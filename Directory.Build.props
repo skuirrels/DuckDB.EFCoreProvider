@@ -1,0 +1,17 @@
+<Project>
+
+  <!-- Shared properties for every project in the repository. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Treat warnings (compiler + analyzer + .editorconfig code style) as build errors so style and
+         correctness rules are enforced in CI rather than only suggested in the IDE. EF1001/EF9100 are
+         expected: a provider necessarily builds on EF Core's internal ("pubternal") and preview APIs. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <NoWarn>$(NoWarn);EF1001;EF9100</NoWarn>
+  </PropertyGroup>
+
+</Project>

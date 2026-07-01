@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageVersion>1.0.4</PackageVersion>
+    <FileVersion>1.0.4</FileVersion>
+    <Version>1.0.4</Version>
+    <Authors>skuirrels</Authors>
+    <Description>NetTopologySuite (spatial) support for the DuckDB provider for Entity Framework Core.</Description>
+    <PackageTags>DuckDB; Entity Framework Core; EF Core; NetTopologySuite; Spatial; GIS</PackageTags>
+    <PackageIcon>DuckDB_icon-lightmode.png</PackageIcon>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/skuirrels/DuckDB.EFCoreProvider</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- Ship the XML documentation file so the public API docs reach consumers' IntelliSense.
+         CS1591 (missing XML comment) is suppressed: EF Core providers necessarily expose many
+         "pubternal" members that carry the standard internal-API boilerplate instead. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <IsPackable>true</IsPackable>
+    <PackageReleaseNotes>
+1.0.4
+- Update Entity Framework Core dependencies from 10.0.8 to 10.0.9. No code or public API changes.
+
+1.0.3
+- Rename the package, assembly, and root namespace from `DuckDB.EFCoreDriver.NTS` to `DuckDB.EFCoreProvider.NTS`, tracking the core package rename. Replace `using DuckDB.EFCoreDriver.NTS...` with `using DuckDB.EFCoreProvider.NTS...`. No behavioural or public API changes beyond the names.
+
+1.0.2
+- Ship the IntelliSense XML documentation file in the package. No code changes.
+
+1.0.1
+- Initial NetTopologySuite spatial support for DuckDB.EFCoreProvider.
+    </PackageReleaseNotes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="NetTopologySuite" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DuckDB.EFCoreProvider\DuckDB.EFCoreProvider.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\DuckDB_icon-lightmode.png" Pack="true" PackagePath="" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+</Project>

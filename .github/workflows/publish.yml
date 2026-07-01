@@ -1,0 +1,44 @@
+name: Publish
+
+# Publishes DuckDB.EFCoreProvider and DuckDB.EFCoreProvider.NTS to NuGet.org
+# using Trusted Publishing (GitHub OIDC -> short-lived API key). No stored secret.
+# Trigger by publishing a GitHub Release (tag), or run manually.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Pack and publish to NuGet.org
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for the OIDC token exchange with NuGet.org
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Pack
+      run: |
+        dotnet pack src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj -c Release -o artifacts
+        dotnet pack src/DuckDB.EFCoreProvider.NTS/DuckDB.EFCoreProvider.NTS.csproj -c Release -o artifacts
+
+    - name: NuGet login (OIDC -> short-lived API key)
+      uses: NuGet/login@v1
+      id: login
+      with:
+        user: skuirrels
+
+    - name: Push to NuGet.org
+      run: >
+        dotnet nuget push "artifacts/*.nupkg"
+        --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+        --source https://api.nuget.org/v3/index.json
+        --skip-duplicate

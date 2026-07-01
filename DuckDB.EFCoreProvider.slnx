@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path="CHANGELOG.md" />
+    <File Path="LICENSE" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/DuckDB.EFCoreProvider.NTS/DuckDB.EFCoreProvider.NTS.csproj" />
+    <Project Path="src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Quickstart/Quickstart.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/DuckDB.EFCoreProvider.Benchmarks/DuckDB.EFCoreProvider.Benchmarks.csproj" />
+    <Project Path="test/DuckDB.EFCoreProvider.FunctionalTests/DuckDB.EFCoreProvider.FunctionalTests.csproj" />
+  </Folder>
+</Solution>
