@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.0.21</PackageVersion>
-    <FileVersion>1.0.21</FileVersion>
-    <Version>1.0.21</Version>
+    <PackageVersion>1.0.22</PackageVersion>
+    <FileVersion>1.0.22</FileVersion>
+    <Version>1.0.22</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; Entity Framework Core; EF Core</PackageTags>
@@ -21,6 +21,9 @@
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
     <PackageValidationBaselineVersion>1.0.21</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.0.22
+- Build/packaging: ship SourceLink metadata, deterministic (CI) builds, and a .snupkg symbol package so consumers get source-mapped stack traces and step-into debugging; the publish workflow now pushes the symbol package alongside the main package. Enable NuGet package validation against the previous release to guard the public API. Documentation: correct the spatial docs/IntelliSense to state that geometry is stored in DuckDB's native GEOMETRY column type (WKT is only the driver wire format), not WKT-in-VARCHAR. No code or public API changes. (DuckDB.EFCoreProvider.NTS updated to 1.0.6.)
+
 1.0.21
 - Update Entity Framework Core dependencies from 10.0.8 to 10.0.9. No code or public API changes.
 
