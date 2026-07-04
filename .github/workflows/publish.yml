@@ -37,8 +37,9 @@ jobs:
         user: skuirrels
 
     - name: Push to NuGet.org
+      # Pushes both the .nupkg and its .snupkg symbol package (the *.nupkg glob does not match .snupkg).
       run: >
-        dotnet nuget push "artifacts/*.nupkg"
+        dotnet nuget push "artifacts/*.nupkg" "artifacts/*.snupkg"
         --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
         --source https://api.nuget.org/v3/index.json
         --skip-duplicate

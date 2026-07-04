@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x. Last reviewed: 2026-06-01.
+**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x. Last reviewed: 2026-07-04.
 
 ---
 
@@ -36,7 +36,7 @@ This document is the published capability matrix for the provider. It serves two
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | File sources | `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (and fluent `FromParquet`/`FromCsv`/`FromJsonFile`) → `read_parquet`/`read_csv`/`read_json` |
 | Bulk insert | `DbContext.BulkInsert(...)` / `BulkInsertAsync(...)` via the DuckDB `Appender` (raw fast path — see §4) |
-| Spatial (NetTopologySuite) | `UseNetTopologySuite()`; geometry stored as WKT text |
+| Spatial (NetTopologySuite) | `UseNetTopologySuite()`; native DuckDB `GEOMETRY` columns (WKT is only the driver wire format) |
 | Raw SQL | EF Core relational raw-SQL APIs |
 | Database-first scaffolding | `dotnet ef dbcontext scaffold` (tables, columns, keys, indexes, sequences, FKs) |
 
@@ -161,7 +161,7 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 ### Extensions
 | Extension | Provider |
 |---|---|
-| `spatial` | ✅ auto-loaded (NetTopologySuite); geometry stored as WKT text, not native `GEOMETRY` |
+| `spatial` | ✅ auto-loaded (NetTopologySuite); native `GEOMETRY` storage — WKT is only the DuckDB.NET wire format (reads via `ST_AsWKT`, writes via `ST_GeomFromText`) |
 | `json` | ✅ built-in |
 | full-text search (`fts`) | ❌ not exposed |
 | database scanners (Postgres / MySQL / SQLite `ATTACH`) | ❌ not exposed |

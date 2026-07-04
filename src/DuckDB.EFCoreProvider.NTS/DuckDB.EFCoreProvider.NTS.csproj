@@ -18,6 +18,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <IsPackable>true</IsPackable>
+    <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
+    <PackageValidationBaselineVersion>1.0.5</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
 1.0.5
 - Fill in the shipped IntelliSense XML docs: add summary/param/returns tags to the public entry points (`UseNetTopologySuite`, `AddEntityFrameworkDuckDBNetTopologySuite`) and the standard internal-API disclaimer to internal translator/plugin classes, matching the core package's earlier documentation pass. No behavioural or public API changes.
