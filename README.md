@@ -294,9 +294,9 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ### Spatial queries
 
-Spatial support lives in the separate `DuckDB.EFCoreProvider.NTS` project (assembly
-`DuckDB.EFCoreProvider.NetTopologySuite`). Reference that project/assembly to enable it. It enables the
-DuckDB spatial extension and maps NetTopologySuite geometry members/methods into DuckDB spatial SQL.
+Spatial support lives in the separate `DuckDB.EFCoreProvider.NTS` project and assembly. Reference that
+project/assembly to enable it. It enables the DuckDB spatial extension and maps NetTopologySuite geometry
+members/methods into DuckDB spatial SQL.
 Geometry is currently stored as WKT text rather than a native spatial column type.
 
 ```csharp
