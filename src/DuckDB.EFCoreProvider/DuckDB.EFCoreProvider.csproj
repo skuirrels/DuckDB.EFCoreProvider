@@ -18,6 +18,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
+    <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
+    <PackageValidationBaselineVersion>1.0.21</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
 1.0.21
 - Update Entity Framework Core dependencies from 10.0.8 to 10.0.9. No code or public API changes.

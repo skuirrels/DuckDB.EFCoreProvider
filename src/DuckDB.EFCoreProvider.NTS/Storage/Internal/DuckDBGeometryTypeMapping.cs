@@ -17,10 +17,11 @@ namespace DuckDB.EFCoreProvider.NTS.Storage.Internal;
 /// <summary>
 /// Type mapping for NTS geometry types in DuckDB.
 /// <para>
-/// DuckDB.NET cannot read the native GEOMETRY column type (type ID 40).
-/// To work around this, geometries are stored as WKT strings in a <c>VARCHAR</c> column.
-/// When a geometry column or parameter is used in a spatial function, the translators
-/// wrap it with <c>ST_GeomFromText()</c> so DuckDB receives the correct GEOMETRY argument.
+/// Geometries are stored in DuckDB's native <c>GEOMETRY</c> column type. DuckDB.NET cannot read the
+/// native GEOMETRY value directly (type ID 40), so WKT text is used only as the wire format: reads are
+/// projected through <c>ST_AsWKT()</c> (see <see cref="Query.Internal.DuckDBNtsQuerySqlGenerator"/>) and this mapping's
+/// CLR value is a WKT <see cref="string"/>. On write, the WKT parameter is wrapped with
+/// <c>ST_GeomFromText()</c> so DuckDB casts it back to the native GEOMETRY column.
 /// </para>
 /// </summary>
 public class DuckDBGeometryTypeMapping<TGeometry> : RelationalGeometryTypeMapping<TGeometry, string>, IDuckDBGeometryTypeMapping

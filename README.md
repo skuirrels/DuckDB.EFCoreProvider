@@ -3,6 +3,7 @@
 **The full-featured Entity Framework Core 10 provider for [DuckDB](https://duckdb.org) — analytics-grade speed with the EF Core developer experience you already know.**
 
 [![NuGet](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.svg)](https://www.nuget.org/packages/DuckDB.EFCoreProvider)
+[![NuGet (NTS)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.NTS.svg?label=NuGet%20%28NTS%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.NTS)
 [![EF Core 10](https://img.shields.io/badge/EF%20Core-10-512BD4)](https://learn.microsoft.com/ef/core/)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -297,7 +298,9 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 Spatial support lives in the separate `DuckDB.EFCoreProvider.NTS` project and assembly. Reference that
 project/assembly to enable it. It enables the DuckDB spatial extension and maps NetTopologySuite geometry
 members/methods into DuckDB spatial SQL.
-Geometry is currently stored as WKT text rather than a native spatial column type.
+Geometry is stored in DuckDB's native `GEOMETRY` column type; WKT text is used only as the wire format
+to and from the driver (reads project `ST_AsWKT(...)`, writes wrap `ST_GeomFromText(...)`), because
+DuckDB.NET cannot yet read the native binary geometry type directly.
 
 ```csharp
 using DuckDB.EFCoreProvider.NTS.Extensions;

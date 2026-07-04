@@ -2,5 +2,27 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Bump all Microsoft EF Core packages together, matching the release workflow that keeps them on the same patch.",
+      "matchPackageNames": ["/^Microsoft\\.EntityFrameworkCore/"],
+      "groupName": "Entity Framework Core"
+    },
+    {
+      "description": "Auto-merge patch-level updates to the test/tooling packages once CI passes, to cut PR noise. (NuGet has no devDependencies depType, so these are matched by name.)",
+      "matchPackageNames": [
+        "/^xunit/",
+        "/^coverlet\\./",
+        "BenchmarkDotNet",
+        "Microsoft.NET.Test.Sdk",
+        "JunitXml.TestLogger",
+        "JetBrains.Annotations",
+        "/^AwesomeAssertions/",
+        "/^Microsoft\\.Extensions\\.Configuration/"
+      ],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    }
   ]
 }

@@ -14,4 +14,21 @@
     <NoWarn>$(NoWarn);EF1001;EF9100</NoWarn>
   </PropertyGroup>
 
+  <!-- Packaging & debugging hygiene for the shipped libraries. SourceLink is bundled in the .NET SDK
+       (no package reference needed): PublishRepositoryUrl + EmbedUntrackedSources emit the metadata that
+       lets consumers step into and get source-mapped stack traces for the provider, and a snupkg symbol
+       package carries the PDBs. ContinuousIntegrationBuild (set automatically under GitHub Actions) makes
+       the build path-independent so the published binaries are deterministic. Packable projects also run
+       package validation against the last published version to catch accidental public-API breaks, in line
+       with the SemVer promise in VERSIONING.md. -->
+  <PropertyGroup>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <Deterministic>true</Deterministic>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <EnablePackageValidation>true</EnablePackageValidation>
+  </PropertyGroup>
+
 </Project>

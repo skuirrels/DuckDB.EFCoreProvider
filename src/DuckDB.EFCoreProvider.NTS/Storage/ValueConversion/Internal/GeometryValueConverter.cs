@@ -7,9 +7,9 @@ namespace DuckDB.EFCoreProvider.NTS.Storage.ValueConversion.Internal;
 
 /// <summary>
 /// Converts between <typeparamref name="TGeometry"/> and WKT <see cref="string"/>.
-/// DuckDB stores geometry as VARCHAR (WKT text) because DuckDB.NET does not support
-/// reading the native GEOMETRY type (type ID 40). Spatial functions receive a
-/// VARCHAR column/parameter wrapped in <c>ST_GeomFromText()</c>.
+/// DuckDB stores geometry in its native GEOMETRY column type; WKT text is only the wire
+/// format, because DuckDB.NET cannot read the native GEOMETRY value directly (type ID 40).
+/// Reads arrive as WKT via <c>ST_AsWKT()</c> and writes are wrapped in <c>ST_GeomFromText()</c>.
 /// </summary>
 public class GeometryValueConverter<TGeometry> : ValueConverter<TGeometry, string>
     where TGeometry : Geometry
