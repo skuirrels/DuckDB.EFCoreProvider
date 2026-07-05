@@ -16,6 +16,7 @@
 - **Full read *and* write.** `SaveChanges`, migrations, transactions, optimistic concurrency, and store-generated keys — the whole EF Core experience, not read-only.
 - **Order-of-magnitude write throughput.** Opt-in insert / update / delete **batching (~10–20× faster)**, **`Upsert`** (~8×), and appender-backed **`BulkInsert` (~1M rows/s)**.
 - **Query Parquet, CSV & JSON in place.** Map an entity straight to a file or glob with `[FromParquet]` / `[FromCsv]` / `[FromJsonFile]` and let DuckDB's vectorised engine do the scanning.
+- **Tiered storage (hot + cold).** Keep recent data in the writable DuckDB file and offload older data — a relational aggregate (root + children) at a time — to hive-partitioned Parquet with `ArchiveTierAsync`. Hot stays plain EF Core; report across hot+cold with LINQ. Idempotent and crash-safe. See [Tiered storage](#tiered-storage-hot-tables--cold-parquet).
 - **Rich type support.** Decimals (precision/scale), arrays & lists, JSON (incl. owned `ToJson()`), temporal, GUID, blobs, row values — plus optional **NetTopologySuite** spatial.
 - **Production knobs.** `MemoryLimit`, `FileSearchPath`, configurable batch sizing, and more.
 
@@ -118,6 +119,7 @@ The batching, memory, and file-search options are explained in detail under [Per
 - DuckDB JSON support for `string`, `JsonDocument`, `JsonElement`, and EF Core owned JSON/structural documents via `ToJson()`.
 - DuckDB array/list mappings for CLR arrays and `List<T>`, including typed `INTEGER[]`-style store types.
 - File-source query mapping for Parquet, CSV, and JSON through `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (or the fluent `FromParquet`/`FromCsv`/`FromJsonFile`), emitted as DuckDB `read_parquet(...)` / `read_csv(...)` / `read_json(...)`.
+- Tiered storage (`ToTieredStore(...)` + `.Including(...)`, `ArchiveTierAsync(...)`, `PurgeArchiveOlderThan(...)`): keep recent data in the DuckDB file and offload older relational aggregates (root + children) to hive-partitioned Parquet, unified by generated views; hot side is plain EF Core, cold reporting via keyless read-models; idempotent and crash-safe. See [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
 - High-throughput bulk insert via `context.BulkInsert(...)` / `BulkInsertAsync(...)`, backed by the DuckDB `Appender` (a raw fast path that bypasses change tracking and store-generated values).
 - High-throughput upsert via `context.Upsert(...)` / `UpsertAsync(...)`, backed by batched DuckDB `INSERT ... ON CONFLICT (key) DO UPDATE` — inserts new rows and updates existing ones by primary key in one round-trip per batch (see [Upsert](#upsert)).
 - Opt-in `SaveChanges` insert, update, and delete batching via `UseDuckDB(o => o.EnableBulkInsertBatching())`, `EnableBulkUpdateBatching()`, and `EnableBulkDeleteBatching()`, which merge consecutive inserts/updates/deletes into a single multi-row statement for an order-of-magnitude (up to ~20×) speed-up while keeping change tracking and store-generated keys — delete batching is especially effective for orphan cleanup and child-collection replacement (see [Faster `SaveChanges`](#faster-savechanges-inserts-updates-and-deletes)).
@@ -211,6 +213,71 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
     modelBuilder.Entity<Customer>().FromCsv("data/customers.csv");
     modelBuilder.Entity<AuditEvent>().FromJsonFile("data/events.json");
 }
+```
+
+### Tiered storage (hot tables + cold Parquet)
+
+Keep recent data hot in the writable DuckDB file and roll older data out to hive-partitioned Parquet, then
+report across the whole history with ordinary LINQ. Tiering works over a **relational aggregate** — a root and
+its children move together, governed by the root's date. Your **hot side stays plain EF Core** (normal
+entities, `SaveChanges`, `Include`); the **cold/reporting side** uses a keyless read-model per table. The
+offload is **idempotent and crash-safe**. Full guide: [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
+
+```csharp
+using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Metadata;
+
+public class BillingContext : DbContext
+{
+    public DbSet<Invoice> Invoices => Set<Invoice>();                       // hot: writes + hot-only reads
+    public DbSet<InvoiceReport> InvoiceHistory => Set<InvoiceReport>();     // hot + cold reporting
+    public DbSet<InvoiceLineReport> LineHistory => Set<InvoiceLineReport>();
+
+    protected override void OnConfiguring(DbContextOptionsBuilder options)
+        => options.UseDuckDB("Data Source=billing.duckdb");
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Invoice>()
+            .HasMany(i => i.Lines).WithOne(l => l.Invoice).HasForeignKey(l => l.InvoiceId);
+
+        modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
+            .WithReadModel<InvoiceReport>()
+            .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
+    }
+}
+```
+
+```csharp
+db.Database.EnsureCreated();                 // also creates the control table + all union views
+// (when using Migrate() instead, call db.Database.EnsureTieredStoresCreated() once at startup)
+
+// ... write invoices with lines normally, then periodically offload aggregates older than a year:
+var result = await db.Database.ArchiveTierAsync<Invoice>(DateTime.UtcNow.AddYears(-1));
+
+var recent = db.Invoices.Count();          // hot only — just the DuckDB file
+var everything = db.InvoiceHistory.Count(); // hot + cold — also scans the Parquet archive
+
+// Report across hot + cold with a plain LINQ join, then enforce retention:
+var byYear = db.LineHistory.Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
+    .GroupBy(x => x.Year).Select(g => new { g.Key, Revenue = g.Sum(x => x.Amount) });
+db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
+```
+
+Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer). See the runnable
+[`samples/TieredStorage`](samples/TieredStorage) sample.
+
+**Child view guard (advanced).** In an aggregate, a child row is shown as hot only when its root is on the hot
+side of the boundary — a semijoin that keeps reports correct even in the brief window if an archive process
+dies between writing Parquet and deleting the hot rows. For deep aggregates where that per-query guard costs
+more than it's worth, opt out with `.WithoutHotChildFilter()`; child views become a plain `SELECT * FROM child`,
+and the next `ArchiveTierAsync` still self-heals any transient double-count.
+
+```csharp
+modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
+    .WithoutHotChildFilter()                        // trade the crash-window guard for faster child reads
+    .WithReadModel<InvoiceReport>()
+    .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
 ```
 
 ### Bulk insert

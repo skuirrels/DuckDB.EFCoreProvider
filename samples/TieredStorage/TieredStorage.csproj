@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- This sample ships inside the repository, so it references the provider by project path.
+         In your own application, reference the NuGet package instead:
+
+           dotnet add package DuckDB.EFCoreProvider
+
+         See README.md for the full consuming-app setup. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DuckDB.EFCoreProvider\DuckDB.EFCoreProvider.csproj" />
+  </ItemGroup>
+
+</Project>

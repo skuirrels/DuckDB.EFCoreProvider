@@ -11,6 +11,7 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Quickstart/Quickstart.csproj" />
+    <Project Path="samples/TieredStorage/TieredStorage.csproj" />
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/DuckDB.EFCoreProvider.Benchmarks/DuckDB.EFCoreProvider.Benchmarks.csproj" />

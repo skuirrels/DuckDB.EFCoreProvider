@@ -1,4 +1,6 @@
-﻿using DuckDB.NET.Data;
+﻿using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.NET.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -93,6 +95,25 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     {
         Dependencies.Connection.Open();
         Dependencies.Connection.Close();
+    }
+
+    /// <inheritdoc />
+    public override void CreateTables()
+    {
+        base.CreateTables();
+
+        // Create the tiered-storage control table and union views alongside the hot tables, so a fresh
+        // EnsureCreated() yields a queryable tiered store without a separate EnsureTieredStoresCreated() call.
+        // No-op when the model has no tiered entities.
+        Dependencies.CurrentContext.Context.Database.EnsureTieredStoresCreated();
+    }
+
+    /// <inheritdoc />
+    public override async Task CreateTablesAsync(CancellationToken cancellationToken = default)
+    {
+        await base.CreateTablesAsync(cancellationToken).ConfigureAwait(false);
+
+        Dependencies.CurrentContext.Context.Database.EnsureTieredStoresCreated();
     }
 
     /// <inheritdoc />
