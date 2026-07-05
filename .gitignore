@@ -368,3 +368,6 @@ FodyWeavers.xsd
 # DuckDB sample/scratch databases
 *.duckdb
 *.duckdb.wal
+
+# TieredStorage sample cold-archive output
+tiered_sample_archive/

@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.0.22</PackageVersion>
-    <FileVersion>1.0.22</FileVersion>
-    <Version>1.0.22</Version>
+    <PackageVersion>1.1.0</PackageVersion>
+    <FileVersion>1.1.0</FileVersion>
+    <Version>1.1.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,11 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.0.21</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.0.22</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.1.0
+- Add tiered storage: keep recent ("hot") rows in the writable DuckDB file and offload older ("cold") rows to hive-partitioned Parquet, then report across the whole history with LINQ. Tiering works over a relational aggregate (root + declared children), governed by the root's date. The hot side stays ordinary EF Core (regular entities, relationships, SaveChanges, Include); cold reporting uses a keyless read-model per table mapped to a generated union view. Configure with modelBuilder.ToTieredStore&lt;TRoot&gt;(r =&gt; r.Date, archivePath, granularity).WithReadModel&lt;TReport&gt;().Including&lt;TChild&gt;(...). Create views with EnsureCreated() (automatic) or EnsureTieredStoresCreated() (migrations). Offload with context.Database.ArchiveTierAsync&lt;TRoot&gt;(cutoff) (also synchronous ArchiveTier&lt;TRoot&gt;) and enforce retention with PurgeArchiveOlderThan&lt;TRoot&gt;(olderThan). Idempotent and crash-safe. See docs/TIERED-STORAGE.md and samples/TieredStorage. No changes to existing APIs.
+
 1.0.22
 - Build/packaging: ship SourceLink metadata, deterministic (CI) builds, and a .snupkg symbol package so consumers get source-mapped stack traces and step-into debugging; the publish workflow now pushes the symbol package alongside the main package. Enable NuGet package validation against the previous release to guard the public API. Documentation: correct the spatial docs/IntelliSense to state that geometry is stored in DuckDB's native GEOMETRY column type (WKT is only the driver wire format), not WKT-in-VARCHAR. No code or public API changes. (DuckDB.EFCoreProvider.NTS updated to 1.0.6.)
 
