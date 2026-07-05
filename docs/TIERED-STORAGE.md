@@ -127,6 +127,45 @@ self-heals leftover hot rows. Deletes run leaf→root in one transaction.
 int partitionsDeleted = db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 ```
 
+## 6. Cold storage on S3 (and other object stores)
+
+The cold tier does not have to be a local disk. Point `archivePath` at an object-store URL — `s3://`,
+`gcs://`/`gs://`, `r2://`, or `azure://` — and DuckDB reads and writes the Parquet there directly via its
+`httpfs` (or `azure`) extension. Recent data stays in the local `.duckdb` file; the archive lives on cheap,
+durable object storage; the union views query across both.
+
+The archive `COPY`, incremental partition writes, idempotent re-runs, and the crash-safety invariant all behave
+identically on S3 (verified against MinIO). Reads stay efficient: hive-partition pruning plus Parquet row-group
+statistics mean a range-scoped report fetches only the byte ranges it needs, not whole files.
+
+**Setup.** Load `httpfs` and configure credentials on every connection with a connection interceptor. The
+provider opens its connections through EF Core, so the interceptor runs for the archive operations too.
+
+```csharp
+public sealed class HttpfsSetup : DbConnectionInterceptor
+{
+    private const string Sql = """
+        INSTALL httpfs; LOAD httpfs;
+        CREATE OR REPLACE SECRET s3 (TYPE s3, PROVIDER credential_chain, REGION 'eu-west-2');
+        """; // or KEY_ID/SECRET, or ENDPOINT/URL_STYLE 'path'/USE_SSL false for MinIO
+    public override void ConnectionOpened(DbConnection c, ConnectionEndEventData e)
+    { using var cmd = c.CreateCommand(); cmd.CommandText = Sql; cmd.ExecuteNonQuery(); }
+    public override async Task ConnectionOpenedAsync(DbConnection c, ConnectionEndEventData e, CancellationToken ct = default)
+    { await using var cmd = c.CreateCommand(); cmd.CommandText = Sql; await cmd.ExecuteNonQueryAsync(ct); }
+}
+
+options.UseDuckDB("Data Source=app.duckdb").AddInterceptors(new HttpfsSetup());
+
+modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "s3://my-bucket/archive/invoices", TierGranularity.Month)
+    .WithReadModel<InvoiceReport>()
+    .Including<InvoiceLine>(i => i.Lines, l => l.WithReadModel<InvoiceLineReport>());
+```
+
+**Retention on object storage.** Object stores can't delete files through DuckDB, so
+`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive. Enforce retention with a **bucket
+lifecycle rule** on the archive prefix instead (for example, expire objects under `archive/invoices/` after
+7 years) — the layout is hive-partitioned by period, so age-based expiry maps cleanly onto it.
+
 ## Production notes
 
 - **Single writer.** DuckDB allows one writer. Run `ArchiveTierAsync` / `PurgeArchiveOlderThan` from the

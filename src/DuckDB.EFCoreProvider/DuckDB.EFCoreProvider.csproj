@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.1.0</PackageVersion>
-    <FileVersion>1.1.0</FileVersion>
-    <Version>1.1.0</Version>
+    <PackageVersion>1.2.0</PackageVersion>
+    <FileVersion>1.2.0</FileVersion>
+    <Version>1.2.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,11 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.0.22</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.1.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.2.0
+- Tiered storage: the cold archive can now live on an object store. Point archivePath at an s3:// (also gcs://, r2://, azure://) URL and DuckDB reads and writes the Parquet there directly via httpfs; hot data stays in the local .duckdb file. Load httpfs and configure credentials with an EF Core connection interceptor (the provider now opens its own connections through EF, so the interceptor runs for archive operations too). Partitioned writes, incremental appends, idempotent re-runs, and the crash-safety invariant behave identically on S3 (verified against MinIO). Retention on object storage: PurgeArchiveOlderThan throws NotSupportedException for a remote archive — use a bucket lifecycle rule on the hive-partitioned prefix instead. See docs/TIERED-STORAGE.md.
+
 1.1.0
 - Add tiered storage: keep recent ("hot") rows in the writable DuckDB file and offload older ("cold") rows to hive-partitioned Parquet, then report across the whole history with LINQ. Tiering works over a relational aggregate (root + declared children), governed by the root's date. The hot side stays ordinary EF Core (regular entities, relationships, SaveChanges, Include); cold reporting uses a keyless read-model per table mapped to a generated union view. Configure with modelBuilder.ToTieredStore&lt;TRoot&gt;(r =&gt; r.Date, archivePath, granularity).WithReadModel&lt;TReport&gt;().Including&lt;TChild&gt;(...). Create views with EnsureCreated() (automatic) or EnsureTieredStoresCreated() (migrations). Offload with context.Database.ArchiveTierAsync&lt;TRoot&gt;(cutoff) (also synchronous ArchiveTier&lt;TRoot&gt;) and enforce retention with PurgeArchiveOlderThan&lt;TRoot&gt;(olderThan). Idempotent and crash-safe. See docs/TIERED-STORAGE.md and samples/TieredStorage. No changes to existing APIs.
 
