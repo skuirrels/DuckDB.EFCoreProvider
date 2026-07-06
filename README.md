@@ -270,7 +270,10 @@ var byYear = db.LineHistory.Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id,
 db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 ```
 
-Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
+Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer). To skip the join on
+a hot reporting path, denormalize the parent column onto the child (e.g. carry `InvoiceDate` on the line) so the
+report is a single-read-model aggregate — see
+[Avoiding the join](docs/TIERED-STORAGE.md#avoiding-the-join-denormalize-the-report-columns).
 
 > **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app tiers two independent
 > roots — an `Invoice` → `InvoiceLine` aggregate on `InvoiceDate` and an `AuditEvent` on `OccurredOn`, each on its

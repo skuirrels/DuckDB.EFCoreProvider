@@ -123,6 +123,37 @@ var revenueByYear = db.LineHistory
     .Select(g => new { Year = g.Key, Revenue = g.Sum(x => x.Amount) });
 ```
 
+### Avoiding the join: denormalize the report columns
+
+If a cross-table join is on a hot reporting path and you'd rather not pay it, **denormalize** the parent column
+onto the child. A read-model can only project columns that exist on its source table, so the copy has to live on
+the **hot child entity** — carry the parent's date on the line and populate it when you write:
+
+```csharp
+public class InvoiceLine
+{
+    public int Id { get; set; }
+    public int InvoiceId { get; set; }
+    public decimal Amount { get; set; }
+    public DateTime InvoiceDate { get; set; } // denormalized from the invoice at write time
+}
+public class InvoiceLineReport
+{
+    public decimal Amount { get; set; }
+    public DateTime InvoiceDate { get; set; } // now available on the line read-model
+}
+
+// Revenue by year is now a single-read-model aggregate — no join:
+var revenueByYear = db.LineHistory
+    .GroupBy(l => l.InvoiceDate.Year)
+    .Select(g => new { Year = g.Key, Revenue = g.Sum(l => l.Amount) });
+```
+
+The trade-off is storage and consistency: the duplicated column lives in the hot table **and** every archived
+Parquet file, and you are responsible for keeping it in sync on write (it's a snapshot — safe for immutable
+history like invoices, riskier for values that change after the fact). Denormalize the few columns your hot
+reports need; join for the rest.
+
 ## 4. Offload old aggregates
 
 Run on a schedule (hosted service / cron) with a rolling cutoff. Root and children archive together:
