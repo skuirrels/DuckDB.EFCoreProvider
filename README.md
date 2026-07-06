@@ -223,6 +223,8 @@ its children move together, governed by the root's date. Your **hot side stays p
 entities, `SaveChanges`, `Include`); the **cold/reporting side** uses a keyless read-model per table. The
 offload is **idempotent and crash-safe**. Full guide: [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
 
+![A single timeline split by a watermark: rows before it live in the cold Parquet archive, rows at or after it stay hot in the DuckDB file.](docs/images/tiered-storage-boundary.png)
+
 **Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (in the
 example below, `i => i.InvoiceDate`). It governs the whole aggregate's hot/cold boundary and is chosen **per
 aggregate**, so every tiered root can tier on a different date: `Invoice` on `InvoiceDate`, `Order` on `PlacedUtc`,
