@@ -62,7 +62,7 @@ public class BillingContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Invoice → InvoiceLine is discovered by convention (Lines / Invoice / InvoiceId).
+        // i => i.InvoiceDate is this aggregate's timestamp property: the date that defines its hot/cold boundary (the watermark).
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
