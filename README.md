@@ -272,6 +272,12 @@ var byYear = db.LineHistory.Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id,
 db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 ```
 
+Notice `ArchiveTierAsync<Invoice>` (and `PurgeArchiveOlderThan<Invoice>`) take **no path** — only the cutoff. The
+*where* (the archive path) and the *which date* (the timestamp property) come from the `ToTieredStore<Invoice>(...)`
+configuration, looked up by the root type; the runtime call supplies only the *when*. Each table in the aggregate
+archives under `<archivePath>/<table>/year=…/month=…/`, and the generated views read back from the same path, so
+reads and writes always agree on the location.
+
 Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer). To skip the join on
 a hot reporting path, denormalize the parent column onto the child (e.g. carry `InvoiceDate` on the line) so the
 report is a single-read-model aggregate — see
