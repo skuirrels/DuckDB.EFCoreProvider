@@ -172,7 +172,7 @@ internal sealed class SampleContext(string dbPath, string invoiceArchive, string
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Two independent roots. Invoice → InvoiceLine is discovered by convention (Lines / Invoice / InvoiceId).
+        // Two independent roots, each tiering on its own timestamp property — the date that defines its hot/cold boundary.
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, invoiceArchive, TierGranularity.Month)
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
