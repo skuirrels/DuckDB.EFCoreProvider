@@ -223,6 +223,11 @@ its children move together, governed by the root's date. Your **hot side stays p
 entities, `SaveChanges`, `Include`); the **cold/reporting side** uses a keyless read-model per table. The
 offload is **idempotent and crash-safe**. Full guide: [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
 
+**Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (in the
+example below, `i => i.InvoiceDate`). It governs the whole aggregate's hot/cold boundary and is chosen **per
+aggregate**, so every tiered root can tier on a different date: `Invoice` on `InvoiceDate`, `Order` on `PlacedUtc`,
+`AuditEvent` on `OccurredOn` — each independent, each with its own archive path.
+
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
@@ -238,9 +243,7 @@ public class BillingContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Invoice>()
-            .HasMany(i => i.Lines).WithOne(l => l.Invoice).HasForeignKey(l => l.InvoiceId);
-
+        // Invoice → InvoiceLine is discovered by convention (Lines / Invoice / InvoiceId).
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
@@ -258,16 +261,23 @@ var result = await db.Database.ArchiveTierAsync<Invoice>(DateTime.UtcNow.AddYear
 var recent = db.Invoices.Count();          // hot only — just the DuckDB file
 var everything = db.InvoiceHistory.Count(); // hot + cold — also scans the Parquet archive
 
-// Report across hot + cold with a plain LINQ join, then enforce retention:
+// Cold reporting over the read-models. Single-table aggregates need no join:
+var invoicesByYear = db.InvoiceHistory.GroupBy(i => i.InvoiceDate.Year).Select(g => new { g.Key, Count = g.Count() });
+
+// Read-models are keyless (no navigations), so a cross-table report joins on the FK column; then enforce retention:
 var byYear = db.LineHistory.Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
     .GroupBy(x => x.Year).Select(g => new { g.Key, Revenue = g.Sum(x => x.Amount) });
 db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 ```
 
-Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
+Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer). To skip the join on
+a hot reporting path, denormalize the parent column onto the child (e.g. carry `InvoiceDate` on the line) so the
+report is a single-read-model aggregate — see
+[Avoiding the join](docs/TIERED-STORAGE.md#avoiding-the-join-denormalize-the-report-columns).
 
-> **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app seeds two years of
-> an `Invoice` → `InvoiceLine` aggregate, offloads data older than a year, and reports across hot + cold:
+> **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app tiers two independent
+> roots — an `Invoice` → `InvoiceLine` aggregate on `InvoiceDate` and an `AuditEvent` on `OccurredOn`, each on its
+> own cutoff — and reports across hot + cold:
 > ```bash
 > dotnet run --project samples/TieredStorage          # cold archive on the local filesystem
 > dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 (defaults to a local MinIO)

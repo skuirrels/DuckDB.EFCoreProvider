@@ -62,9 +62,7 @@ public class BillingContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Invoice>()
-            .HasMany(i => i.Lines).WithOne(l => l.Invoice).HasForeignKey(l => l.InvoiceId);
-
+        // Invoice → InvoiceLine is discovered by convention (Lines / Invoice / InvoiceId).
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
@@ -72,6 +70,11 @@ public class BillingContext : DbContext
     }
 }
 ```
+
+**Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (here,
+`i => i.InvoiceDate`). It governs that aggregate's entire hot/cold boundary and is chosen **per aggregate**, so
+`Invoice` can tier on `InvoiceDate`, `Order` on `PlacedUtc`, `AuditEvent` on `OccurredOn` — each independent, each
+with its own archive path.
 
 `.Including(...)` declares which navigations are **aggregate children** (archived with the root). Anything not
 included — e.g. an `InvoiceLine → Product` reference — stays hot.
@@ -93,19 +96,63 @@ db.Database.EnsureTieredStoresCreated();
 
 ## 3. Write and read
 
+Writes are ordinary EF Core — child graphs, `SaveChanges`, `Include` over hot data:
+
 ```csharp
-// Writes are ordinary EF Core, including child graphs and Include over hot data:
 db.Invoices.Add(new Invoice { InvoiceDate = DateTime.UtcNow, Lines = { new() { Amount = 100 } } });
 db.SaveChanges();
 var recent = db.Invoices.Include(i => i.Lines).Where(i => i.InvoiceDate >= DateTime.UtcNow.AddDays(-30)).ToList();
-
-// Reporting spans hot + cold via the read-models — a plain LINQ join:
-var revenueByYear =
-    from line in db.LineHistory
-    join invoice in db.InvoiceHistory on line.InvoiceId equals invoice.Id
-    group line.Amount by invoice.InvoiceDate.Year into g
-    select new { Year = g.Key, Revenue = g.Sum() };
 ```
+
+Cold reporting queries the read-models, which span hot + cold. Most reports are single-read-model aggregates
+that need no join:
+
+```csharp
+var invoicesByYear = db.InvoiceHistory
+    .GroupBy(i => i.InvoiceDate.Year)
+    .Select(g => new { Year = g.Key, Count = g.Count() });
+```
+
+The read-models are **keyless** (mapped to views), so they carry no navigation properties. A report that spans
+two tables therefore joins on the foreign-key column — there is no `invoice.Lines` to navigate on the cold side:
+
+```csharp
+var revenueByYear = db.LineHistory
+    .Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
+    .GroupBy(x => x.Year)
+    .Select(g => new { Year = g.Key, Revenue = g.Sum(x => x.Amount) });
+```
+
+### Avoiding the join: denormalize the report columns
+
+If a cross-table join is on a hot reporting path and you'd rather not pay it, **denormalize** the parent column
+onto the child. A read-model can only project columns that exist on its source table, so the copy has to live on
+the **hot child entity** — carry the parent's date on the line and populate it when you write:
+
+```csharp
+public class InvoiceLine
+{
+    public int Id { get; set; }
+    public int InvoiceId { get; set; }
+    public decimal Amount { get; set; }
+    public DateTime InvoiceDate { get; set; } // denormalized from the invoice at write time
+}
+public class InvoiceLineReport
+{
+    public decimal Amount { get; set; }
+    public DateTime InvoiceDate { get; set; } // now available on the line read-model
+}
+
+// Revenue by year is now a single-read-model aggregate — no join:
+var revenueByYear = db.LineHistory
+    .GroupBy(l => l.InvoiceDate.Year)
+    .Select(g => new { Year = g.Key, Revenue = g.Sum(l => l.Amount) });
+```
+
+The trade-off is storage and consistency: the duplicated column lives in the hot table **and** every archived
+Parquet file, and you are responsible for keeping it in sync on write (it's a snapshot — safe for immutable
+history like invoices, riskier for values that change after the fact). Denormalize the few columns your hot
+reports need; join for the rest.
 
 ## 4. Offload old aggregates
 
