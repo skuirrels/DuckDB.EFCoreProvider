@@ -225,7 +225,7 @@ offload is **idempotent and crash-safe**. Full guide: [docs/TIERED-STORAGE.md](d
 
 ![A single timeline split by a watermark: rows before it live in the cold Parquet archive, rows at or after it stay hot in the DuckDB file.](docs/images/tiered-storage-boundary.png)
 
-**Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (in the
+**Each aggregate root declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (in the
 example below, `i => i.InvoiceDate`). It governs the whole aggregate's hot/cold boundary and is chosen **per
 aggregate**, so every tiered root can tier on a different date: `Invoice` on `InvoiceDate`, `Order` on `PlacedUtc`,
 `AuditEvent` on `OccurredOn` — each independent, each with its own archive path.
