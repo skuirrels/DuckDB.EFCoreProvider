@@ -264,14 +264,21 @@ var byYear = db.LineHistory.Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id,
 db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 ```
 
-Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer). See the runnable
-[`samples/TieredStorage`](samples/TieredStorage) sample.
+Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
+
+> **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app seeds two years of
+> an `Invoice` → `InvoiceLine` aggregate, offloads data older than a year, and reports across hot + cold:
+> ```bash
+> dotnet run --project samples/TieredStorage          # cold archive on the local filesystem
+> dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 (defaults to a local MinIO)
+> ```
 
 **Cold storage on S3.** Point `archivePath` at an object-store URL (`s3://`, `gcs://`, `r2://`, `azure://`) and
 DuckDB reads and writes the archive there directly — hot data in the local file, cold data on cheap durable
 storage, one set of views over both. Load `httpfs` and configure credentials with a connection interceptor;
 enforce retention with a bucket lifecycle rule (remote `PurgeArchiveOlderThan` is intentionally not supported).
-Full guide: [Cold storage on S3](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-and-other-object-stores).
+Full guide: [Cold storage on S3](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-and-other-object-stores); the
+sample above runs against S3 with `-- s3`.
 
 **Child view guard (advanced).** In an aggregate, a child row is shown as hot only when its root is on the hot
 side of the boundary — a semijoin that keeps reports correct even in the brief window if an archive process
