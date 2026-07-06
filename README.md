@@ -323,8 +323,15 @@ fewer cold rows; S3 mode skips the purge, so you see the full archive.)
 
 **Cold storage on S3.** Point `archivePath` at an object-store URL (`s3://`, `gcs://`, `r2://`, `azure://`) and
 DuckDB reads and writes the archive there directly — hot data in the local file, cold data on cheap durable
-storage, one set of views over both. Load `httpfs` and configure credentials with a connection interceptor;
-enforce retention with a bucket lifecycle rule (remote `PurgeArchiveOlderThan` is intentionally not supported).
+storage, one set of views over both. Load `httpfs` and configure credentials with a connection interceptor. The
+two maintenance calls differ on S3:
+
+- **`ArchiveTierAsync` works against S3 exactly as on local disk** — archiving, incremental writes, idempotent
+  re-runs, and crash-safety all behave identically (verified against MinIO).
+- **`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive** — DuckDB can't delete objects
+  from an object store. Enforce retention with a **bucket lifecycle rule** on the archive prefix instead; the
+  hive-partitioned layout maps cleanly onto age-based expiry.
+
 Full guide: [Cold storage on S3](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-and-other-object-stores); the
 sample above runs against S3 with `-- s3`.
 
