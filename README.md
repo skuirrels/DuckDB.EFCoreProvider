@@ -289,6 +289,32 @@ report is a single-read-model aggregate — see
 > ```
 > The S3 mode targets that MinIO by default; override the `TIER_S3_*` environment variables to point at real S3.
 
+**See the two tiers for yourself.** After a run, the hot rows are `BASE TABLE`s in the `.duckdb` file and the
+cold rows are hive-partitioned Parquet in the archive; the generated `*_tiered` views union them. Inspect each
+store directly with the [DuckDB CLI](https://duckdb.org/docs/stable/clients/cli/overview) (local mode shown —
+no S3 credentials needed):
+
+```bash
+# Hot: rows physically in the DuckDB file, plus the watermark that splits hot from cold.
+duckdb tiered_sample.duckdb -c "SELECT count(*) FROM Invoices; SELECT * FROM __duckdb_tier_control;"
+
+# Cold: the Parquet the archive actually wrote (S3 mode: mc ls --recursive local/tier).
+ls -R tiered_sample_archive/invoices/Invoices
+
+# The view is exactly hot + cold — count all three side by side:
+duckdb tiered_sample.duckdb -c "
+SELECT (SELECT count(*) FROM Invoices)                                     AS hot_duckdb,
+       (SELECT count(*) FROM read_parquet('tiered_sample_archive/invoices/Invoices/**/*.parquet',
+                                          hive_partitioning = true))       AS cold_parquet,
+       (SELECT count(*) FROM Invoices_tiered)                              AS union_view;"
+#  hot_duckdb + cold_parquet == union_view   (e.g. 13 + 6 == 19)
+```
+
+`EXPLAIN SELECT * FROM Invoices_tiered` makes the union structural: a `UNION` of a `SEQ_SCAN` on the hot
+`Invoices` table beside a `READ_PARQUET` over the archive. (In local mode the sample runs a retention purge at
+the end, so some archived partitions are already gone when you look — `hot + cold == union` still holds, with
+fewer cold rows; S3 mode skips the purge, so you see the full archive.)
+
 **Cold storage on S3.** Point `archivePath` at an object-store URL (`s3://`, `gcs://`, `r2://`, `azure://`) and
 DuckDB reads and writes the archive there directly — hot data in the local file, cold data on cheap durable
 storage, one set of views over both. Load `httpfs` and configure credentials with a connection interceptor;
