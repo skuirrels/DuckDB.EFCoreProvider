@@ -1,5 +1,6 @@
-// Tiered storage over a relational aggregate: keep recent invoices (and their lines) in the writable DuckDB
-// file, offload older ones to hive-partitioned Parquet, and report across hot+cold with ordinary LINQ joins.
+// Tiered storage over two independent root aggregates: Invoice (tiered on InvoiceDate) and AuditEvent
+// (tiered on OccurredOn). Each root names its own timestamp property and archives on its own cutoff, so their
+// hot/cold boundaries move independently. Reporting spans hot + cold through keyless read-models.
 //
 //   dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (default)
 //   dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 / an S3-compatible store
@@ -16,51 +17,71 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 
 var useS3 = args.Length > 0 && args[0].Trim('-').Equals("s3", StringComparison.OrdinalIgnoreCase);
 const string dbPath = "tiered_sample.duckdb";
+const string localArchiveRoot = "tiered_sample_archive";
 
 var s3 = useS3 ? S3Options.FromEnvironment() : null;
-var archivePath = useS3 ? $"s3://{s3!.Bucket}/tiered_sample" : "tiered_sample_archive";
+var archiveRoot = useS3 ? $"s3://{s3!.Bucket}/tiered_sample" : localArchiveRoot;
+var invoiceArchive = $"{archiveRoot}/invoices";   // each root aggregate gets its own, non-overlapping path
+var auditArchive = $"{archiveRoot}/audit";
 
 // Fresh slate for the local artefacts (the S3 prefix is left as-is — overwrites are idempotent).
 if (File.Exists(dbPath)) File.Delete(dbPath);
-if (!useS3 && Directory.Exists(archivePath)) Directory.Delete(archivePath, recursive: true);
+if (!useS3 && Directory.Exists(localArchiveRoot)) Directory.Delete(localArchiveRoot, recursive: true);
 
 Console.WriteLine(useS3
-    ? $"Cold archive: {archivePath}  (S3 endpoint '{s3!.Endpoint}')\n"
-    : $"Cold archive: ./{archivePath}  (local filesystem)\n");
+    ? $"Cold archive: {archiveRoot}  (S3 endpoint '{s3!.Endpoint}')\n"
+    : $"Cold archive: ./{localArchiveRoot}  (local filesystem)\n");
 
-using (var db = new BillingContext(dbPath, archivePath, s3))
+using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, s3))
 {
-    db.Database.EnsureCreated(); // also creates the control table + union views for the whole aggregate
+    db.Database.EnsureCreated(); // also creates the control table + union views for both aggregates
 
-    // Seed two years of monthly invoices, each with two lines. These are ordinary EF writes.
-    var today = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
-    for (var monthsAgo = 24; monthsAgo >= 0; monthsAgo--)
+    var thisMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+
+    // Two years of invoices, two lines each — ordinary EF writes with a child graph.
+    for (var m = 24; m >= 0; m--)
     {
-        var invoice = new Invoice { InvoiceDate = today.AddMonths(-monthsAgo) };
-        invoice.Lines.Add(new InvoiceLine { Description = "Services", Amount = 100 + monthsAgo });
+        var invoice = new Invoice { InvoiceDate = thisMonth.AddMonths(-m) };
+        invoice.Lines.Add(new InvoiceLine { Description = "Services", Amount = 100 + m });
         invoice.Lines.Add(new InvoiceLine { Description = "Expenses", Amount = 25 });
         db.Invoices.Add(invoice);
     }
 
+    // Three years of audit events — a different root, keyed on a different date.
+    for (var m = 36; m >= 0; m--)
+    {
+        db.AuditEvents.Add(new AuditEvent { OccurredOn = thisMonth.AddMonths(-m), Action = "login" });
+    }
+
     db.SaveChanges();
-    Console.WriteLine($"Seeded {db.Invoices.Count()} invoices with {db.Set<InvoiceLine>().Count()} lines.\n");
 
-    // Offload everything older than one year to Parquet — root and lines move together (to disk or S3).
-    var cutoff = today.AddYears(-1);
-    var result = await db.Database.ArchiveTierAsync<Invoice>(cutoff);
-    Console.WriteLine($"Archived {result.RowsArchived} invoices older than {cutoff:yyyy-MM}. Watermark: {result.Watermark:yyyy-MM}.\n");
+    // Each aggregate archives on its OWN cutoff, against its OWN timestamp property — independent boundaries.
+    var invoiceCutoff = thisMonth.AddYears(-1);
+    var auditCutoff = thisMonth.AddMonths(-6);
+    await db.Database.ArchiveTierAsync<Invoice>(invoiceCutoff);
+    await db.Database.ArchiveTierAsync<AuditEvent>(auditCutoff);
 
-    // Hot = just the DuckDB file (your normal DbSet). Tiered read-models = hot + cold Parquet.
-    Console.WriteLine($"Hot invoices  (DuckDB file):  {db.Invoices.Count(),3}");
-    Console.WriteLine($"All invoices  (hot + cold):   {db.InvoiceHistory.Count(),3}");
+    Console.WriteLine($"Invoices   hot {db.Invoices.Count(),3}  |  hot+cold {db.InvoiceHistory.Count(),3}   (InvoiceDate, cutoff {invoiceCutoff:yyyy-MM})");
+    Console.WriteLine($"Audit      hot {db.AuditEvents.Count(),3}  |  hot+cold {db.AuditHistory.Count(),3}   (OccurredOn, cutoff {auditCutoff:yyyy-MM})");
 
-    // Reporting: a plain LINQ join across the read-models, spanning hot and cold transparently.
-    var revenueByYear =
-        from line in db.LineHistory
-        join invoice in db.InvoiceHistory on line.InvoiceId equals invoice.Id
-        group line.Amount by invoice.InvoiceDate.Year into g
-        orderby g.Key
-        select new { Year = g.Key, Revenue = g.Sum() };
+    // Most cold reports are single read-model aggregates — no join needed:
+    var invoicesByYear = db.InvoiceHistory
+        .GroupBy(i => i.InvoiceDate.Year)
+        .Select(g => new { Year = g.Key, Count = g.Count() })
+        .OrderBy(r => r.Year);
+
+    Console.WriteLine("\nInvoices by year (hot + cold):");
+    foreach (var row in invoicesByYear)
+    {
+        Console.WriteLine($"  {row.Year}: {row.Count,3}");
+    }
+
+    // A cross-table report joins on the FK column — read-models are keyless, so there are no navigations:
+    var revenueByYear = db.LineHistory
+        .Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
+        .GroupBy(x => x.Year)
+        .Select(g => new { Year = g.Key, Revenue = g.Sum(x => x.Amount) })
+        .OrderBy(r => r.Year);
 
     Console.WriteLine("\nRevenue by year (hot + cold):");
     foreach (var row in revenueByYear)
@@ -68,18 +89,17 @@ using (var db = new BillingContext(dbPath, archivePath, s3))
         Console.WriteLine($"  {row.Year}: {row.Revenue:C}");
     }
 
-    // Retention. On local disk we purge partitions directly; on an object store, DuckDB can't delete files,
-    // so PurgeArchiveOlderThan is not supported — use a bucket lifecycle rule on the archive prefix instead.
-    if (useS3)
+    // Retention: on local disk we purge partitions directly; on an object store, use a bucket lifecycle rule
+    // (PurgeArchiveOlderThan is not supported for remote archives).
+    if (!useS3)
     {
-        Console.WriteLine("\nRetention on S3: use a bucket lifecycle rule on the 'tiered_sample/' prefix " +
-                          "(PurgeArchiveOlderThan is not supported for remote archives).");
+        db.Database.PurgeArchiveOlderThan<Invoice>(thisMonth.AddMonths(-18));
+        db.Database.PurgeArchiveOlderThan<AuditEvent>(thisMonth.AddMonths(-18));
+        Console.WriteLine("\nPurged archive partitions older than 18 months.");
     }
     else
     {
-        var purged = db.Database.PurgeArchiveOlderThan<Invoice>(today.AddMonths(-18));
-        Console.WriteLine($"\nPurged {purged} archive partitions older than 18 months.");
-        Console.WriteLine($"All invoices after purge:     {db.InvoiceHistory.Count(),3}");
+        Console.WriteLine($"\nRetention on S3: use bucket lifecycle rules on the 'tiered_sample/' prefix.");
     }
 }
 
@@ -87,7 +107,7 @@ Console.WriteLine(useS3
     ? "\nDone. Delete 'tiered_sample.duckdb' and the S3 'tiered_sample/' prefix to reset."
     : "\nDone. Delete 'tiered_sample.duckdb' and 'tiered_sample_archive/' to reset.");
 
-// --- Hot model: ordinary EF Core entities with a normal relationship (full SaveChanges + Include). ---
+// --- Hot model: ordinary EF Core entities. ---
 internal sealed class Invoice
 {
     public int Id { get; set; }
@@ -104,7 +124,14 @@ internal sealed class InvoiceLine
     public decimal Amount { get; set; }
 }
 
-// --- Cold read-models: keyless projections used for hot+cold reporting queries. ---
+internal sealed class AuditEvent
+{
+    public int Id { get; set; }
+    public DateTime OccurredOn { get; set; }
+    public required string Action { get; set; }
+}
+
+// --- Cold read-models: keyless projections used for hot+cold reporting. ---
 internal sealed class InvoiceReport
 {
     public int Id { get; set; }
@@ -118,11 +145,19 @@ internal sealed class InvoiceLineReport
     public decimal Amount { get; set; }
 }
 
-internal sealed class BillingContext(string dbPath, string archivePath, S3Options? s3) : DbContext
+internal sealed class AuditEventReport
+{
+    public int Id { get; set; }
+    public DateTime OccurredOn { get; set; }
+}
+
+internal sealed class SampleContext(string dbPath, string invoiceArchive, string auditArchive, S3Options? s3) : DbContext
 {
     public DbSet<Invoice> Invoices => Set<Invoice>();
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
     public DbSet<InvoiceReport> InvoiceHistory => Set<InvoiceReport>();
     public DbSet<InvoiceLineReport> LineHistory => Set<InvoiceLineReport>();
+    public DbSet<AuditEventReport> AuditHistory => Set<AuditEventReport>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
     {
@@ -137,16 +172,13 @@ internal sealed class BillingContext(string dbPath, string archivePath, S3Option
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Invoice>(b =>
-        {
-            b.ToTable("invoices");
-            b.HasMany(i => i.Lines).WithOne(l => l.Invoice).HasForeignKey(l => l.InvoiceId);
-        });
-        modelBuilder.Entity<InvoiceLine>().ToTable("invoice_lines");
-
-        modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath, TierGranularity.Month)
+        // Two independent roots. Invoice → InvoiceLine is discovered by convention (Lines / Invoice / InvoiceId).
+        modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, invoiceArchive, TierGranularity.Month)
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
+
+        modelBuilder.ToTieredStore<AuditEvent>(e => e.OccurredOn, auditArchive, TierGranularity.Month)
+            .WithReadModel<AuditEventReport>();
     }
 }
 

@@ -96,18 +96,31 @@ db.Database.EnsureTieredStoresCreated();
 
 ## 3. Write and read
 
+Writes are ordinary EF Core — child graphs, `SaveChanges`, `Include` over hot data:
+
 ```csharp
-// Writes are ordinary EF Core, including child graphs and Include over hot data:
 db.Invoices.Add(new Invoice { InvoiceDate = DateTime.UtcNow, Lines = { new() { Amount = 100 } } });
 db.SaveChanges();
 var recent = db.Invoices.Include(i => i.Lines).Where(i => i.InvoiceDate >= DateTime.UtcNow.AddDays(-30)).ToList();
+```
 
-// Reporting spans hot + cold via the read-models — a plain LINQ join:
-var revenueByYear =
-    from line in db.LineHistory
-    join invoice in db.InvoiceHistory on line.InvoiceId equals invoice.Id
-    group line.Amount by invoice.InvoiceDate.Year into g
-    select new { Year = g.Key, Revenue = g.Sum() };
+Cold reporting queries the read-models, which span hot + cold. Most reports are single-read-model aggregates
+that need no join:
+
+```csharp
+var invoicesByYear = db.InvoiceHistory
+    .GroupBy(i => i.InvoiceDate.Year)
+    .Select(g => new { Year = g.Key, Count = g.Count() });
+```
+
+The read-models are **keyless** (mapped to views), so they carry no navigation properties. A report that spans
+two tables therefore joins on the foreign-key column — there is no `invoice.Lines` to navigate on the cold side:
+
+```csharp
+var revenueByYear = db.LineHistory
+    .Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
+    .GroupBy(x => x.Year)
+    .Select(g => new { Year = g.Key, Revenue = g.Sum(x => x.Amount) });
 ```
 
 ## 4. Offload old aggregates

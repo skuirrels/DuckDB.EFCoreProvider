@@ -261,7 +261,10 @@ var result = await db.Database.ArchiveTierAsync<Invoice>(DateTime.UtcNow.AddYear
 var recent = db.Invoices.Count();          // hot only — just the DuckDB file
 var everything = db.InvoiceHistory.Count(); // hot + cold — also scans the Parquet archive
 
-// Report across hot + cold with a plain LINQ join, then enforce retention:
+// Cold reporting over the read-models. Single-table aggregates need no join:
+var invoicesByYear = db.InvoiceHistory.GroupBy(i => i.InvoiceDate.Year).Select(g => new { g.Key, Count = g.Count() });
+
+// Read-models are keyless (no navigations), so a cross-table report joins on the FK column; then enforce retention:
 var byYear = db.LineHistory.Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
     .GroupBy(x => x.Year).Select(g => new { g.Key, Revenue = g.Sum(x => x.Amount) });
 db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
@@ -269,8 +272,9 @@ db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 
 Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
 
-> **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app seeds two years of
-> an `Invoice` → `InvoiceLine` aggregate, offloads data older than a year, and reports across hot + cold:
+> **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app tiers two independent
+> roots — an `Invoice` → `InvoiceLine` aggregate on `InvoiceDate` and an `AuditEvent` on `OccurredOn`, each on its
+> own cutoff — and reports across hot + cold:
 > ```bash
 > dotnet run --project samples/TieredStorage          # cold archive on the local filesystem
 > dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 (defaults to a local MinIO)
