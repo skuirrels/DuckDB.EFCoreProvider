@@ -223,6 +223,11 @@ its children move together, governed by the root's date. Your **hot side stays p
 entities, `SaveChanges`, `Include`); the **cold/reporting side** uses a keyless read-model per table. The
 offload is **idempotent and crash-safe**. Full guide: [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
 
+**Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (in the
+example below, `i => i.InvoiceDate`). It governs the whole aggregate's hot/cold boundary and is chosen **per
+aggregate**, so every tiered root can tier on a different date: `Invoice` on `InvoiceDate`, `Order` on `PlacedUtc`,
+`AuditEvent` on `OccurredOn` — each independent, each with its own archive path.
+
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
@@ -238,9 +243,7 @@ public class BillingContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Invoice>()
-            .HasMany(i => i.Lines).WithOne(l => l.Invoice).HasForeignKey(l => l.InvoiceId);
-
+        // Invoice → InvoiceLine is discovered by convention (Lines / Invoice / InvoiceId).
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());

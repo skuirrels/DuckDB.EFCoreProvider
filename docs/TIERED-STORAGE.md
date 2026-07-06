@@ -62,9 +62,7 @@ public class BillingContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Invoice>()
-            .HasMany(i => i.Lines).WithOne(l => l.Invoice).HasForeignKey(l => l.InvoiceId);
-
+        // Invoice → InvoiceLine is discovered by convention (Lines / Invoice / InvoiceId).
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
@@ -72,6 +70,11 @@ public class BillingContext : DbContext
     }
 }
 ```
+
+**Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (here,
+`i => i.InvoiceDate`). It governs that aggregate's entire hot/cold boundary and is chosen **per aggregate**, so
+`Invoice` can tier on `InvoiceDate`, `Order` on `PlacedUtc`, `AuditEvent` on `OccurredOn` — each independent, each
+with its own archive path.
 
 `.Including(...)` declares which navigations are **aggregate children** (archived with the root). Anything not
 included — e.g. an `InvoiceLine → Product` reference — stays hot.
