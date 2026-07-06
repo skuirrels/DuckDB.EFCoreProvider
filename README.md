@@ -272,6 +272,12 @@ var byYear = db.LineHistory.Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id,
 db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 ```
 
+Notice `ArchiveTierAsync<Invoice>` (and `PurgeArchiveOlderThan<Invoice>`) take **no path** — only the cutoff. The
+*where* (the archive path) and the *which date* (the timestamp property) come from the `ToTieredStore<Invoice>(...)`
+configuration, looked up by the root type; the runtime call supplies only the *when*. Each table in the aggregate
+archives under `<archivePath>/<table>/year=…/month=…/`, and the generated views read back from the same path, so
+reads and writes always agree on the location.
+
 Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer). To skip the join on
 a hot reporting path, denormalize the parent column onto the child (e.g. carry `InvoiceDate` on the line) so the
 report is a single-read-model aggregate — see
@@ -281,9 +287,39 @@ report is a single-read-model aggregate — see
 > roots — an `Invoice` → `InvoiceLine` aggregate on `InvoiceDate` and an `AuditEvent` on `OccurredOn`, each on its
 > own cutoff — and reports across hot + cold:
 > ```bash
-> dotnet run --project samples/TieredStorage          # cold archive on the local filesystem
-> dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 (defaults to a local MinIO)
+> dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (no setup)
+>
+> # S3 mode: start a local MinIO (auto-creates the 'tier' bucket), then run against it:
+> docker compose -f samples/TieredStorage/docker-compose.yml up -d
+> dotnet run --project samples/TieredStorage -- s3     # cold archive on S3
 > ```
+> The S3 mode targets that MinIO by default; override the `TIER_S3_*` environment variables to point at real S3.
+
+**See the two tiers for yourself.** After a run, the hot rows are `BASE TABLE`s in the `.duckdb` file and the
+cold rows are hive-partitioned Parquet in the archive; the generated `*_tiered` views union them. Inspect each
+store directly with the [DuckDB CLI](https://duckdb.org/docs/stable/clients/cli/overview) (local mode shown —
+no S3 credentials needed):
+
+```bash
+# Hot: rows physically in the DuckDB file, plus the watermark that splits hot from cold.
+duckdb tiered_sample.duckdb -c "SELECT count(*) FROM Invoices; SELECT * FROM __duckdb_tier_control;"
+
+# Cold: the Parquet the archive actually wrote (S3 mode: mc ls --recursive local/tier).
+ls -R tiered_sample_archive/invoices/Invoices
+
+# The view is exactly hot + cold — count all three side by side:
+duckdb tiered_sample.duckdb -c "
+SELECT (SELECT count(*) FROM Invoices)                                     AS hot_duckdb,
+       (SELECT count(*) FROM read_parquet('tiered_sample_archive/invoices/Invoices/**/*.parquet',
+                                          hive_partitioning = true))       AS cold_parquet,
+       (SELECT count(*) FROM Invoices_tiered)                              AS union_view;"
+#  hot_duckdb + cold_parquet == union_view   (e.g. 13 + 6 == 19)
+```
+
+`EXPLAIN SELECT * FROM Invoices_tiered` makes the union structural: a `UNION` of a `SEQ_SCAN` on the hot
+`Invoices` table beside a `READ_PARQUET` over the archive. (In local mode the sample runs a retention purge at
+the end, so some archived partitions are already gone when you look — `hot + cold == union` still holds, with
+fewer cold rows; S3 mode skips the purge, so you see the full archive.)
 
 **Cold storage on S3.** Point `archivePath` at an object-store URL (`s3://`, `gcs://`, `r2://`, `azure://`) and
 DuckDB reads and writes the archive there directly — hot data in the local file, cold data on cheap durable

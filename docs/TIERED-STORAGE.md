@@ -213,8 +213,15 @@ modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "s3://my-bucket/archive/
 lifecycle rule** on the archive prefix instead (for example, expire objects under `archive/invoices/` after
 7 years) — the layout is hive-partitioned by period, so age-based expiry maps cleanly onto it.
 
-**Try it.** The sample runs against S3: `dotnet run --project samples/TieredStorage -- s3` (defaults to a local
-MinIO; override with the `TIER_S3_*` environment variables to point at real S3).
+**Try it.** The sample ships a compose file that starts a local MinIO and creates the `tier` bucket, so S3 mode
+is two commands:
+
+```bash
+docker compose -f samples/TieredStorage/docker-compose.yml up -d
+dotnet run --project samples/TieredStorage -- s3
+```
+
+It targets that MinIO by default; override the `TIER_S3_*` environment variables to point at real S3.
 
 ## Production notes
 

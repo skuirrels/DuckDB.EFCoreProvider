@@ -5,9 +5,9 @@
 //   dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (default)
 //   dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 / an S3-compatible store
 //
-// S3 mode defaults to a local MinIO (docker run -p 9000:9000 -e MINIO_ROOT_USER=minioadmin
-// -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data — and create a bucket named 'tier').
-// Override with TIER_S3_ENDPOINT / _BUCKET / _KEY / _SECRET / _REGION / _SSL to point at real S3.
+// S3 mode targets a local MinIO by default. Start one (and auto-create the 'tier' bucket) with the compose
+// file next to this sample:  docker compose -f samples/TieredStorage/docker-compose.yml up -d
+// Override TIER_S3_ENDPOINT / _BUCKET / _KEY / _SECRET / _REGION / _SSL to point at real S3 instead.
 
 using System.Data.Common;
 using DuckDB.EFCoreProvider.Extensions;
