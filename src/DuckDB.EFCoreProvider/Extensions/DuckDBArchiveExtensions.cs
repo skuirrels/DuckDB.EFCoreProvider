@@ -43,8 +43,8 @@ public static class DuckDBArchiveExtensions
             return;
         }
 
+        var openedHere = OpenTracked(database);
         var connection = (DuckDBConnection)database.GetDbConnection();
-        var openedHere = Open(connection);
         try
         {
             ExecuteNonQuery(connection, DuckDBTierControl.ControlTableDdl(sql));
@@ -55,7 +55,7 @@ public static class DuckDBArchiveExtensions
         }
         finally
         {
-            Close(connection, openedHere);
+            CloseTracked(database, openedHere);
         }
     }
 
@@ -80,12 +80,8 @@ public static class DuckDBArchiveExtensions
         // (a raw BEGIN inside an existing transaction would fail).
         var ownTransaction = database.CurrentTransaction is null;
 
+        var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
         var connection = (DuckDBConnection)database.GetDbConnection();
-        var openedHere = connection.State != ConnectionState.Open;
-        if (openedHere)
-        {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        }
 
         try
         {
@@ -107,7 +103,14 @@ public static class DuckDBArchiveExtensions
             {
                 foreach (var node in aggregate.Nodes)
                 {
-                    Directory.CreateDirectory(node.ArchiveSubPath);
+                    // DuckDB does not create the archive root's parent directories for a local COPY, so create
+                    // them here. Remote object stores (s3://, gcs://, azure://, …) have no directories and
+                    // DuckDB writes the keys directly, so this step is skipped for them.
+                    if (!IsRemoteArchive(node.ArchiveSubPath))
+                    {
+                        Directory.CreateDirectory(node.ArchiveSubPath);
+                    }
+
                     await ExecuteNonQueryAsync(connection, CopySql(sql, aggregate, node, from, aligned), cancellationToken).ConfigureAwait(false);
                 }
             }
@@ -121,10 +124,7 @@ public static class DuckDBArchiveExtensions
         }
         finally
         {
-            if (openedHere)
-            {
-                await connection.CloseAsync().ConfigureAwait(false);
-            }
+            await CloseTrackedAsync(database, openedHere).ConfigureAwait(false);
         }
     }
 
@@ -144,6 +144,15 @@ public static class DuckDBArchiveExtensions
         ArgumentNullException.ThrowIfNull(database);
         var (context, sql) = Services(database);
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot)) ?? throw NotConfigured(typeof(TRoot));
+
+        if (IsRemoteArchive(aggregate.Root.ArchiveSubPath))
+        {
+            throw new NotSupportedException(
+                $"PurgeArchiveOlderThan is not supported for the remote archive '{aggregate.Root.ArchiveSubPath}'. "
+                + "Object stores cannot delete files through DuckDB; enforce retention with a bucket lifecycle rule on "
+                + "the archive prefix instead.");
+        }
+
         var cutoff = DuckDBTierControl.AlignCutoff(olderThan, aggregate.Granularity);
         var deleted = aggregate.Nodes.Sum(node => PurgePartitions(node.ArchiveSubPath, aggregate.Granularity, cutoff));
 
@@ -152,15 +161,14 @@ public static class DuckDBArchiveExtensions
             // Regenerate the views so a table whose archive is now completely empty falls back to a hot-only
             // view instead of leaving a cold read_parquet() branch over a glob that matches no files (which
             // would throw on every query).
-            var connection = (DuckDBConnection)database.GetDbConnection();
-            var openedHere = Open(connection);
+            var openedHere = OpenTracked(database);
             try
             {
-                RegenerateViews(connection, sql, aggregate);
+                RegenerateViews((DuckDBConnection)database.GetDbConnection(), sql, aggregate);
             }
             finally
             {
-                Close(connection, openedHere);
+                CloseTracked(database, openedHere);
             }
         }
 
@@ -227,6 +235,14 @@ public static class DuckDBArchiveExtensions
                + $"WHERE {ts} >= TIMESTAMP '{from.ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}' "
                + $"AND {ts} < TIMESTAMP '{cutoff.ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}';";
     }
+
+    /// <summary>
+    ///     Returns <see langword="true" /> if the archive path targets a remote object store (has a URL scheme
+    ///     such as <c>s3://</c>, <c>gcs://</c>, <c>r2://</c>, <c>azure://</c>, <c>http(s)://</c>) rather than a
+    ///     local or mounted filesystem path.
+    /// </summary>
+    private static bool IsRemoteArchive(string archivePath)
+        => System.Text.RegularExpressions.Regex.IsMatch(archivePath, "^[A-Za-z][A-Za-z0-9+.-]*://");
 
     private static int PurgePartitions(string archivePath, Metadata.TierGranularity granularity, DateTime cutoff)
     {
@@ -296,22 +312,44 @@ public static class DuckDBArchiveExtensions
         return Convert.ToInt64(ExecuteScalar(connection, $"SELECT count(*) FROM glob('{glob}');"), CultureInfo.InvariantCulture) > 0;
     }
 
-    private static bool Open(DuckDBConnection connection)
+    // Open/close through the EF Core database facade (not the raw ADO connection) so registered connection
+    // interceptors run — in particular any that load DuckDB's httpfs extension and configure object-store
+    // (s3://, gcs://, azure://) credentials before the archive reads or writes remote Parquet.
+    private static bool OpenTracked(DatabaseFacade database)
     {
-        if (connection.State == ConnectionState.Open)
+        if (database.GetDbConnection().State == ConnectionState.Open)
         {
             return false;
         }
 
-        connection.Open();
+        database.OpenConnection();
         return true;
     }
 
-    private static void Close(DuckDBConnection connection, bool openedHere)
+    private static void CloseTracked(DatabaseFacade database, bool openedHere)
     {
         if (openedHere)
         {
-            connection.Close();
+            database.CloseConnection();
+        }
+    }
+
+    private static async Task<bool> OpenTrackedAsync(DatabaseFacade database, CancellationToken cancellationToken)
+    {
+        if (database.GetDbConnection().State == ConnectionState.Open)
+        {
+            return false;
+        }
+
+        await database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    private static async Task CloseTrackedAsync(DatabaseFacade database, bool openedHere)
+    {
+        if (openedHere)
+        {
+            await database.CloseConnectionAsync().ConfigureAwait(false);
         }
     }
 
