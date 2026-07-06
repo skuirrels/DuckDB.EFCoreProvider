@@ -166,6 +166,9 @@ modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "s3://my-bucket/archive/
 lifecycle rule** on the archive prefix instead (for example, expire objects under `archive/invoices/` after
 7 years) — the layout is hive-partitioned by period, so age-based expiry maps cleanly onto it.
 
+**Try it.** The sample runs against S3: `dotnet run --project samples/TieredStorage -- s3` (defaults to a local
+MinIO; override with the `TIER_S3_*` environment variables to point at real S3).
+
 ## Production notes
 
 - **Single writer.** DuckDB allows one writer. Run `ArchiveTierAsync` / `PurgeArchiveOlderThan` from the

@@ -1,19 +1,34 @@
 // Tiered storage over a relational aggregate: keep recent invoices (and their lines) in the writable DuckDB
 // file, offload older ones to hive-partitioned Parquet, and report across hot+cold with ordinary LINQ joins.
 //
-// Run it:  dotnet run --project samples/TieredStorage
+//   dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (default)
+//   dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 / an S3-compatible store
+//
+// S3 mode defaults to a local MinIO (docker run -p 9000:9000 -e MINIO_ROOT_USER=minioadmin
+// -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data — and create a bucket named 'tier').
+// Override with TIER_S3_ENDPOINT / _BUCKET / _KEY / _SECRET / _REGION / _SSL to point at real S3.
 
+using System.Data.Common;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
+var useS3 = args.Length > 0 && args[0].Trim('-').Equals("s3", StringComparison.OrdinalIgnoreCase);
 const string dbPath = "tiered_sample.duckdb";
-const string archivePath = "tiered_sample_archive";
 
+var s3 = useS3 ? S3Options.FromEnvironment() : null;
+var archivePath = useS3 ? $"s3://{s3!.Bucket}/tiered_sample" : "tiered_sample_archive";
+
+// Fresh slate for the local artefacts (the S3 prefix is left as-is — overwrites are idempotent).
 if (File.Exists(dbPath)) File.Delete(dbPath);
-if (Directory.Exists(archivePath)) Directory.Delete(archivePath, recursive: true);
+if (!useS3 && Directory.Exists(archivePath)) Directory.Delete(archivePath, recursive: true);
 
-using (var db = new BillingContext(dbPath, archivePath))
+Console.WriteLine(useS3
+    ? $"Cold archive: {archivePath}  (S3 endpoint '{s3!.Endpoint}')\n"
+    : $"Cold archive: ./{archivePath}  (local filesystem)\n");
+
+using (var db = new BillingContext(dbPath, archivePath, s3))
 {
     db.Database.EnsureCreated(); // also creates the control table + union views for the whole aggregate
 
@@ -30,7 +45,7 @@ using (var db = new BillingContext(dbPath, archivePath))
     db.SaveChanges();
     Console.WriteLine($"Seeded {db.Invoices.Count()} invoices with {db.Set<InvoiceLine>().Count()} lines.\n");
 
-    // Offload everything older than one year to Parquet — root and lines move together.
+    // Offload everything older than one year to Parquet — root and lines move together (to disk or S3).
     var cutoff = today.AddYears(-1);
     var result = await db.Database.ArchiveTierAsync<Invoice>(cutoff);
     Console.WriteLine($"Archived {result.RowsArchived} invoices older than {cutoff:yyyy-MM}. Watermark: {result.Watermark:yyyy-MM}.\n");
@@ -53,13 +68,24 @@ using (var db = new BillingContext(dbPath, archivePath))
         Console.WriteLine($"  {row.Year}: {row.Revenue:C}");
     }
 
-    // Retention: drop archived partitions older than 18 months across every aggregate table.
-    var purged = db.Database.PurgeArchiveOlderThan<Invoice>(today.AddMonths(-18));
-    Console.WriteLine($"\nPurged {purged} archive partitions older than 18 months.");
-    Console.WriteLine($"All invoices after purge:     {db.InvoiceHistory.Count(),3}");
+    // Retention. On local disk we purge partitions directly; on an object store, DuckDB can't delete files,
+    // so PurgeArchiveOlderThan is not supported — use a bucket lifecycle rule on the archive prefix instead.
+    if (useS3)
+    {
+        Console.WriteLine("\nRetention on S3: use a bucket lifecycle rule on the 'tiered_sample/' prefix " +
+                          "(PurgeArchiveOlderThan is not supported for remote archives).");
+    }
+    else
+    {
+        var purged = db.Database.PurgeArchiveOlderThan<Invoice>(today.AddMonths(-18));
+        Console.WriteLine($"\nPurged {purged} archive partitions older than 18 months.");
+        Console.WriteLine($"All invoices after purge:     {db.InvoiceHistory.Count(),3}");
+    }
 }
 
-Console.WriteLine("\nDone. Delete 'tiered_sample.duckdb' and 'tiered_sample_archive/' to reset.");
+Console.WriteLine(useS3
+    ? "\nDone. Delete 'tiered_sample.duckdb' and the S3 'tiered_sample/' prefix to reset."
+    : "\nDone. Delete 'tiered_sample.duckdb' and 'tiered_sample_archive/' to reset.");
 
 // --- Hot model: ordinary EF Core entities with a normal relationship (full SaveChanges + Include). ---
 internal sealed class Invoice
@@ -92,14 +118,22 @@ internal sealed class InvoiceLineReport
     public decimal Amount { get; set; }
 }
 
-internal sealed class BillingContext(string dbPath, string archivePath) : DbContext
+internal sealed class BillingContext(string dbPath, string archivePath, S3Options? s3) : DbContext
 {
     public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<InvoiceReport> InvoiceHistory => Set<InvoiceReport>();
     public DbSet<InvoiceLineReport> LineHistory => Set<InvoiceLineReport>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
-        => options.UseDuckDB($"Data Source={dbPath}");
+    {
+        options.UseDuckDB($"Data Source={dbPath}");
+        if (s3 is not null)
+        {
+            // Loads httpfs and configures object-store credentials on every connection. Because the provider
+            // opens its connections through EF Core, this runs for the archive operations too.
+            options.AddInterceptors(new HttpfsSetupInterceptor(s3));
+        }
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -114,4 +148,39 @@ internal sealed class BillingContext(string dbPath, string archivePath) : DbCont
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
     }
+}
+
+// --- S3 setup: an EF Core connection interceptor that prepares DuckDB for object-store access. ---
+internal sealed class HttpfsSetupInterceptor(S3Options s3) : DbConnectionInterceptor
+{
+    private string SetupSql =>
+        "INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET tiersample (TYPE s3, "
+        + $"KEY_ID '{s3.KeyId}', SECRET '{s3.Secret}', REGION '{s3.Region}'"
+        + (string.IsNullOrEmpty(s3.Endpoint) ? "" : $", ENDPOINT '{s3.Endpoint}', URL_STYLE 'path', USE_SSL {(s3.UseSsl ? "true" : "false")}")
+        + ");";
+
+    public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = SetupSql;
+        command.ExecuteNonQuery();
+    }
+
+    public override async Task ConnectionOpenedAsync(DbConnection connection, ConnectionEndEventData eventData, CancellationToken cancellationToken = default)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = SetupSql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+}
+
+internal sealed record S3Options(string Endpoint, string KeyId, string Secret, string Region, string Bucket, bool UseSsl)
+{
+    public static S3Options FromEnvironment() => new(
+        Environment.GetEnvironmentVariable("TIER_S3_ENDPOINT") ?? "localhost:9000",
+        Environment.GetEnvironmentVariable("TIER_S3_KEY") ?? "minioadmin",
+        Environment.GetEnvironmentVariable("TIER_S3_SECRET") ?? "minioadmin",
+        Environment.GetEnvironmentVariable("TIER_S3_REGION") ?? "us-east-1",
+        Environment.GetEnvironmentVariable("TIER_S3_BUCKET") ?? "tier",
+        string.Equals(Environment.GetEnvironmentVariable("TIER_S3_SSL"), "true", StringComparison.OrdinalIgnoreCase));
 }
