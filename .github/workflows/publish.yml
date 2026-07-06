@@ -25,10 +25,24 @@ jobs:
       with:
         dotnet-version: 10.0.x
 
-    - name: Pack
+    - name: Pack core
+      run: dotnet pack src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj -c Release -o artifacts
+
+    - name: Pack NTS (only when its version is not already published)
+      # NTS is versioned independently and usually unchanged on a core release. Re-packing an already-published
+      # NTS version and pushing its .snupkg fails symbol validation: SourceLink embeds the current commit in the
+      # rebuilt PDB, so it no longer matches the DLL in the .nupkg already on NuGet (which --skip-duplicate keeps).
+      # So only pack NTS — and therefore only push it — when this is a genuinely new NTS version.
       run: |
-        dotnet pack src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj -c Release -o artifacts
-        dotnet pack src/DuckDB.EFCoreProvider.NTS/DuckDB.EFCoreProvider.NTS.csproj -c Release -o artifacts
+        id=duckdb.efcoreprovider.nts
+        ver=$(sed -n 's:.*<PackageVersion>\(.*\)</PackageVersion>.*:\1:p' src/DuckDB.EFCoreProvider.NTS/DuckDB.EFCoreProvider.NTS.csproj | head -1)
+        published=$(curl -s "https://api.nuget.org/v3-flatcontainer/$id/index.json" || echo '{}')
+        if echo "$published" | grep -q "\"$ver\""; then
+          echo "DuckDB.EFCoreProvider.NTS $ver is already published; skipping pack/push."
+        else
+          echo "Packing DuckDB.EFCoreProvider.NTS $ver (new version)."
+          dotnet pack src/DuckDB.EFCoreProvider.NTS/DuckDB.EFCoreProvider.NTS.csproj -c Release -o artifacts
+        fi
 
     - name: NuGet login (OIDC -> short-lived API key)
       uses: NuGet/login@v1
