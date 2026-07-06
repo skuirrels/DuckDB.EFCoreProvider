@@ -281,9 +281,13 @@ report is a single-read-model aggregate — see
 > roots — an `Invoice` → `InvoiceLine` aggregate on `InvoiceDate` and an `AuditEvent` on `OccurredOn`, each on its
 > own cutoff — and reports across hot + cold:
 > ```bash
-> dotnet run --project samples/TieredStorage          # cold archive on the local filesystem
-> dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 (defaults to a local MinIO)
+> dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (no setup)
+>
+> # S3 mode: start a local MinIO (auto-creates the 'tier' bucket), then run against it:
+> docker compose -f samples/TieredStorage/docker-compose.yml up -d
+> dotnet run --project samples/TieredStorage -- s3     # cold archive on S3
 > ```
+> The S3 mode targets that MinIO by default; override the `TIER_S3_*` environment variables to point at real S3.
 
 **Cold storage on S3.** Point `archivePath` at an object-store URL (`s3://`, `gcs://`, `r2://`, `azure://`) and
 DuckDB reads and writes the archive there directly — hot data in the local file, cold data on cheap durable

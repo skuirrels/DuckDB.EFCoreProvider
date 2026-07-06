@@ -1,0 +1,32 @@
+# Local S3-compatible endpoint for the tiered-storage sample's S3 mode.
+#
+#   docker compose -f samples/TieredStorage/docker-compose.yml up -d
+#   dotnet run --project samples/TieredStorage -- s3
+#   docker compose -f samples/TieredStorage/docker-compose.yml down -v   # tear down + wipe data
+#
+# Starts MinIO (S3 API on :9000, web console on :9001, minioadmin/minioadmin) and creates the 'tier'
+# bucket the sample archives into. These defaults match samples/TieredStorage/Program.cs; override with the
+# TIER_S3_* environment variables to point the sample at real S3 instead.
+
+services:
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console (http://localhost:9001)
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+
+  # One-shot: wait for MinIO, then create the bucket the sample uses. Exits when done.
+  createbucket:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do echo 'waiting for minio...'; sleep 1; done &&
+      mc mb --ignore-existing local/tier &&
+      echo 'bucket tier ready'
+      "
