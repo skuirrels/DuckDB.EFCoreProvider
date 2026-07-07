@@ -250,7 +250,14 @@ dotnet run --project samples/TieredStorage -- s3      # archive to S3 (MinIO)
 dotnet run --project samples/TieredStorage -- azure   # archive to Azure Blob (Azurite)
 ```
 
-It targets that MinIO by default; override the `TIER_S3_*` environment variables to point at real S3.
+It targets that MinIO / Azurite by default; override the `TIER_S3_*` / `TIER_AZURE_*` environment variables to
+point at real S3 / Azure.
+
+**How remote reads stay cheap.** A scoped cold query prunes to the partitions it needs and range-reads only the
+Parquet byte ranges within them — it never downloads whole files. `EXPLAIN ANALYZE` shows the pruning, e.g.
+`Scanning Files: 1/60` for a single-month query. To measure this on your own S3 / Azure endpoints (cold vs warm
+latency, files scanned, S3 vs Azure side by side), point [`scripts/bench-remote-read.sh`](../scripts/bench-remote-read.sh)
+at your buckets/containers (it's configured entirely by `BENCH_*` environment variables — see the script header).
 
 ## Production notes
 
