@@ -321,16 +321,19 @@ SELECT (SELECT count(*) FROM Invoices)                                     AS ho
 the end, so some archived partitions are already gone when you look — `hot + cold == union` still holds, with
 fewer cold rows; S3 mode skips the purge, so you see the full archive.)
 
-**Cold storage on S3.** Point `archivePath` at an object-store URL (`s3://`, `gcs://`, `r2://`, `azure://`) and
-DuckDB reads and writes the archive there directly — hot data in the local file, cold data on cheap durable
-storage, one set of views over both. Load `httpfs` and configure credentials with a connection interceptor. The
-two maintenance calls differ on S3:
+**Cold storage on S3 (and Azure).** Point `archivePath` at an object-store URL — `s3://`, `gcs://`, `r2://` (all
+via DuckDB's `httpfs` extension), or `az://`/`azure://`/`abfss://` (via the separate `azure` extension) — and
+DuckDB reads and writes the archive there directly. Hot data stays in the local file, cold data on cheap durable
+storage, one set of views over both. Load the extension and configure credentials with a connection interceptor
+(the `httpfs`/`s3` form for S3, an `INSTALL azure` / `azure`-secret form for Azure). Verified against MinIO (S3)
+and Azurite (Azure). The two maintenance calls differ on remote storage:
 
 - **`ArchiveTierAsync` works against S3 exactly as on local disk** — archiving, incremental writes, idempotent
   re-runs, and crash-safety all behave identically (verified against MinIO).
 - **`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive** — DuckDB can't delete objects
-  from an object store. Enforce retention with a **bucket lifecycle rule** on the archive prefix instead; the
-  hive-partitioned layout maps cleanly onto age-based expiry.
+  from an object store. Enforce retention with the store's own age-based expiry instead (an **S3 bucket lifecycle
+  rule** or an **Azure Blob lifecycle-management policy**) on the archive prefix; the hive-partitioned layout maps
+  cleanly onto it.
 
 Full guide: [Cold storage on S3](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-and-other-object-stores); the
 sample above runs against S3 with `-- s3`.

@@ -208,10 +208,38 @@ modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "s3://my-bucket/archive/
     .Including<InvoiceLine>(i => i.Lines, l => l.WithReadModel<InvoiceLineReport>());
 ```
 
+`s3://`, `gcs://`/`gs://`, and `r2://` all go through the `httpfs` extension shown above.
+
+**Azure Blob Storage.** Azure uses a **different DuckDB extension** — `azure`, not `httpfs` — so the interceptor
+loads `azure` and creates an `azure`-typed secret. Point the archive at an `az://`, `azure://`, or `abfss://`
+(ADLS Gen2) URL. The archive `COPY` (hive-partitioned, `OVERWRITE_OR_IGNORE`) and the `read_parquet` glob behave
+the same as on S3 — verified against Azurite, the Azure Storage emulator.
+
+```csharp
+public sealed class AzureSetup : DbConnectionInterceptor
+{
+    private const string Sql = """
+        INSTALL azure; LOAD azure;
+        CREATE OR REPLACE SECRET az (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'mystorageacct');
+        """; // or CONNECTION_STRING '...', or PROVIDER service_principal / managed_identity
+    public override void ConnectionOpened(DbConnection c, ConnectionEndEventData e)
+    { using var cmd = c.CreateCommand(); cmd.CommandText = Sql; cmd.ExecuteNonQuery(); }
+    public override async Task ConnectionOpenedAsync(DbConnection c, ConnectionEndEventData e, CancellationToken ct = default)
+    { await using var cmd = c.CreateCommand(); cmd.CommandText = Sql; await cmd.ExecuteNonQueryAsync(ct); }
+}
+
+options.UseDuckDB("Data Source=app.duckdb").AddInterceptors(new AzureSetup());
+
+modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "azure://my-container/archive/invoices", TierGranularity.Month)
+    .WithReadModel<InvoiceReport>()
+    .Including<InvoiceLine>(i => i.Lines, l => l.WithReadModel<InvoiceLineReport>());
+```
+
 **Retention on object storage.** Object stores can't delete files through DuckDB, so
-`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive. Enforce retention with a **bucket
-lifecycle rule** on the archive prefix instead (for example, expire objects under `archive/invoices/` after
-7 years) — the layout is hive-partitioned by period, so age-based expiry maps cleanly onto it.
+`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive. Enforce retention with the store's
+own age-based expiry instead — an **S3 bucket lifecycle rule** or an **Azure Blob lifecycle-management policy** on
+the archive prefix (for example, expire objects under `archive/invoices/` after 7 years). The layout is
+hive-partitioned by period, so age-based expiry maps cleanly onto it.
 
 **Try it.** The sample ships a compose file that starts a local MinIO and creates the `tier` bucket, so S3 mode
 is two commands:
