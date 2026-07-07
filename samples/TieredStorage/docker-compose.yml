@@ -1,12 +1,14 @@
-# Local S3-compatible endpoint for the tiered-storage sample's S3 mode.
+# Local object-store endpoints for the tiered-storage sample's remote modes.
 #
 #   docker compose -f samples/TieredStorage/docker-compose.yml up -d
-#   dotnet run --project samples/TieredStorage -- s3
+#   dotnet run --project samples/TieredStorage -- s3       # uses the minio service
+#   dotnet run --project samples/TieredStorage -- azure    # uses the azurite service
 #   docker compose -f samples/TieredStorage/docker-compose.yml down -v   # tear down + wipe data
 #
-# Starts MinIO (S3 API on :9000, web console on :9001, minioadmin/minioadmin) and creates the 'tier'
-# bucket the sample archives into. These defaults match samples/TieredStorage/Program.cs; override with the
-# TIER_S3_* environment variables to point the sample at real S3 instead.
+# - minio    : S3-compatible store (API :9000, console :9001, minioadmin/minioadmin); createbucket makes 'tier'.
+# - azurite  : Azure Blob emulator (:10000, well-known devstoreaccount1); the sample creates the 'tier' container.
+#
+# Defaults match samples/TieredStorage/Program.cs; override with TIER_S3_* or TIER_AZURE_* to point at real cloud.
 
 services:
   minio:
@@ -30,3 +32,11 @@ services:
       mc mb --ignore-existing local/tier &&
       echo 'bucket tier ready'
       "
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    ports:
+      - "10000:10000"   # blob service
+    # --skipApiVersionCheck lets newer Azure SDK / DuckDB clients talk to the emulator. The sample creates the
+    # 'tier' container itself on startup (DuckDB does not create blob containers), so no init step is needed here.
+    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck

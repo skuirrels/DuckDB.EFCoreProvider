@@ -19,6 +19,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Sample-only dependencies -->
+    <PackageVersion Include="Azure.Storage.Blobs" Version="12.29.1" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Test-only dependencies -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational.Specification.Tests" Version="10.0.9" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.9" />

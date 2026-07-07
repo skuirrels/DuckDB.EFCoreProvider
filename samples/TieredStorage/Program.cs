@@ -2,37 +2,59 @@
 // (tiered on OccurredOn). Each root names its own timestamp property and archives on its own cutoff, so their
 // hot/cold boundaries move independently. Reporting spans hot + cold through keyless read-models.
 //
-//   dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (default)
-//   dotnet run --project samples/TieredStorage -- s3     # cold archive on S3 / an S3-compatible store
+//   dotnet run --project samples/TieredStorage            # cold archive on the local filesystem (default)
+//   dotnet run --project samples/TieredStorage -- s3      # cold archive on S3 / an S3-compatible store (httpfs)
+//   dotnet run --project samples/TieredStorage -- azure   # cold archive on Azure Blob Storage (azure extension)
 //
-// S3 mode targets a local MinIO by default. Start one (and auto-create the 'tier' bucket) with the compose
-// file next to this sample:  docker compose -f samples/TieredStorage/docker-compose.yml up -d
-// Override TIER_S3_ENDPOINT / _BUCKET / _KEY / _SECRET / _REGION / _SSL to point at real S3 instead.
+// The s3/azure modes target a local MinIO / Azurite by default. Start them (and, for S3, auto-create the
+// bucket) with the compose file next to this sample:
+//   docker compose -f samples/TieredStorage/docker-compose.yml up -d
+// Override TIER_S3_* or TIER_AZURE_CONNECTION_STRING / TIER_AZURE_CONTAINER to point at real S3 / Azure.
 
 using System.Data.Common;
+using Azure.Storage.Blobs;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
-var useS3 = args.Length > 0 && args[0].Trim('-').Equals("s3", StringComparison.OrdinalIgnoreCase);
+var mode = (args.Length > 0 ? args[0].Trim('-') : "local").ToLowerInvariant();
+var useS3 = mode == "s3";
+var useAzure = mode == "azure";
+var useRemote = useS3 || useAzure;
+
 const string dbPath = "tiered_sample.duckdb";
 const string localArchiveRoot = "tiered_sample_archive";
 
 var s3 = useS3 ? S3Options.FromEnvironment() : null;
-var archiveRoot = useS3 ? $"s3://{s3!.Bucket}/tiered_sample" : localArchiveRoot;
+var azure = useAzure ? AzureOptions.FromEnvironment() : null;
+
+var archiveRoot =
+    useS3 ? $"s3://{s3!.Bucket}/tiered_sample" :
+    useAzure ? $"azure://{azure!.Container}/tiered_sample" :
+    localArchiveRoot;
 var invoiceArchive = $"{archiveRoot}/invoices";   // each root aggregate gets its own, non-overlapping path
 var auditArchive = $"{archiveRoot}/audit";
 
-// Fresh slate for the local artefacts (the S3 prefix is left as-is — overwrites are idempotent).
+// One connection interceptor prepares DuckDB for the chosen object store; local mode needs none.
+DbConnectionInterceptor? cloudSetup =
+    s3 is not null ? new HttpfsSetupInterceptor(s3) :
+    azure is not null ? new AzureSetupInterceptor(azure) :
+    null;
+
+// Fresh slate for the local artefacts (a remote prefix is left as-is — overwrites are idempotent).
 if (File.Exists(dbPath)) File.Delete(dbPath);
-if (!useS3 && Directory.Exists(localArchiveRoot)) Directory.Delete(localArchiveRoot, recursive: true);
+if (!useRemote && Directory.Exists(localArchiveRoot)) Directory.Delete(localArchiveRoot, recursive: true);
 
-Console.WriteLine(useS3
-    ? $"Cold archive: {archiveRoot}  (S3 endpoint '{s3!.Endpoint}')\n"
-    : $"Cold archive: ./{localArchiveRoot}  (local filesystem)\n");
+// Azure only: unlike a local directory, DuckDB does not create the blob container, so ensure it exists first.
+if (azure is not null) await new BlobContainerClient(azure.ConnectionString, azure.Container).CreateIfNotExistsAsync();
 
-using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, s3))
+Console.WriteLine(
+    useS3 ? $"Cold archive: {archiveRoot}  (S3 endpoint '{s3!.Endpoint}')\n" :
+    useAzure ? $"Cold archive: {archiveRoot}  (Azure Blob Storage)\n" :
+    $"Cold archive: ./{localArchiveRoot}  (local filesystem)\n");
+
+using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, cloudSetup))
 {
     db.Database.EnsureCreated(); // also creates the control table + union views for both aggregates
 
@@ -89,9 +111,9 @@ using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, s3))
         Console.WriteLine($"  {row.Year}: {row.Revenue:C}");
     }
 
-    // Retention: on local disk we purge partitions directly; on an object store, use a bucket lifecycle rule
-    // (PurgeArchiveOlderThan is not supported for remote archives).
-    if (!useS3)
+    // Retention: on local disk we purge partitions directly; on an object store, PurgeArchiveOlderThan is not
+    // supported (DuckDB can't delete objects) — use a bucket lifecycle rule / Azure lifecycle-management policy.
+    if (!useRemote)
     {
         db.Database.PurgeArchiveOlderThan<Invoice>(thisMonth.AddMonths(-18));
         db.Database.PurgeArchiveOlderThan<AuditEvent>(thisMonth.AddMonths(-18));
@@ -99,12 +121,13 @@ using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, s3))
     }
     else
     {
-        Console.WriteLine($"\nRetention on S3: use bucket lifecycle rules on the 'tiered_sample/' prefix.");
+        Console.WriteLine("\nRetention on object storage: use a lifecycle rule/policy on the 'tiered_sample/' prefix " +
+                          "(PurgeArchiveOlderThan is not supported for remote archives).");
     }
 }
 
-Console.WriteLine(useS3
-    ? "\nDone. Delete 'tiered_sample.duckdb' and the S3 'tiered_sample/' prefix to reset."
+Console.WriteLine(useRemote
+    ? "\nDone. Delete 'tiered_sample.duckdb' and the remote 'tiered_sample/' prefix to reset."
     : "\nDone. Delete 'tiered_sample.duckdb' and 'tiered_sample_archive/' to reset.");
 
 // --- Hot model: ordinary EF Core entities. ---
@@ -151,7 +174,7 @@ internal sealed class AuditEventReport
     public DateTime OccurredOn { get; set; }
 }
 
-internal sealed class SampleContext(string dbPath, string invoiceArchive, string auditArchive, S3Options? s3) : DbContext
+internal sealed class SampleContext(string dbPath, string invoiceArchive, string auditArchive, DbConnectionInterceptor? cloudSetup) : DbContext
 {
     public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
@@ -162,11 +185,11 @@ internal sealed class SampleContext(string dbPath, string invoiceArchive, string
     protected override void OnConfiguring(DbContextOptionsBuilder options)
     {
         options.UseDuckDB($"Data Source={dbPath}");
-        if (s3 is not null)
+        if (cloudSetup is not null)
         {
-            // Loads httpfs and configures object-store credentials on every connection. Because the provider
-            // opens its connections through EF Core, this runs for the archive operations too.
-            options.AddInterceptors(new HttpfsSetupInterceptor(s3));
+            // Loads the object-store extension and credentials on every connection. Because the provider opens
+            // its connections through EF Core, this runs for the archive operations too.
+            options.AddInterceptors(cloudSetup);
         }
     }
 
@@ -182,7 +205,7 @@ internal sealed class SampleContext(string dbPath, string invoiceArchive, string
     }
 }
 
-// --- S3 setup: an EF Core connection interceptor that prepares DuckDB for object-store access. ---
+// --- S3 setup: loads httpfs and configures S3 credentials on every connection. ---
 internal sealed class HttpfsSetupInterceptor(S3Options s3) : DbConnectionInterceptor
 {
     private string SetupSql =>
@@ -190,6 +213,28 @@ internal sealed class HttpfsSetupInterceptor(S3Options s3) : DbConnectionInterce
         + $"KEY_ID '{s3.KeyId}', SECRET '{s3.Secret}', REGION '{s3.Region}'"
         + (string.IsNullOrEmpty(s3.Endpoint) ? "" : $", ENDPOINT '{s3.Endpoint}', URL_STYLE 'path', USE_SSL {(s3.UseSsl ? "true" : "false")}")
         + ");";
+
+    public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = SetupSql;
+        command.ExecuteNonQuery();
+    }
+
+    public override async Task ConnectionOpenedAsync(DbConnection connection, ConnectionEndEventData eventData, CancellationToken cancellationToken = default)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = SetupSql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+}
+
+// --- Azure setup: loads the azure extension and configures a blob credential on every connection. ---
+internal sealed class AzureSetupInterceptor(AzureOptions azure) : DbConnectionInterceptor
+{
+    private string SetupSql =>
+        "INSTALL azure; LOAD azure; CREATE OR REPLACE SECRET tiersample "
+        + $"(TYPE azure, CONNECTION_STRING '{azure.ConnectionString}');";
 
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
@@ -215,4 +260,15 @@ internal sealed record S3Options(string Endpoint, string KeyId, string Secret, s
         Environment.GetEnvironmentVariable("TIER_S3_REGION") ?? "us-east-1",
         Environment.GetEnvironmentVariable("TIER_S3_BUCKET") ?? "tier",
         string.Equals(Environment.GetEnvironmentVariable("TIER_S3_SSL"), "true", StringComparison.OrdinalIgnoreCase));
+}
+
+internal sealed record AzureOptions(string ConnectionString, string Container)
+{
+    // Defaults target a local Azurite (the compose service). The well-known Azurite account/key are public.
+    public static AzureOptions FromEnvironment() => new(
+        Environment.GetEnvironmentVariable("TIER_AZURE_CONNECTION_STRING")
+            ?? "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;"
+             + "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;"
+             + "BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;",
+        Environment.GetEnvironmentVariable("TIER_AZURE_CONTAINER") ?? "tier");
 }

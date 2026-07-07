@@ -289,11 +289,13 @@ report is a single-read-model aggregate — see
 > ```bash
 > dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (no setup)
 >
-> # S3 mode: start a local MinIO (auto-creates the 'tier' bucket), then run against it:
+> # S3 or Azure mode: start the local MinIO + Azurite, then run against one of them:
 > docker compose -f samples/TieredStorage/docker-compose.yml up -d
-> dotnet run --project samples/TieredStorage -- s3     # cold archive on S3
+> dotnet run --project samples/TieredStorage -- s3     # cold archive on S3      (via httpfs, MinIO)
+> dotnet run --project samples/TieredStorage -- azure  # cold archive on Azure   (via azure ext, Azurite)
 > ```
-> The S3 mode targets that MinIO by default; override the `TIER_S3_*` environment variables to point at real S3.
+> The remote modes target that MinIO / Azurite by default; override the `TIER_S3_*` or `TIER_AZURE_*` environment
+> variables to point at real S3 / Azure.
 
 **See the two tiers for yourself.** After a run, the hot rows are `BASE TABLE`s in the `.duckdb` file and the
 cold rows are hive-partitioned Parquet in the archive; the generated `*_tiered` views union them. Inspect each

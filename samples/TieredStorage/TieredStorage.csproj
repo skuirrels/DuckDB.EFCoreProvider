@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DuckDB.EFCoreProvider\DuckDB.EFCoreProvider.csproj" />
+    <!-- Azure mode only: used to create the blob container before archiving (DuckDB won't create it). -->
+    <PackageReference Include="Azure.Storage.Blobs" />
   </ItemGroup>
 
 </Project>

@@ -241,12 +241,13 @@ own age-based expiry instead — an **S3 bucket lifecycle rule** or an **Azure B
 the archive prefix (for example, expire objects under `archive/invoices/` after 7 years). The layout is
 hive-partitioned by period, so age-based expiry maps cleanly onto it.
 
-**Try it.** The sample ships a compose file that starts a local MinIO and creates the `tier` bucket, so S3 mode
-is two commands:
+**Try it.** The sample ships a compose file with a local MinIO (S3) and Azurite (Azure), so the remote modes are
+two commands each — and they exercise the real `ArchiveTierAsync` against those emulators (verified end to end):
 
 ```bash
 docker compose -f samples/TieredStorage/docker-compose.yml up -d
-dotnet run --project samples/TieredStorage -- s3
+dotnet run --project samples/TieredStorage -- s3      # archive to S3 (MinIO)
+dotnet run --project samples/TieredStorage -- azure   # archive to Azure Blob (Azurite)
 ```
 
 It targets that MinIO by default; override the `TIER_S3_*` environment variables to point at real S3.
