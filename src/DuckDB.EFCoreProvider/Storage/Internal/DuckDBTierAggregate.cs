@@ -93,9 +93,14 @@ public sealed class DuckDBTierAggregate
             .Select(p => p.GetColumnName(store))
             .OfType<string>()
             .ToList();
+        var keyColumns = entity.FindPrimaryKey()?.Properties
+            .Select(p => p.GetColumnName(store))
+            .OfType<string>()
+            .ToList()
+            ?? [];
 
         return new DuckDBTierNode(
-            entity, table, entity.GetSchema(), columns, entity.GetTieredStoreView(),
+            entity, table, entity.GetSchema(), columns, keyColumns, entity.GetTieredStoreView(),
             archivePath.TrimEnd('/', '\\') + "/" + table, chain);
     }
 
@@ -116,6 +121,7 @@ public sealed class DuckDBTierAggregate
             chain.Add(new DuckDBTierControl.TierJoinHop(
                 foreignKey.Properties[0].GetColumnName(currentStore)!,
                 parent.GetTableName()!,
+                parent.GetSchema(),
                 foreignKey.PrincipalKey.Properties[0].GetColumnName(parentStore)!));
 
             current = parent;
@@ -131,6 +137,7 @@ public sealed record DuckDBTierNode(
     string Table,
     string? Schema,
     IReadOnlyList<string> Columns,
+    IReadOnlyList<string> KeyColumns,
     string? ViewName,
     string ArchiveSubPath,
     IReadOnlyList<DuckDBTierControl.TierJoinHop> ChainToRoot)

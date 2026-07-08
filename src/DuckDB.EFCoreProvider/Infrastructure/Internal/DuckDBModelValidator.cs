@@ -35,29 +35,16 @@ public class DuckDBModelValidator : RelationalModelValidator
 
         foreach (var entityType in model.GetEntityTypes())
         {
-            var role = entityType.GetTieredStoreRole();
-            if (role is null || entityType.GetTableName() is not { } table)
+            if (entityType.GetTieredStoreRole() is not { } role || entityType.GetTableName() is not { } table)
             {
                 continue;
             }
 
-            var granularity = ResolveGranularity(model, entityType);
-            var reserved = granularity == TierGranularity.Day
-                ? new[] { "year", "month", "day" }
-                : new[] { "year", "month" };
-
             var storeObject = StoreObjectIdentifier.Table(table, entityType.GetSchema());
-            foreach (var property in entityType.GetProperties())
-            {
-                if (property.GetColumnName(storeObject) is { } column
-                    && reserved.Contains(column, StringComparer.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException(
-                        $"Tiered-storage entity '{entityType.DisplayName()}' maps a property to column '{column}', which "
-                        + $"collides with the hive partition column DuckDB adds for {granularity} granularity. Rename the "
-                        + $"column (for example with HasColumnName) so it is none of: {string.Join(", ", reserved)}.");
-                }
-            }
+
+            ValidatePrimaryKey(entityType);
+            ValidateReservedColumns(model, entityType, storeObject);
+            ValidateReadModelColumns(model, entityType, storeObject);
 
             if (role == "Child")
             {
@@ -67,10 +54,43 @@ public class DuckDBModelValidator : RelationalModelValidator
             {
                 rootArchives.Add((NormalizeArchivePath(entityType.GetTieredStoreArchivePath()!), entityType.DisplayName()));
             }
-
-            ValidateReadModelColumns(model, entityType, storeObject);
         }
 
+        ValidateNoOverlappingArchivePaths(rootArchives);
+    }
+
+    private static void ValidatePrimaryKey(IReadOnlyEntityType entityType)
+    {
+        if (entityType.FindPrimaryKey() is null)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage entity '{entityType.DisplayName()}' must have a primary key. The generated hot/cold "
+                + "union views use the key to suppress crash-retry duplicates while keeping late hot rows visible.");
+        }
+    }
+
+    private static void ValidateReservedColumns(IModel model, IReadOnlyEntityType entityType, StoreObjectIdentifier storeObject)
+    {
+        var granularity = ResolveGranularity(model, entityType);
+        var reserved = granularity == TierGranularity.Day
+            ? new[] { "year", "month", "day" }
+            : new[] { "year", "month" };
+
+        foreach (var property in entityType.GetProperties())
+        {
+            if (property.GetColumnName(storeObject) is { } column
+                && reserved.Contains(column, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage entity '{entityType.DisplayName()}' maps a property to column '{column}', which "
+                    + $"collides with the hive partition column DuckDB adds for {granularity} granularity. Rename the "
+                    + $"column (for example with HasColumnName) so it is none of: {string.Join(", ", reserved)}.");
+            }
+        }
+    }
+
+    private static void ValidateNoOverlappingArchivePaths(IReadOnlyList<(string Path, string Entity)> rootArchives)
+    {
         for (var i = 0; i < rootArchives.Count; i++)
         {
             for (var j = i + 1; j < rootArchives.Count; j++)
