@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.2.0</PackageVersion>
-    <FileVersion>1.2.0</FileVersion>
-    <Version>1.2.0</Version>
+    <PackageVersion>1.2.1</PackageVersion>
+    <FileVersion>1.2.1</FileVersion>
+    <Version>1.2.1</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,11 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.1.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.2.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.2.1
+- Harden tiered storage archive handling. Cold views now require a real archive watermark and at least one archive file, so empty or missing cold archives no longer hide hot rows. Archive cleanup is key-aware, preserving late/backdated hot rows unless the same primary key is present in cold storage. Tiered SQL now consistently honours schema-qualified table mappings, and malformed partition directories are skipped during local purge. No public API changes.
+
 1.2.0
 - Tiered storage: the cold archive can now live on an object store. Point archivePath at an s3:// (also gcs://, r2://, azure://) URL and DuckDB reads and writes the Parquet there directly via httpfs; hot data stays in the local .duckdb file. Load httpfs and configure credentials with an EF Core connection interceptor (the provider now opens its own connections through EF, so the interceptor runs for archive operations too). Partitioned writes, incremental appends, idempotent re-runs, and the crash-safety invariant behave identically on S3 (verified against MinIO). Retention on object storage: PurgeArchiveOlderThan throws NotSupportedException for a remote archive — use a bucket lifecycle rule on the hive-partitioned prefix instead. See docs/TIERED-STORAGE.md.
 

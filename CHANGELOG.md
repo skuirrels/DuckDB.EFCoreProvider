@@ -2,6 +2,10 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.2.1
+
+- **Tiered storage hardening.** Cold views now require both an archive watermark and at least one archive file, so missing or empty archives no longer hide hot rows. Archive cleanup is key-aware and only deletes hot rows when the same primary key is present in cold storage, preserving late/backdated rows inserted before an existing watermark. Generated tiered SQL now consistently honours schema-qualified hot tables for views, archive copy/delete, and child joins. Local purge now skips malformed partition directories instead of failing the purge. No public API changes.
+
 ## 1.2.0
 
 - **Tiered storage — cold archive on object storage.** Point `archivePath` at an `s3://` URL (also `gcs://`/`gs://`, `r2://`, `azure://`) and DuckDB reads and writes the cold Parquet there directly via its `httpfs` extension, while hot data stays in the local `.duckdb` file and the union views span both. Load `httpfs` and configure credentials with an EF Core `DbConnectionInterceptor`; the provider now opens its own connections through EF Core, so that interceptor runs for the archive operations too. Partitioned writes, incremental month-by-month appends, idempotent re-runs after a crash, and the no-dup/no-gap invariant all behave identically on object storage (verified against MinIO), and range-scoped reads still prune partitions and row-groups so only the needed byte ranges are fetched. Retention on object storage is delegated to the bucket: `PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive (object stores can't delete files through DuckDB) — enforce it with a lifecycle rule on the hive-partitioned prefix instead. No public API changes. See [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-and-other-object-stores).
