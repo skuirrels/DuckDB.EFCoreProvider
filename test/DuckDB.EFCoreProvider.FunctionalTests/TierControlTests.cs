@@ -25,31 +25,39 @@ public sealed class TierControlTests
     [Fact]
     public void ViewSql_hot_only_selects_only_the_hot_table()
     {
-        var sql = DuckDBTierControl.ViewSql(Sql, "events_tiered", "events", Columns, "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: false);
+        var sql = DuckDBTierControl.ViewSql(Sql, "events_tiered", "events", null, Columns, ["Id"], "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: false);
 
         Assert.Contains("CREATE OR REPLACE VIEW events_tiered AS", sql);
-        Assert.Contains("FROM events", sql);
+        Assert.Contains("FROM events AS h", sql);
         Assert.DoesNotContain("read_parquet", sql);
     }
 
     [Fact]
     public void ViewSql_full_unions_hot_and_cold_filtered_by_watermark()
     {
-        var sql = DuckDBTierControl.ViewSql(Sql, "events_tiered", "events", Columns, "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: true);
+        var sql = DuckDBTierControl.ViewSql(Sql, "events_tiered", "events", null, Columns, ["Id"], "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: true);
 
         Assert.Contains("UNION ALL BY NAME", sql);
         // Cold branch uses SELECT * EXCLUDE so added columns are NULL-filled instead of erroring.
         Assert.Contains("SELECT * EXCLUDE (\"year\", \"month\")", sql);
         Assert.Contains("read_parquet('archive/events/**/*.parquet', hive_partitioning = true, union_by_name = true)", sql);
-        Assert.Contains("\"Ts\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
-        Assert.Contains("\"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+        Assert.Contains("WHERE NOT EXISTS (SELECT 1 FROM visible_cold AS c WHERE c.\"Id\" = h.\"Id\")", sql);
+        Assert.Contains("SELECT * FROM cold WHERE \"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+    }
+
+    [Fact]
+    public void ViewSql_schema_qualifies_the_hot_table()
+    {
+        var sql = DuckDBTierControl.ViewSql(Sql, "events_tiered", "events", "analytics", Columns, ["Id"], "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: false);
+
+        Assert.Contains("FROM analytics.events AS h", sql);
     }
 
     [Fact]
     public void ArchiveCopySql_partitions_by_year_and_month_over_the_window()
     {
         var sql = DuckDBTierControl.ArchiveCopySql(
-            Sql, "events", Columns, "Ts", "archive/events", TierGranularity.Month,
+            Sql, "events", null, Columns, "Ts", "archive/events", TierGranularity.Month,
             new DateTime(2024, 1, 1), new DateTime(2024, 6, 1));
 
         Assert.Contains("year(\"Ts\") AS \"year\", month(\"Ts\") AS \"month\"", sql);
@@ -62,7 +70,7 @@ public sealed class TierControlTests
     public void ArchiveCopySql_day_granularity_adds_day_partition()
     {
         var sql = DuckDBTierControl.ArchiveCopySql(
-            Sql, "events", Columns, "Ts", "archive/events", TierGranularity.Day,
+            Sql, "events", null, Columns, "Ts", "archive/events", TierGranularity.Day,
             new DateTime(2024, 1, 1), new DateTime(2024, 2, 1));
 
         Assert.Contains("day(\"Ts\") AS \"day\"", sql);
@@ -81,11 +89,20 @@ public sealed class TierControlTests
         => Assert.Equal("archive/events/**/*.parquet", DuckDBTierControl.ReadGlob("archive/events/"));
 
     [Fact]
+    public void Archive_file_probe_uses_existence_query_instead_of_counting_every_remote_match()
+    {
+        var sql = DuckDBArchiveFileProbe.ArchiveFileExistenceSql("s3://bucket/archive/events/");
+
+        Assert.Equal("SELECT 1 FROM glob('s3://bucket/archive/events/**/*.parquet') LIMIT 1;", sql);
+        Assert.DoesNotContain("count", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ArchiveChildCopySql_joins_to_the_root_for_the_boundary_and_partitions()
     {
-        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", "Id") };
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
         var sql = DuckDBTierControl.ArchiveChildCopySql(
-            Sql, "invoice_lines", ["Id", "InvoiceId", "Amount"], chain, "InvoiceDate",
+            Sql, "invoice_lines", null, ["Id", "InvoiceId", "Amount"], chain, "InvoiceDate",
             "archive/invoice_lines", TierGranularity.Month, new DateTime(2024, 1, 1), new DateTime(2024, 6, 1));
 
         Assert.Contains("FROM invoice_lines AS t0 JOIN invoices AS t1 ON t0.\"InvoiceId\" = t1.\"Id\"", sql);
@@ -98,12 +115,13 @@ public sealed class TierControlTests
     [Fact]
     public void ChildViewSql_depth_one_semijoins_to_the_watermark_filtered_root()
     {
-        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", "Id") };
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
         var sql = DuckDBTierControl.ChildViewSql(
-            Sql, "invoice_lines_tiered", "invoice_lines", ["Id", "InvoiceId", "Amount"], chain, "InvoiceDate",
+            Sql, "invoice_lines_tiered", "invoice_lines", null, ["Id", "InvoiceId", "Amount"], ["Id"], chain, "InvoiceDate",
             "invoices", "archive/invoice_lines", TierGranularity.Month, includeCold: true, includeHotChildFilter: true);
 
-        Assert.Contains("WHERE \"InvoiceId\" IN (SELECT \"Id\" FROM invoices WHERE \"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')", sql);
+        Assert.Contains("WHERE h.\"InvoiceId\" IN (SELECT r0.\"Id\" FROM invoices AS r0 WHERE r0.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')", sql);
+        Assert.Contains("OR NOT EXISTS (SELECT 1 FROM cold AS c WHERE c.\"Id\" = h.\"Id\")", sql);
         Assert.Contains("UNION ALL BY NAME", sql);
         Assert.Contains("SELECT * EXCLUDE (\"year\", \"month\")", sql);
     }
@@ -113,37 +131,38 @@ public sealed class TierControlTests
     {
         var chain = new[]
         {
-            new DuckDBTierControl.TierJoinHop("InvoiceLineId", "invoice_lines", "Id"),
-            new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", "Id"),
+            new DuckDBTierControl.TierJoinHop("InvoiceLineId", "invoice_lines", null, "Id"),
+            new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id"),
         };
         var sql = DuckDBTierControl.ChildViewSql(
-            Sql, "line_allocations_tiered", "line_allocations", ["Id", "InvoiceLineId", "Amount"], chain, "InvoiceDate",
+            Sql, "line_allocations_tiered", "line_allocations", null, ["Id", "InvoiceLineId", "Amount"], ["Id"], chain, "InvoiceDate",
             "invoices", "archive/line_allocations", TierGranularity.Month, includeCold: true, includeHotChildFilter: true);
 
         Assert.Contains(
-            "WHERE \"InvoiceLineId\" IN (SELECT \"Id\" FROM invoice_lines WHERE \"InvoiceId\" IN (SELECT \"Id\" FROM invoices WHERE \"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')))",
+            "WHERE h.\"InvoiceLineId\" IN (SELECT r0.\"Id\" FROM invoice_lines AS r0 WHERE r0.\"InvoiceId\" IN (SELECT r1.\"Id\" FROM invoices AS r1 WHERE r1.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')))",
             sql);
     }
 
     [Fact]
     public void ChildViewSql_without_hot_filter_omits_the_semijoin()
     {
-        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", "Id") };
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
         var sql = DuckDBTierControl.ChildViewSql(
-            Sql, "invoice_lines_tiered", "invoice_lines", ["Id", "InvoiceId", "Amount"], chain, "InvoiceDate",
+            Sql, "invoice_lines_tiered", "invoice_lines", null, ["Id", "InvoiceId", "Amount"], ["Id"], chain, "InvoiceDate",
             "invoices", "archive/invoice_lines", TierGranularity.Month, includeCold: true, includeHotChildFilter: false);
 
         Assert.DoesNotContain("IN (SELECT", sql);
-        Assert.Contains("SELECT \"Id\", \"InvoiceId\", \"Amount\" FROM invoice_lines\nUNION ALL BY NAME", sql);
+        Assert.Contains("WHERE NOT EXISTS (SELECT 1 FROM cold AS c WHERE c.\"Id\" = h.\"Id\")", sql);
     }
 
     [Fact]
     public void DeleteChildSql_matches_rows_whose_root_is_before_the_cutoff()
     {
-        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", "Id") };
-        var sql = DuckDBTierControl.DeleteChildSql(Sql, "invoice_lines", chain, "InvoiceDate", new DateTime(2024, 6, 1));
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
+        var sql = DuckDBTierControl.DeleteChildSql(Sql, "invoice_lines", null, ["Id"], chain, "InvoiceDate", "archive/invoice_lines", new DateTime(2024, 6, 1));
 
-        Assert.Contains("DELETE FROM invoice_lines WHERE \"InvoiceId\" IN (SELECT \"Id\" FROM invoices WHERE \"InvoiceDate\" < TIMESTAMP '2024-06-01", sql);
+        Assert.Contains("DELETE FROM invoice_lines AS h WHERE h.\"InvoiceId\" IN (SELECT r0.\"Id\" FROM invoices AS r0 WHERE r0.\"InvoiceDate\" < TIMESTAMP '2024-06-01", sql);
+        Assert.Contains("EXISTS (SELECT 1 FROM read_parquet('archive/invoice_lines/**/*.parquet'", sql);
     }
 
     private static ISqlGenerationHelper GetSqlHelper()

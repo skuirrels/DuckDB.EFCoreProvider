@@ -196,6 +196,96 @@ public sealed class TieredStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task Late_hot_rows_before_existing_watermark_remain_visible_and_are_not_deleted()
+    {
+        using var context = CreateContext();
+        Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
+        var cutoff = new DateTime(2025, 7, 1).AddMonths(-12);
+
+        await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var before = TieredTotals(context);
+
+        context.Invoices.Add(new Invoice { InvoiceDate = cutoff.AddMonths(-1) });
+        context.SaveChanges();
+
+        Assert.Equal(before.Invoices + 1, context.InvoiceHistory.Count());
+
+        var rerun = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+
+        Assert.True(rerun.NoOp);
+        Assert.Equal(before.Invoices + 1, context.InvoiceHistory.Count());
+    }
+
+    [Fact]
+    public async Task Noop_archive_rerun_does_not_delete_late_hot_rows_before_existing_watermark()
+    {
+        using var context = CreateContext();
+        Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
+        var cutoff = new DateTime(2025, 7, 1).AddMonths(-12);
+
+        await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var hotRowsAfterArchive = context.Invoices.Count();
+
+        context.Invoices.Add(new Invoice { InvoiceDate = cutoff.AddMonths(-1) });
+        context.SaveChanges();
+
+        Assert.Equal(hotRowsAfterArchive + 1, context.Invoices.Count());
+
+        var rerun = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+
+        Assert.True(rerun.NoOp);
+        Assert.Equal(hotRowsAfterArchive + 1, context.Invoices.Count());
+    }
+
+    [Fact]
+    public void Cold_files_without_a_watermark_do_not_hide_hot_rows_when_views_are_regenerated()
+    {
+        using var context = CreateContext();
+        Seed(context, months: 3, baseDate: new DateTime(2025, 7, 1));
+        var archive = Path.Combine(_root, "archive", "invoices");
+        Directory.CreateDirectory(archive);
+
+#pragma warning disable EF1002, EF1003 // archive is a test-owned temp path, not user input
+        context.Database.ExecuteSqlRaw(
+            $"""
+             COPY (
+                 SELECT "Id", "InvoiceDate", year("InvoiceDate") AS "year", month("InvoiceDate") AS "month"
+                   FROM invoices
+             )
+             TO '{archive.Replace("'", "''")}'
+             (FORMAT PARQUET, PARTITION_BY ("year", "month"), OVERWRITE_OR_IGNORE);
+             """);
+#pragma warning restore EF1002, EF1003
+
+        context.Database.EnsureTieredStoresCreated();
+
+        Assert.Equal(context.Invoices.Count(), context.InvoiceHistory.Count());
+    }
+
+    [Fact]
+    public void Tiered_storage_honors_schema_mapped_hot_tables()
+    {
+        using var context = new SchemaContext(Path.Combine(_root, "schema.duckdb"), Path.Combine(_root, "schema-archive"));
+
+        context.Database.EnsureCreated();
+        context.Invoices.Add(new Invoice { InvoiceDate = new DateTime(2025, 6, 1) });
+        context.SaveChanges();
+
+        Assert.Equal(1, context.InvoiceHistory.Count());
+    }
+
+    [Fact]
+    public void Purge_skips_malformed_partition_directories()
+    {
+        using var context = CreateContext();
+        Directory.CreateDirectory(Path.Combine(_root, "archive", "invoices", "year=2024", "month=99"));
+
+        var purged = context.Database.PurgeArchiveOlderThan<Invoice>(new DateTime(2025, 1, 1));
+
+        Assert.Equal(0, purged);
+    }
+
+    [Fact]
     public async Task Column_added_after_archiving_reads_null_for_cold_rows()
     {
         var dbPath = Path.Combine(_root, "store.duckdb");
@@ -423,6 +513,29 @@ public sealed class TieredStorageTests : IDisposable
             modelBuilder.Entity<InvoiceV2>().ToTable("invoices");
             modelBuilder.ToTieredStore<InvoiceV2>(i => i.InvoiceDate, archivePath, TierGranularity.Month)
                 .WithReadModel<InvoiceV2Rm>();
+        }
+    }
+
+    private sealed class SchemaContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public DbSet<InvoiceRm> InvoiceHistory => Set<InvoiceRm>();
+        public string ArchivePath => archivePath + "|schema";
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(b =>
+            {
+                b.ToTable("invoices", "accounting");
+                b.HasKey(i => i.Id);
+                b.Ignore(i => i.Lines);
+            });
+
+            modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath, TierGranularity.Month)
+                .WithReadModel<InvoiceRm>();
         }
     }
 

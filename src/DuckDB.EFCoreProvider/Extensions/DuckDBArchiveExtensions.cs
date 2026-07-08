@@ -36,7 +36,7 @@ public static class DuckDBArchiveExtensions
     public static void EnsureTieredStoresCreated(this DatabaseFacade database)
     {
         ArgumentNullException.ThrowIfNull(database);
-        var (context, sql) = Services(database);
+        var (context, sql, archiveFileProbe) = Services(database);
         var aggregates = DuckDBTierAggregate.ResolveAll(context.Model);
         if (aggregates.Count == 0)
         {
@@ -50,7 +50,7 @@ public static class DuckDBArchiveExtensions
             ExecuteNonQuery(connection, DuckDBTierControl.ControlTableDdl(sql));
             foreach (var aggregate in aggregates)
             {
-                RegenerateViews(connection, sql, aggregate);
+                RegenerateViews(connection, sql, archiveFileProbe, aggregate);
             }
         }
         finally
@@ -71,7 +71,7 @@ public static class DuckDBArchiveExtensions
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
-        var (context, sql) = Services(database);
+        var (context, sql, archiveFileProbe) = Services(database);
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
         var aligned = DuckDBTierControl.AlignCutoff(cutoff, aggregate.Granularity);
@@ -116,7 +116,7 @@ public static class DuckDBArchiveExtensions
             }
 
             await ExecuteNonQueryAsync(connection, DuckDBTierControl.UpsertWatermarkSql(sql, aggregate.ControlKey, aligned, archivePath, aggregate.Granularity), cancellationToken).ConfigureAwait(false);
-            RegenerateViews(connection, sql, aggregate);
+            RegenerateViews(connection, sql, archiveFileProbe, aggregate);
             await DeleteAggregateAsync(connection, sql, aggregate, aligned, ownTransaction, cancellationToken).ConfigureAwait(false);
             await ExecuteNonQueryAsync(connection, "CHECKPOINT;", cancellationToken).ConfigureAwait(false);
 
@@ -142,7 +142,7 @@ public static class DuckDBArchiveExtensions
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
-        var (context, sql) = Services(database);
+        var (context, sql, archiveFileProbe) = Services(database);
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot)) ?? throw NotConfigured(typeof(TRoot));
 
         if (IsRemoteArchive(aggregate.Root.ArchiveSubPath))
@@ -164,7 +164,7 @@ public static class DuckDBArchiveExtensions
             var openedHere = OpenTracked(database);
             try
             {
-                RegenerateViews((DuckDBConnection)database.GetDbConnection(), sql, aggregate);
+                RegenerateViews((DuckDBConnection)database.GetDbConnection(), sql, archiveFileProbe, aggregate);
             }
             finally
             {
@@ -177,11 +177,17 @@ public static class DuckDBArchiveExtensions
 
     private static string CopySql(ISqlGenerationHelper sql, DuckDBTierAggregate aggregate, DuckDBTierNode node, DateTime from, DateTime cutoff)
         => node.IsRoot
-            ? DuckDBTierControl.ArchiveCopySql(sql, node.Table, node.Columns, aggregate.RootTimestampColumn, node.ArchiveSubPath, aggregate.Granularity, from, cutoff)
-            : DuckDBTierControl.ArchiveChildCopySql(sql, node.Table, node.Columns, node.ChainToRoot, aggregate.RootTimestampColumn, node.ArchiveSubPath, aggregate.Granularity, from, cutoff);
+            ? DuckDBTierControl.ArchiveCopySql(sql, node.Table, node.Schema, node.Columns, aggregate.RootTimestampColumn, node.ArchiveSubPath, aggregate.Granularity, from, cutoff)
+            : DuckDBTierControl.ArchiveChildCopySql(sql, node.Table, node.Schema, node.Columns, node.ChainToRoot, aggregate.RootTimestampColumn, node.ArchiveSubPath, aggregate.Granularity, from, cutoff);
 
-    private static void RegenerateViews(DuckDBConnection connection, ISqlGenerationHelper sql, DuckDBTierAggregate aggregate)
+    private static void RegenerateViews(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        IDuckDBArchiveFileProbe archiveFileProbe,
+        DuckDBTierAggregate aggregate)
     {
+        var hasWatermark = ReadWatermark(connection, sql, aggregate.ControlKey) is not null;
+
         foreach (var node in aggregate.Nodes)
         {
             if (node.ViewName is null)
@@ -189,10 +195,10 @@ public static class DuckDBArchiveExtensions
                 continue;
             }
 
-            var includeCold = HasArchiveFiles(connection, node.ArchiveSubPath);
+            var includeCold = hasWatermark && archiveFileProbe.HasArchiveFiles(connection, node.ArchiveSubPath);
             var viewSql = node.IsRoot
-                ? DuckDBTierControl.ViewSql(sql, node.ViewName, node.Table, node.Columns, aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath, aggregate.Granularity, includeCold)
-                : DuckDBTierControl.ChildViewSql(sql, node.ViewName, node.Table, node.Columns, node.ChainToRoot, aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath, aggregate.Granularity, includeCold, aggregate.IncludeHotChildFilter);
+                ? DuckDBTierControl.ViewSql(sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns, aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath, aggregate.Granularity, includeCold)
+                : DuckDBTierControl.ChildViewSql(sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns, node.ChainToRoot, aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath, aggregate.Granularity, includeCold, aggregate.IncludeHotChildFilter);
             ExecuteNonQuery(connection, viewSql);
         }
     }
@@ -211,8 +217,8 @@ public static class DuckDBArchiveExtensions
             {
                 var node = aggregate.Nodes[i];
                 var deleteSql = node.IsRoot
-                    ? DuckDBTierControl.DeleteHotSql(sql, node.Table, aggregate.RootTimestampColumn, cutoff)
-                    : DuckDBTierControl.DeleteChildSql(sql, node.Table, node.ChainToRoot, aggregate.RootTimestampColumn, cutoff);
+                    ? DuckDBTierControl.DeleteHotSql(sql, node.Table, node.Schema, node.KeyColumns, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff)
+                    : DuckDBTierControl.DeleteChildSql(sql, node.Table, node.Schema, node.KeyColumns, node.ChainToRoot, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff);
                 await ExecuteNonQueryAsync(connection, deleteSql, cancellationToken).ConfigureAwait(false);
             }
 
@@ -271,14 +277,16 @@ public static class DuckDBArchiveExtensions
                 {
                     foreach (var dayDir in Directory.GetDirectories(monthDir, "day=*"))
                     {
-                        if (TryParsePart(dayDir, "day=", out var day) && new DateTime(year, month, day) < cutoff)
+                        if (TryParsePart(dayDir, "day=", out var day)
+                            && TryCreatePartitionDate(year, month, day, out var partition)
+                            && partition < cutoff)
                         {
                             Directory.Delete(dayDir, recursive: true);
                             deleted++;
                         }
                     }
                 }
-                else if (new DateTime(year, month, 1) < cutoff)
+                else if (TryCreatePartitionDate(year, month, 1, out var partition) && partition < cutoff)
                 {
                     Directory.Delete(monthDir, recursive: true);
                     deleted++;
@@ -287,6 +295,24 @@ public static class DuckDBArchiveExtensions
         }
 
         return deleted;
+    }
+
+    private static bool TryCreatePartitionDate(int year, int month, int day, out DateTime date)
+    {
+        date = default;
+
+        if (year is < 1 or > 9999 || month is < 1 or > 12)
+        {
+            return false;
+        }
+
+        if (day < 1 || day > DateTime.DaysInMonth(year, month))
+        {
+            return false;
+        }
+
+        date = new DateTime(year, month, day);
+        return true;
     }
 
     private static bool TryParsePart(string directory, string prefix, out int value)
@@ -300,17 +326,11 @@ public static class DuckDBArchiveExtensions
     private static InvalidOperationException NotConfigured(Type clrType)
         => new($"'{clrType.Name}' is not configured as a tiered-storage root. Call modelBuilder.ToTieredStore<{clrType.Name}>(...) in OnModelCreating.");
 
-    private static (DbContext Context, ISqlGenerationHelper Sql) Services(DatabaseFacade database)
-        => (database.GetService<ICurrentDbContext>().Context, database.GetService<ISqlGenerationHelper>());
+    private static (DbContext Context, ISqlGenerationHelper Sql, IDuckDBArchiveFileProbe ArchiveFileProbe) Services(DatabaseFacade database)
+        => (database.GetService<ICurrentDbContext>().Context, database.GetService<ISqlGenerationHelper>(), database.GetService<IDuckDBArchiveFileProbe>());
 
     private static DateTime? ReadWatermark(DuckDBConnection connection, ISqlGenerationHelper sql, string controlKey)
         => ExecuteScalar(connection, DuckDBTierControl.ReadWatermarkSql(sql, controlKey)) is DateTime dt ? dt : null;
-
-    private static bool HasArchiveFiles(DuckDBConnection connection, string archivePath)
-    {
-        var glob = DuckDBTierControl.ReadGlob(archivePath).Replace("'", "''");
-        return Convert.ToInt64(ExecuteScalar(connection, $"SELECT count(*) FROM glob('{glob}');"), CultureInfo.InvariantCulture) > 0;
-    }
 
     // Open/close through the EF Core database facade (not the raw ADO connection) so registered connection
     // interceptors run — in particular any that load DuckDB's httpfs extension and configure object-store

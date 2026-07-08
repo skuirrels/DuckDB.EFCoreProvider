@@ -42,6 +42,7 @@ public class DuckDBModelValidator : RelationalModelValidator
 
             var storeObject = StoreObjectIdentifier.Table(table, entityType.GetSchema());
 
+            ValidatePrimaryKey(entityType);
             ValidateReservedColumns(model, entityType, storeObject);
             ValidateReadModelColumns(model, entityType, storeObject);
 
@@ -56,6 +57,16 @@ public class DuckDBModelValidator : RelationalModelValidator
         }
 
         ValidateNoOverlappingArchivePaths(rootArchives);
+    }
+
+    private static void ValidatePrimaryKey(IReadOnlyEntityType entityType)
+    {
+        if (entityType.FindPrimaryKey() is null)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage entity '{entityType.DisplayName()}' must have a primary key. The generated hot/cold "
+                + "union views use the key to suppress crash-retry duplicates while keeping late hot rows visible.");
+        }
     }
 
     private static void ValidateReservedColumns(IModel model, IReadOnlyEntityType entityType, StoreObjectIdentifier storeObject)
