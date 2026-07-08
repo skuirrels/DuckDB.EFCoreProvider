@@ -5,7 +5,7 @@ A single-file console app that exercises the four things you will use most:
 1. **`SaveChanges`** with a DuckDB-generated key (read back via `RETURNING`).
 2. **`BulkInsert`** — the appender-backed fast path (~1M rows/s).
 3. **LINQ analytics** — a `GroupBy` aggregate run by DuckDB's columnar engine.
-4. **`Upsert`** — insert-or-update by primary key in one round-trip per batch.
+4. **`Upsert`** — insert-or-update by primary key using appender-staged batches.
 
 ## Run it
 

@@ -5,6 +5,7 @@
     <IsPackable>false</IsPackable>
     <AssemblyName>DuckDB.EFCoreProvider.Benchmarks</AssemblyName>
     <RootNamespace>DuckDB.EFCoreProvider.Benchmarks</RootNamespace>
+    <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
 
   <ItemGroup>

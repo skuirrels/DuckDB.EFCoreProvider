@@ -5,22 +5,21 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Collections.Concurrent;
 using System.Data;
-using System.Data.Common;
 using System.Text;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
 /// <summary>
-///     High-throughput upsert helpers built on DuckDB's <c>INSERT ... ON CONFLICT DO UPDATE</c>.
+///     High-throughput upsert helpers built on DuckDB's appender API plus <c>INSERT ... ON CONFLICT DO UPDATE</c>.
 /// </summary>
 /// <remarks>
 ///     <para>
 ///         <see cref="Upsert{TEntity}" /> / <see cref="UpsertAsync{TEntity}" /> insert the supplied entities,
-///         updating any rows whose primary key already exists. Consecutive entities are merged into a single
-///         multi-row statement, which is roughly an order of magnitude faster than the usual
-///         read-then-insert-or-update pattern (it removes the existence-check round-trip and batches the
-///         writes). Per-row upserts are intentionally not exposed because a single-row <c>ON CONFLICT</c> is
-///         slower than that pattern on DuckDB.
+///         updating any rows whose primary key already exists. Each batch is staged into a temporary table
+///         via DuckDB's appender API and then merged into the target table with a set-based
+///         <c>INSERT ... ON CONFLICT</c>. This is roughly an order of magnitude faster than the usual
+///         read-then-insert-or-update pattern because it removes the existence-check round-trip and batches
+///         the writes.
 ///     </para>
 ///     <para>
 ///         Like <see cref="DuckDBBulkExtensions.BulkInsert{TEntity}" />, this is a raw fast path:
@@ -36,14 +35,14 @@ namespace DuckDB.EFCoreProvider.Extensions;
 /// </remarks>
 public static class DuckDBUpsertExtensions
 {
-    /// <summary>Default number of rows merged into a single <c>INSERT ... ON CONFLICT</c> statement.</summary>
+    /// <summary>Default number of rows staged into one temporary table before a set-based upsert.</summary>
     private const int DefaultBatchSize = 100;
 
-    private static readonly ConcurrentDictionary<string, UpsertPlan> PlanCache = new();
+    private static readonly ConcurrentDictionary<(IEntityType EntityType, string? Schema, string Table), UpsertPlan> PlanCache = new();
 
     /// <summary>
-    ///     Inserts the supplied entities, updating any whose primary key already exists, using batched
-    ///     <c>INSERT ... ON CONFLICT (key) DO UPDATE</c> statements.
+    ///     Inserts the supplied entities, updating any whose primary key already exists, using appender-staged
+    ///     batches and set-based <c>INSERT ... ON CONFLICT (key) DO UPDATE</c> statements.
     /// </summary>
     /// <returns>The number of rows processed.</returns>
     public static int Upsert<TEntity>(this DbContext context, IEnumerable<TEntity> entities, int batchSize = DefaultBatchSize)
@@ -65,11 +64,22 @@ public static class DuckDBUpsertExtensions
         try
         {
             var count = 0;
-            foreach (var chunk in Chunk(entities, batchSize))
+            var batch = new List<TEntity>(batchSize);
+            foreach (var entity in entities)
             {
-                using var command = BuildCommand(connection, plan, chunk);
-                command.ExecuteNonQuery();
-                count += chunk.Count;
+                batch.Add(entity);
+                if (batch.Count == batchSize)
+                {
+                    UpsertBatch(connection, plan, batch);
+                    count += batch.Count;
+                    batch.Clear();
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                UpsertBatch(connection, plan, batch);
+                count += batch.Count;
             }
 
             return count;
@@ -85,7 +95,7 @@ public static class DuckDBUpsertExtensions
 
     /// <summary>
     ///     Asynchronously inserts the supplied entities, updating any whose primary key already exists, using
-    ///     batched <c>INSERT ... ON CONFLICT (key) DO UPDATE</c> statements.
+    ///     appender-staged batches and set-based <c>INSERT ... ON CONFLICT (key) DO UPDATE</c> statements.
     /// </summary>
     /// <returns>The number of rows processed.</returns>
     public static async Task<int> UpsertAsync<TEntity>(
@@ -111,11 +121,24 @@ public static class DuckDBUpsertExtensions
         try
         {
             var count = 0;
-            foreach (var chunk in Chunk(entities, batchSize))
+            var batch = new List<TEntity>(batchSize);
+            foreach (var entity in entities)
             {
-                await using var command = BuildCommand(connection, plan, chunk);
-                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                count += chunk.Count;
+                cancellationToken.ThrowIfCancellationRequested();
+
+                batch.Add(entity);
+                if (batch.Count == batchSize)
+                {
+                    await UpsertBatchAsync(connection, plan, batch, cancellationToken).ConfigureAwait(false);
+                    count += batch.Count;
+                    batch.Clear();
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                await UpsertBatchAsync(connection, plan, batch, cancellationToken).ConfigureAwait(false);
+                count += batch.Count;
             }
 
             return count;
@@ -129,37 +152,114 @@ public static class DuckDBUpsertExtensions
         }
     }
 
-    private static DbCommand BuildCommand<TEntity>(DuckDBConnection connection, UpsertPlan plan, List<TEntity> chunk)
+    private static void UpsertBatch<TEntity>(DuckDBConnection connection, UpsertPlan plan, List<TEntity> batch)
         where TEntity : class
     {
-        var command = connection.CreateCommand();
-        var sql = new StringBuilder(plan.InsertPrefix);
-
-        var parameterIndex = 0;
-        for (var row = 0; row < chunk.Count; row++)
+        var tempTable = CreateTemporaryTable(connection, plan);
+        try
         {
-            sql.Append(row == 0 ? " " : ", ").Append('(');
+            AppendTemporaryRows(connection, plan, tempTable, batch, cancellationToken: null);
+            using var command = connection.CreateCommand();
+            command.CommandText = plan.UpsertFromTemporaryTableSql(tempTable);
+            command.ExecuteNonQuery();
+        }
+        finally
+        {
+            DropTemporaryTable(connection, tempTable);
+        }
+    }
 
-            for (var col = 0; col < plan.Accessors.Count; col++)
+    private static async Task UpsertBatchAsync<TEntity>(
+        DuckDBConnection connection,
+        UpsertPlan plan,
+        List<TEntity> batch,
+        CancellationToken cancellationToken)
+        where TEntity : class
+    {
+        var tempTable = CreateTemporaryTable(connection, plan);
+        try
+        {
+            AppendTemporaryRows(connection, plan, tempTable, batch, cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = plan.UpsertFromTemporaryTableSql(tempTable);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            DropTemporaryTable(connection, tempTable);
+        }
+    }
+
+    private static string CreateTemporaryTable(DuckDBConnection connection, UpsertPlan plan)
+    {
+        var tempTable = "__duckdb_upsert_" + Guid.NewGuid().ToString("N");
+        using var command = connection.CreateCommand();
+        command.CommandText = plan.CreateTemporaryTableSql(tempTable);
+        command.ExecuteNonQuery();
+        return tempTable;
+    }
+
+    private static void AppendTemporaryRows<TEntity>(
+        DuckDBConnection connection,
+        UpsertPlan plan,
+        string tempTable,
+        List<TEntity> batch,
+        CancellationToken? cancellationToken)
+        where TEntity : class
+    {
+        using var appender = connection.CreateAppender(tempTable);
+        foreach (var entity in batch)
+        {
+            cancellationToken?.ThrowIfCancellationRequested();
+
+            var row = appender.CreateRow();
+            for (var i = 0; i < plan.Accessors.Count; i++)
             {
-                if (col > 0)
-                {
-                    sql.Append(", ");
-                }
-
-                var name = "p" + parameterIndex;
-                sql.Append('$').Append(name);
-                command.Parameters.Add(new DuckDBParameter(name, plan.Accessors[col](chunk[row]!) ?? DBNull.Value));
-                parameterIndex++;
+                AppendValue(row, plan.Accessors[i](entity!));
             }
 
-            sql.Append(')');
+            row.EndRow();
         }
-
-        sql.Append(plan.ConflictSuffix);
-        command.CommandText = sql.ToString();
-        return command;
     }
+
+    private static void DropTemporaryTable(DuckDBConnection connection, string tempTable)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"DROP TABLE IF EXISTS {DelimitTemporaryIdentifier(tempTable)};";
+        command.ExecuteNonQuery();
+    }
+
+    private static void AppendValue(IDuckDBAppenderRow row, object? value)
+    {
+        switch (value)
+        {
+            case null: row.AppendNullValue(); break;
+            case bool v: row.AppendValue(v); break;
+            case byte v: row.AppendValue(v); break;
+            case sbyte v: row.AppendValue(v); break;
+            case short v: row.AppendValue(v); break;
+            case ushort v: row.AppendValue(v); break;
+            case int v: row.AppendValue(v); break;
+            case uint v: row.AppendValue(v); break;
+            case long v: row.AppendValue(v); break;
+            case ulong v: row.AppendValue(v); break;
+            case float v: row.AppendValue(v); break;
+            case double v: row.AppendValue(v); break;
+            case decimal v: row.AppendValue(v); break;
+            case string v: row.AppendValue(v); break;
+            case Guid v: row.AppendValue(v); break;
+            case DateTime v: row.AppendValue(v); break;
+            case DateTimeOffset v: row.AppendValue(v); break;
+            case TimeSpan v: row.AppendValue(v); break;
+            case byte[] v: row.AppendValue(v); break;
+            default:
+                throw new NotSupportedException(
+                    $"DuckDB upsert does not support values of type '{value.GetType()}'. Use SaveChanges for this entity.");
+        }
+    }
+
+    private static string DelimitTemporaryIdentifier(string identifier)
+        => "\"" + identifier.Replace("\"", "\"\"") + "\"";
 
     private static UpsertPlan GetPlan(DbContext context, Type clrType)
     {
@@ -169,7 +269,7 @@ public static class DuckDBUpsertExtensions
         var table = entityType.GetTableName()
             ?? throw new InvalidOperationException($"'{clrType.Name}' is not mapped to a table; upsert is not supported.");
         var schema = entityType.GetSchema();
-        var cacheKey = $"{clrType.FullName}|{schema}|{table}";
+        var cacheKey = (entityType, schema, table);
 
         return PlanCache.GetOrAdd(cacheKey, _ => BuildPlan(context, entityType, table, schema));
     }
@@ -235,12 +335,9 @@ public static class DuckDBUpsertExtensions
             throw new InvalidOperationException($"No writable columns were found for table '{table}'.");
         }
 
-        var insertPrefix = new StringBuilder("INSERT INTO ")
-            .Append(helper.DelimitIdentifier(table, schema))
-            .Append(" (")
-            .AppendJoin(", ", insertColumns.Select(helper.DelimitIdentifier))
-            .Append(") VALUES")
-            .ToString();
+        var delimitedInsertColumns = insertColumns.Select(helper.DelimitIdentifier).ToArray();
+        var insertColumnList = string.Join(", ", delimitedInsertColumns);
+        var targetTable = helper.DelimitIdentifier(table, schema);
 
         // On a key conflict, overwrite the non-key columns from the proposed row; if the entity is all-key,
         // there is nothing to update, so do nothing.
@@ -255,30 +352,19 @@ public static class DuckDBUpsertExtensions
                     updateColumns.Select(c => $"{helper.DelimitIdentifier(c)} = excluded.{helper.DelimitIdentifier(c)}")))
             .ToString();
 
-        return new UpsertPlan(insertPrefix, conflictSuffix, accessors);
-    }
-
-    private static IEnumerable<List<TEntity>> Chunk<TEntity>(IEnumerable<TEntity> entities, int batchSize)
-    {
-        var batch = new List<TEntity>(batchSize);
-        foreach (var entity in entities)
-        {
-            batch.Add(entity);
-            if (batch.Count == batchSize)
-            {
-                yield return batch;
-                batch = new List<TEntity>(batchSize);
-            }
-        }
-
-        if (batch.Count > 0)
-        {
-            yield return batch;
-        }
+        return new UpsertPlan(targetTable, insertColumnList, conflictSuffix, accessors);
     }
 
     private sealed record UpsertPlan(
-        string InsertPrefix,
+        string TargetTable,
+        string InsertColumnList,
         string ConflictSuffix,
-        IReadOnlyList<Func<object, object?>> Accessors);
+        IReadOnlyList<Func<object, object?>> Accessors)
+    {
+        public string CreateTemporaryTableSql(string tempTable)
+            => $"CREATE TEMPORARY TABLE {DelimitTemporaryIdentifier(tempTable)} AS SELECT {InsertColumnList} FROM {TargetTable} WHERE false;";
+
+        public string UpsertFromTemporaryTableSql(string tempTable)
+            => $"INSERT INTO {TargetTable} ({InsertColumnList}) SELECT {InsertColumnList} FROM {DelimitTemporaryIdentifier(tempTable)}{ConflictSuffix};";
+    }
 }

@@ -166,7 +166,7 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
         bool? nullable = null,
         ParameterDirection direction = ParameterDirection.Input)
     {
-        if (value is not null && Converter is null && !value.GetType().IsArrayOrGenericList())
+        if (value is not null && Converter is null && value is not TElement[] && value is not List<TElement>)
         {
             switch (value)
             {

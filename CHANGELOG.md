@@ -2,6 +2,10 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.2.2
+
+- **Performance and allocation cleanup.** Provider-owned write hot paths allocate less during batched writes. `BulkInsert` now uses typed appender delegates for common CLR property types, SaveChanges batching reuses column-modification views more aggressively, and `Upsert` now stages each batch through DuckDB's appender into a temporary table before a set-based `INSERT ... ON CONFLICT` merge. In the local 1,000-row allocation benchmark, `UpsertBatch` improved from 45.706 ms / 2203.38 KB to 24.455 ms / 1046.66 KB. No public API changes.
+
 ## 1.2.1
 
 - **Tiered storage hardening.** Cold views now require both an archive watermark and at least one archive file, so missing or empty archives no longer hide hot rows. Archive cleanup is key-aware and only deletes hot rows when the same primary key is present in cold storage, preserving late/backdated rows inserted before an existing watermark. Generated tiered SQL now consistently honours schema-qualified hot tables for views, archive copy/delete, and child joins. Local purge now skips malformed partition directories instead of failing the purge. No public API changes.

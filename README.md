@@ -121,7 +121,7 @@ The batching, memory, and file-search options are explained in detail under [Per
 - File-source query mapping for Parquet, CSV, and JSON through `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (or the fluent `FromParquet`/`FromCsv`/`FromJsonFile`), emitted as DuckDB `read_parquet(...)` / `read_csv(...)` / `read_json(...)`.
 - Tiered storage (`ToTieredStore(...)` + `.Including(...)`, `ArchiveTierAsync(...)`, `PurgeArchiveOlderThan(...)`): keep recent data in the DuckDB file and offload older relational aggregates (root + children) to hive-partitioned Parquet, unified by generated views; hot side is plain EF Core, cold reporting via keyless read-models; idempotent and crash-safe. See [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
 - High-throughput bulk insert via `context.BulkInsert(...)` / `BulkInsertAsync(...)`, backed by the DuckDB `Appender` (a raw fast path that bypasses change tracking and store-generated values).
-- High-throughput upsert via `context.Upsert(...)` / `UpsertAsync(...)`, backed by batched DuckDB `INSERT ... ON CONFLICT (key) DO UPDATE` — inserts new rows and updates existing ones by primary key in one round-trip per batch (see [Upsert](#upsert)).
+- High-throughput upsert via `context.Upsert(...)` / `UpsertAsync(...)`, backed by appender-staged batches and DuckDB `INSERT ... ON CONFLICT (key) DO UPDATE` — inserts new rows and updates existing ones by primary key (see [Upsert](#upsert)).
 - Opt-in `SaveChanges` insert, update, and delete batching via `UseDuckDB(o => o.EnableBulkInsertBatching())`, `EnableBulkUpdateBatching()`, and `EnableBulkDeleteBatching()`, which merge consecutive inserts/updates/deletes into a single multi-row statement for an order-of-magnitude (up to ~20×) speed-up while keeping change tracking and store-generated keys — delete batching is especially effective for orphan cleanup and child-collection replacement (see [Faster `SaveChanges`](#faster-savechanges-inserts-updates-and-deletes)).
 - NetTopologySuite spatial support with DuckDB spatial extension loading and geometry translation.
 - Configurable DuckDB `memory_limit` and `file_search_path` via `UseDuckDB(o => o.MemoryLimit("4GB").FileSearchPath("/data"))` (see [Memory limit and file search path](#memory-limit-and-file-search-path)).
@@ -373,12 +373,13 @@ var inserted = context.BulkInsert(rows);
 
 ### Upsert
 
-`Upsert` / `UpsertAsync` insert the supplied entities and update any whose primary key already exists, using
-batched `INSERT ... ON CONFLICT (key) DO UPDATE` statements. This replaces the usual
-read-then-insert-or-update pattern — it removes the existence-check round-trip and batches the writes,
-running roughly an order of magnitude faster (~8× in local measurements). The conflict target is the entity's
-primary key (whose values you supply), and all mapped non-key columns are overwritten from the supplied
-values; an entity with only key columns becomes `ON CONFLICT DO NOTHING`.
+`Upsert` / `UpsertAsync` insert the supplied entities and update any whose primary key already exists. Each
+batch is staged into a temporary table with DuckDB's appender API, then merged into the target table with a
+set-based `INSERT ... ON CONFLICT (key) DO UPDATE`. This replaces the usual read-then-insert-or-update
+pattern — it removes the existence-check round-trip and batches the writes, running roughly an order of
+magnitude faster in local measurements. The conflict target is the entity's primary key (whose values you
+supply), and all mapped non-key columns are overwritten from the supplied values; an entity with only key
+columns becomes `ON CONFLICT DO NOTHING`.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;

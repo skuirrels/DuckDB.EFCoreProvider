@@ -64,8 +64,8 @@ using (var context = new QuickstartContext(connectionString))
     }
 }
 
-// 4) Upsert — insert new rows and update existing ones by primary key in a
-//    single round-trip per batch (INSERT ... ON CONFLICT DO UPDATE).
+// 4) Upsert — insert new rows and update existing ones by primary key using
+//    appender-staged batches plus INSERT ... ON CONFLICT DO UPDATE.
 using (var context = new QuickstartContext(connectionString))
 {
     var processed = context.Upsert(new[]

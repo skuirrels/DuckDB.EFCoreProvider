@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.2.1</PackageVersion>
-    <FileVersion>1.2.1</FileVersion>
-    <Version>1.2.1</Version>
+    <PackageVersion>1.2.2</PackageVersion>
+    <FileVersion>1.2.2</FileVersion>
+    <Version>1.2.2</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,11 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.2.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.2.1</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.2.2
+- Performance: reduce managed allocations in provider-owned write hot paths and array parameter binding. Bulk insert now uses typed appender delegates for common CLR property types, SaveChanges batching reuses column-modification views more aggressively, and upsert now stages each batch through DuckDB's appender into a temporary table before a set-based INSERT ... ON CONFLICT merge. In the local 1,000-row allocation benchmark, UpsertBatch improved from 45.706 ms / 2203.38 KB to 24.455 ms / 1046.66 KB. No public API changes.
+
 1.2.1
 - Harden tiered storage archive handling. Cold views now require a real archive watermark and at least one archive file, so empty or missing cold archives no longer hide hot rows. Archive cleanup is key-aware, preserving late/backdated hot rows unless the same primary key is present in cold storage. Tiered SQL now consistently honours schema-qualified table mappings, and malformed partition directories are skipped during local purge. No public API changes.
 

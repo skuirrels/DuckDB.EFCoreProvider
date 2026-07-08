@@ -66,21 +66,24 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         var table = firstCommand.TableName;
         var schema = firstCommand.Schema;
 
-        var writeOperations = firstCommand.ColumnModifications.Where(o => o.IsWrite).ToList();
-        var readOperations = firstCommand.ColumnModifications.Where(o => o.IsRead).ToList();
+        var writeIndexes = GetColumnModificationIndexes(firstCommand, o => o.IsWrite);
+        var writeOperations = GetColumnModifications(firstCommand, writeIndexes);
+        var readOperations = GetColumnModifications(firstCommand, o => o.IsRead);
 
         AppendInsertCommandHeader(commandStringBuilder, table, schema, writeOperations);
         AppendValuesHeader(commandStringBuilder, writeOperations);
         AppendValues(commandStringBuilder, table, schema, writeOperations);
 
+        var reusableWriteOperations = new List<IColumnModification>(writeOperations.Count);
         for (var i = 1; i < modificationCommands.Count; i++)
         {
             commandStringBuilder.AppendLine(",");
+            CollectColumnModifications(modificationCommands[i], writeIndexes, reusableWriteOperations);
             AppendValues(
                 commandStringBuilder,
                 table,
                 schema,
-                modificationCommands[i].ColumnModifications.Where(o => o.IsWrite).ToList());
+                reusableWriteOperations);
         }
 
         // Inserts run inside the change-tracking transaction; no additional transaction is required here.
@@ -132,8 +135,10 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         var table = firstCommand.TableName;
         var schema = firstCommand.Schema;
 
-        var writeOperations = firstCommand.ColumnModifications.Where(o => o.IsWrite).ToList();
-        var keyOperations = firstCommand.ColumnModifications.Where(o => o.IsCondition).ToList();
+        var writeIndexes = GetColumnModificationIndexes(firstCommand, o => o.IsWrite);
+        var keyIndexes = GetColumnModificationIndexes(firstCommand, o => o.IsCondition);
+        var writeOperations = GetColumnModifications(firstCommand, writeIndexes);
+        var keyOperations = GetColumnModifications(firstCommand, keyIndexes);
 
         // UPDATE <table> SET <col> = v.<col>, ...
         commandStringBuilder.Append("UPDATE ");
@@ -160,19 +165,30 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                 commandStringBuilder.Append(", ");
             }
 
-            AppendBulkUpdateValuesTuple(commandStringBuilder, modificationCommands[c], helper);
+            AppendBulkUpdateValuesTuple(commandStringBuilder, modificationCommands[c], keyIndexes, writeIndexes, helper);
         }
 
         commandStringBuilder.Append(") AS v(");
         var firstColumn = true;
-        foreach (var operation in keyOperations.Concat(writeOperations))
+        for (var i = 0; i < keyOperations.Count; i++)
         {
             if (!firstColumn)
             {
                 commandStringBuilder.Append(", ");
             }
 
-            commandStringBuilder.Append(helper.DelimitIdentifier(operation.ColumnName));
+            commandStringBuilder.Append(helper.DelimitIdentifier(keyOperations[i].ColumnName));
+            firstColumn = false;
+        }
+
+        for (var i = 0; i < writeOperations.Count; i++)
+        {
+            if (!firstColumn)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            commandStringBuilder.Append(helper.DelimitIdentifier(writeOperations[i].ColumnName));
             firstColumn = false;
         }
 
@@ -208,6 +224,8 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
     private void AppendBulkUpdateValuesTuple(
         StringBuilder commandStringBuilder,
         IReadOnlyModificationCommand command,
+        IReadOnlyList<int> keyIndexes,
+        IReadOnlyList<int> writeIndexes,
         ISqlGenerationHelper helper)
     {
         commandStringBuilder.Append('(');
@@ -215,24 +233,26 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         var first = true;
 
         // Key columns first (original values, matching the alias column order), then written values.
-        foreach (var operation in command.ColumnModifications.Where(o => o.IsCondition))
+        for (var i = 0; i < keyIndexes.Count; i++)
         {
             if (!first)
             {
                 commandStringBuilder.Append(", ");
             }
 
+            var operation = command.ColumnModifications[keyIndexes[i]];
             commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(operation.OriginalParameterName!));
             first = false;
         }
 
-        foreach (var operation in command.ColumnModifications.Where(o => o.IsWrite))
+        for (var i = 0; i < writeIndexes.Count; i++)
         {
             if (!first)
             {
                 commandStringBuilder.Append(", ");
             }
 
+            var operation = command.ColumnModifications[writeIndexes[i]];
             commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(operation.ParameterName!));
             first = false;
         }
@@ -265,7 +285,8 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         var firstCommand = modificationCommands[0];
         var table = firstCommand.TableName;
         var schema = firstCommand.Schema;
-        var keyOperations = firstCommand.ColumnModifications.Where(o => o.IsCondition).ToList();
+        var keyIndexes = GetColumnModificationIndexes(firstCommand, o => o.IsCondition);
+        var keyOperations = GetColumnModifications(firstCommand, keyIndexes);
 
         commandStringBuilder.Append("DELETE FROM ");
         commandStringBuilder.Append(helper.DelimitIdentifier(table, schema));
@@ -284,7 +305,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                     commandStringBuilder.Append(", ");
                 }
 
-                var key = modificationCommands[c].ColumnModifications.First(o => o.IsCondition);
+                var key = modificationCommands[c].ColumnModifications[keyIndexes[0]];
                 commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(key.OriginalParameterName!));
             }
 
@@ -302,15 +323,15 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                 }
 
                 commandStringBuilder.Append('(');
-                var keys = modificationCommands[c].ColumnModifications.Where(o => o.IsCondition).ToList();
-                for (var i = 0; i < keys.Count; i++)
+                var columnModifications = modificationCommands[c].ColumnModifications;
+                for (var i = 0; i < keyIndexes.Length; i++)
                 {
                     if (i > 0)
                     {
                         commandStringBuilder.Append(", ");
                     }
 
-                    commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(keys[i].OriginalParameterName!));
+                    commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(columnModifications[keyIndexes[i]].OriginalParameterName!));
                 }
 
                 commandStringBuilder.Append(')');
@@ -350,5 +371,62 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         requiresTransaction = false;
 
         return ResultSetMapping.NoResults;
+    }
+
+    private static int[] GetColumnModificationIndexes(
+        IReadOnlyModificationCommand command,
+        Func<IColumnModification, bool> predicate)
+    {
+        var indexes = new List<int>();
+        var columnModifications = command.ColumnModifications;
+        for (var i = 0; i < columnModifications.Count; i++)
+        {
+            if (predicate(columnModifications[i]))
+            {
+                indexes.Add(i);
+            }
+        }
+
+        return indexes.ToArray();
+    }
+
+    private static List<IColumnModification> GetColumnModifications(
+        IReadOnlyModificationCommand command,
+        Func<IColumnModification, bool> predicate)
+    {
+        var operations = new List<IColumnModification>();
+        var columnModifications = command.ColumnModifications;
+        for (var i = 0; i < columnModifications.Count; i++)
+        {
+            var operation = columnModifications[i];
+            if (predicate(operation))
+            {
+                operations.Add(operation);
+            }
+        }
+
+        return operations;
+    }
+
+    private static List<IColumnModification> GetColumnModifications(
+        IReadOnlyModificationCommand command,
+        IReadOnlyList<int> indexes)
+    {
+        var operations = new List<IColumnModification>(indexes.Count);
+        CollectColumnModifications(command, indexes, operations);
+        return operations;
+    }
+
+    private static void CollectColumnModifications(
+        IReadOnlyModificationCommand command,
+        IReadOnlyList<int> indexes,
+        List<IColumnModification> target)
+    {
+        target.Clear();
+        var columnModifications = command.ColumnModifications;
+        for (var i = 0; i < indexes.Count; i++)
+        {
+            target.Add(columnModifications[indexes[i]]);
+        }
     }
 }
