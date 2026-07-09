@@ -169,7 +169,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         {
             length += EstimateMergedStatementLength(
                 _pendingBulkDeleteCommands.Count,
-                _pendingBulkDeleteCommands[0].ColumnModifications.Count(o => o.IsCondition));
+                CountConditions(_pendingBulkDeleteCommands[0]));
         }
 
         return length < MaxScriptLength;
@@ -194,19 +194,19 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         => _insertBatching
            && command.EntityState == EntityState.Added
            && command.StoreStoredProcedure is null
-           && command.ColumnModifications.Any(o => o.IsWrite);
+           && HasWrite(command);
 
     private bool CanBulkUpdate(IReadOnlyModificationCommand command)
         => _updateBatching
            && command.EntityState == EntityState.Modified
            && command.StoreStoredProcedure is null
-           && command.ColumnModifications.Any(o => o.IsWrite)
+           && HasWrite(command)
            // No values read back (no computed/store-generated columns to propagate).
-           && command.ColumnModifications.All(o => !o.IsRead)
+           && HasNoReadValues(command)
            // The WHERE clause is the primary key only (no concurrency tokens). This keeps the merged
            // statement a simple key join and avoids changing concurrency-detection semantics.
-           && command.ColumnModifications.Where(o => o.IsCondition).All(o => o.IsKey)
-           && command.ColumnModifications.Any(o => o.IsCondition);
+           && AllConditionsAreKey(command)
+           && HasCondition(command);
 
     private bool CanBulkDelete(IReadOnlyModificationCommand command)
         => _deleteBatching
@@ -214,8 +214,8 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
            && command.StoreStoredProcedure is null
            // The WHERE clause is the primary key only (no concurrency tokens), so the rows can be matched by
            // key without per-row affected-count verification.
-           && command.ColumnModifications.Where(o => o.IsCondition).All(o => o.IsKey)
-           && command.ColumnModifications.Any(o => o.IsCondition);
+           && AllConditionsAreKey(command)
+           && HasCondition(command);
 
     private bool CanBeInsertedInSameStatement(
         IReadOnlyModificationCommand first,
@@ -223,10 +223,8 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         => CanBulkInsert(second)
            && first.TableName == second.TableName
            && first.Schema == second.Schema
-           && first.ColumnModifications.Where(o => o.IsWrite).Select(o => o.ColumnName)
-               .SequenceEqual(second.ColumnModifications.Where(o => o.IsWrite).Select(o => o.ColumnName))
-           && first.ColumnModifications.Where(o => o.IsRead).Select(o => o.ColumnName)
-               .SequenceEqual(second.ColumnModifications.Where(o => o.IsRead).Select(o => o.ColumnName));
+           && ColumnNamesEqual(first, second, ColumnRole.Write)
+           && ColumnNamesEqual(first, second, ColumnRole.Read);
 
     private bool CanBeUpdatedInSameStatement(
         IReadOnlyModificationCommand first,
@@ -234,10 +232,8 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         => CanBulkUpdate(second)
            && first.TableName == second.TableName
            && first.Schema == second.Schema
-           && first.ColumnModifications.Where(o => o.IsWrite).Select(o => o.ColumnName)
-               .SequenceEqual(second.ColumnModifications.Where(o => o.IsWrite).Select(o => o.ColumnName))
-           && first.ColumnModifications.Where(o => o.IsCondition).Select(o => o.ColumnName)
-               .SequenceEqual(second.ColumnModifications.Where(o => o.IsCondition).Select(o => o.ColumnName));
+           && ColumnNamesEqual(first, second, ColumnRole.Write)
+           && ColumnNamesEqual(first, second, ColumnRole.Condition);
 
     private bool CanBeDeletedInSameStatement(
         IReadOnlyModificationCommand first,
@@ -245,8 +241,140 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         => CanBulkDelete(second)
            && first.TableName == second.TableName
            && first.Schema == second.Schema
-           && first.ColumnModifications.Where(o => o.IsCondition).Select(o => o.ColumnName)
-               .SequenceEqual(second.ColumnModifications.Where(o => o.IsCondition).Select(o => o.ColumnName));
+           && ColumnNamesEqual(first, second, ColumnRole.Condition);
+
+    private enum ColumnRole
+    {
+        Write,
+        Read,
+        Condition
+    }
+
+    private static bool HasRole(IColumnModification modification, ColumnRole role)
+        => role switch
+        {
+            ColumnRole.Write => modification.IsWrite,
+            ColumnRole.Read => modification.IsRead,
+            _ => modification.IsCondition
+        };
+
+    // command.ColumnModifications.Any(o => o.IsWrite)
+    private static bool HasWrite(IReadOnlyModificationCommand command)
+    {
+        var modifications = command.ColumnModifications;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (modifications[i].IsWrite)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // command.ColumnModifications.Any(o => o.IsCondition)
+    private static bool HasCondition(IReadOnlyModificationCommand command)
+    {
+        var modifications = command.ColumnModifications;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (modifications[i].IsCondition)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // command.ColumnModifications.Count(o => o.IsCondition)
+    private static int CountConditions(IReadOnlyModificationCommand command)
+    {
+        var modifications = command.ColumnModifications;
+        var count = 0;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (modifications[i].IsCondition)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    // command.ColumnModifications.All(o => !o.IsRead)
+    private static bool HasNoReadValues(IReadOnlyModificationCommand command)
+    {
+        var modifications = command.ColumnModifications;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (modifications[i].IsRead)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // command.ColumnModifications.Where(o => o.IsCondition).All(o => o.IsKey)
+    private static bool AllConditionsAreKey(IReadOnlyModificationCommand command)
+    {
+        var modifications = command.ColumnModifications;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            var modification = modifications[i];
+            if (modification.IsCondition && !modification.IsKey)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Equivalent to comparing first.ColumnModifications.Where(role).Select(o => o.ColumnName) with the same
+    // projection over second, in order (SequenceEqual) — without allocating the intermediate LINQ iterators.
+    private static bool ColumnNamesEqual(
+        IReadOnlyModificationCommand first,
+        IReadOnlyModificationCommand second,
+        ColumnRole role)
+    {
+        var firstModifications = first.ColumnModifications;
+        var secondModifications = second.ColumnModifications;
+        int i = 0, j = 0;
+
+        while (true)
+        {
+            while (i < firstModifications.Count && !HasRole(firstModifications[i], role))
+            {
+                i++;
+            }
+
+            while (j < secondModifications.Count && !HasRole(secondModifications[j], role))
+            {
+                j++;
+            }
+
+            var firstDone = i >= firstModifications.Count;
+            var secondDone = j >= secondModifications.Count;
+            if (firstDone || secondDone)
+            {
+                // SequenceEqual is true only when both sequences end at the same point.
+                return firstDone && secondDone;
+            }
+
+            if (firstModifications[i].ColumnName != secondModifications[j].ColumnName)
+            {
+                return false;
+            }
+
+            i++;
+            j++;
+        }
+    }
 
     private void ApplyPendingBulkInsertCommands()
     {

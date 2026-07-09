@@ -116,11 +116,15 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
     /// <inheritdoc />
     protected override Expression VisitTable(TableExpression tableExpression)
     {
-        var fileSource = tableExpression.Table.EntityTypeMappings
-            .Select(m => m.TypeBase)
-            .OfType<IEntityType>()
-            .Select(GetFileSource)
-            .FirstOrDefault(s => s is not null);
+        (string Function, string Path)? fileSource = null;
+        foreach (var mapping in tableExpression.Table.EntityTypeMappings)
+        {
+            if (mapping.TypeBase is IEntityType entityType && GetFileSource(entityType) is { } source)
+            {
+                fileSource = source;
+                break;
+            }
+        }
 
         if (fileSource is null)
         {
