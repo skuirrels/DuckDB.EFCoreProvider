@@ -61,6 +61,16 @@ public class DuckDBBlobTypeMapping : ByteArrayTypeMapping
 
     private static byte[] ReadStream(Stream stream)
     {
+        // DuckDB.NET returns a seekable UnmanagedMemoryStream over the blob's native memory, so the length
+        // is known up front: read once into an exact-size array instead of double-buffering through a
+        // growing MemoryStream plus ToArray (which allocated ~2x the blob's size per row).
+        if (stream.CanSeek)
+        {
+            var buffer = new byte[stream.Length];
+            stream.ReadExactly(buffer);
+            return buffer;
+        }
+
         using var memoryStream = new MemoryStream();
         stream.CopyTo(memoryStream);
         return memoryStream.ToArray();
