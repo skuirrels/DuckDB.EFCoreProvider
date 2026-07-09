@@ -84,6 +84,30 @@ public class ParquetTests : IClassFixture<ParquetTests.ParquetFixture>
     }
 
     [Fact]
+    public void Include_eager_load_across_two_parquet_sets_uses_read_parquet_for_both()
+    {
+        using var context = CreateContext();
+        var roots = context.MyData
+            .Where(m => m.Id <= 2)
+            .Include(m => m.Related)
+            .OrderBy(m => m.Id)
+            .ToList();
+
+        Assert.Equal(new[] { 1, 2 }, roots.Select(m => m.Id));
+        Assert.Equal(new[] { 100, 200 }, roots[0].Related.OrderBy(r => r.Value).Select(r => r.Value));
+        Assert.Equal(new[] { 300 }, roots[1].Related.Select(r => r.Value));
+
+        AssertSql(
+            """
+            SELECT m."Id", r."Id", r."MyDataId", r."Value"
+            FROM read_parquet('parquet/my_data.parquet') AS m
+            LEFT JOIN read_parquet('parquet/related.parquet') AS r ON m."Id" = r."MyDataId"
+            WHERE m."Id" <= 2
+            ORDER BY m."Id"
+            """);
+    }
+
+    [Fact]
     public void Dynamic_parquet_path_from_context_configuration_uses_read_parquet()
     {
         using var context = CreateDynamicContext(ParquetFixture.MyDataParquetFile);
