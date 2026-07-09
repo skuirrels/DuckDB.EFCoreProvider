@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -26,7 +27,7 @@ public readonly record struct TierArchiveResult(long RowsArchived, DateTime Wate
 /// <remarks>
 ///     DuckDB is single-writer: run these from the writing process with no other writer active.
 /// </remarks>
-public static class DuckDBArchiveExtensions
+public static partial class DuckDBArchiveExtensions
 {
     /// <summary>
     ///     Creates the tier control table and the union view for every configured tiered table (roots and
@@ -248,7 +249,10 @@ public static class DuckDBArchiveExtensions
     ///     local or mounted filesystem path.
     /// </summary>
     private static bool IsRemoteArchive(string archivePath)
-        => System.Text.RegularExpressions.Regex.IsMatch(archivePath, "^[A-Za-z][A-Za-z0-9+.-]*://");
+        => RemoteArchiveSchemeRegex().IsMatch(archivePath);
+
+    [GeneratedRegex("^[A-Za-z][A-Za-z0-9+.-]*://")]
+    private static partial Regex RemoteArchiveSchemeRegex();
 
     private static int PurgePartitions(string archivePath, Metadata.TierGranularity granularity, DateTime cutoff)
     {
