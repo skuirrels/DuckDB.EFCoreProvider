@@ -2,6 +2,10 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.2.4
+
+- **Blob reads allocate roughly half as much.** Materializing a `byte[]` column no longer double-buffers the driver's stream through a growing `MemoryStream` plus `ToArray()`; DuckDB.NET's blob stream is seekable with a known length, so the provider reads once into an exact-size array. On 2,000 rows × 4 KB blobs, allocations fell from 16.49 MB to 8.51 MB (~2.1× payload → ~1.1×) and Gen0 collections halved. Also adds test coverage for eager-loading (`Include`) across two parquet-backed sets. No public API changes.
+
 ## 1.2.3
 
 - **Further allocation cleanup in provider hot paths.** SaveChanges batching no longer allocates throwaway LINQ iterators when deciding whether consecutive insert/update/delete commands can merge into one statement; on a 4,000-row batched insert this cut allocations by ~12% (19.74 MB → 17.42 MB). Query SQL generation drops a small per-table allocation in the file-source lookup, and remote-archive path detection now uses a source-generated regex. No public API changes.

@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.2.3</PackageVersion>
-    <FileVersion>1.2.3</FileVersion>
-    <Version>1.2.3</Version>
+    <PackageVersion>1.2.4</PackageVersion>
+    <FileVersion>1.2.4</FileVersion>
+    <Version>1.2.4</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,11 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.2.2</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.2.3</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.2.4
+- Performance: blob reads allocate roughly half as much. Materializing a byte[] column no longer double-buffers the driver's stream through a growing MemoryStream plus ToArray(); DuckDB.NET's blob stream is seekable with a known length, so the provider reads once into an exact-size array. On 2,000 rows x 4 KB blobs, allocations fell from 16.49 MB to 8.51 MB and Gen0 collections halved. No public API changes.
+
 1.2.3
 - Performance: further reduce managed allocations in provider-owned hot paths. SaveChanges insert/update/delete batching now decides statement merging without allocating per-command LINQ iterators (~12% fewer bytes on a 4,000-row batched insert: 19.74 MB -&gt; 17.42 MB). Query SQL generation drops a per-table allocation in the file-source lookup, and remote-archive path detection uses a source-generated regex. No public API changes.
 
