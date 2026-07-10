@@ -217,60 +217,72 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ### Tiered storage (hot tables + cold Parquet)
 
-Keep recent data hot in the writable DuckDB file and roll older data out to hive-partitioned Parquet, then
-report across the whole history with ordinary LINQ. Tiering works over a **relational aggregate** — a root and
-its children move together, governed by the root's date. Your **hot side stays plain EF Core** (normal
-entities, `SaveChanges`, `Include`); the **cold/reporting side** uses a keyless read-model per table. The
-offload is **idempotent and crash-safe**. Full guide: [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
+Keep recent invoices hot in the writable DuckDB file and archive older invoices and their lines to
+hive-partitioned Parquet. The offload is **idempotent and crash-safe**. Full guide:
+[docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
 
 ![A single timeline split by a watermark: rows before it live in the cold Parquet archive, rows at or after it stay hot in the DuckDB file.](docs/images/tiered-storage-boundary.png)
 
-**Each aggregate root declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (in the
-example below, `i => i.InvoiceDate`). It governs the whole aggregate's hot/cold boundary and is chosen **per
-aggregate**, so every tiered root can tier on a different date: `Invoice` on `InvoiceDate`, `Order` on `PlacedUtc`,
-`AuditEvent` on `OccurredOn` — each independent, each with its own archive path.
+The application exposes exactly two invoice query paths:
+
+- `Invoices` queries the normal `Invoice` entity in the hot DuckDB table. It supports writes, relationships,
+  and `Include(i => i.Lines)`.
+- `InvoiceHistory` queries a keyless `InvoiceHistory` model across the hot table and Parquet archive.
+
+`.WithReadModel<InvoiceHistory>()` connects the `InvoiceHistory` model to the provider-generated hot+cold view.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
+using Microsoft.EntityFrameworkCore;
 
 public class BillingContext : DbContext
 {
-    public DbSet<Invoice> Invoices => Set<Invoice>();                       // hot: writes + hot-only reads
-    public DbSet<InvoiceReport> InvoiceHistory => Set<InvoiceReport>();     // hot + cold reporting
-    public DbSet<InvoiceLineReport> LineHistory => Set<InvoiceLineReport>();
+    // Hot Invoice entities.
+    public DbSet<Invoice> Invoices => Set<Invoice>();
+
+    // Read-only Invoice rows from hot DuckDB + cold Parquet.
+    public DbSet<InvoiceHistory> InvoiceHistory => Set<InvoiceHistory>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
         => options.UseDuckDB("Data Source=billing.duckdb");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // i => i.InvoiceDate is this aggregate's timestamp property: the date that defines its hot/cold boundary (the watermark).
+        // InvoiceDate defines the watermark and monthly archive partitions.
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
-            .WithReadModel<InvoiceReport>()
-            .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
+            .WithReadModel<InvoiceHistory>()
+            // Cold: InvoiceLines archive together with their Invoice.
+            .Including<InvoiceLine>(i => i.Lines);
     }
 }
 ```
 
 ```csharp
-db.Database.EnsureCreated();                 // also creates the control table + all union views
+db.Database.EnsureCreated();                 // creates the control table + hot/cold view
 // (when using Migrate() instead, call db.Database.EnsureTieredStoresCreated() once at startup)
 
-// ... write invoices with lines normally, then periodically offload aggregates older than a year:
+// Archive invoices older than one year. Their InvoiceLines move with them.
 var result = await db.Database.ArchiveTierAsync<Invoice>(DateTime.UtcNow.AddYears(-1));
 
-var recent = db.Invoices.Count();          // hot only — just the DuckDB file
-var everything = db.InvoiceHistory.Count(); // hot + cold — also scans the Parquet archive
+// Invoices: hot only, with their InvoiceLines. Parquet is not queried.
+var hotInvoices = await db.Invoices
+    .Include(i => i.Lines)
+    .ToListAsync();
 
-// Cold reporting over the read-models. Single-table aggregates need no join:
-var invoicesByYear = db.InvoiceHistory.GroupBy(i => i.InvoiceDate.Year).Select(g => new { g.Key, Count = g.Count() });
+// InvoiceHistory: hot + Parquet. No timestamp filter is required.
+var allInvoices = await db.InvoiceHistory.ToListAsync();
 
-// Read-models are keyless (no navigations), so a cross-table report joins on the FK column; then enforce retention:
-var byYear = db.LineHistory.Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
-    .GroupBy(x => x.Year).Select(g => new { g.Key, Revenue = g.Sum(x => x.Amount) });
-db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
+// InvoiceHistory with a date range: DuckDB can skip irrelevant monthly Parquet data.
+var from = new DateTime(2024, 1, 1);
+var toExclusive = new DateTime(2024, 4, 1);
+var rangedInvoices = await db.InvoiceHistory
+    .Where(i => i.InvoiceDate >= from && i.InvoiceDate < toExclusive)
+    .ToListAsync();
 ```
+
+The `InvoiceDate` filter is optional. Use it when you only need a date range so DuckDB can skip irrelevant
+monthly Parquet data.
 
 Notice `ArchiveTierAsync<Invoice>` (and `PurgeArchiveOlderThan<Invoice>`) take **no path** — only the cutoff. The
 *where* (the archive path) and the *which date* (the timestamp property) come from the `ToTieredStore<Invoice>(...)`
@@ -278,14 +290,16 @@ configuration, looked up by the root type; the runtime call supplies only the *w
 archives under `<archivePath>/<table>/year=…/month=…/`, and the generated views read back from the same path, so
 reads and writes always agree on the location.
 
-Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer). To skip the join on
-a hot reporting path, denormalize the parent column onto the child (e.g. carry `InvoiceDate` on the line) so the
-report is a single-read-model aggregate — see
-[Avoiding the join](docs/TIERED-STORAGE.md#avoiding-the-join-denormalize-the-report-columns).
+Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
 
-> **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app tiers two independent
-> roots — an `Invoice` → `InvoiceLine` aggregate on `InvoiceDate` and an `AuditEvent` on `OccurredOn`, each on its
-> own cutoff — and reports across hot + cold:
+Enforce archive retention separately when required:
+
+```csharp
+db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
+```
+
+> **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app demonstrates archiving
+> and reporting across hot + cold:
 > ```bash
 > dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (no setup)
 >
@@ -349,7 +363,7 @@ and the next `ArchiveTierAsync` still self-heals any transient double-count.
 ```csharp
 modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
     .WithoutHotChildFilter()                        // trade the crash-window guard for faster child reads
-    .WithReadModel<InvoiceReport>()
+    .WithReadModel<InvoiceHistory>()
     .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
 ```
 
