@@ -1,5 +1,6 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 
@@ -177,5 +178,52 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
         }
 
         return WithOption(e => e.WithMigrationLockTimeout(timeout));
+    }
+
+    /// <summary>
+    ///     Enables an opt-in table-rebuild strategy for migration constraint changes which DuckDB cannot
+    ///     apply with <c>ALTER TABLE</c>.
+    /// </summary>
+    /// <remarks>
+    ///     The migration copies the table into a temporary backup, recreates the target table from the EF
+    ///     model, copies compatible columns back, and recreates indexes. This requires temporary disk space
+    ///     approximately equal to the table and an exclusive writer window. Disabled by default.
+    /// </remarks>
+    /// <param name="enable"><see langword="true" /> to enable table rebuilds; otherwise, <see langword="false" />.</param>
+    public virtual DuckDBDbContextOptionsBuilder EnableMigrationTableRebuilds(bool enable = true)
+        => WithOption(e => e.WithMigrationTableRebuilds(enable));
+
+    /// <summary>Installs and loads a DuckDB extension whenever a provider-owned connection opens.</summary>
+    /// <remarks>
+    ///     Use <c>httpfs</c> for S3-compatible storage and <c>azure</c> for Azure Blob Storage. Extension
+    ///     names are validated as identifiers and cannot contain SQL fragments.
+    /// </remarks>
+    /// <param name="extension">The DuckDB extension name.</param>
+    public virtual DuckDBDbContextOptionsBuilder LoadExtension(string extension)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(extension);
+        if (!char.IsAsciiLetter(extension[0])
+            || extension.Any(character => !char.IsAsciiLetterOrDigit(character) && character != '_'))
+        {
+            throw new ArgumentException("DuckDB extension names may contain only ASCII letters, digits, and underscores.", nameof(extension));
+        }
+
+        return WithOption(e => e.WithExtension(extension));
+    }
+
+    /// <summary>
+    ///     Registers initialization that runs after configured extensions are loaded on every provider-owned
+    ///     connection.
+    /// </summary>
+    /// <remarks>
+    ///     This is intended for connection-scoped setup such as <c>CREATE SECRET</c>. Commands executed by the
+    ///     callback are not passed through EF Core command logging, which prevents credentials from appearing
+    ///     in generated SQL logs. Resolve credentials inside the callback rather than storing them in the EF model.
+    /// </remarks>
+    /// <param name="initializer">The connection initialization callback.</param>
+    public virtual DuckDBDbContextOptionsBuilder ConfigureConnection(Action<DuckDBConnection> initializer)
+    {
+        ArgumentNullException.ThrowIfNull(initializer);
+        return WithOption(e => e.WithConnectionInitializer(initializer));
     }
 }

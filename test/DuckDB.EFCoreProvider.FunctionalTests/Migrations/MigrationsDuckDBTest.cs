@@ -168,14 +168,14 @@ public class MigrationsDuckDBTest : MigrationsTestBase<MigrationsDuckDBTest.Migr
 
     public override async Task Add_required_primitive_collection_with_custom_converter_and_custom_default_value_to_existing_table()
     {
-         var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Add_required_primitive_collection_with_custom_converter_and_custom_default_value_to_existing_table());
-         Assert.Equal("Parser Error: Adding columns with constraints not yet supported", exception.Message);
+        var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Add_required_primitive_collection_with_custom_converter_and_custom_default_value_to_existing_table());
+        Assert.Equal("Parser Error: Adding columns with constraints not yet supported", exception.Message);
     }
 
     public override async Task Add_required_primitive_collection_with_custom_default_value_to_existing_table()
     {
-         var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Add_required_primitive_collection_with_custom_default_value_to_existing_table());
-         Assert.Equal("Parser Error: Adding columns with constraints not yet supported", exception.Message);
+        var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Add_required_primitive_collection_with_custom_default_value_to_existing_table());
+        Assert.Equal("Parser Error: Adding columns with constraints not yet supported", exception.Message);
     }
 
     public override async Task Add_required_primitive_collection_with_custom_converter_to_existing_table()
@@ -183,7 +183,7 @@ public class MigrationsDuckDBTest : MigrationsTestBase<MigrationsDuckDBTest.Migr
         var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Add_required_primitive_collection_with_custom_converter_to_existing_table());
         Assert.Equal("Parser Error: Adding columns with constraints not yet supported", exception.Message);
     }
-    
+
     public override async Task Add_required_primitve_collection_to_existing_table()
     {
         var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Add_required_primitve_collection_to_existing_table());
@@ -223,13 +223,13 @@ public class MigrationsDuckDBTest : MigrationsTestBase<MigrationsDuckDBTest.Migr
     public override async Task Alter_check_constraint()
     {
         var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Alter_check_constraint());
-        Assert.Equal("Not implemented Error: No support for that ALTER TABLE option yet!", exception.Message);   
+        Assert.Equal("Not implemented Error: No support for that ALTER TABLE option yet!", exception.Message);
     }
 
     public override async Task Alter_column_change_computed()
     {
         var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Alter_column_change_computed());
-        Assert.Equal("Parser Error: Adding generated columns after table creation is not supported yet", exception.Message);  
+        Assert.Equal("Parser Error: Adding generated columns after table creation is not supported yet", exception.Message);
     }
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
@@ -407,6 +407,12 @@ public class MigrationsDuckDBTest : MigrationsTestBase<MigrationsDuckDBTest.Migr
         Assert.Equal("Not implemented Error: No support for that ALTER TABLE option yet!", exception.Message);
     }
 
+    [ConditionalFact(Skip = DuckDBSkipReasons.NotSupportedByDuckDB)]
+    public override Task Drop_foreign_key()
+    {
+        return base.Drop_foreign_key();
+    }
+
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Drop_column_computed_and_non_computed_with_dependency()
     {
@@ -440,7 +446,7 @@ public class MigrationsDuckDBTest : MigrationsTestBase<MigrationsDuckDBTest.Migr
     public override async Task Move_sequence()
     {
         var exception = await Assert.ThrowsAsync<DuckDBException>(async () => await base.Move_sequence());
-        Assert.Equal("Not implemented Error: T_AlterObjectSchemaStmt", exception.Message);  
+        Assert.Equal("Not implemented Error: T_AlterObjectSchemaStmt", exception.Message);
     }
 
     public override async Task Move_table()

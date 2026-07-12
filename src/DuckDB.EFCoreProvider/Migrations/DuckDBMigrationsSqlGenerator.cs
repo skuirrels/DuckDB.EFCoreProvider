@@ -1,10 +1,13 @@
-﻿using DuckDB.EFCoreProvider.Metadata;
+﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace DuckDB.EFCoreProvider.Migrations;
 
@@ -24,16 +27,30 @@ namespace DuckDB.EFCoreProvider.Migrations;
 /// </remarks>
 public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
 {
+    private readonly bool _migrationTableRebuilds;
+
     /// <summary>
     ///     Creates a new instance of <see cref="DuckDBMigrationsSqlGenerator" />.
     /// </summary>
     /// <param name="dependencies">Parameter object containing dependencies for this service.</param>
     public DuckDBMigrationsSqlGenerator(MigrationsSqlGeneratorDependencies dependencies) : base(dependencies)
     {
+        _migrationTableRebuilds = dependencies.CurrentContext.Context.GetService<IDbContextOptions>()
+            .FindExtension<DuckDBOptionsExtension>()?.MigrationTableRebuilds == true;
     }
 
+    /// <inheritdoc />
+    public override IReadOnlyList<MigrationCommand> Generate(
+        IReadOnlyList<MigrationOperation> operations,
+        IModel? model = null,
+        MigrationsSqlGenerationOptions options = MigrationsSqlGenerationOptions.Default)
+        => base.Generate(
+            _migrationTableRebuilds ? RewriteConstraintOperations(operations, model) : operations,
+            model,
+            options);
+
     /// <summary>
-    ///     Ignored, DuckDB does not support adding foreign keys.
+    ///     Throws because DuckDB does not support adding foreign keys in place.
     /// </summary>
     /// <param name="operation">The operation.</param>
     /// <param name="model">The target model which may be <see langword="null" /> if the operations exist without a model.</param>
@@ -45,10 +62,11 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         MigrationCommandListBuilder builder,
         bool terminate = true)
     {
+        throw RebuildRequired(operation.Table, nameof(AddForeignKeyOperation));
     }
 
     /// <summary>
-    ///     Ignored, DuckDB does not support dropping foreign keys.
+    ///     Throws because DuckDB does not support dropping foreign keys in place.
     /// </summary>
     /// <param name="operation">The operation.</param>
     /// <param name="model">The target model which may be <see langword="null" /> if the operations exist without a model.</param>
@@ -60,17 +78,238 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         MigrationCommandListBuilder builder,
         bool terminate = true)
     {
+        throw RebuildRequired(operation.Table, nameof(DropForeignKeyOperation));
     }
 
     /// <summary>
-    ///     Ignored due to functional tests issue.
+    ///     Emits foreign keys declared as part of a newly created table.
     /// </summary>
     /// <param name="operation">The operation.</param>
     /// <param name="model">The target model which may be <see langword="null" /> if the operations exist without a model.</param>
     /// <param name="builder">The command builder to use to build the commands.</param>
     protected override void CreateTableForeignKeys(CreateTableOperation operation, IModel? model, MigrationCommandListBuilder builder)
     {
+        base.CreateTableForeignKeys(operation, model, builder);
     }
+
+    /// <inheritdoc />
+    protected override void ForeignKeyConstraint(
+        AddForeignKeyOperation operation,
+        IModel? model,
+        MigrationCommandListBuilder builder)
+    {
+        var onUpdate = operation.OnUpdate;
+        var onDelete = operation.OnDelete;
+        try
+        {
+            operation.OnUpdate = NormalizeReferentialAction(operation.OnUpdate, operation.Name);
+            operation.OnDelete = NormalizeReferentialAction(operation.OnDelete, operation.Name);
+            base.ForeignKeyConstraint(operation, model, builder);
+        }
+        finally
+        {
+            operation.OnUpdate = onUpdate;
+            operation.OnDelete = onDelete;
+        }
+    }
+
+    private ReferentialAction NormalizeReferentialAction(
+        ReferentialAction action,
+        string? constraintName)
+    {
+        if (action is ReferentialAction.NoAction or ReferentialAction.Restrict)
+        {
+            return action;
+        }
+
+        Dependencies.MigrationsLogger.Logger.LogWarning(
+            "DuckDB does not support {Action} for foreign key {ConstraintName}; the constraint is generated with NO ACTION. "
+            + "Use EF client-side cascading with loaded dependants when required.",
+            action,
+            constraintName ?? "<unnamed>");
+        return ReferentialAction.NoAction;
+    }
+
+    private IReadOnlyList<MigrationOperation> RewriteConstraintOperations(
+        IReadOnlyList<MigrationOperation> operations,
+        IModel? model)
+    {
+        var rebuildOperations = operations
+            .Where(IsConstraintAlterOperation)
+            .Cast<ITableMigrationOperation>()
+            .GroupBy(operation => (operation.Table, operation.Schema))
+            .ToDictionary(group => group.Key, group => group.Cast<MigrationOperation>().ToHashSet());
+
+        if (rebuildOperations.Count == 0)
+        {
+            return operations;
+        }
+
+        if (model is null)
+        {
+            throw new NotSupportedException(
+                "DuckDB table rebuilds require the target EF Core model. Generate the migration with a model or disable the rebuild option.");
+        }
+
+        var rebuildKeys = rebuildOperations.Keys.ToHashSet();
+        var mixedShapeOperation = operations
+            .OfType<ITableMigrationOperation>()
+            .FirstOrDefault(operation => rebuildKeys.Contains((operation.Table, operation.Schema))
+                && operation is AddColumnOperation or AlterColumnOperation or DropColumnOperation or RenameColumnOperation);
+        if (mixedShapeOperation is not null)
+        {
+            throw new NotSupportedException(
+                $"DuckDB cannot safely combine {mixedShapeOperation.GetType().Name} with a constraint table rebuild for "
+                + $"'{mixedShapeOperation.Table}' in the same migration. Split the column and constraint changes into separate migrations.");
+        }
+
+        var operationTables = rebuildOperations
+            .SelectMany(pair => pair.Value.Select(operation => (operation, pair.Key)))
+            .ToDictionary(pair => pair.operation, pair => pair.Key);
+        var emitted = new HashSet<(string Table, string? Schema)>();
+        var rewritten = new List<MigrationOperation>();
+        foreach (var operation in operations)
+        {
+            if (TryGetIndexTable(operation, out var indexKey) && rebuildKeys.Contains(indexKey))
+            {
+                // The rebuilt table is recreated from the final model and all final indexes are emitted once
+                // by AddTableRebuild. Retaining explicit index operations would duplicate or drop that state.
+                continue;
+            }
+
+            if (!operationTables.TryGetValue(operation, out var key))
+            {
+                rewritten.Add(operation);
+                continue;
+            }
+
+            if (emitted.Add(key))
+            {
+                var table = model.GetRelationalModel().FindTable(key.Table, key.Schema)
+                    ?? throw new InvalidOperationException($"The target model does not contain table '{key.Table}'.");
+                AddTableRebuild(rewritten, table);
+            }
+        }
+
+        return rewritten;
+    }
+
+    private void AddTableRebuild(List<MigrationOperation> operations, ITable table)
+    {
+        var backupName = $"__ef_rebuild_{table.Name}";
+        var delimitedTable = Dependencies.SqlGenerationHelper.DelimitIdentifier(table.Name, table.Schema);
+        var delimitedBackup = Dependencies.SqlGenerationHelper.DelimitIdentifier(backupName, table.Schema);
+
+        operations.Add(new SqlOperation
+        {
+            Sql = $"CREATE TABLE {delimitedBackup} AS SELECT * FROM {delimitedTable}{Dependencies.SqlGenerationHelper.StatementTerminator}"
+        });
+        operations.Add(new DropTableOperation { Name = table.Name, Schema = table.Schema });
+
+        var createTable = CreateTableOperationFrom(table);
+        operations.Add(createTable);
+
+        var copiedColumns = table.Columns.Where(column => column.ComputedColumnSql is null).ToList();
+        var columnList = string.Join(", ", copiedColumns.Select(column => Dependencies.SqlGenerationHelper.DelimitIdentifier(column.Name)));
+        operations.Add(new SqlOperation
+        {
+            Sql = $"INSERT INTO {delimitedTable} ({columnList}) SELECT {columnList} FROM {delimitedBackup}{Dependencies.SqlGenerationHelper.StatementTerminator}"
+        });
+        operations.Add(new DropTableOperation { Name = backupName, Schema = table.Schema });
+
+        foreach (var index in table.Indexes)
+        {
+            operations.Add(CreateIndexOperation.CreateFrom(index));
+        }
+    }
+
+    private static CreateTableOperation CreateTableOperationFrom(ITable table)
+    {
+        var operation = new CreateTableOperation
+        {
+            Name = table.Name,
+            Schema = table.Schema,
+            Comment = table.Comment
+        };
+
+        foreach (var column in table.Columns.Where(column => column.Order.HasValue).OrderBy(column => column.Order)
+                     .Concat(table.Columns.Where(column => !column.Order.HasValue)))
+        {
+            column.TryGetDefaultValue(out var defaultValue);
+            var addColumn = new AddColumnOperation
+            {
+                Name = column.Name,
+                Table = table.Name,
+                Schema = table.Schema,
+                ClrType = column.StoreTypeMapping.ClrType,
+                ColumnType = column.StoreType,
+                IsNullable = column.IsNullable,
+                DefaultValue = defaultValue,
+                DefaultValueSql = column.DefaultValueSql,
+                ComputedColumnSql = column.ComputedColumnSql,
+                IsStored = column.IsStored,
+                Comment = column.Comment,
+                Collation = column.Collation
+            };
+            addColumn.AddAnnotations(column.GetAnnotations());
+            operation.Columns.Add(addColumn);
+        }
+
+        if (table.PrimaryKey is { } primaryKey)
+        {
+            operation.PrimaryKey = AddPrimaryKeyOperation.CreateFrom(primaryKey);
+        }
+
+        foreach (var foreignKey in table.ForeignKeyConstraints)
+        {
+            operation.ForeignKeys.Add(AddForeignKeyOperation.CreateFrom(foreignKey));
+        }
+
+        foreach (var uniqueConstraint in table.UniqueConstraints.Where(constraint => !constraint.GetIsPrimaryKey()))
+        {
+            operation.UniqueConstraints.Add(AddUniqueConstraintOperation.CreateFrom(uniqueConstraint));
+        }
+
+        foreach (var checkConstraint in table.CheckConstraints)
+        {
+            operation.CheckConstraints.Add(AddCheckConstraintOperation.CreateFrom(checkConstraint));
+        }
+
+        operation.AddAnnotations(table.GetAnnotations());
+        return operation;
+    }
+
+    private static bool IsConstraintAlterOperation(MigrationOperation operation)
+        => operation is AddForeignKeyOperation or DropForeignKeyOperation
+            or AddPrimaryKeyOperation or DropPrimaryKeyOperation
+            or AddUniqueConstraintOperation or DropUniqueConstraintOperation
+            or AddCheckConstraintOperation or DropCheckConstraintOperation;
+
+    private static bool TryGetIndexTable(
+        MigrationOperation operation,
+        out (string Table, string? Schema) table)
+    {
+        switch (operation)
+        {
+            case CreateIndexOperation createIndex:
+                table = (createIndex.Table, createIndex.Schema);
+                return true;
+            case DropIndexOperation { Table: not null } dropIndex:
+                table = (dropIndex.Table, dropIndex.Schema);
+                return true;
+            case RenameIndexOperation { Table: not null } renameIndex:
+                table = (renameIndex.Table, renameIndex.Schema);
+                return true;
+            default:
+                table = default;
+                return false;
+        }
+    }
+
+    private static NotSupportedException RebuildRequired(string table, string operation)
+        => new(
+            $"DuckDB cannot apply {operation} to table '{table}' in place. "
+            + "Enable opt-in table rebuilds with UseDuckDB(options => options.EnableMigrationTableRebuilds()).");
 
     /// <summary>
     ///     Builds commands for the given <see cref="RenameTableOperation" />

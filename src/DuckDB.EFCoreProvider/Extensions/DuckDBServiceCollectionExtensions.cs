@@ -103,6 +103,7 @@ public static class DuckDBServiceCollectionExtensions
             .TryAdd<LoggingDefinitions, DuckDBLoggingDefinitions>()
             .TryAdd<IDatabaseProvider, DatabaseProvider<DuckDBOptionsExtension>>()
             .TryAdd<IRelationalTypeMappingSource, DuckDBTypeMappingSource>()
+            .TryAdd<IRawSqlCommandBuilder, DuckDBRawSqlCommandBuilder>()
             .TryAdd<ISqlGenerationHelper, DuckDBSqlGenerationHelper>()
             .TryAdd<IRelationalAnnotationProvider, DuckDBAnnotationProvider>()
             .TryAdd<IModelValidator, DuckDBModelValidator>()

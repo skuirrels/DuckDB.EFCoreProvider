@@ -9,6 +9,48 @@ namespace DuckDB.EFCoreProvider.Extensions.DbFunctionsExtensions;
 /// </summary>
 public static class DuckDBDbFunctionsExtensions
 {
+    /// <summary>Returns the one-based field from a delimited string using DuckDB's <c>split_part</c>.</summary>
+    public static string SplitPart(this DbFunctions _, string value, string separator, int index)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(SplitPart)));
+
+    /// <summary>Computes the sample standard deviation of integer values.</summary>
+    public static double? StandardDeviationSample(this DbFunctions _, IEnumerable<int> values)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(StandardDeviationSample)));
+
+    /// <summary>Computes the sample standard deviation of long integer values.</summary>
+    public static double? StandardDeviationSample(this DbFunctions _, IEnumerable<long> values)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(StandardDeviationSample)));
+
+    /// <summary>Computes the sample standard deviation of single-precision values.</summary>
+    public static double? StandardDeviationSample(this DbFunctions _, IEnumerable<float> values)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(StandardDeviationSample)));
+
+    /// <summary>Computes the sample standard deviation of double-precision values.</summary>
+    public static double? StandardDeviationSample(this DbFunctions _, IEnumerable<double> values)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(StandardDeviationSample)));
+
+    /// <summary>Computes the sample standard deviation of decimal values.</summary>
+    public static double? StandardDeviationSample(this DbFunctions _, IEnumerable<decimal> values)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(StandardDeviationSample)));
+
+    /// <summary>
+    ///     Returns the value associated with the greatest ordering key. DuckDB chooses one value when keys tie;
+    ///     callers requiring deterministic ties should include a unique tie-breaker in the ordering key.
+    /// </summary>
+    public static TValue? ArgMax<TValue, TOrder>(
+        this DbFunctions _,
+        IEnumerable<(TValue Value, TOrder Order)> values)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(ArgMax)));
+
+    /// <summary>
+    ///     Returns the value associated with the least ordering key. DuckDB chooses one value when keys tie;
+    ///     callers requiring deterministic ties should include a unique tie-breaker in the ordering key.
+    /// </summary>
+    public static TValue? ArgMin<TValue, TOrder>(
+        this DbFunctions _,
+        IEnumerable<(TValue Value, TOrder Order)> values)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(ArgMin)));
+
     /// <summary>
     ///     Returns whether the row value represented by <paramref name="a" /> is greater than the row value represented by <paramref name="b" />.
     /// </summary>

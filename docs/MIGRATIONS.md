@@ -58,12 +58,42 @@ This scaffolds a `CREATE SEQUENCE` plus a column default in the generated migrat
 
 These are **engine** limitations (DuckDB's `ALTER TABLE` and index surface), not provider gaps. The provider surfaces them clearly rather than silently producing wrong SQL.
 
+DuckDB enforces foreign keys but supports only `NO ACTION` / `RESTRICT`, not database `CASCADE`, `SET NULL`,
+or `SET DEFAULT`. The provider emits an enforced `NO ACTION` constraint and logs a migration warning when an
+EF model requests an unsupported action. EF can still cascade tracked, loaded dependants client-side; deleting
+a principal without loading its dependants is rejected by the database.
+
+DuckDB also currently rejects an update or delete of a referenced row while any foreign-key row points to it,
+even when an update changes only a non-key column. This is an engine limitation rather than a provider ordering
+issue. Design write-heavy aggregates so referenced principals are stable, or update the dependent rows as part
+of an application-controlled maintenance operation.
+
 | Area | Detail |
 |---|---|
 | **Index direction** | DuckDB does not retain a per-column `ASC`/`DESC` direction; `CREATE INDEX ... (col DESC)` persists as `(col)`. Descending indexes are not generated. |
 | **Filtered / partial indexes** | Not supported by DuckDB; `HasFilter(...)` is not emitted. |
 | **Renaming an index** | Not supported; model a rename as drop-and-create. |
 | **Some `ALTER COLUMN` shapes** | DuckDB's in-place column alteration is narrower than SQL Server's; certain type/nullability changes may require a table rebuild. |
+
+### Opt-in table rebuilds
+
+Foreign keys declared as part of `CREATE TABLE` are emitted normally. DuckDB cannot add or drop constraints
+in place, so those migration operations fail clearly by default. Enable explicit rebuilds when the operational
+trade-off is acceptable:
+
+```csharp
+options.UseDuckDB(
+    "Data Source=app.duckdb",
+    duckdb => duckdb.EnableMigrationTableRebuilds());
+```
+
+For primary-key, foreign-key, unique, and check-constraint changes, the provider then copies the table to a
+temporary backup, recreates it from the target EF model, copies compatible non-computed columns back, drops
+the backup, and recreates indexes. Run with a single writer, ensure free disk space roughly equal to the table,
+and test rollback/recovery against a production-sized copy before enabling this in production. Column-shape
+changes and constraint rebuilds must be placed in separate migrations; the provider rejects that mixed shape
+rather than risking an ambiguous copy. Rebuilding a table referenced by foreign keys from other tables may also
+be rejected by DuckDB, so rebuild dependants first or use an application-managed maintenance migration.
 
 For the complete capability matrix and the engine-limitation rationale, see [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
 

@@ -25,6 +25,8 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly bool _loadSpatial;
     private readonly string? _memoryLimit;
     private readonly string? _fileSearchPath;
+    private readonly IReadOnlyList<string> _extensionsToLoad;
+    private readonly Action<DuckDBConnection>? _connectionInitializer;
 
     public DuckDBRelationalConnection(
         RelationalConnectionDependencies dependencies,
@@ -39,6 +41,8 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         _loadSpatial = optionsExtension?.LoadSpatialite == true;
         _memoryLimit = optionsExtension?.MemoryLimit;
         _fileSearchPath = optionsExtension?.FileSearchPath;
+        _extensionsToLoad = optionsExtension?.ExtensionsToLoad ?? [];
+        _connectionInitializer = optionsExtension?.ConnectionInitializer;
     }
 
     // DuckDB.NET only supports IsolationLevel.Unspecified and IsolationLevel.Snapshot.
@@ -124,7 +128,15 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
         connectionStringBuilder[AccessModeConfigurationKey] = ReadOnlyAccessMode;
 
-        var contextOptions = new DbContextOptionsBuilder().UseDuckDB(connectionStringBuilder.ToString()).Options;
+        var contextOptions = new DbContextOptionsBuilder().UseDuckDB(
+            connectionStringBuilder.ToString(),
+            options =>
+            {
+                if (_memoryLimit is not null) options.MemoryLimit(_memoryLimit);
+                if (_fileSearchPath is not null) options.FileSearchPath(_fileSearchPath);
+                foreach (var extension in _extensionsToLoad) options.LoadExtension(extension);
+                if (_connectionInitializer is not null) options.ConfigureConnection(_connectionInitializer);
+            }).Options;
 
         return new DuckDBRelationalConnection(Dependencies with { ContextOptions = contextOptions }, _rawSqlCommandBuilder, _logger);
     }
@@ -156,8 +168,18 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         if (connection.State != ConnectionState.Open)
         {
             connection.Open();
-            ApplyConfigurationIfNeeded();
-            LoadSpatialExtensionIfNeeded();
+            try
+            {
+                ApplyConfigurationIfNeeded();
+                LoadSpatialExtensionIfNeeded();
+                LoadConfiguredExtensions();
+                _connectionInitializer?.Invoke(connection);
+            }
+            catch
+            {
+                connection.Close();
+                throw;
+            }
         }
     }
 
@@ -168,8 +190,18 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         if (connection.State != ConnectionState.Open)
         {
             await connection.OpenAsync(cancellationToken);
-            await ApplyConfigurationIfNeededAsync(cancellationToken);
-            await LoadSpatialExtensionIfNeededAsync(cancellationToken);
+            try
+            {
+                await ApplyConfigurationIfNeededAsync(cancellationToken);
+                await LoadSpatialExtensionIfNeededAsync(cancellationToken);
+                await LoadConfiguredExtensionsAsync(cancellationToken);
+                _connectionInitializer?.Invoke(connection);
+            }
+            catch
+            {
+                await connection.CloseAsync();
+                throw;
+            }
         }
     }
 
@@ -245,5 +277,25 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         var paramObj = new RelationalCommandParameterObject(this, null, null, null, null);
         await _rawSqlCommandBuilder.Build("INSTALL spatial").ExecuteNonQueryAsync(paramObj, cancellationToken);
         await _rawSqlCommandBuilder.Build("LOAD spatial").ExecuteNonQueryAsync(paramObj, cancellationToken);
+    }
+
+    private void LoadConfiguredExtensions()
+    {
+        foreach (var extension in _extensionsToLoad)
+        {
+            using var command = DbConnection.CreateCommand();
+            command.CommandText = $"INSTALL {extension}; LOAD {extension};";
+            command.ExecuteNonQuery();
+        }
+    }
+
+    private async Task LoadConfiguredExtensionsAsync(CancellationToken cancellationToken)
+    {
+        foreach (var extension in _extensionsToLoad)
+        {
+            await using var command = DbConnection.CreateCommand();
+            command.CommandText = $"INSTALL {extension}; LOAD {extension};";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 }

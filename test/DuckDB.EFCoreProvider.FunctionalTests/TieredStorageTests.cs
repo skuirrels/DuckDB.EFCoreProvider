@@ -63,6 +63,20 @@ public sealed class TieredStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task Multi_table_archive_rejects_an_existing_transaction_before_copying()
+    {
+        using var context = CreateContext();
+        Seed(context, months: 2, baseDate: new DateTime(2025, 7, 1));
+        await using var transaction = await context.Database.BeginTransactionAsync();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            context.Database.ArchiveTierAsync<Invoice>(new DateTime(2025, 7, 1)));
+
+        Assert.Contains("outside the caller transaction", exception.Message);
+        Assert.False(Directory.Exists(Path.Combine(_root, "archive", "invoices")));
+    }
+
+    [Fact]
     public async Task Reporting_join_across_read_models_spans_hot_and_cold()
     {
         using var context = CreateContext();

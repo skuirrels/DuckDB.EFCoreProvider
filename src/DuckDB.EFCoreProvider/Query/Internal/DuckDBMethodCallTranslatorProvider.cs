@@ -14,6 +14,7 @@ public class DuckDBMethodCallTranslatorProvider : RelationalMethodCallTranslator
     public DuckDBMethodCallTranslatorProvider(RelationalMethodCallTranslatorProviderDependencies dependencies) : base(dependencies)
     {
         AddTranslators([
+            new DuckDBAnalyticalMethodTranslator(dependencies.SqlExpressionFactory),
             new DuckDBMathTranslator(dependencies.SqlExpressionFactory),
             new DuckDBStringMethodTranslator(dependencies.SqlExpressionFactory, dependencies.RelationalTypeMappingSource),
             new DuckDBDateOnlyMethodTranslator(dependencies.SqlExpressionFactory),

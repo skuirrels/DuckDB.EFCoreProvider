@@ -101,6 +101,42 @@ public class NorthwindBulkUpdatesDuckDBTest : NorthwindBulkUpdatesRelationalTest
         return base.Update_Where_Join_set_property_from_joined_single_result_table(async);
     }
 
+    [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public override Task Update_Where_Join_set_property_from_joined_table(bool async)
+    {
+        return base.Update_Where_Join_set_property_from_joined_table(async);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public override Task Update_Where_SelectMany_set_null(bool async)
+    {
+        return base.Update_Where_SelectMany_set_null(async);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public override Task Update_Where_SelectMany_subquery_set_null(bool async)
+    {
+        return base.Update_Where_SelectMany_subquery_set_null(async);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public override Task Update_Where_multiple_set(bool async)
+    {
+        return base.Update_Where_multiple_set(async);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public override Task Update_Where_using_navigation_set_null(bool async)
+    {
+        return base.Update_Where_using_navigation_set_null(async);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public override Task Update_with_RightJoin(bool async)
+    {
+        return base.Update_with_RightJoin(async);
+    }
+
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Update_with_cross_apply_set_constant(bool async)
     {

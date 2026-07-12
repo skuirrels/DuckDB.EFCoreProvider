@@ -2,6 +2,16 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.3.0
+
+- Fix nullable values in `ExecuteSqlInterpolated` by applying DuckDB parameter-name normalization centrally to untyped raw-SQL nulls.
+- Emit and enforce foreign keys declared during table creation, normalize DuckDB-unsupported cascade actions to `NO ACTION` with a migration warning, and fail clearly for unsupported in-place constraint changes. Add opt-in migration table rebuilds for primary, foreign-key, unique, and check-constraint changes.
+- Document and classify DuckDB's native restriction on updating or deleting referenced rows, including non-key updates, so the enforced-FK behavior is explicit in production guidance and test coverage.
+- Make tiered aggregate cleanup compatible with enforced foreign keys by deleting leaf-to-root in crash-safe autocommit statements; multi-table archives now reject an existing caller transaction before copying.
+- Add typed `ExportToParquet` / `ExportToParquetAsync` APIs for translated, parameterized `IQueryable<T>` queries, including typed partition columns, overwrite policy, compression, and cancellation.
+- Add provider-owned extension loading and connection initialization for `httpfs`, Azure, and secret setup.
+- Translate `SplitPart`, sample standard deviation, `ArgMax`, and `ArgMin` through `EF.Functions`.
+
 ## 1.2.4
 
 - **Blob reads allocate roughly half as much.** Materializing a `byte[]` column no longer double-buffers the driver's stream through a growing `MemoryStream` plus `ToArray()`; DuckDB.NET's blob stream is seekable with a known length, so the provider reads once into an exact-size array. On 2,000 rows × 4 KB blobs, allocations fell from 16.49 MB to 8.51 MB (~2.1× payload → ~1.1×) and Gen0 collections halved. Also adds test coverage for eager-loading (`Include`) across two parquet-backed sets. No public API changes.

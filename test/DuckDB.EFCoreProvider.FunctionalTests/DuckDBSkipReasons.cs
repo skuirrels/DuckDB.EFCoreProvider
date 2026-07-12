@@ -24,6 +24,13 @@ internal static class DuckDBSkipReasons
     /// <summary>DuckDB engine limitation: renaming an index is not supported (ALTER INDEX ... RENAME).</summary>
     public const string RenameIndexNotSupported = "DuckDB does not support renaming indexes.";
 
+    /// <summary>
+    ///     DuckDB engine limitation: a referenced row cannot currently be updated or deleted while the
+    ///     referencing foreign-key row exists, even when the update does not change the referenced key.
+    /// </summary>
+    public const string ReferencedRowsCannotBeUpdated =
+        "DuckDB cannot update or delete a row while it is referenced by a foreign key.";
+
     /// <summary>Provider roadmap (capability map §3): could be supported, not implemented yet.</summary>
     public const string NotYetImplemented = "Not yet implemented by the DuckDB provider.";
 

@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.2.4</PackageVersion>
-    <FileVersion>1.2.4</FileVersion>
-    <Version>1.2.4</Version>
+    <PackageVersion>1.3.0</PackageVersion>
+    <FileVersion>1.3.0</FileVersion>
+    <Version>1.3.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,16 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.2.3</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.2.4</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.3.0
+- Fix nullable ExecuteSqlInterpolated parameters and normalize raw-SQL parameter names centrally.
+- Emit and enforce foreign keys during table creation; normalize unsupported cascade actions to NO ACTION and add opt-in table rebuilds for constraint changes.
+- Add typed ExportToParquet and ExportToParquetAsync APIs with parameter preservation, typed partitions, overwrite policy, compression, and cancellation.
+- Add provider-owned extension loading and connection initialization for httpfs, Azure, secrets, and other DuckDB extensions.
+- Translate SplitPart, sample standard deviation, ArgMax, and ArgMin through EF.Functions.
+- Harden tiered aggregate cleanup for enforced foreign keys and reject unsafe caller transactions before multi-table archival.
+
 1.2.4
 - Performance: blob reads allocate roughly half as much. Materializing a byte[] column no longer double-buffers the driver's stream through a growing MemoryStream plus ToArray(); DuckDB.NET's blob stream is seekable with a known length, so the provider reads once into an exact-size array. On 2,000 rows x 4 KB blobs, allocations fell from 16.49 MB to 8.51 MB and Gen0 collections halved. No public API changes.
 

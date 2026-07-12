@@ -1,4 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,6 +24,9 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private string? _memoryLimit;
     private string? _fileSearchPath;
     private TimeSpan? _migrationLockTimeout;
+    private bool _migrationTableRebuilds;
+    private IReadOnlyList<string> _extensionsToLoad = [];
+    private Action<DuckDBConnection>? _connectionInitializer;
 
     public DuckDBOptionsExtension()
     {
@@ -39,6 +43,9 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _memoryLimit = copyFrom._memoryLimit;
         _fileSearchPath = copyFrom._fileSearchPath;
         _migrationLockTimeout = copyFrom._migrationLockTimeout;
+        _migrationTableRebuilds = copyFrom._migrationTableRebuilds;
+        _extensionsToLoad = copyFrom._extensionsToLoad;
+        _connectionInitializer = copyFrom._connectionInitializer;
     }
 
     /// <summary>
@@ -122,6 +129,18 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     ///     indefinitely, or <see langword="null" /> to use the default of five minutes.
     /// </summary>
     public virtual TimeSpan? MigrationLockTimeout => _migrationLockTimeout;
+
+    /// <summary>
+    ///     <see langword="true" /> when migration operations unsupported by DuckDB's in-place
+    ///     <c>ALTER TABLE</c> surface may rebuild the affected table; otherwise, <see langword="false" />.
+    /// </summary>
+    public virtual bool MigrationTableRebuilds => _migrationTableRebuilds;
+
+    /// <summary>DuckDB extensions installed and loaded whenever a provider-owned connection opens.</summary>
+    public virtual IReadOnlyList<string> ExtensionsToLoad => _extensionsToLoad;
+
+    /// <summary>An optional provider-owned connection initializer invoked after extensions are loaded.</summary>
+    public virtual Action<DuckDBConnection>? ConnectionInitializer => _connectionInitializer;
 
     protected override RelationalOptionsExtension Clone()
     {
@@ -218,6 +237,32 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
 
         clone._migrationLockTimeout = migrationLockTimeout;
 
+        return clone;
+    }
+
+    /// <summary>Returns a copy configured with the specified table-rebuild behaviour.</summary>
+    public virtual DuckDBOptionsExtension WithMigrationTableRebuilds(bool migrationTableRebuilds)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+        clone._migrationTableRebuilds = migrationTableRebuilds;
+        return clone;
+    }
+
+    /// <summary>Returns a copy that installs and loads the specified DuckDB extension.</summary>
+    public virtual DuckDBOptionsExtension WithExtension(string extension)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+        clone._extensionsToLoad = _extensionsToLoad.Contains(extension, StringComparer.OrdinalIgnoreCase)
+            ? _extensionsToLoad
+            : [.. _extensionsToLoad, extension];
+        return clone;
+    }
+
+    /// <summary>Returns a copy with an additional connection initializer.</summary>
+    public virtual DuckDBOptionsExtension WithConnectionInitializer(Action<DuckDBConnection> initializer)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+        clone._connectionInitializer = _connectionInitializer + initializer;
         return clone;
     }
 

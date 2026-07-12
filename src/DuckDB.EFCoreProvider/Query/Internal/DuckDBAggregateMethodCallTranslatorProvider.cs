@@ -14,6 +14,7 @@ public class DuckDBAggregateMethodCallTranslatorProvider : RelationalAggregateMe
     public DuckDBAggregateMethodCallTranslatorProvider(RelationalAggregateMethodCallTranslatorProviderDependencies dependencies) : base(dependencies)
     {
         AddTranslators([
+            new DuckDBStatisticsAggregateMethodTranslator(Dependencies.SqlExpressionFactory, dependencies.RelationalTypeMappingSource),
             new DuckDBQueryableAggregateMethodTranslator(Dependencies.SqlExpressionFactory),
             new DuckDBStringAggregateMethodTranslator()
         ]);

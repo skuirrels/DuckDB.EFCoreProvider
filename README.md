@@ -16,6 +16,7 @@
 - **Full read *and* write.** `SaveChanges`, migrations, transactions, optimistic concurrency, and store-generated keys — the whole EF Core experience, not read-only.
 - **Order-of-magnitude write throughput.** Opt-in insert / update / delete **batching (~10–20× faster)**, **`Upsert`** (~8×), and appender-backed **`BulkInsert` (~1M rows/s)**.
 - **Query Parquet, CSV & JSON in place.** Map an entity straight to a file or glob with `[FromParquet]` / `[FromCsv]` / `[FromJsonFile]` and let DuckDB's vectorised engine do the scanning.
+- **Export typed queries to Parquet.** `ExportToParquetAsync` preserves EF query parameters and supports typed partition columns, overwrite policy, compression, and cancellation.
 - **Tiered storage (hot + cold).** Keep recent data in the writable DuckDB file and offload older data — a relational aggregate (root + children) at a time — to hive-partitioned Parquet with `ArchiveTierAsync`. Hot stays plain EF Core; report across hot+cold with LINQ. Idempotent and crash-safe. See [Tiered storage](#tiered-storage-hot-tables--cold-parquet).
 - **Rich type support.** Decimals (precision/scale), arrays & lists, JSON (incl. owned `ToJson()`), temporal, GUID, blobs, row values — plus optional **NetTopologySuite** spatial.
 - **Production knobs.** `MemoryLimit`, `FileSearchPath`, configurable batch sizing, and more.
@@ -94,6 +95,9 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
 | `.FileSearchPath("/data")` | Base directory (or comma-separated directories) for resolving relative file paths. | DuckDB default |
 | `.MigrationLockTimeout(TimeSpan.FromMinutes(10))` | Maximum wait for the migrations lock before failing with guidance (use `Timeout.InfiniteTimeSpan` to wait forever). | 5 minutes |
+| `.EnableMigrationTableRebuilds()` | Opt in to rebuilding tables for constraint changes DuckDB cannot apply in place. | off |
+| `.LoadExtension("httpfs")` | Install and load a DuckDB extension whenever the connection opens. | none |
+| `.ConfigureConnection(connection => …)` | Run provider-owned connection setup after extensions load; intended for `CREATE SECRET` and similar setup. | none |
 | `.UseNetTopologySuite()` | Enable spatial support (requires the `DuckDB.EFCoreProvider.NTS` package). | off |
 | `.MaxBatchSize(n)` | Tune the batching merge size (standard EF Core option). | 100 |
 
@@ -119,6 +123,7 @@ The batching, memory, and file-search options are explained in detail under [Per
 - DuckDB JSON support for `string`, `JsonDocument`, `JsonElement`, and EF Core owned JSON/structural documents via `ToJson()`.
 - DuckDB array/list mappings for CLR arrays and `List<T>`, including typed `INTEGER[]`-style store types.
 - File-source query mapping for Parquet, CSV, and JSON through `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (or the fluent `FromParquet`/`FromCsv`/`FromJsonFile`), emitted as DuckDB `read_parquet(...)` / `read_csv(...)` / `read_json(...)`.
+- Typed Parquet export through `context.Database.ExportToParquet(...)` / `ExportToParquetAsync(...)` for any translated `IQueryable<T>`.
 - Tiered storage (`ToTieredStore(...)` + `.Including(...)`, `ArchiveTierAsync(...)`, `PurgeArchiveOlderThan(...)`): keep recent data in the DuckDB file and offload older relational aggregates (root + children) to hive-partitioned Parquet, unified by generated views; hot side is plain EF Core, cold reporting via keyless read-models; idempotent and crash-safe. See [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
 - High-throughput bulk insert via `context.BulkInsert(...)` / `BulkInsertAsync(...)`, backed by the DuckDB `Appender` (a raw fast path that bypasses change tracking and store-generated values).
 - High-throughput upsert via `context.Upsert(...)` / `UpsertAsync(...)`, backed by appender-staged batches and DuckDB `INSERT ... ON CONFLICT (key) DO UPDATE` — inserts new rows and updates existing ones by primary key (see [Upsert](#upsert)).
@@ -126,6 +131,22 @@ The batching, memory, and file-search options are explained in detail under [Per
 - NetTopologySuite spatial support with DuckDB spatial extension loading and geometry translation.
 - Configurable DuckDB `memory_limit` and `file_search_path` via `UseDuckDB(o => o.MemoryLimit("4GB").FileSearchPath("/data"))` (see [Memory limit and file search path](#memory-limit-and-file-search-path)).
 - Raw SQL queries and commands through EF Core relational APIs.
+
+### Export a query to Parquet
+
+```csharp
+await context.Database.ExportToParquetAsync(
+    context.Events.Where(e => e.Timestamp < cutoff),
+    "/data/archive/events",
+    options => options
+        .PartitionBy(e => e.Timestamp)
+        .OverwriteOrIgnore()
+        .Compression(DuckDBParquetCompression.Zstd),
+    cancellationToken);
+```
+
+Values in the LINQ query remain command parameters. Destination paths are escaped as SQL literals and typed
+partition expressions are resolved through EF's column mappings.
 
 ## Examples
 

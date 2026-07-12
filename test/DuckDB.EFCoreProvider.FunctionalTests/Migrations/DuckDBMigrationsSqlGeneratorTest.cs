@@ -143,7 +143,45 @@ public class DuckDBMigrationsSqlGeneratorTest : MigrationsSqlGeneratorTestBase
 
     public override void AddForeignKeyOperation_without_principal_columns()
     {
-        base.AddForeignKeyOperation_without_principal_columns();
+        var exception = Assert.Throws<NotSupportedException>(() => base.AddForeignKeyOperation_without_principal_columns());
+        Assert.Contains("EnableMigrationTableRebuilds", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void CreateTableOperation_emits_inline_foreign_key_and_normalizes_unsupported_cascade()
+    {
+        Generate(
+            new CreateTableOperation
+            {
+                Name = "Children",
+                Columns =
+                {
+                    new AddColumnOperation { Table = "Children", Name = "Id", ClrType = typeof(int) },
+                    new AddColumnOperation { Table = "Children", Name = "ParentId", ClrType = typeof(int) }
+                },
+                PrimaryKey = new AddPrimaryKeyOperation { Name = "PK_Children", Columns = ["Id"] },
+                ForeignKeys =
+                {
+                    new AddForeignKeyOperation
+                    {
+                        Name = "FK_Children_Parents_ParentId",
+                        Columns = ["ParentId"],
+                        PrincipalTable = "Parents",
+                        PrincipalColumns = ["Id"],
+                        OnDelete = ReferentialAction.Cascade
+                    }
+                }
+            });
+
+        AssertSql(
+            """
+            CREATE TABLE "Children" (
+                "Id" INTEGER NOT NULL,
+                "ParentId" INTEGER NOT NULL,
+                CONSTRAINT "PK_Children" PRIMARY KEY ("Id"),
+                CONSTRAINT "FK_Children_Parents_ParentId" FOREIGN KEY ("ParentId") REFERENCES "Parents" ("Id")
+            );
+            """);
     }
 
     public override void RenameTableOperation_legacy()

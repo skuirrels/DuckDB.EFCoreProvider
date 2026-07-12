@@ -77,9 +77,15 @@ public static partial class DuckDBArchiveExtensions
             ?? throw NotConfigured(typeof(TRoot));
         var aligned = DuckDBTierControl.AlignCutoff(cutoff, aggregate.Granularity);
         var archivePath = aggregate.Root.ArchiveSubPath;
-        // Only manage our own delete transaction when the caller has not already opened one on this connection
-        // (a raw BEGIN inside an existing transaction would fail).
-        var ownTransaction = database.CurrentTransaction is null;
+        // DuckDB's immediate foreign-key checks do not allow a dependent and then its principal to be
+        // deleted in the same transaction. Multi-table aggregates therefore delete leaf-to-root in separate
+        // autocommit statements; the hot/cold anti-join makes every partial-cleanup state crash-safe.
+        if (database.CurrentTransaction is not null && aggregate.Nodes.Count > 1)
+        {
+            throw new InvalidOperationException(
+                "Archiving a multi-table tiered aggregate cannot run inside an existing transaction because "
+                + "DuckDB checks foreign keys immediately. Run ArchiveTierAsync outside the caller transaction.");
+        }
 
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
         var connection = (DuckDBConnection)database.GetDbConnection();
@@ -91,7 +97,7 @@ public static partial class DuckDBArchiveExtensions
             var current = ReadWatermark(connection, sql, aggregate.ControlKey);
             if (current is { } watermark && aligned <= watermark)
             {
-                await DeleteAggregateAsync(connection, sql, aggregate, watermark, ownTransaction, cancellationToken).ConfigureAwait(false);
+                await DeleteAggregateAsync(connection, sql, aggregate, watermark, cancellationToken).ConfigureAwait(false);
                 return new TierArchiveResult(0, watermark, archivePath, NoOp: true);
             }
 
@@ -118,7 +124,7 @@ public static partial class DuckDBArchiveExtensions
 
             await ExecuteNonQueryAsync(connection, DuckDBTierControl.UpsertWatermarkSql(sql, aggregate.ControlKey, aligned, archivePath, aggregate.Granularity), cancellationToken).ConfigureAwait(false);
             RegenerateViews(connection, sql, archiveFileProbe, aggregate);
-            await DeleteAggregateAsync(connection, sql, aggregate, aligned, ownTransaction, cancellationToken).ConfigureAwait(false);
+            await DeleteAggregateAsync(connection, sql, aggregate, aligned, cancellationToken).ConfigureAwait(false);
             await ExecuteNonQueryAsync(connection, "CHECKPOINT;", cancellationToken).ConfigureAwait(false);
 
             return new TierArchiveResult(rows, aligned, archivePath, NoOp: false);
@@ -204,34 +210,24 @@ public static partial class DuckDBArchiveExtensions
         }
     }
 
-    private static async Task DeleteAggregateAsync(DuckDBConnection connection, ISqlGenerationHelper sql, DuckDBTierAggregate aggregate, DateTime cutoff, bool ownTransaction, CancellationToken cancellationToken)
+    private static async Task DeleteAggregateAsync(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        DuckDBTierAggregate aggregate,
+        DateTime cutoff,
+        CancellationToken cancellationToken)
     {
-        if (ownTransaction)
+        // Each delete autocommits when the caller has no transaction. This is required by DuckDB's immediate
+        // FK enforcement: deleting all descendants and then a principal inside one transaction is rejected.
+        // A crash between statements is safe because each view anti-joins hot rows already present in cold
+        // Parquet, and a rerun removes any remaining hot rows.
+        for (var i = aggregate.Nodes.Count - 1; i >= 0; i--)
         {
-            await ExecuteNonQueryAsync(connection, "BEGIN TRANSACTION;", cancellationToken).ConfigureAwait(false);
-        }
-
-        try
-        {
-            // Leaf → root so foreign keys stay satisfied.
-            for (var i = aggregate.Nodes.Count - 1; i >= 0; i--)
-            {
-                var node = aggregate.Nodes[i];
-                var deleteSql = node.IsRoot
-                    ? DuckDBTierControl.DeleteHotSql(sql, node.Table, node.Schema, node.KeyColumns, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff)
-                    : DuckDBTierControl.DeleteChildSql(sql, node.Table, node.Schema, node.KeyColumns, node.ChainToRoot, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff);
-                await ExecuteNonQueryAsync(connection, deleteSql, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (ownTransaction)
-            {
-                await ExecuteNonQueryAsync(connection, "COMMIT;", cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch when (ownTransaction)
-        {
-            await ExecuteNonQueryAsync(connection, "ROLLBACK;", cancellationToken).ConfigureAwait(false);
-            throw;
+            var node = aggregate.Nodes[i];
+            var deleteSql = node.IsRoot
+                ? DuckDBTierControl.DeleteHotSql(sql, node.Table, node.Schema, node.KeyColumns, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff)
+                : DuckDBTierControl.DeleteChildSql(sql, node.Table, node.Schema, node.KeyColumns, node.ChainToRoot, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff);
+            await ExecuteNonQueryAsync(connection, deleteSql, cancellationToken).ConfigureAwait(false);
         }
     }
 

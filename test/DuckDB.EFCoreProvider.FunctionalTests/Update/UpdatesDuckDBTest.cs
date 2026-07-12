@@ -61,6 +61,24 @@ public class UpdatesDuckDBTest : UpdatesRelationalTestBase<UpdatesDuckDBTest.Upd
         return base.Save_with_shared_foreign_key();
     }
 
+    [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public new Task SaveChanges_processes_all_tracked_entities(bool async)
+    {
+        return base.SaveChanges_processes_all_tracked_entities(async);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public new Task SaveChanges_false_processes_all_tracked_entities_without_calling_AcceptAllChanges(bool async)
+    {
+        return base.SaveChanges_false_processes_all_tracked_entities_without_calling_AcceptAllChanges(async);
+    }
+
+    [ConditionalFact(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+    public override Task Save_replaced_principal()
+    {
+        return base.Save_replaced_principal();
+    }
+
     public class UpdatesDuckDBFixture : UpdatesRelationalFixture
     {
         protected override ITestStoreFactory TestStoreFactory

@@ -165,7 +165,10 @@ var result = await db.Database.ArchiveTierAsync<Invoice>(DateTime.UtcNow.AddYear
 It is **idempotent and crash-safe**: the cutoff snaps down to the granularity so each period moves whole; each
 table's `COPY` overwrites only the partitions it writes; the views filter the hot side to `>= watermark` (roots)
 or "root is hot" (children) so reads never double-count or drop a row even before the delete runs; a re-run
-self-heals leftover hot rows. Deletes run leaf→root in one transaction.
+self-heals leftover hot rows. Deletes run leaf→root as separate autocommit statements because DuckDB checks
+foreign keys immediately and rejects deleting descendants and then their principals inside one transaction.
+Do not wrap `ArchiveTierAsync` for a multi-table aggregate in an application transaction; the provider rejects
+that combination before copying. A crash between delete statements remains safe and a rerun removes leftovers.
 
 ## 5. Retention
 
@@ -185,23 +188,21 @@ The archive `COPY`, incremental partition writes, idempotent re-runs, and the cr
 identically on S3 (verified against MinIO). Reads stay efficient: hive-partition pruning plus Parquet row-group
 statistics mean a range-scoped report fetches only the byte ranges it needs, not whole files.
 
-**Setup.** Load `httpfs` and configure credentials on every connection with a connection interceptor. The
-provider opens its connections through EF Core, so the interceptor runs for the archive operations too.
+**Setup.** Load `httpfs` and configure credentials through the provider-owned connection initializer. The
+initializer runs after configured extensions load and its commands bypass EF command logging, keeping secret
+values out of generated SQL logs.
 
 ```csharp
-public sealed class HttpfsSetup : DbConnectionInterceptor
-{
-    private const string Sql = """
-        INSTALL httpfs; LOAD httpfs;
-        CREATE OR REPLACE SECRET s3 (TYPE s3, PROVIDER credential_chain, REGION 'eu-west-2');
-        """; // or KEY_ID/SECRET, or ENDPOINT/URL_STYLE 'path'/USE_SSL false for MinIO
-    public override void ConnectionOpened(DbConnection c, ConnectionEndEventData e)
-    { using var cmd = c.CreateCommand(); cmd.CommandText = Sql; cmd.ExecuteNonQuery(); }
-    public override async Task ConnectionOpenedAsync(DbConnection c, ConnectionEndEventData e, CancellationToken ct = default)
-    { await using var cmd = c.CreateCommand(); cmd.CommandText = Sql; await cmd.ExecuteNonQueryAsync(ct); }
-}
-
-options.UseDuckDB("Data Source=app.duckdb").AddInterceptors(new HttpfsSetup());
+options.UseDuckDB("Data Source=app.duckdb", duckdb => duckdb
+    .LoadExtension("httpfs")
+    .ConfigureConnection(connection =>
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE OR REPLACE SECRET s3 (TYPE s3, PROVIDER credential_chain, REGION 'eu-west-2');
+            """; // or resolve KEY_ID/SECRET here; do not put credentials in the EF model
+        command.ExecuteNonQuery();
+    }));
 
 modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "s3://my-bucket/archive/invoices", TierGranularity.Month)
     .WithReadModel<InvoiceReport>()
@@ -210,25 +211,22 @@ modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "s3://my-bucket/archive/
 
 `s3://`, `gcs://`/`gs://`, and `r2://` all go through the `httpfs` extension shown above.
 
-**Azure Blob Storage.** Azure uses a **different DuckDB extension** — `azure`, not `httpfs` — so the interceptor
+**Azure Blob Storage.** Azure uses a **different DuckDB extension** — `azure`, not `httpfs` — so configuration
 loads `azure` and creates an `azure`-typed secret. Point the archive at an `az://`, `azure://`, or `abfss://`
 (ADLS Gen2) URL. The archive `COPY` (hive-partitioned, `OVERWRITE_OR_IGNORE`) and the `read_parquet` glob behave
 the same as on S3 — verified against Azurite, the Azure Storage emulator.
 
 ```csharp
-public sealed class AzureSetup : DbConnectionInterceptor
-{
-    private const string Sql = """
-        INSTALL azure; LOAD azure;
-        CREATE OR REPLACE SECRET az (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'mystorageacct');
-        """; // or CONNECTION_STRING '...', or PROVIDER service_principal / managed_identity
-    public override void ConnectionOpened(DbConnection c, ConnectionEndEventData e)
-    { using var cmd = c.CreateCommand(); cmd.CommandText = Sql; cmd.ExecuteNonQuery(); }
-    public override async Task ConnectionOpenedAsync(DbConnection c, ConnectionEndEventData e, CancellationToken ct = default)
-    { await using var cmd = c.CreateCommand(); cmd.CommandText = Sql; await cmd.ExecuteNonQueryAsync(ct); }
-}
-
-options.UseDuckDB("Data Source=app.duckdb").AddInterceptors(new AzureSetup());
+options.UseDuckDB("Data Source=app.duckdb", duckdb => duckdb
+    .LoadExtension("azure")
+    .ConfigureConnection(connection =>
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE OR REPLACE SECRET az (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'mystorageacct');
+            """; // or CONNECTION_STRING, service_principal, or managed_identity
+        command.ExecuteNonQuery();
+    }));
 
 modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "azure://my-container/archive/invoices", TierGranularity.Month)
     .WithReadModel<InvoiceReport>()

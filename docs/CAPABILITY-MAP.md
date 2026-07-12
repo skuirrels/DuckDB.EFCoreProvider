@@ -53,10 +53,14 @@ This document is the published capability matrix for the provider. It serves two
 | No retrying execution strategy / `EnableRetryOnFailure` | not provided (embedded model) |
 
 ### Migrations (`ALTER TABLE` surface)
-DuckDB rejects most in-place schema changes. The provider surfaces the DuckDB error rather than faking it.
-| Operation | DuckDB error |
+DuckDB rejects most in-place constraint changes. The provider fails clearly by default; applications can opt
+into a target-model table rebuild with `EnableMigrationTableRebuilds()`.
+| Operation | Provider behaviour |
 |---|---|
-| Add / drop foreign key | unsupported (operation ignored / not emitted) |
+| Foreign key in `CREATE TABLE` | ✅ emitted and enforced; unsupported cascade actions become `NO ACTION` with a migration warning |
+| Add / drop foreign key | clear `NotSupportedException`; ✅ opt-in table rebuild |
+| Update / delete a referenced row | DuckDB rejects the operation while dependent rows exist, including non-key updates |
+| Add / drop primary, unique, or check constraint | clear engine error by default; ✅ opt-in table rebuild |
 | Add column with constraint / default / required | `Adding columns with constraints not yet supported` |
 | Add / alter computed (generated) column | `Adding generated columns after table creation is not supported yet` |
 | Add / drop / alter check constraint | `No support for that ALTER TABLE option yet!` |
@@ -131,8 +135,9 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 |---|---|---|
 | `read_parquet` | ✅ exposed | `[FromParquet]` / `FromParquet(...)` |
 | `read_csv` / `read_json` | ✅ exposed | `[FromCsv]` / `[FromJsonFile]` and fluent equivalents |
-| `COPY` (import/export) | ❌ not exposed | raw SQL only |
-| `httpfs` / S3 / remote URLs | ❌ not exposed | extension not loaded |
+| `COPY` export to Parquet | ✅ exposed | `ExportToParquet` / `ExportToParquetAsync` over translated queries |
+| Other `COPY` import/export formats | ❌ not exposed | raw SQL only |
+| `httpfs` / S3 / remote URLs | ✅ configurable | `LoadExtension("httpfs")` plus `ConfigureConnection(...)` for secrets |
 | `ATTACH` (multi-database / cross-DB queries) | ❌ not exposed | one connection/database per context |
 
 ### Analytical SQL constructs
@@ -166,7 +171,7 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | `json` | ✅ built-in |
 | full-text search (`fts`) | ❌ not exposed |
 | database scanners (Postgres / MySQL / SQLite `ATTACH`) | ❌ not exposed |
-| `excel`, `httpfs`, others | ❌ not exposed |
+| `httpfs`, `azure`, `excel`, others | ✅ generic loading via `LoadExtension(...)`; feature-specific LINQ APIs vary |
 
 ### Write performance
 | DuckDB capability | Provider |
@@ -174,8 +179,9 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | `Appender` (high-throughput bulk load) | ✅ exposed via `DbContext.BulkInsert(...)` (raw fast path; bypasses change tracking / generated values). `SaveChanges` still uses `INSERT … RETURNING`. |
 
 ### Functions
-Only a subset of DuckDB's large function library is LINQ-translatable (some string / math / date / regex).
-DuckDB-specific functions (`list_*`, `map_*`, many `regexp_*` / date helpers) require raw SQL.
+Only a subset of DuckDB's large function library is LINQ-translatable. In addition to common string / math /
+date / regex operations, the provider exposes `SplitPart`, `StandardDeviationSample`, `ArgMax`, and `ArgMin`
+through `EF.Functions`. Other DuckDB-specific functions (`list_*`, `map_*`, many helpers) require raw SQL.
 
 ---
 
