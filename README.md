@@ -237,6 +237,8 @@ hive-partitioned Parquet. The offload is **idempotent and crash-safe**. Full gui
 
 ![A single timeline split by a watermark: rows before it live in the cold Parquet archive, rows at or after it stay hot in the DuckDB file.](docs/images/tiered-storage-boundary.png)
 
+![The cold Parquet archive partitioned first by customer and then by completed month, while recent rows remain in the hot DuckDB file.](docs/images/tiered-storage-partitions.png)
+
 The application exposes exactly two invoice query paths:
 
 - `Invoices` queries the normal `Invoice` entity in the hot DuckDB table. It supports writes, relationships,
