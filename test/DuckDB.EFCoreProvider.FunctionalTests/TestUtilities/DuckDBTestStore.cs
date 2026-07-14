@@ -16,7 +16,7 @@ public class DuckDBTestStore : RelationalTestStore
 
     public static async Task<DuckDBTestStore> GetOrCreateInitializedAsync(string name)
         => await new DuckDBTestStore(name).InitializeDuckDBAsync(
-            new ServiceCollection().AddEntityFrameworkDuckDB().BuildServiceProvider(validateScopes: true),
+            new ServiceCollection().AddDuckDBTestStoreServices().BuildServiceProvider(validateScopes: true),
             (Func<DbContext>?)null,
             null);
 

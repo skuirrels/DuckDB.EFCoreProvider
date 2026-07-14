@@ -1,5 +1,4 @@
-﻿using DuckDB.EFCoreProvider.Extensions;
-using DuckDB.EFCoreProvider.NTS.Extensions;
+﻿using DuckDB.EFCoreProvider.NTS.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Microsoft.EntityFrameworkCore.TestUtilities;
@@ -21,7 +20,7 @@ public class DuckDBTestStoreFactory : RelationalTestStoreFactory
     public override IServiceCollection AddProviderServices(IServiceCollection serviceCollection)
     {
         return serviceCollection
-            .AddEntityFrameworkDuckDB()
+            .AddDuckDBTestStoreServices()
             .AddEntityFrameworkDuckDBNetTopologySuite();
     }
 }

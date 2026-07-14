@@ -1,4 +1,3 @@
-using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.NTS.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -16,7 +15,6 @@ public class SpatialDuckDBTestStoreFactory : RelationalTestStoreFactory
 
     public override IServiceCollection AddProviderServices(IServiceCollection serviceCollection)
         => serviceCollection
-            .AddEntityFrameworkDuckDB()
+            .AddDuckDBTestStoreServices()
             .AddEntityFrameworkDuckDBNetTopologySuite();
 }
-
