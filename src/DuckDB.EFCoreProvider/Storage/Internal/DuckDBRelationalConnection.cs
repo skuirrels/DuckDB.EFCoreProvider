@@ -27,6 +27,10 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly string? _fileSearchPath;
     private readonly IReadOnlyList<string> _extensionsToLoad;
     private readonly Action<DuckDBConnection>? _connectionInitializer;
+    private readonly DuckLakeOptions? _duckLakeOptions;
+    private DuckDBConnection? _initializedDuckLakeConnection;
+    private DuckDBConnection? _initializingDuckLakeConnection;
+    private DuckDBConnection? _observedDuckLakeConnection;
 
     public DuckDBRelationalConnection(
         RelationalConnectionDependencies dependencies,
@@ -43,6 +47,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         _fileSearchPath = optionsExtension?.FileSearchPath;
         _extensionsToLoad = optionsExtension?.ExtensionsToLoad ?? [];
         _connectionInitializer = optionsExtension?.ConnectionInitializer;
+        _duckLakeOptions = optionsExtension?.DuckLakeOptions;
     }
 
     // DuckDB.NET only supports IsolationLevel.Unspecified and IsolationLevel.Snapshot.
@@ -56,6 +61,28 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         var connection = new DuckDBConnection(GetValidatedConnectionString());
 
         return connection;
+    }
+
+    /// <inheritdoc />
+    public override bool Open(bool errorsExpected = false)
+    {
+        if (_duckLakeOptions is not null && DbConnection.State == ConnectionState.Open)
+        {
+            InitializeOpenConnection((DuckDBConnection)DbConnection);
+        }
+
+        return base.Open(errorsExpected);
+    }
+
+    /// <inheritdoc />
+    public override async Task<bool> OpenAsync(CancellationToken cancellationToken, bool errorsExpected = false)
+    {
+        if (_duckLakeOptions is not null && DbConnection.State == ConnectionState.Open)
+        {
+            await InitializeOpenConnectionAsync((DuckDBConnection)DbConnection, cancellationToken).ConfigureAwait(false);
+        }
+
+        return await base.OpenAsync(cancellationToken, errorsExpected).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -126,7 +153,10 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             ConnectionString = GetValidatedConnectionString()
         };
 
-        connectionStringBuilder[AccessModeConfigurationKey] = ReadOnlyAccessMode;
+        if (_duckLakeOptions is null)
+        {
+            connectionStringBuilder[AccessModeConfigurationKey] = ReadOnlyAccessMode;
+        }
 
         var contextOptions = new DbContextOptionsBuilder().UseDuckDB(
             connectionStringBuilder.ToString(),
@@ -136,6 +166,33 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
                 if (_fileSearchPath is not null) options.FileSearchPath(_fileSearchPath);
                 foreach (var extension in _extensionsToLoad) options.LoadExtension(extension);
                 if (_connectionInitializer is not null) options.ConfigureConnection(_connectionInitializer);
+                if (_duckLakeOptions is not null)
+                {
+                    var readOnlyProfile = _duckLakeOptions.AsReadOnly();
+                    options.UseDuckLake(duckLake =>
+                    {
+                        if (readOnlyProfile.UsesSecret && readOnlyProfile.MetadataSource!.Length == 0)
+                        {
+                            duckLake.UseDefaultSecret();
+                        }
+                        else if (readOnlyProfile.UsesSecret)
+                        {
+                            duckLake.UseNamedSecret(readOnlyProfile.MetadataSource!);
+                        }
+                        else
+                        {
+                            duckLake.UseLocalMetadata(readOnlyProfile.MetadataSource!);
+                        }
+
+                        duckLake.CatalogName(readOnlyProfile.CatalogName);
+                        if (readOnlyProfile.DataPath is not null)
+                        {
+                            duckLake.DataPath(readOnlyProfile.DataPath, readOnlyProfile.OverrideDataPath);
+                        }
+
+                        duckLake.ReadOnly();
+                    });
+                }
             }).Options;
 
         return new DuckDBRelationalConnection(Dependencies with { ContextOptions = contextOptions }, _rawSqlCommandBuilder, _logger);
@@ -165,21 +222,15 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     {
         var connection = (DuckDBConnection)DbConnection;
 
-        if (connection.State != ConnectionState.Open)
+        connection.Open();
+        try
         {
-            connection.Open();
-            try
-            {
-                ApplyConfigurationIfNeeded();
-                LoadSpatialExtensionIfNeeded();
-                LoadConfiguredExtensions();
-                _connectionInitializer?.Invoke(connection);
-            }
-            catch
-            {
-                connection.Close();
-                throw;
-            }
+            InitializeOpenConnection(connection);
+        }
+        catch
+        {
+            connection.Close();
+            throw;
         }
     }
 
@@ -187,20 +238,88 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     {
         var connection = (DuckDBConnection)DbConnection;
 
-        if (connection.State != ConnectionState.Open)
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            await connection.OpenAsync(cancellationToken);
-            try
+            await InitializeOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await connection.CloseAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private void InitializeOpenConnection(DuckDBConnection connection)
+    {
+        if (_duckLakeOptions is not null)
+        {
+            ObserveDuckLakeConnection(connection);
+            if (ReferenceEquals(_initializedDuckLakeConnection, connection)
+                || ReferenceEquals(_initializingDuckLakeConnection, connection))
             {
-                await ApplyConfigurationIfNeededAsync(cancellationToken);
-                await LoadSpatialExtensionIfNeededAsync(cancellationToken);
-                await LoadConfiguredExtensionsAsync(cancellationToken);
-                _connectionInitializer?.Invoke(connection);
+                return;
             }
-            catch
+
+            _initializingDuckLakeConnection = connection;
+        }
+
+        try
+        {
+            ApplyConfigurationIfNeeded();
+            LoadSpatialExtensionIfNeeded();
+            LoadConfiguredExtensions();
+            _connectionInitializer?.Invoke(connection);
+            AttachOrSelectDuckLakeCatalog();
+
+            if (_duckLakeOptions is not null)
             {
-                await connection.CloseAsync();
-                throw;
+                _initializedDuckLakeConnection = connection;
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_initializingDuckLakeConnection, connection))
+            {
+                _initializingDuckLakeConnection = null;
+            }
+        }
+    }
+
+    private async Task InitializeOpenConnectionAsync(
+        DuckDBConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (_duckLakeOptions is not null)
+        {
+            ObserveDuckLakeConnection(connection);
+            if (ReferenceEquals(_initializedDuckLakeConnection, connection)
+                || ReferenceEquals(_initializingDuckLakeConnection, connection))
+            {
+                return;
+            }
+
+            _initializingDuckLakeConnection = connection;
+        }
+
+        try
+        {
+            await ApplyConfigurationIfNeededAsync(cancellationToken).ConfigureAwait(false);
+            await LoadSpatialExtensionIfNeededAsync(cancellationToken).ConfigureAwait(false);
+            await LoadConfiguredExtensionsAsync(cancellationToken).ConfigureAwait(false);
+            _connectionInitializer?.Invoke(connection);
+            await AttachOrSelectDuckLakeCatalogAsync(cancellationToken).ConfigureAwait(false);
+
+            if (_duckLakeOptions is not null)
+            {
+                _initializedDuckLakeConnection = connection;
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_initializingDuckLakeConnection, connection))
+            {
+                _initializingDuckLakeConnection = null;
             }
         }
     }
@@ -296,6 +415,131 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             await using var command = DbConnection.CreateCommand();
             command.CommandText = $"INSTALL {extension}; LOAD {extension};";
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void AttachOrSelectDuckLakeCatalog()
+    {
+        if (_duckLakeOptions is null)
+        {
+            return;
+        }
+
+        var attachedDatabaseType = GetAttachedDatabaseType(_duckLakeOptions.CatalogName);
+        EnsureCompatibleAttachedDatabase(attachedDatabaseType);
+
+        using var command = DbConnection.CreateCommand();
+        command.CommandText = attachedDatabaseType is null
+            ? DuckLakeAttachCommandBuilder.Build(_duckLakeOptions)
+            : DuckLakeAttachCommandBuilder.BuildUse(_duckLakeOptions);
+        command.ExecuteNonQuery();
+    }
+
+    private async Task AttachOrSelectDuckLakeCatalogAsync(CancellationToken cancellationToken)
+    {
+        if (_duckLakeOptions is null)
+        {
+            return;
+        }
+
+        var attachedDatabaseType = await GetAttachedDatabaseTypeAsync(_duckLakeOptions.CatalogName, cancellationToken)
+            .ConfigureAwait(false);
+        EnsureCompatibleAttachedDatabase(attachedDatabaseType);
+
+        await using var command = DbConnection.CreateCommand();
+        command.CommandText = attachedDatabaseType is null
+            ? DuckLakeAttachCommandBuilder.Build(_duckLakeOptions)
+            : DuckLakeAttachCommandBuilder.BuildUse(_duckLakeOptions);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private string? GetAttachedDatabaseType(string catalogName)
+    {
+        using var command = DbConnection.CreateCommand();
+        command.CommandText =
+            "SELECT type FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
+        command.Parameters.Add(new DuckDBParameter("catalog_name", catalogName));
+        return command.ExecuteScalar() as string;
+    }
+
+    private async Task<string?> GetAttachedDatabaseTypeAsync(
+        string catalogName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = DbConnection.CreateCommand();
+        command.CommandText =
+            "SELECT type FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
+        command.Parameters.Add(new DuckDBParameter("catalog_name", catalogName));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+    }
+
+    private void EnsureCompatibleAttachedDatabase(string? attachedDatabaseType)
+    {
+        if (attachedDatabaseType is not null
+            && !attachedDatabaseType.Equals("ducklake", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Database alias '{_duckLakeOptions!.CatalogName}' is already attached as type "
+                + $"'{attachedDatabaseType}' and cannot be used for the DuckLake profile.");
+        }
+    }
+
+    private void ObserveDuckLakeConnection(DuckDBConnection connection)
+    {
+        if (ReferenceEquals(_observedDuckLakeConnection, connection))
+        {
+            return;
+        }
+
+        StopObservingDuckLakeConnection();
+        _observedDuckLakeConnection = connection;
+        _observedDuckLakeConnection.StateChange += DuckLakeConnectionStateChanged;
+    }
+
+    private void DuckLakeConnectionStateChanged(object? sender, StateChangeEventArgs eventArgs)
+    {
+        if (eventArgs.CurrentState != ConnectionState.Open
+            && ReferenceEquals(sender, _initializedDuckLakeConnection))
+        {
+            _initializedDuckLakeConnection = null;
+        }
+    }
+
+    private void StopObservingDuckLakeConnection()
+    {
+        if (_observedDuckLakeConnection is not null)
+        {
+            _observedDuckLakeConnection.StateChange -= DuckLakeConnectionStateChanged;
+        }
+
+        _observedDuckLakeConnection = null;
+        _initializedDuckLakeConnection = null;
+        _initializingDuckLakeConnection = null;
+    }
+
+    /// <inheritdoc />
+    public override void Dispose()
+    {
+        try
+        {
+            base.Dispose();
+        }
+        finally
+        {
+            StopObservingDuckLakeConnection();
+        }
+    }
+
+    /// <inheritdoc />
+    public override async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await base.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            StopObservingDuckLakeConnection();
         }
     }
 }

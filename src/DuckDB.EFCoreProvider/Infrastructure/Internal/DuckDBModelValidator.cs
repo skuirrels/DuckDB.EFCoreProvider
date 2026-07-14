@@ -16,8 +16,23 @@ namespace DuckDB.EFCoreProvider.Infrastructure.Internal;
 /// </summary>
 public class DuckDBModelValidator : RelationalModelValidator
 {
-    public DuckDBModelValidator(ModelValidatorDependencies dependencies, RelationalModelValidatorDependencies relationalDependencies) : base(dependencies, relationalDependencies)
+    private readonly bool _isDuckLake;
+
+    /// <summary>Creates a native-DuckDB model validator.</summary>
+    public DuckDBModelValidator(
+        ModelValidatorDependencies dependencies,
+        RelationalModelValidatorDependencies relationalDependencies)
+        : this(dependencies, relationalDependencies, null)
     {
+    }
+
+    public DuckDBModelValidator(
+        ModelValidatorDependencies dependencies,
+        RelationalModelValidatorDependencies relationalDependencies,
+        IDuckLakeSingletonOptions? singletonOptions)
+        : base(dependencies, relationalDependencies)
+    {
+        _isDuckLake = singletonOptions?.IsDuckLake == true;
     }
 
     /// <inheritdoc />
@@ -27,6 +42,71 @@ public class DuckDBModelValidator : RelationalModelValidator
 
         ValidateAutoIncrement(model);
         ValidateTieredStores(model);
+
+        if (_isDuckLake)
+        {
+            ValidateDuckLake(model);
+        }
+    }
+
+    private static void ValidateDuckLake(IModel model)
+    {
+        if (model.GetSequences().Any())
+        {
+            throw new InvalidOperationException(
+                "DuckLake does not support sequences. Configure client-assigned keys or a client-side value generator.");
+        }
+
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            if (entityType.GetTieredStoreRole() is not null)
+            {
+                throw new InvalidOperationException(
+                    $"Entity '{entityType.DisplayName()}' enables provider tiered storage. DuckLake already owns the data-file "
+                    + "lifecycle, so the DuckDB tiered-storage feature cannot be combined with a DuckLake profile.");
+            }
+
+            foreach (var property in entityType.GetProperties())
+            {
+                if (property.GetValueGenerationStrategy() == DuckDBValueGenerationStrategy.AutoIncrement)
+                {
+                    throw new InvalidOperationException(
+                        $"DuckLake does not support auto-increment or sequence-backed values. Property "
+                        + $"'{entityType.DisplayName()}.{property.Name}' must use a client-assigned value.");
+                }
+
+                if (property.GetComputedColumnSql() is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"DuckLake does not support generated columns. Property "
+                        + $"'{entityType.DisplayName()}.{property.Name}' must be computed by the application.");
+                }
+
+                if (property.GetDefaultValueSql() is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"DuckLake only supports literal defaults. Property '{entityType.DisplayName()}.{property.Name}' "
+                        + "uses a SQL default expression; assign the value in the application instead. A literal "
+                        + "HasDefaultValue(...) may be retained only with ValueGeneratedNever().");
+                }
+
+                if (property.FindAnnotation(RelationalAnnotationNames.DefaultValue) is not null
+                    && property.ValueGenerated != ValueGenerated.Never)
+                {
+                    throw new InvalidOperationException(
+                        $"DuckLake can store a literal default for '{entityType.DisplayName()}.{property.Name}', but EF cannot "
+                        + "read that generated value back because DuckLake does not support RETURNING. Configure "
+                        + "ValueGeneratedNever() and assign the value in tracked writes, or remove the default.");
+                }
+
+                if (property.ValueGenerated is ValueGenerated.OnUpdate or ValueGenerated.OnAddOrUpdate)
+                {
+                    throw new InvalidOperationException(
+                        $"DuckLake cannot read store-generated values for '{entityType.DisplayName()}.{property.Name}'. "
+                        + "Compute and assign the value in the application instead.");
+                }
+            }
+        }
     }
 
     private static void ValidateTieredStores(IModel model)

@@ -1,7 +1,9 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
@@ -18,6 +20,8 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
 {
     private readonly IDuckDBRelationalConnection _connection;
     private readonly IRawSqlCommandBuilder _rawSqlCommandBuilder;
+    private readonly DuckLakeOptions? _duckLakeOptions;
+    private bool _duckLakeCatalogReadyForEnsureCreated;
 
     public DuckDBDatabaseCreator(
         RelationalDatabaseCreatorDependencies dependencies,
@@ -27,11 +31,78 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     {
         _connection = connection;
         _rawSqlCommandBuilder = rawSqlCommandBuilder;
+        _duckLakeOptions = dependencies.CurrentContext.Context.GetService<IDbContextOptions>()
+            .FindExtension<DuckDBOptionsExtension>()?.DuckLakeOptions;
+    }
+
+    /// <inheritdoc />
+    public override bool EnsureCreated()
+    {
+        if (_duckLakeOptions is null)
+        {
+            return base.EnsureCreated();
+        }
+
+        // A DuckLake read-only probe cannot migrate an older catalog. Open the configured profile first so
+        // CREATE_IF_NOT_EXISTS and AUTOMATIC_MIGRATION run, then let EF inspect the catalog's existing tables.
+        Create();
+        _duckLakeCatalogReadyForEnsureCreated = true;
+
+        try
+        {
+            return base.EnsureCreated();
+        }
+        finally
+        {
+            _duckLakeCatalogReadyForEnsureCreated = false;
+        }
+    }
+
+    /// <inheritdoc />
+    public override async Task<bool> EnsureCreatedAsync(CancellationToken cancellationToken = default)
+    {
+        if (_duckLakeOptions is null)
+        {
+            return await base.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await CreateAsync(cancellationToken).ConfigureAwait(false);
+        _duckLakeCatalogReadyForEnsureCreated = true;
+
+        try
+        {
+            return await base.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _duckLakeCatalogReadyForEnsureCreated = false;
+        }
     }
 
     /// <inheritdoc />
     public override bool Exists()
     {
+        if (_duckLakeOptions is not null)
+        {
+            if (_duckLakeCatalogReadyForEnsureCreated)
+            {
+                return true;
+            }
+
+            using var probeConnection = _connection.CreateReadOnlyConnection();
+
+            try
+            {
+                probeConnection.Open(errorsExpected: true);
+            }
+            catch (DuckDBException)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
         var connectionOptions = new DuckDBConnectionStringBuilder
         {
             ConnectionString = _connection.ConnectionString
@@ -71,18 +142,57 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     }
 
     /// <inheritdoc />
+    public override async Task<bool> ExistsAsync(CancellationToken cancellationToken = default)
+    {
+        if (_duckLakeOptions is null)
+        {
+            return await base.ExistsAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (_duckLakeCatalogReadyForEnsureCreated)
+        {
+            return true;
+        }
+
+        await using var probeConnection = _connection.CreateReadOnlyConnection();
+
+        try
+        {
+            await probeConnection.OpenAsync(cancellationToken, errorsExpected: true).ConfigureAwait(false);
+        }
+        catch (DuckDBException)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <inheritdoc />
     public override bool HasTables()
     {
+        var databasePredicate = _duckLakeOptions is null
+            ? string.Empty
+            : " AND database_name = $database_name";
+        var parameters = new List<System.Data.Common.DbParameter>
+        {
+            new DuckDBParameter("default_table_name", HistoryRepository.DefaultTableName)
+        };
+
+        if (_duckLakeOptions is not null)
+        {
+            parameters.Add(new DuckDBParameter("database_name", _duckLakeOptions.CatalogName));
+        }
+
         return (bool)_rawSqlCommandBuilder
             .Build(
-                """
+                $$"""
                 SELECT coalesce(any_value(true), false)
-                  FROM duckdb_tables
+                  FROM duckdb_tables()
                  WHERE table_name != $default_table_name
+                {{databasePredicate}}
                 """,
-                [
-                    new DuckDBParameter("default_table_name", HistoryRepository.DefaultTableName)
-                ]).RelationalCommand.ExecuteScalar(new RelationalCommandParameterObject(
+                parameters).RelationalCommand.ExecuteScalar(new RelationalCommandParameterObject(
                 Dependencies.Connection,
                 null,
                 null,
@@ -98,6 +208,13 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     }
 
     /// <inheritdoc />
+    public override async Task CreateAsync(CancellationToken cancellationToken = default)
+    {
+        await Dependencies.Connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await Dependencies.Connection.CloseAsync().ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public override void CreateTables()
     {
         base.CreateTables();
@@ -105,7 +222,10 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         // Create the tiered-storage control table and union views alongside the hot tables, so a fresh
         // EnsureCreated() yields a queryable tiered store without a separate EnsureTieredStoresCreated() call.
         // No-op when the model has no tiered entities.
-        Dependencies.CurrentContext.Context.Database.EnsureTieredStoresCreated();
+        if (_duckLakeOptions is null)
+        {
+            Dependencies.CurrentContext.Context.Database.EnsureTieredStoresCreated();
+        }
     }
 
     /// <inheritdoc />
@@ -113,12 +233,22 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     {
         await base.CreateTablesAsync(cancellationToken).ConfigureAwait(false);
 
-        Dependencies.CurrentContext.Context.Database.EnsureTieredStoresCreated();
+        if (_duckLakeOptions is null)
+        {
+            Dependencies.CurrentContext.Context.Database.EnsureTieredStoresCreated();
+        }
     }
 
     /// <inheritdoc />
     public override void Delete()
     {
+        if (_duckLakeOptions is not null)
+        {
+            throw new NotSupportedException(
+                "Database.EnsureDeleted() is intentionally disabled for DuckLake because a catalog may reference shared or "
+                + "remote metadata and object storage. Delete the catalog and data path explicitly with storage-specific tooling.");
+        }
+
         string? path = null;
 
         Dependencies.Connection.Open();

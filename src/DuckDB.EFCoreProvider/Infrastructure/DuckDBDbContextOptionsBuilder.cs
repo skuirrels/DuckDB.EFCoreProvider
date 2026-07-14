@@ -30,6 +30,33 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     {
     }
 
+    /// <summary>Configures an attached DuckLake catalog backed by a local metadata file.</summary>
+    /// <param name="metadataPath">The local DuckDB file used as the DuckLake metadata catalog.</param>
+    /// <param name="duckLakeOptionsAction">Optional DuckLake catalog configuration.</param>
+    /// <returns>The DuckDB options builder so that further configuration can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder UseDuckLake(
+        string metadataPath,
+        Action<DuckLakeDbContextOptionsBuilder>? duckLakeOptionsAction = null)
+    {
+        var builder = new DuckLakeDbContextOptionsBuilder(OptionsBuilder).UseLocalMetadata(metadataPath);
+        duckLakeOptionsAction?.Invoke(builder);
+        return this;
+    }
+
+    /// <summary>Configures an attached DuckLake catalog.</summary>
+    /// <remarks>Call <see cref="DuckLakeDbContextOptionsBuilder.UseLocalMetadata" />,
+    /// <see cref="DuckLakeDbContextOptionsBuilder.UseNamedSecret" />, or
+    /// <see cref="DuckLakeDbContextOptionsBuilder.UseDefaultSecret" /> in <paramref name="duckLakeOptionsAction" />.</remarks>
+    /// <param name="duckLakeOptionsAction">DuckLake metadata, catalog, and access-mode configuration.</param>
+    /// <returns>The DuckDB options builder so that further configuration can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder UseDuckLake(Action<DuckLakeDbContextOptionsBuilder> duckLakeOptionsAction)
+    {
+        ArgumentNullException.ThrowIfNull(duckLakeOptionsAction);
+        var builder = new DuckLakeDbContextOptionsBuilder(OptionsBuilder);
+        duckLakeOptionsAction(builder);
+        return this;
+    }
+
     /// <summary>
     ///     Appends NULLS FIRST to all ORDER BY clauses. This is important for the tests which were written
     ///     for SQL Server. Note that to fully implement null-first ordering indexes also need to be generated

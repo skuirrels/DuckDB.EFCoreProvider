@@ -8,7 +8,7 @@
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[DuckDB.EFCoreProvider](https://www.nuget.org/packages/DuckDB.EFCoreProvider) provides LINQ queries, `SaveChanges`, migrations, high-throughput ingestion, and Parquet-backed data lifecycle management through EF Core.
+[DuckDB.EFCoreProvider](https://www.nuget.org/packages/DuckDB.EFCoreProvider) provides LINQ queries, `SaveChanges`, native-DuckDB migrations, high-throughput ingestion, DuckLake catalogs, and Parquet-backed data lifecycle management through EF Core.
 
 ## Core capabilities
 
@@ -17,6 +17,7 @@
 | Application persistence | LINQ, `SaveChanges`, transactions, migrations, scaffolding, and optimistic concurrency |
 | High-throughput ingestion | Write batching, appender-backed `BulkInsert`, and primary-key `Upsert` |
 | Open-format analytics | Direct Parquet, CSV, and JSON queries, plus typed Parquet export |
+| Lakehouse persistence | First-class DuckLake profile with tracked writes, transactions, appender ingestion, and `MERGE` upsert |
 | Data lifecycle | Hot DuckDB tables with relational aggregates archived to partitioned Parquet |
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
 | Data types | Decimal, temporal, JSON, arrays, lists, GUID, binary, row-value, and optional spatial mappings |
@@ -36,6 +37,8 @@ The [`samples/Quickstart`](samples/Quickstart) console application provides runn
 ```bash
 dotnet run --project samples/Quickstart
 ```
+
+For the DuckLake backend profile, run `dotnet run --project samples/DuckLake`.
 
 ### Configure an invoice model
 
@@ -81,6 +84,45 @@ var invoice = await db.Invoices
 
 var total = invoice.InvoiceLines.Sum(line => line.Quantity * line.UnitPrice);
 ```
+
+## DuckLake backend profile
+
+DuckLake support is included in the same `DuckDB.EFCoreProvider` NuGet package. The convenience entry point
+configures an in-memory DuckDB host, loads the `ducklake` extension, and ensures the catalog is attached and
+selected before EF executes a command, including when a caller-owned connection is already open:
+
+```csharp
+using DuckDB.EFCoreProvider.Extensions;
+
+builder.Services.AddDbContext<AnalyticsContext>(options =>
+    options.UseDuckLake(
+        "catalog/analytics.ducklake",
+        duckLake => duckLake
+            .CatalogName("analytics")
+            .DataPath("data/analytics")));
+```
+
+Production deployments should configure remote metadata and object storage through a named DuckDB secret:
+
+```csharp
+options.UseDuckLake(
+    duckLake => duckLake
+        .UseNamedSecret("application_lake")
+        .CreateIfNotExists(false),
+    duckDB => duckDB.ConfigureConnection(connection =>
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = BuildCreateSecretFromEnvironment();
+        command.ExecuteNonQuery();
+    }));
+```
+
+Supported workflows include LINQ, tracked `SaveChanges`, transactions, optimistic concurrency, initial
+`EnsureCreated`, appender-backed `BulkInsert`, `MERGE`-backed `Upsert`, and read-only profiles. DuckLake does
+not physically enforce keys, foreign keys, unique/check constraints, or indexes, and it does not support
+sequences, store-generated values, or `RETURNING`. EF migrations, `EnsureDeleted`, scaffolding, provider tiered
+storage, and `SaveChanges` batching are therefore deliberately unavailable in this profile. See the complete
+[DuckLake configuration, security, and limitations guide](docs/DUCKLAKE.md).
 
 ## Configuration and connection strings
 

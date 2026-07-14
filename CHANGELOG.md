@@ -2,6 +2,25 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.5.0
+
+- Add a first-class DuckLake backend profile in the main package. `UseDuckLake(...)` configures a local metadata
+  catalog or named DuckDB secret, loads the extension, runs connection/secret initialization before a safely
+  quoted `ATTACH`, and selects the catalog before EF uses provider-owned or caller-owned connections, including
+  already-open connections. Read-only attachment, controlled
+  catalog creation, automatic metadata migration, data-path override, and custom catalog names are supported.
+- Support DuckLake LINQ queries, transactions, initial `EnsureCreated`, tracked insert/update/delete, appender
+  `BulkInsert`, and `MERGE INTO`-based `Upsert`. Because DuckLake rejects `RETURNING`, tracked writes execute one
+  non-returning command at a time and retain optimistic concurrency checks through DuckDB.NET affected-row counts.
+- Enforce the DuckLake capability boundary at startup and schema generation: client-assigned or client-generated
+  keys are required;
+  sequences, generated columns, SQL default expressions, tiered storage, and SaveChanges batching fail clearly;
+  unsupported physical PK/FK/unique/check/index definitions are omitted from initial DDL while remaining logical
+  EF metadata. EF migrations and `EnsureDeleted` are explicitly disabled rather than using unsafe native-DuckDB
+  assumptions. Add real DuckLake functional coverage, including an official pre-1.0 catalog migration fixture and
+  an isolated PostgreSQL/MinIO named-secret integration lane exercised on Linux CI, plus a production guide and a
+  runnable sample.
+
 ## 1.4.0
 
 - Add application-defined, root-owned partition plans to tiered Parquet archives. The ordered builder supports

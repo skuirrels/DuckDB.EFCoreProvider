@@ -41,6 +41,7 @@ scripts/test-suite.sh migrations
 scripts/test-suite.sh updates
 scripts/test-suite.sh all
 scripts/test-suite.sh full-project
+scripts/test-ducklake-external.sh
 ```
 
 Minimum expectations:
@@ -48,6 +49,9 @@ Minimum expectations:
 - Run `scripts/test-suite.sh write-critical` for focused write-provider changes.
 - Run `scripts/test-suite.sh all` before considering production write-provider work complete.
 - Run `scripts/test-suite.sh full-project` when changing shared provider infrastructure, query translation, type mapping, migrations, or EF Core version dependencies.
+- Run `scripts/test-ducklake-external.sh` for DuckLake connection, secret, catalog-lifecycle, or remote-storage changes. It starts isolated PostgreSQL and MinIO containers, runs the complete DuckLake suite including the named-secret integration test, and removes the containers and volumes afterward.
+  The compose file pins CI images by default; local mirrors can be selected with `DUCKLAKE_POSTGRES_IMAGE`,
+  `DUCKLAKE_MINIO_IMAGE`, and `DUCKLAKE_MINIO_MC_IMAGE`.
 - Add focused tests for every bug fix and every new supported behaviour.
 - Keep skipped tests intentional and provider-specific; do not hide failures by broad skip changes.
 

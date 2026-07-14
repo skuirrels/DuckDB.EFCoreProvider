@@ -27,6 +27,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private bool _migrationTableRebuilds;
     private IReadOnlyList<string> _extensionsToLoad = [];
     private Action<DuckDBConnection>? _connectionInitializer;
+    private DuckLakeOptions? _duckLakeOptions;
 
     public DuckDBOptionsExtension()
     {
@@ -46,6 +47,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _migrationTableRebuilds = copyFrom._migrationTableRebuilds;
         _extensionsToLoad = copyFrom._extensionsToLoad;
         _connectionInitializer = copyFrom._connectionInitializer;
+        _duckLakeOptions = copyFrom._duckLakeOptions;
     }
 
     /// <summary>
@@ -141,6 +143,9 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
 
     /// <summary>An optional provider-owned connection initializer invoked after extensions are loaded.</summary>
     public virtual Action<DuckDBConnection>? ConnectionInitializer => _connectionInitializer;
+
+    /// <summary>The attached DuckLake catalog profile, or <see langword="null" /> for native DuckDB mode.</summary>
+    internal virtual DuckLakeOptions? DuckLakeOptions => _duckLakeOptions;
 
     protected override RelationalOptionsExtension Clone()
     {
@@ -266,6 +271,46 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         return clone;
     }
 
+    /// <summary>Returns a copy configured with an attached DuckLake catalog.</summary>
+    internal virtual DuckDBOptionsExtension WithDuckLakeOptions(DuckLakeOptions options)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+        clone._duckLakeOptions = options;
+        clone._extensionsToLoad = clone._extensionsToLoad.Contains("ducklake", StringComparer.OrdinalIgnoreCase)
+            ? clone._extensionsToLoad
+            : [.. clone._extensionsToLoad, "ducklake"];
+        return clone;
+    }
+
+    /// <inheritdoc />
+    public override void Validate(IDbContextOptions options)
+    {
+        base.Validate(options);
+
+        if (_duckLakeOptions is null)
+        {
+            return;
+        }
+
+        if (_duckLakeOptions.MetadataSource is null
+            || !_duckLakeOptions.UsesSecret && string.IsNullOrWhiteSpace(_duckLakeOptions.MetadataSource))
+        {
+            throw new InvalidOperationException(
+                "The DuckLake profile has no metadata source. Call UseLocalMetadata(...) or UseNamedSecret(...).");
+        }
+
+        if (_duckLakeOptions.IsReadOnly && (_duckLakeOptions.CreateIfNotExists || _duckLakeOptions.AutomaticMigration))
+        {
+            throw new InvalidOperationException(
+                "A read-only DuckLake profile cannot create a missing catalog or perform automatic catalog migration.");
+        }
+
+        if (_duckLakeOptions.OverrideDataPath && string.IsNullOrWhiteSpace(_duckLakeOptions.DataPath))
+        {
+            throw new InvalidOperationException("OverrideDataPath requires a DuckLake data path.");
+        }
+    }
+
     /// <summary>
     ///     Returns a copy of the current instance configured with the specified value.
     /// </summary>
@@ -297,7 +342,8 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                && Extension.ReverseNullOrdering == otherInfo.Extension.ReverseNullOrdering
                && Extension.BulkInsertBatching == otherInfo.Extension.BulkInsertBatching
                && Extension.BulkUpdateBatching == otherInfo.Extension.BulkUpdateBatching
-               && Extension.BulkDeleteBatching == otherInfo.Extension.BulkDeleteBatching;
+               && Extension.BulkDeleteBatching == otherInfo.Extension.BulkDeleteBatching
+               && (Extension.DuckLakeOptions is null) == (otherInfo.Extension.DuckLakeOptions is null);
 
         public override string LogFragment
         {
@@ -312,6 +358,11 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                     if (Extension.ReverseNullOrdering)
                     {
                         builder.Append(nameof(Extension.ReverseNullOrdering)).Append(' ');
+                    }
+
+                    if (Extension.DuckLakeOptions is not null)
+                    {
+                        builder.Append("DuckLake ");
                     }
 
                     _logFragment = builder.ToString();
@@ -331,6 +382,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                 hashCode.Add(Extension.BulkInsertBatching);
                 hashCode.Add(Extension.BulkUpdateBatching);
                 hashCode.Add(Extension.BulkDeleteBatching);
+                hashCode.Add(Extension.DuckLakeOptions is not null);
 
                 _serviceProviderHash = hashCode.ToHashCode();
             }
@@ -348,6 +400,8 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             debugInfo["DuckDB.EFCoreProvider:" + nameof(BulkUpdateBatching)] = Extension.BulkUpdateBatching.GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:" + nameof(BulkDeleteBatching)] = Extension.BulkDeleteBatching.GetHashCode()
+                .ToString(CultureInfo.InvariantCulture);
+            debugInfo["DuckDB.EFCoreProvider:DuckLake"] = (Extension.DuckLakeOptions is not null).GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);
         }
     }

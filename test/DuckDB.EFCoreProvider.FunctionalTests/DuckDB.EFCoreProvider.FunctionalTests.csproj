@@ -64,4 +64,10 @@
     <AssemblyAttribute Include="System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource
+        Include="TestData/DuckLake/v03.db.gz.b64"
+        LogicalName="DuckDB.EFCoreProvider.FunctionalTests.TestData.DuckLake.v03.db.gz.b64" />
+  </ItemGroup>
+
 </Project>

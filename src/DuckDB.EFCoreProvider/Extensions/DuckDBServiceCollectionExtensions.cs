@@ -130,8 +130,10 @@ public static class DuckDBServiceCollectionExtensions
             .TryAdd<ISqlExpressionFactory, DuckDBSqlExpressionFactory>()
             .TryAdd<IRelationalParameterBasedSqlProcessorFactory, DuckDBParameterBasedSqlProcessorFactory>()
             .TryAdd<ISingletonOptions, IDuckDBSingletonOptions>(p => p.GetRequiredService<IDuckDBSingletonOptions>())
+            .TryAdd<ISingletonOptions, IDuckLakeSingletonOptions>(p => p.GetRequiredService<IDuckLakeSingletonOptions>())
             .TryAddProviderSpecificServices(b => b
                 .TryAddSingleton<IDuckDBSingletonOptions, DuckDBSingletonOptions>()
+                .TryAddSingleton<IDuckLakeSingletonOptions, DuckLakeSingletonOptions>()
                 .TryAddScoped<IDuckDBArchiveFileProbe, DuckDBArchiveFileProbe>()
                 .TryAddScoped<IDuckDBRelationalConnection, DuckDBRelationalConnection>());
 

@@ -28,6 +28,7 @@ namespace DuckDB.EFCoreProvider.Migrations;
 public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
 {
     private readonly bool _migrationTableRebuilds;
+    private readonly bool _isDuckLake;
 
     /// <summary>
     ///     Creates a new instance of <see cref="DuckDBMigrationsSqlGenerator" />.
@@ -35,8 +36,10 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
     /// <param name="dependencies">Parameter object containing dependencies for this service.</param>
     public DuckDBMigrationsSqlGenerator(MigrationsSqlGeneratorDependencies dependencies) : base(dependencies)
     {
-        _migrationTableRebuilds = dependencies.CurrentContext.Context.GetService<IDbContextOptions>()
-            .FindExtension<DuckDBOptionsExtension>()?.MigrationTableRebuilds == true;
+        var options = dependencies.CurrentContext.Context.GetService<IDbContextOptions>()
+            .FindExtension<DuckDBOptionsExtension>();
+        _migrationTableRebuilds = options?.MigrationTableRebuilds == true;
+        _isDuckLake = options?.DuckLakeOptions is not null;
     }
 
     /// <inheritdoc />
@@ -44,10 +47,91 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         IReadOnlyList<MigrationOperation> operations,
         IModel? model = null,
         MigrationsSqlGenerationOptions options = MigrationsSqlGenerationOptions.Default)
-        => base.Generate(
-            _migrationTableRebuilds ? RewriteConstraintOperations(operations, model) : operations,
-            model,
-            options);
+    {
+        if (!_isDuckLake)
+        {
+            return base.Generate(
+                _migrationTableRebuilds ? RewriteConstraintOperations(operations, model) : operations,
+                model,
+                options);
+        }
+
+        ValidateDuckLakeOperations(operations);
+
+        var tableBackups = operations.OfType<CreateTableOperation>()
+            .Select(operation => new DuckLakeCreateTableBackup(
+                operation,
+                operation.PrimaryKey,
+                operation.UniqueConstraints.ToArray(),
+                operation.ForeignKeys.ToArray(),
+                operation.CheckConstraints.ToArray()))
+            .ToArray();
+
+        try
+        {
+            foreach (var backup in tableBackups)
+            {
+                backup.Operation.PrimaryKey = null;
+                backup.Operation.UniqueConstraints.Clear();
+                backup.Operation.ForeignKeys.Clear();
+                backup.Operation.CheckConstraints.Clear();
+            }
+
+            var supportedOperations = operations.Where(IsSupportedDuckLakeOperation).ToArray();
+            return base.Generate(supportedOperations, model, options);
+        }
+        finally
+        {
+            foreach (var backup in tableBackups)
+            {
+                backup.Operation.PrimaryKey = backup.PrimaryKey;
+                foreach (var constraint in backup.UniqueConstraints) backup.Operation.UniqueConstraints.Add(constraint);
+                foreach (var constraint in backup.ForeignKeys) backup.Operation.ForeignKeys.Add(constraint);
+                foreach (var constraint in backup.CheckConstraints) backup.Operation.CheckConstraints.Add(constraint);
+            }
+        }
+    }
+
+    private static bool IsSupportedDuckLakeOperation(MigrationOperation operation)
+        => operation is not (CreateIndexOperation
+            or DropIndexOperation
+            or AddPrimaryKeyOperation
+            or DropPrimaryKeyOperation
+            or AddForeignKeyOperation
+            or DropForeignKeyOperation
+            or AddUniqueConstraintOperation
+            or DropUniqueConstraintOperation
+            or AddCheckConstraintOperation
+            or DropCheckConstraintOperation);
+
+    private static void ValidateDuckLakeOperations(IReadOnlyList<MigrationOperation> operations)
+    {
+        if (operations.Any(operation => operation is CreateSequenceOperation or AlterSequenceOperation or DropSequenceOperation or RestartSequenceOperation))
+        {
+            throw new NotSupportedException(
+                "DuckLake does not support sequences. Use client-assigned values or a client-side value generator.");
+        }
+
+        var unsupportedColumn = operations
+            .SelectMany(operation => operation is CreateTableOperation table
+                ? table.Columns.Cast<MigrationOperation>()
+                : [operation])
+            .OfType<ColumnOperation>()
+            .FirstOrDefault(column => column.ComputedColumnSql is not null || column.DefaultValueSql is not null);
+        if (unsupportedColumn is not null)
+        {
+            throw new NotSupportedException(
+                $"DuckLake does not support generated columns or SQL default expressions. Column "
+                + $"'{unsupportedColumn.Table}.{unsupportedColumn.Name}' must use an application-assigned value or a literal default.");
+        }
+    }
+
+    private sealed record DuckLakeCreateTableBackup(
+        CreateTableOperation Operation,
+        AddPrimaryKeyOperation? PrimaryKey,
+        AddUniqueConstraintOperation[] UniqueConstraints,
+        AddForeignKeyOperation[] ForeignKeys,
+        AddCheckConstraintOperation[] CheckConstraints);
 
     /// <summary>
     ///     Throws because DuckDB does not support adding foreign keys in place.

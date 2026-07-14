@@ -12,6 +12,95 @@ namespace DuckDB.EFCoreProvider.Extensions;
 public static class DuckDBDbContextOptionsBuilderExtensions
 {
     /// <summary>
+    ///     Configures the context to use a DuckLake catalog backed by a local metadata file.
+    /// </summary>
+    /// <remarks>
+    ///     The provider creates an in-memory DuckDB host connection, installs and loads the DuckLake extension,
+    ///     attaches the catalog before EF uses provider-owned or caller-owned connections, and selects it as the default catalog.
+    /// </remarks>
+    /// <param name="optionsBuilder">The builder being used to configure the context.</param>
+    /// <param name="metadataPath">The local DuckDB file used for DuckLake metadata.</param>
+    /// <param name="duckLakeOptionsAction">Optional DuckLake catalog configuration.</param>
+    /// <param name="duckDBOptionsAction">Optional host DuckDB configuration, including extension and secret setup.</param>
+    /// <returns>The options builder so that further configuration can be chained.</returns>
+    public static DbContextOptionsBuilder UseDuckLake(
+        this DbContextOptionsBuilder optionsBuilder,
+        string metadataPath,
+        Action<DuckLakeDbContextOptionsBuilder>? duckLakeOptionsAction = null,
+        Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
+    {
+        ArgumentNullException.ThrowIfNull(optionsBuilder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
+
+        return optionsBuilder.UseDuckDB(
+            "Data Source=:memory:",
+            duckDB =>
+            {
+                duckDBOptionsAction?.Invoke(duckDB);
+                duckDB.UseDuckLake(metadataPath, duckLakeOptionsAction);
+            });
+    }
+
+    /// <summary>
+    ///     Configures the context to use a DuckLake catalog. The profile action must select local metadata or a DuckDB secret.
+    /// </summary>
+    /// <param name="optionsBuilder">The builder being used to configure the context.</param>
+    /// <param name="duckLakeOptionsAction">DuckLake metadata, catalog, and access-mode configuration.</param>
+    /// <param name="duckDBOptionsAction">Optional host DuckDB configuration, including extension and secret setup.</param>
+    /// <returns>The options builder so that further configuration can be chained.</returns>
+    public static DbContextOptionsBuilder UseDuckLake(
+        this DbContextOptionsBuilder optionsBuilder,
+        Action<DuckLakeDbContextOptionsBuilder> duckLakeOptionsAction,
+        Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
+    {
+        ArgumentNullException.ThrowIfNull(optionsBuilder);
+        ArgumentNullException.ThrowIfNull(duckLakeOptionsAction);
+
+        return optionsBuilder.UseDuckDB(
+            "Data Source=:memory:",
+            duckDB =>
+            {
+                duckDBOptionsAction?.Invoke(duckDB);
+                duckDB.UseDuckLake(duckLakeOptionsAction);
+            });
+    }
+
+    /// <summary>Configures the context to use a local DuckLake catalog.</summary>
+    /// <param name="optionsBuilder">The builder being used to configure the context.</param>
+    /// <param name="metadataPath">The local DuckDB file used for DuckLake metadata.</param>
+    /// <param name="duckLakeOptionsAction">Optional DuckLake catalog configuration.</param>
+    /// <param name="duckDBOptionsAction">Optional host DuckDB configuration.</param>
+    /// <typeparam name="TContext">The context type being configured.</typeparam>
+    /// <returns>The typed options builder so that further configuration can be chained.</returns>
+    public static DbContextOptionsBuilder<TContext> UseDuckLake<TContext>(
+        this DbContextOptionsBuilder<TContext> optionsBuilder,
+        string metadataPath,
+        Action<DuckLakeDbContextOptionsBuilder>? duckLakeOptionsAction = null,
+        Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
+        where TContext : DbContext
+        => (DbContextOptionsBuilder<TContext>)UseDuckLake(
+            (DbContextOptionsBuilder)optionsBuilder,
+            metadataPath,
+            duckLakeOptionsAction,
+            duckDBOptionsAction);
+
+    /// <summary>Configures the context to use a DuckLake catalog selected by the profile action.</summary>
+    /// <param name="optionsBuilder">The builder being used to configure the context.</param>
+    /// <param name="duckLakeOptionsAction">DuckLake metadata, catalog, and access-mode configuration.</param>
+    /// <param name="duckDBOptionsAction">Optional host DuckDB configuration.</param>
+    /// <typeparam name="TContext">The context type being configured.</typeparam>
+    /// <returns>The typed options builder so that further configuration can be chained.</returns>
+    public static DbContextOptionsBuilder<TContext> UseDuckLake<TContext>(
+        this DbContextOptionsBuilder<TContext> optionsBuilder,
+        Action<DuckLakeDbContextOptionsBuilder> duckLakeOptionsAction,
+        Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
+        where TContext : DbContext
+        => (DbContextOptionsBuilder<TContext>)UseDuckLake(
+            (DbContextOptionsBuilder)optionsBuilder,
+            duckLakeOptionsAction,
+            duckDBOptionsAction);
+
+    /// <summary>
     ///     Configures the context to connect to a DuckDB database, but without initially setting any
     ///     <see cref="DbConnection"/> or connection string.
     /// </summary>
@@ -30,9 +119,9 @@ public static class DuckDBDbContextOptionsBuilderExtensions
         Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
     {
         ((IDbContextOptionsBuilderInfrastructure)optionsBuilder).AddOrUpdateExtension(GetOrCreateExtension(optionsBuilder));
-        
+
         ConfigureWarnings(optionsBuilder);
-        
+
         duckDBOptionsAction?.Invoke(new DuckDBDbContextOptionsBuilder(optionsBuilder));
 
         return optionsBuilder;
@@ -52,9 +141,9 @@ public static class DuckDBDbContextOptionsBuilderExtensions
     {
         var extension = (DuckDBOptionsExtension)GetOrCreateExtension(optionsBuilder).WithConnectionString(connectionString);
         ((IDbContextOptionsBuilderInfrastructure)optionsBuilder).AddOrUpdateExtension(extension);
-        
+
         ConfigureWarnings(optionsBuilder);
-        
+
         duckDBOptionsAction?.Invoke(new DuckDBDbContextOptionsBuilder(optionsBuilder));
 
         return optionsBuilder;
@@ -104,9 +193,9 @@ public static class DuckDBDbContextOptionsBuilderExtensions
 
         var extension = (DuckDBOptionsExtension)GetOrCreateExtension(optionsBuilder).WithConnection(connection, contextOwnsConnection);
         ((IDbContextOptionsBuilderInfrastructure)optionsBuilder).AddOrUpdateExtension(extension);
-        
+
         ConfigureWarnings(optionsBuilder);
-        
+
         duckDBOptionsAction?.Invoke(new DuckDBDbContextOptionsBuilder(optionsBuilder));
 
         return optionsBuilder;

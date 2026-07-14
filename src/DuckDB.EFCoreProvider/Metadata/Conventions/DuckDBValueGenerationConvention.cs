@@ -22,6 +22,8 @@ public class DuckDBValueGenerationConvention :
     RelationalValueGenerationConvention,
     IModelFinalizingConvention
 {
+    private readonly bool _isDuckLake;
+
     /// <summary>
     ///     Creates a new instance of <see cref="DuckDBValueGenerationConvention" />.
     /// </summary>
@@ -30,8 +32,21 @@ public class DuckDBValueGenerationConvention :
     public DuckDBValueGenerationConvention(
         ProviderConventionSetBuilderDependencies dependencies,
         RelationalConventionSetBuilderDependencies relationalDependencies)
+        : this(dependencies, relationalDependencies, false)
+    {
+    }
+
+    /// <summary>Creates a value-generation convention for the selected backend.</summary>
+    /// <param name="dependencies">Parameter object containing dependencies for this convention.</param>
+    /// <param name="relationalDependencies">Parameter object containing relational dependencies for this convention.</param>
+    /// <param name="isDuckLake">Whether store generation must be limited to DuckLake-compatible behavior.</param>
+    public DuckDBValueGenerationConvention(
+        ProviderConventionSetBuilderDependencies dependencies,
+        RelationalConventionSetBuilderDependencies relationalDependencies,
+        bool isDuckLake)
         : base(dependencies, relationalDependencies)
     {
+        _isDuckLake = isDuckLake;
     }
 
     /// <summary>
@@ -87,6 +102,21 @@ public class DuckDBValueGenerationConvention :
                 var annotation = property.FindAnnotation(DuckDBAnnotationNames.ValueGenerationStrategy);
                 if (annotation?.Value != null)
                 {
+                    continue;
+                }
+
+                if (_isDuckLake)
+                {
+                    if (property.ValueGenerated == ValueGenerated.OnAdd
+                        && DuckDBValueGenerationStrategyCompatibility.IsAutoIncrementCompatible(property.ClrType)
+                        && property.GetValueGeneratorFactory() is null
+                        && property.FindAnnotation(RelationalAnnotationNames.DefaultValue) == null
+                        && property.FindAnnotation(RelationalAnnotationNames.DefaultValueSql) == null)
+                    {
+                        property.Builder.ValueGenerated(ValueGenerated.Never);
+                        property.SetValueGenerationStrategy(DuckDBValueGenerationStrategy.None);
+                    }
+
                     continue;
                 }
 

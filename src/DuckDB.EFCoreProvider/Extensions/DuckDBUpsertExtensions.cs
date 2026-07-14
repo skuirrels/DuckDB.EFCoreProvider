@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -10,14 +11,14 @@ using System.Text;
 namespace DuckDB.EFCoreProvider.Extensions;
 
 /// <summary>
-///     High-throughput upsert helpers built on DuckDB's appender API plus <c>INSERT ... ON CONFLICT DO UPDATE</c>.
+///     High-throughput upsert helpers built on DuckDB's appender API plus a set-based native-DuckDB or DuckLake merge.
 /// </summary>
 /// <remarks>
 ///     <para>
 ///         <see cref="Upsert{TEntity}" /> / <see cref="UpsertAsync{TEntity}" /> insert the supplied entities,
 ///         updating any rows whose primary key already exists. Each batch is staged into a temporary table
 ///         via DuckDB's appender API and then merged into the target table with a set-based
-///         <c>INSERT ... ON CONFLICT</c>. This is roughly an order of magnitude faster than the usual
+///         <c>INSERT ... ON CONFLICT</c> (native DuckDB) or <c>MERGE INTO</c> (DuckLake). This is roughly an order of magnitude faster than the usual
 ///         read-then-insert-or-update pattern because it removes the existence-check round-trip and batches
 ///         the writes.
 ///     </para>
@@ -38,11 +39,13 @@ public static class DuckDBUpsertExtensions
     /// <summary>Default number of rows staged into one temporary table before a set-based upsert.</summary>
     private const int DefaultBatchSize = 100;
 
-    private static readonly ConcurrentDictionary<(IEntityType EntityType, string? Schema, string Table), UpsertPlan> PlanCache = new();
+    private static readonly ConcurrentDictionary<
+        (IEntityType EntityType, string? Schema, string Table, bool IsDuckLake),
+        UpsertPlan> PlanCache = new();
 
     /// <summary>
     ///     Inserts the supplied entities, updating any whose primary key already exists, using appender-staged
-    ///     batches and set-based <c>INSERT ... ON CONFLICT (key) DO UPDATE</c> statements.
+    ///     batches and set-based native-DuckDB <c>INSERT ... ON CONFLICT</c> or DuckLake <c>MERGE INTO</c> statements.
     /// </summary>
     /// <returns>The number of rows processed.</returns>
     public static int Upsert<TEntity>(this DbContext context, IEnumerable<TEntity> entities, int batchSize = DefaultBatchSize)
@@ -58,7 +61,7 @@ public static class DuckDBUpsertExtensions
 
         if (openedHere)
         {
-            connection.Open();
+            context.Database.OpenConnection();
         }
 
         try
@@ -88,14 +91,14 @@ public static class DuckDBUpsertExtensions
         {
             if (openedHere)
             {
-                connection.Close();
+                context.Database.CloseConnection();
             }
         }
     }
 
     /// <summary>
     ///     Asynchronously inserts the supplied entities, updating any whose primary key already exists, using
-    ///     appender-staged batches and set-based <c>INSERT ... ON CONFLICT (key) DO UPDATE</c> statements.
+    ///     appender-staged batches and set-based native-DuckDB <c>INSERT ... ON CONFLICT</c> or DuckLake <c>MERGE INTO</c> statements.
     /// </summary>
     /// <returns>The number of rows processed.</returns>
     public static async Task<int> UpsertAsync<TEntity>(
@@ -115,7 +118,7 @@ public static class DuckDBUpsertExtensions
 
         if (openedHere)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await context.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
 
         try
@@ -147,7 +150,7 @@ public static class DuckDBUpsertExtensions
         {
             if (openedHere)
             {
-                await connection.CloseAsync().ConfigureAwait(false);
+                await context.Database.CloseConnectionAsync().ConfigureAwait(false);
             }
         }
     }
@@ -269,12 +272,19 @@ public static class DuckDBUpsertExtensions
         var table = entityType.GetTableName()
             ?? throw new InvalidOperationException($"'{clrType.Name}' is not mapped to a table; upsert is not supported.");
         var schema = entityType.GetSchema();
-        var cacheKey = (entityType, schema, table);
+        var isDuckLake = context.GetService<IDbContextOptions>()
+            .FindExtension<DuckDBOptionsExtension>()?.DuckLakeOptions is not null;
+        var cacheKey = (entityType, schema, table, isDuckLake);
 
-        return PlanCache.GetOrAdd(cacheKey, _ => BuildPlan(context, entityType, table, schema));
+        return PlanCache.GetOrAdd(cacheKey, _ => BuildPlan(context, entityType, table, schema, isDuckLake));
     }
 
-    private static UpsertPlan BuildPlan(DbContext context, IEntityType entityType, string table, string? schema)
+    private static UpsertPlan BuildPlan(
+        DbContext context,
+        IEntityType entityType,
+        string table,
+        string? schema,
+        bool isDuckLake)
     {
         var helper = context.GetService<ISqlGenerationHelper>();
         var storeObject = StoreObjectIdentifier.Table(table, schema);
@@ -339,6 +349,38 @@ public static class DuckDBUpsertExtensions
         var insertColumnList = string.Join(", ", delimitedInsertColumns);
         var targetTable = helper.DelimitIdentifier(table, schema);
 
+        if (isDuckLake)
+        {
+            var keyPredicates = primaryKey.Properties.Select(property =>
+            {
+                var column = helper.DelimitIdentifier(property.GetColumnName(storeObject)!);
+                return $"target.{column} = source.{column}";
+            });
+            var updateAssignments = updateColumns.Select(column =>
+            {
+                var delimited = helper.DelimitIdentifier(column);
+                return $"{delimited} = source.{delimited}";
+            });
+            var sourceValues = delimitedInsertColumns.Select(column => $"source.{column}");
+
+            var mergeSuffix = new StringBuilder()
+                .Append(" ON ")
+                .AppendJoin(" AND ", keyPredicates);
+            if (updateColumns.Count > 0)
+            {
+                mergeSuffix.Append(" WHEN MATCHED THEN UPDATE SET ").AppendJoin(", ", updateAssignments);
+            }
+
+            mergeSuffix
+                .Append(" WHEN NOT MATCHED THEN INSERT (")
+                .Append(insertColumnList)
+                .Append(") VALUES (")
+                .AppendJoin(", ", sourceValues)
+                .Append(')');
+
+            return new UpsertPlan(targetTable, insertColumnList, null, mergeSuffix.ToString(), accessors);
+        }
+
         // On a key conflict, overwrite the non-key columns from the proposed row; if the entity is all-key,
         // there is nothing to update, so do nothing.
         var conflictSuffix = new StringBuilder()
@@ -352,19 +394,22 @@ public static class DuckDBUpsertExtensions
                     updateColumns.Select(c => $"{helper.DelimitIdentifier(c)} = excluded.{helper.DelimitIdentifier(c)}")))
             .ToString();
 
-        return new UpsertPlan(targetTable, insertColumnList, conflictSuffix, accessors);
+        return new UpsertPlan(targetTable, insertColumnList, conflictSuffix, null, accessors);
     }
 
     private sealed record UpsertPlan(
         string TargetTable,
         string InsertColumnList,
-        string ConflictSuffix,
+        string? ConflictSuffix,
+        string? MergeSuffix,
         IReadOnlyList<Func<object, object?>> Accessors)
     {
         public string CreateTemporaryTableSql(string tempTable)
             => $"CREATE TEMPORARY TABLE {DelimitTemporaryIdentifier(tempTable)} AS SELECT {InsertColumnList} FROM {TargetTable} WHERE false;";
 
         public string UpsertFromTemporaryTableSql(string tempTable)
-            => $"INSERT INTO {TargetTable} ({InsertColumnList}) SELECT {InsertColumnList} FROM {DelimitTemporaryIdentifier(tempTable)}{ConflictSuffix};";
+            => MergeSuffix is null
+                ? $"INSERT INTO {TargetTable} ({InsertColumnList}) SELECT {InsertColumnList} FROM {DelimitTemporaryIdentifier(tempTable)}{ConflictSuffix};"
+                : $"MERGE INTO {TargetTable} AS target USING {DelimitTemporaryIdentifier(tempTable)} AS source{MergeSuffix};";
     }
 }
