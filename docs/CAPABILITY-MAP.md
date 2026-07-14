@@ -137,7 +137,7 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | `read_csv` / `read_json` | ✅ exposed | `[FromCsv]` / `[FromJsonFile]` and fluent equivalents |
 | `COPY` export to Parquet | ✅ exposed | `ExportToParquet` / `ExportToParquetAsync` over translated queries |
 | Other `COPY` import/export formats | ❌ not exposed | raw SQL only |
-| `httpfs` / S3 / remote URLs | ✅ configurable | `LoadExtension("httpfs")` plus `ConfigureConnection(...)` for secrets |
+| `httpfs` / S3 / GCS / remote URLs | ✅ configurable | `LoadExtension("httpfs")` plus `ConfigureConnection(...)` for secrets |
 | `ATTACH` (multi-database / cross-DB queries) | ❌ not exposed | one connection/database per context |
 
 ### Analytical SQL constructs

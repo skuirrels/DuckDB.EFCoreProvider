@@ -233,15 +233,15 @@ that combination before copying. A crash between delete statements remains safe 
 int partitionsDeleted = db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 ```
 
-## 6. Cold storage on S3 (and other object stores)
+## 6. Cold storage on S3, Google Cloud Storage, and other object stores
 
 The cold tier does not have to be a local disk. Point `archivePath` at an object-store URL — `s3://`,
 `gcs://`/`gs://`, `r2://`, or `azure://` — and DuckDB reads and writes the Parquet there directly via its
 `httpfs` (or `azure`) extension. Recent data stays in the local `.duckdb` file; the archive lives on cheap,
 durable object storage; the union views query across both.
 
-The archive `COPY`, incremental partition writes, idempotent re-runs, and the crash-safety invariant all behave
-identically on S3 (verified against MinIO). Reads stay efficient: hive-partition pruning plus Parquet row-group
+The archive `COPY`, incremental partition writes, idempotent re-runs, and the crash-safety invariant use the same
+provider path for every remote scheme. Reads stay efficient: hive-partition pruning plus Parquet row-group
 statistics mean a range-scoped report fetches only the byte ranges it needs, not whole files.
 
 **Setup.** Load `httpfs` and configure credentials through the provider-owned connection initializer. The
@@ -265,7 +265,36 @@ modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "s3://my-bucket/archive/
     .Including<InvoiceLine>(i => i.Lines, l => l.WithReadModel<InvoiceLineReport>());
 ```
 
-`s3://`, `gcs://`/`gs://`, and `r2://` all go through the `httpfs` extension shown above.
+**Google Cloud Storage.** GCS also uses `httpfs`, but selects DuckDB's `TYPE gcs` secret and `gcs://` or `gs://`
+URLs. DuckDB accesses GCS through its S3 interoperability API, so production credentials are an HMAC access ID
+and secret rather than an ordinary OAuth service-account JSON file or Application Default Credentials. Create
+the bucket first, keep credentials outside the EF model, and install/load `httpfs` on every connection as above.
+
+```csharp
+options.UseDuckDB("Data Source=app.duckdb", duckdb => duckdb
+    .LoadExtension("httpfs")
+    .ConfigureConnection(connection =>
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE OR REPLACE SECRET gcs (
+                TYPE gcs,
+                KEY_ID 'your-hmac-access-id',
+                SECRET 'your-hmac-secret'
+            );
+            """; // resolve these values from a secret store; do not put them in the EF model
+        command.ExecuteNonQuery();
+    }));
+
+modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "gcs://my-bucket/archive/invoices", TierGranularity.Month)
+    .WithReadModel<InvoiceReport>()
+    .Including<InvoiceLine>(i => i.Lines, l => l.WithReadModel<InvoiceLineReport>());
+```
+
+The sample's local GCS mode points this exact `TYPE gcs` + `gcs://` path at MinIO. That proves the DuckDB
+interoperability protocol and tiered archive round-trip, but MinIO is not a GCS emulator and cannot validate
+Google IAM, HMAC provisioning, quotas, or GCS-specific service behavior. Keep at least one integration test
+against a real, disposable GCS bucket for those concerns.
 
 **Azure Blob Storage.** Azure uses a **different DuckDB extension** — `azure`, not `httpfs` — so configuration
 loads `azure` and creates an `azure`-typed secret. Point the archive at an `az://`, `azure://`, or `abfss://`
@@ -291,21 +320,32 @@ modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "azure://my-container/ar
 
 **Retention on object storage.** Object stores can't delete files through DuckDB, so
 `PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive. Enforce retention with the store's
-own age-based expiry instead — an **S3 bucket lifecycle rule** or an **Azure Blob lifecycle-management policy** on
-the archive prefix (for example, expire objects under `archive/invoices/` after 7 years). The layout is
-hive-partitioned by period, so age-based expiry maps cleanly onto it.
+own age-based expiry instead — an **S3 bucket lifecycle rule**, **GCS Object Lifecycle Management**, or an
+**Azure Blob lifecycle-management policy** on the archive prefix (for example, expire objects under
+`archive/invoices/` after 7 years). These policies normally use object creation/upload age. If retention must
+follow the partition's business date, especially for backfilled data, use a prefix-aware external cleanup job.
 
-**Try it.** The sample ships a compose file with a local MinIO (S3) and Azurite (Azure), so the remote modes are
-two commands each — and they exercise the real `ArchiveTierAsync` against those emulators (verified end to end):
+**Try it.** The sample ships a compose file with MinIO and Azurite. MinIO serves both the local S3 mode and the
+GCS interoperability mode, using separate buckets; Azurite serves Azure:
 
 ```bash
 docker compose -f samples/TieredStorage/docker-compose.yml up -d
 dotnet run --project samples/TieredStorage -- s3      # archive to S3 (MinIO)
+dotnet run --project samples/TieredStorage -- gcs     # TYPE gcs + gcs:// archive (MinIO)
 dotnet run --project samples/TieredStorage -- azure   # archive to Azure Blob (Azurite)
 ```
 
-It targets that MinIO / Azurite by default; override the `TIER_S3_*` / `TIER_AZURE_*` environment variables to
-point at real S3 / Azure.
+It targets MinIO / Azurite by default. Override `TIER_S3_*`, `TIER_GCS_*`, or `TIER_AZURE_*` to point at a real
+cloud store. For real GCS, set `TIER_GCS_ENDPOINT` to an empty value so DuckDB uses the default Google endpoint,
+then set `TIER_GCS_KEY_ID`, `TIER_GCS_SECRET`, and `TIER_GCS_BUCKET` to an HMAC key and an existing bucket:
+
+```bash
+TIER_GCS_ENDPOINT="" \
+TIER_GCS_KEY_ID="$GCS_HMAC_ACCESS_ID" \
+TIER_GCS_SECRET="$GCS_HMAC_SECRET" \
+TIER_GCS_BUCKET="my-archive-bucket" \
+dotnet run --project samples/TieredStorage -- gcs
+```
 
 **How remote reads stay cheap.** A scoped cold query prunes to the partitions it needs and range-reads only the
 Parquet byte ranges within them — it never downloads whole files. `EXPLAIN ANALYZE` shows the pruning, e.g.
