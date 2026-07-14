@@ -3,6 +3,7 @@ using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using System.Linq.Expressions;
+using System.Reflection;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -108,6 +109,25 @@ public static class DuckDBTieredStoreExtensions
             ? granularity
             : TierGranularity.Month;
 
+    /// <summary>Gets the ordered application-declared Hive partition property names on a tiered aggregate root.</summary>
+    public static IReadOnlyList<string> GetTieredStorePartitionProperties(this IReadOnlyEntityType entityType)
+        => entityType.GetTieredStorePartitionDefinitions()
+            .Where(definition => !definition.IsImplicit)
+            .Select(definition => definition.PropertyName)
+            .ToArray();
+
+    internal static IReadOnlyList<DuckDBTierPartitionDefinition> GetTieredStorePartitionDefinitions(
+        this IReadOnlyEntityType entityType)
+        => DuckDBTierPartitionDefinitionSerializer.Deserialize(
+            entityType.FindAnnotation(DuckDBAnnotationNames.TieredStorePartitionProperties)?.Value as string);
+
+    internal static void SetTieredStorePartitionDefinitions(
+        this IMutableEntityType entityType,
+        IReadOnlyList<DuckDBTierPartitionDefinition> definitions)
+        => entityType.SetAnnotation(
+            DuckDBAnnotationNames.TieredStorePartitionProperties,
+            DuckDBTierPartitionDefinitionSerializer.Serialize(definitions));
+
     /// <summary>Gets the union view name for a tiered entity, or <see langword="null" /> if it has no read model.</summary>
     public static string? GetTieredStoreView(this IReadOnlyEntityType entityType)
         => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreView)?.Value as string;
@@ -136,12 +156,27 @@ public static class DuckDBTieredStoreExtensions
         => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreHotChildFilter)?.Value as bool? ?? true;
 
     internal static string GetPropertyName<TEntity, TValue>(Expression<Func<TEntity, TValue>> expression)
-        => expression.Body switch
+        => GetDirectMember(
+            expression,
+            nameof(expression),
+            "The selector must be a simple property access, for example 'e => e.Timestamp'.").Name;
+
+    internal static MemberInfo GetDirectMember<TEntity, TValue>(
+        Expression<Func<TEntity, TValue>> expression,
+        string parameterName,
+        string errorMessage)
+    {
+        ArgumentNullException.ThrowIfNull(expression);
+        var body = expression.Body is UnaryExpression
         {
-            MemberExpression member => member.Member.Name,
-            UnaryExpression { Operand: MemberExpression member } => member.Member.Name,
-            _ => throw new ArgumentException(
-                "The selector must be a simple property access, for example 'e => e.Timestamp'.",
-                nameof(expression)),
-        };
+            NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+            Operand: var operand,
+        }
+            ? operand
+            : expression.Body;
+
+        return body is MemberExpression { Expression: ParameterExpression } member
+            ? member.Member
+            : throw new ArgumentException(errorMessage, parameterName);
+    }
 }

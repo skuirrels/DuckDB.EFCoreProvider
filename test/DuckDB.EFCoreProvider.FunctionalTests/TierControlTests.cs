@@ -41,8 +41,9 @@ public sealed class TierControlTests
         // Cold branch uses SELECT * EXCLUDE so added columns are NULL-filled instead of erroring.
         Assert.Contains("SELECT * EXCLUDE (\"year\", \"month\")", sql);
         Assert.Contains("read_parquet('archive/events/**/*.parquet', hive_partitioning = true, union_by_name = true)", sql);
-        Assert.Contains("WHERE NOT EXISTS (SELECT 1 FROM visible_cold AS c WHERE c.\"Id\" = h.\"Id\")", sql);
-        Assert.Contains("SELECT * FROM cold WHERE \"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+        Assert.Contains("WHERE h.\"Ts\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+        Assert.Contains("AND NOT EXISTS (SELECT 1 FROM (SELECT * EXCLUDE (\"year\", \"month\") FROM read_parquet", sql);
+        Assert.Contains("AS c WHERE c.\"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
     }
 
     [Fact]
@@ -51,6 +52,26 @@ public sealed class TierControlTests
         var sql = DuckDBTierControl.ViewSql(Sql, "events_tiered", "events", "analytics", Columns, ["Id"], "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: false);
 
         Assert.Contains("FROM analytics.events AS h", sql);
+    }
+
+    [Fact]
+    public void ViewSql_casts_hive_partition_values_back_to_their_mapped_store_types()
+    {
+        var sql = DuckDBTierControl.ViewSql(
+            Sql, "events_tiered", "events", null, [.. Columns, "CustomerId", "AmountBand", "SnapshotAt"],
+            ["Id"], "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: true,
+            [
+                new DuckDBTierPartitionColumn("CustomerId", "INTEGER"),
+                new DuckDBTierPartitionColumn("AmountBand", "DECIMAL(10,2)"),
+                new DuckDBTierPartitionColumn("SnapshotAt", "TIMESTAMP"),
+            ]);
+
+        Assert.Contains(
+            "SELECT * REPLACE ("
+            + "CAST(\"CustomerId\" AS INTEGER) AS \"CustomerId\", "
+            + "CAST(\"AmountBand\" AS DECIMAL(10,2)) AS \"AmountBand\", "
+            + "CAST(\"SnapshotAt\" AS TIMESTAMP) AS \"SnapshotAt\")",
+            sql);
     }
 
     [Fact]
@@ -75,6 +96,21 @@ public sealed class TierControlTests
 
         Assert.Contains("day(\"Ts\") AS \"day\"", sql);
         Assert.Contains("PARTITION_BY (\"year\", \"month\", \"day\")", sql);
+    }
+
+    [Fact]
+    public void ArchiveCopySql_uses_the_application_defined_partition_order_and_transform()
+    {
+        var sql = DuckDBTierControl.ArchiveCopySql(
+            Sql, "events", null, [.. Columns, "CustomerId"], "Ts", "archive/events", TierGranularity.Month,
+            new DateTime(2024, 1, 1), new DateTime(2024, 6, 1),
+            [
+                new DuckDBTierPartitionColumn("CustomerId", "CustomerId", "CustomerId", "INTEGER", TierPartitionTransform.Value),
+                new DuckDBTierPartitionColumn("Ts", "Ts", "Ts_month", "DATE", TierPartitionTransform.Month),
+            ]);
+
+        Assert.Contains("CAST(date_trunc('month', \"Ts\") AS DATE) AS \"Ts_month\"", sql);
+        Assert.Contains("PARTITION_BY (\"CustomerId\", \"Ts_month\")", sql);
     }
 
     [Fact]
@@ -110,6 +146,24 @@ public sealed class TierControlTests
         Assert.Contains("t1.\"InvoiceDate\" >= TIMESTAMP '2024-01-01", sql);
         Assert.Contains("t1.\"InvoiceDate\" < TIMESTAMP '2024-06-01", sql);
         Assert.Contains("TO 'archive/invoice_lines' (FORMAT PARQUET, PARTITION_BY (\"year\", \"month\"), OVERWRITE_OR_IGNORE)", sql);
+    }
+
+    [Fact]
+    public void ArchiveChildCopySql_inherits_additional_partitions_from_the_root_join()
+    {
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
+        var sql = DuckDBTierControl.ArchiveChildCopySql(
+            Sql, "invoice_lines", null, ["Id", "InvoiceId", "Amount"], chain, "InvoiceDate",
+            "archive/invoice_lines", TierGranularity.Month, new DateTime(2024, 1, 1),
+            new DateTime(2024, 6, 1),
+            [
+                new DuckDBTierPartitionColumn("CustomerId", "CustomerId", "CustomerId", "INTEGER", TierPartitionTransform.Value),
+                new DuckDBTierPartitionColumn("InvoiceDate", "InvoiceDate", "InvoiceDate_month", "DATE", TierPartitionTransform.Month),
+            ]);
+
+        Assert.Contains("t1.\"CustomerId\" AS \"CustomerId\"", sql);
+        Assert.Contains("CAST(date_trunc('month', t1.\"InvoiceDate\") AS DATE) AS \"InvoiceDate_month\"", sql);
+        Assert.Contains("PARTITION_BY (\"CustomerId\", \"InvoiceDate_month\")", sql);
     }
 
     [Fact]
@@ -153,6 +207,55 @@ public sealed class TierControlTests
 
         Assert.DoesNotContain("IN (SELECT", sql);
         Assert.Contains("WHERE NOT EXISTS (SELECT 1 FROM cold AS c WHERE c.\"Id\" = h.\"Id\")", sql);
+    }
+
+    [Fact]
+    public void ChildViewSql_excludes_root_owned_partition_columns_from_the_child_shape()
+    {
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
+        var sql = DuckDBTierControl.ChildViewSql(
+            Sql, "invoice_lines_tiered", "invoice_lines", null, ["Id", "InvoiceId", "Amount"], ["Id"], chain,
+            "InvoiceDate", "invoices", "archive/invoice_lines", TierGranularity.Month, includeCold: true,
+            includeHotChildFilter: true,
+            rootPartitions:
+            [
+                new DuckDBTierPartitionColumn("CustomerId", "CustomerId", "CustomerId", "INTEGER", TierPartitionTransform.Value),
+                new DuckDBTierPartitionColumn("InvoiceDate", "InvoiceDate", "InvoiceDate_month", "DATE", TierPartitionTransform.Month),
+            ]);
+
+        Assert.Contains("SELECT * EXCLUDE (\"CustomerId\", \"InvoiceDate_month\")", sql);
+    }
+
+    [Fact]
+    public void Control_table_ddl_upgrades_legacy_tables_with_a_partition_spec()
+    {
+        var sql = DuckDBTierControl.ControlTableDdl(Sql);
+
+        Assert.Contains("partition_spec TEXT", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS partition_spec TEXT", sql);
+    }
+
+    [Fact]
+    public void Partition_layout_is_persisted_without_advancing_the_watermark()
+    {
+        var sql = DuckDBTierControl.UpsertPartitionLayoutSql(
+            Sql, "events", "archive/events", TierGranularity.Day, "{\"Version\":1}");
+
+        Assert.Contains("(name, archive_path, granularity, partition_spec)", sql);
+        Assert.DoesNotContain("watermark", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("granularity = excluded.granularity, partition_spec = excluded.partition_spec", sql);
+    }
+
+    [Fact]
+    public void DeleteHotSql_casts_partitioned_key_before_matching_cold_rows()
+    {
+        var sql = DuckDBTierControl.DeleteHotSql(
+            Sql, "events", null, ["CustomerId"], "Ts", "archive/events", new DateTime(2024, 6, 1),
+            [new DuckDBTierPartitionColumn("CustomerId", "INTEGER")]);
+
+        Assert.Contains(
+            "FROM (SELECT * REPLACE (CAST(\"CustomerId\" AS INTEGER) AS \"CustomerId\") FROM read_parquet",
+            sql);
     }
 
     [Fact]

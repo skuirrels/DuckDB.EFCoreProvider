@@ -35,7 +35,7 @@ This document is the published capability matrix for the provider. It serves two
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | File sources | `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (and fluent `FromParquet`/`FromCsv`/`FromJsonFile`) → `read_parquet`/`read_csv`/`read_json` |
-| Tiered storage (hot + cold) | `ToTieredStore(...)` + `ArchiveTierAsync(...)`: recent rows in the DuckDB file, older rows offloaded to hive-partitioned Parquet, unified by a view. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) |
+| Tiered storage (hot + cold) | `ToTieredStore(...)` + root-only ordered `.PartitionBy(p => p.By(...).ByMonth(...))` + `ArchiveTierAsync(...)`: application-defined Hive order/transforms, inherited child layout, and metadata-driven query pruning over a unified hot+cold view. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) |
 | Bulk insert | `DbContext.BulkInsert(...)` / `BulkInsertAsync(...)` via the DuckDB `Appender` (raw fast path — see §4) |
 | Spatial (NetTopologySuite) | `UseNetTopologySuite()`; native DuckDB `GEOMETRY` columns (WKT is only the driver wire format) |
 | Raw SQL | EF Core relational raw-SQL APIs |

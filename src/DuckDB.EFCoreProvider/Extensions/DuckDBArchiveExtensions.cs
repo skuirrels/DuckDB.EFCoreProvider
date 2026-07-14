@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
@@ -6,6 +7,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace DuckDB.EFCoreProvider.Extensions;
@@ -51,6 +53,15 @@ public static partial class DuckDBArchiveExtensions
             ExecuteNonQuery(connection, DuckDBTierControl.ControlTableDdl(sql));
             foreach (var aggregate in aggregates)
             {
+                EnsurePartitionSpecCompatible(connection, sql, archiveFileProbe, aggregate);
+                ExecuteNonQuery(
+                    connection,
+                    DuckDBTierControl.UpsertPartitionLayoutSql(
+                        sql,
+                        aggregate.ControlKey,
+                        aggregate.Root.ArchiveSubPath,
+                        aggregate.Granularity,
+                        aggregate.PartitionSpec));
                 RegenerateViews(connection, sql, archiveFileProbe, aggregate);
             }
         }
@@ -93,6 +104,12 @@ public static partial class DuckDBArchiveExtensions
         try
         {
             await ExecuteNonQueryAsync(connection, DuckDBTierControl.ControlTableDdl(sql), cancellationToken).ConfigureAwait(false);
+            EnsurePartitionSpecCompatible(connection, sql, archiveFileProbe, aggregate);
+            await ExecuteNonQueryAsync(
+                connection,
+                DuckDBTierControl.UpsertPartitionLayoutSql(
+                    sql, aggregate.ControlKey, archivePath, aggregate.Granularity, aggregate.PartitionSpec),
+                cancellationToken).ConfigureAwait(false);
 
             var current = ReadWatermark(connection, sql, aggregate.ControlKey);
             if (current is { } watermark && aligned <= watermark)
@@ -122,7 +139,11 @@ public static partial class DuckDBArchiveExtensions
                 }
             }
 
-            await ExecuteNonQueryAsync(connection, DuckDBTierControl.UpsertWatermarkSql(sql, aggregate.ControlKey, aligned, archivePath, aggregate.Granularity), cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(
+                connection,
+                DuckDBTierControl.UpsertWatermarkSql(
+                    sql, aggregate.ControlKey, aligned, archivePath, aggregate.Granularity, aggregate.PartitionSpec),
+                cancellationToken).ConfigureAwait(false);
             RegenerateViews(connection, sql, archiveFileProbe, aggregate);
             await DeleteAggregateAsync(connection, sql, aggregate, aligned, cancellationToken).ConfigureAwait(false);
             await ExecuteNonQueryAsync(connection, "CHECKPOINT;", cancellationToken).ConfigureAwait(false);
@@ -161,7 +182,7 @@ public static partial class DuckDBArchiveExtensions
         }
 
         var cutoff = DuckDBTierControl.AlignCutoff(olderThan, aggregate.Granularity);
-        var deleted = aggregate.Nodes.Sum(node => PurgePartitions(node.ArchiveSubPath, aggregate.Granularity, cutoff));
+        var deleted = aggregate.Nodes.Sum(node => PurgePartitions(node.ArchiveSubPath, aggregate, cutoff));
 
         if (deleted > 0)
         {
@@ -184,8 +205,12 @@ public static partial class DuckDBArchiveExtensions
 
     private static string CopySql(ISqlGenerationHelper sql, DuckDBTierAggregate aggregate, DuckDBTierNode node, DateTime from, DateTime cutoff)
         => node.IsRoot
-            ? DuckDBTierControl.ArchiveCopySql(sql, node.Table, node.Schema, node.Columns, aggregate.RootTimestampColumn, node.ArchiveSubPath, aggregate.Granularity, from, cutoff)
-            : DuckDBTierControl.ArchiveChildCopySql(sql, node.Table, node.Schema, node.Columns, node.ChainToRoot, aggregate.RootTimestampColumn, node.ArchiveSubPath, aggregate.Granularity, from, cutoff);
+            ? DuckDBTierControl.ArchiveCopySql(
+                sql, node.Table, node.Schema, node.Columns, aggregate.RootTimestampColumn, node.ArchiveSubPath,
+                aggregate.Granularity, from, cutoff, aggregate.RootPartitions)
+            : DuckDBTierControl.ArchiveChildCopySql(
+                sql, node.Table, node.Schema, node.Columns, node.ChainToRoot, aggregate.RootTimestampColumn,
+                node.ArchiveSubPath, aggregate.Granularity, from, cutoff, aggregate.RootPartitions);
 
     private static void RegenerateViews(
         DuckDBConnection connection,
@@ -204,9 +229,85 @@ public static partial class DuckDBArchiveExtensions
 
             var includeCold = hasWatermark && archiveFileProbe.HasArchiveFiles(connection, node.ArchiveSubPath);
             var viewSql = node.IsRoot
-                ? DuckDBTierControl.ViewSql(sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns, aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath, aggregate.Granularity, includeCold)
-                : DuckDBTierControl.ChildViewSql(sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns, node.ChainToRoot, aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath, aggregate.Granularity, includeCold, aggregate.IncludeHotChildFilter);
+                ? DuckDBTierControl.ViewSql(
+                    sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns,
+                    aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath,
+                    aggregate.Granularity, includeCold, aggregate.RootPartitions)
+                : DuckDBTierControl.ChildViewSql(
+                    sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns, node.ChainToRoot,
+                    aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath, aggregate.Granularity,
+                    includeCold, aggregate.IncludeHotChildFilter, aggregate.RootPartitions);
             ExecuteNonQuery(connection, viewSql);
+        }
+    }
+
+    private static void EnsurePartitionSpecCompatible(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        IDuckDBArchiveFileProbe archiveFileProbe,
+        DuckDBTierAggregate aggregate)
+    {
+        var recorded = ExecuteScalar(connection, DuckDBTierControl.ReadPartitionSpecSql(sql, aggregate.ControlKey)) as string;
+        var recordedGranularity = ExecuteScalar(
+            connection,
+            DuckDBTierControl.ReadGranularitySql(sql, aggregate.ControlKey)) as string;
+        if (PartitionLayoutsMatch(recorded, recordedGranularity, aggregate))
+        {
+            return;
+        }
+
+        if (!aggregate.Nodes.Any(node => archiveFileProbe.HasArchiveFiles(connection, node.ArchiveSubPath)))
+        {
+            return;
+        }
+
+        var configured = aggregate.RootPartitions.Count == 0
+            ? "temporal partitions only"
+            : string.Join(", ", aggregate.RootPartitions.Select(partition => partition.Name));
+        var existingLayout = recorded is null && recordedGranularity is null
+            ? "an unrecorded partition layout"
+            : "a different partition layout";
+        throw new InvalidOperationException(
+            $"Tiered-storage aggregate '{aggregate.ControlKey}' is configured for {configured}, but its existing "
+            + $"Parquet archive has {existingLayout}. Rewrite or clear the cold archive "
+            + "before changing PartitionBy(...) or granularity; mixed Hive layouts are not supported.");
+    }
+
+    private static bool PartitionLayoutsMatch(
+        string? recordedSpec,
+        string? recordedGranularity,
+        DuckDBTierAggregate aggregate)
+    {
+        if (string.Equals(recordedSpec, aggregate.PartitionSpec, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (!string.Equals(
+                recordedGranularity,
+                aggregate.Granularity.ToString(),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (recordedSpec is null)
+        {
+            // Control rows written before root-owned partitions existed describe the legacy temporal-only layout.
+            return aggregate.RootPartitions.Count == 0;
+        }
+
+        try
+        {
+            // Accept the short-lived pre-versioned representation so development databases created while this
+            // feature was being introduced can be upgraded without rewriting compatible files.
+            var legacyColumns = JsonSerializer.Deserialize<string[]>(recordedSpec);
+            return legacyColumns is not null
+                && legacyColumns.SequenceEqual(aggregate.RootPartitionColumns, StringComparer.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 
@@ -225,7 +326,9 @@ public static partial class DuckDBArchiveExtensions
         {
             var node = aggregate.Nodes[i];
             var deleteSql = node.IsRoot
-                ? DuckDBTierControl.DeleteHotSql(sql, node.Table, node.Schema, node.KeyColumns, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff)
+                ? DuckDBTierControl.DeleteHotSql(
+                    sql, node.Table, node.Schema, node.KeyColumns, aggregate.RootTimestampColumn,
+                    node.ArchiveSubPath, cutoff, aggregate.RootPartitions)
                 : DuckDBTierControl.DeleteChildSql(sql, node.Table, node.Schema, node.KeyColumns, node.ChainToRoot, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff);
             await ExecuteNonQueryAsync(connection, deleteSql, cancellationToken).ConfigureAwait(false);
         }
@@ -250,12 +353,33 @@ public static partial class DuckDBArchiveExtensions
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9+.-]*://")]
     private static partial Regex RemoteArchiveSchemeRegex();
 
-    private static int PurgePartitions(string archivePath, Metadata.TierGranularity granularity, DateTime cutoff)
+    private static int PurgePartitions(string archivePath, DuckDBTierAggregate aggregate, DateTime cutoff)
     {
         var root = archivePath.TrimEnd('/', '\\');
         if (!Directory.Exists(root))
         {
             return 0;
+        }
+
+        if (aggregate.RootPartitions.Count > 0)
+        {
+            var lifecycle = aggregate.RootPartitions.Single(partition =>
+                partition.PropertyName == aggregate.Root.Entity.GetTieredStoreTimestamp()
+                && partition.Transform is TierPartitionTransform.Value or TierPartitionTransform.Month or TierPartitionTransform.Day);
+            var prefix = lifecycle.Name + "=";
+            var directories = Directory.GetDirectories(root, prefix + "*", SearchOption.AllDirectories);
+            var deletedDerived = 0;
+            foreach (var directory in directories)
+            {
+                var encoded = Path.GetFileName(directory)[prefix.Length..];
+                if (TryParsePartitionDate(Uri.UnescapeDataString(encoded), out var partition) && partition < cutoff)
+                {
+                    Directory.Delete(directory, recursive: true);
+                    deletedDerived++;
+                }
+            }
+
+            return deletedDerived;
         }
 
         var deleted = 0;
@@ -273,7 +397,7 @@ public static partial class DuckDBArchiveExtensions
                     continue;
                 }
 
-                if (granularity == Metadata.TierGranularity.Day)
+                if (aggregate.Granularity == Metadata.TierGranularity.Day)
                 {
                     foreach (var dayDir in Directory.GetDirectories(monthDir, "day=*"))
                     {
@@ -296,6 +420,13 @@ public static partial class DuckDBArchiveExtensions
 
         return deleted;
     }
+
+    private static bool TryParsePartitionDate(string value, out DateTime date)
+        => DateTime.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal,
+            out date);
 
     private static bool TryCreatePartitionDate(int year, int month, int day, out DateTime date)
     {

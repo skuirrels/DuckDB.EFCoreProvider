@@ -32,6 +32,13 @@ public class DuckDBModelValidator : RelationalModelValidator
     private static void ValidateTieredStores(IModel model)
     {
         var rootArchives = new List<(string Path, string Entity)>();
+        var rootPartitionColumns = model.GetEntityTypes()
+            .Where(entityType => entityType.GetTieredStoreRole() == "Root" && entityType.GetTableName() is not null)
+            .ToDictionary(
+                entityType => entityType.Name,
+                entityType => ValidateRootPartitionProperties(
+                    entityType,
+                    StoreObjectIdentifier.Table(entityType.GetTableName()!, entityType.GetSchema())));
 
         foreach (var entityType in model.GetEntityTypes())
         {
@@ -43,12 +50,17 @@ public class DuckDBModelValidator : RelationalModelValidator
             var storeObject = StoreObjectIdentifier.Table(table, entityType.GetSchema());
 
             ValidatePrimaryKey(entityType);
+            ValidatePartitionOwnership(entityType, role);
             ValidateReservedColumns(model, entityType, storeObject);
             ValidateReadModelColumns(model, entityType, storeObject);
 
             if (role == "Child")
             {
                 ValidateChildForeignKey(model, entityType);
+                ValidateChildPartitionColumnCollisions(
+                    entityType,
+                    storeObject,
+                    rootPartitionColumns.GetValueOrDefault(entityType.GetTieredStoreRoot()!) ?? []);
             }
             else
             {
@@ -57,6 +69,133 @@ public class DuckDBModelValidator : RelationalModelValidator
         }
 
         ValidateNoOverlappingArchivePaths(rootArchives);
+    }
+
+    private static IReadOnlyList<string> ValidateRootPartitionProperties(
+        IReadOnlyEntityType root,
+        StoreObjectIdentifier storeObject)
+    {
+        var definitions = root.GetTieredStorePartitionDefinitions();
+        if (definitions.Count == 0)
+        {
+            return [];
+        }
+
+        var duplicateProperty = definitions.GroupBy(definition => definition.PropertyName, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1)?.Key;
+        if (duplicateProperty is not null)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage root '{root.DisplayName()}' declares partition property '{duplicateProperty}' more "
+                + "than once. Each property can occupy only one position in the physical layout.");
+        }
+
+        var mappedColumns = root.GetProperties()
+            .Select(property => property.GetColumnName(storeObject))
+            .OfType<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var columns = new List<string>(definitions.Count);
+        foreach (var definition in definitions)
+        {
+            var property = root.FindProperty(definition.PropertyName)
+                ?? throw new InvalidOperationException(
+                    $"Tiered-storage partition property '{root.DisplayName()}.{definition.PropertyName}' is not a mapped scalar "
+                    + "property on the aggregate root.");
+            var sourceColumn = property.GetColumnName(storeObject)
+                ?? throw new InvalidOperationException(
+                    $"Tiered-storage partition property '{root.DisplayName()}.{definition.PropertyName}' is not mapped to the "
+                    + "root table.");
+            if (definition.Transform != TierPartitionTransform.Value && !IsDateProperty(property.ClrType))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage partition '{root.DisplayName()}.{definition.PropertyName}' uses "
+                    + $"{definition.Transform} bucketing, but its CLR type '{property.ClrType.ShortDisplayName()}' is not "
+                    + "DateTime, DateTimeOffset, or DateOnly.");
+            }
+
+            var column = definition.Transform == TierPartitionTransform.Value
+                ? sourceColumn
+                : sourceColumn + "_" + definition.Transform.ToString().ToLowerInvariant();
+
+            if (definition.Transform != TierPartitionTransform.Value && mappedColumns.Contains(column))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage derived partition '{root.DisplayName()}.{definition.PropertyName}' maps to Hive "
+                    + $"column '{column}', which collides with a mapped root column. Rename the mapped column.");
+            }
+
+            if (columns.Contains(column, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage root '{root.DisplayName()}' maps more than one partition property to column "
+                    + $"'{column}'. Each additional partition must have a distinct physical column.");
+            }
+
+            columns.Add(column);
+        }
+
+        var lifecycle = definitions.FirstOrDefault(
+            definition => definition.PropertyName == root.GetTieredStoreTimestamp()
+                && IsSafeLifecyclePartition(definition.Transform, root.GetTieredStoreGranularity()));
+        if (lifecycle is null)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage root '{root.DisplayName()}' must include its lifecycle property "
+                + $"'{root.GetTieredStoreTimestamp()}' in the ordered partition plan using "
+                + (root.GetTieredStoreGranularity() == TierGranularity.Day
+                    ? "ByDay(...) (or exact By(...))"
+                    : "ByMonth(...), ByDay(...), or exact By(...)")
+                + ". This keeps incremental archive windows disjoint and crash-safe.");
+        }
+
+        return columns;
+    }
+
+    private static bool IsDateProperty(Type clrType)
+    {
+        clrType = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        return clrType == typeof(DateTime) || clrType == typeof(DateTimeOffset) || clrType == typeof(DateOnly);
+    }
+
+    private static bool IsSafeLifecyclePartition(
+        TierPartitionTransform transform,
+        TierGranularity granularity)
+        => transform == TierPartitionTransform.Value
+           || transform == TierPartitionTransform.Day
+           || granularity == TierGranularity.Month && transform == TierPartitionTransform.Month;
+
+    private static void ValidatePartitionOwnership(IReadOnlyEntityType entityType, string role)
+    {
+        if (role != "Root" && entityType.GetTieredStorePartitionDefinitions().Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage partitions can only be declared on an aggregate root, but "
+                + $"'{entityType.DisplayName()}' has role '{role}'. Declare PartitionBy(...) on the root's "
+                + "TieredStoreBuilder instead; children inherit its partition values.");
+        }
+    }
+
+    private static void ValidateChildPartitionColumnCollisions(
+        IReadOnlyEntityType child,
+        StoreObjectIdentifier childStore,
+        IReadOnlyList<string> rootPartitionColumns)
+    {
+        if (rootPartitionColumns.Count == 0)
+        {
+            return;
+        }
+
+        var collision = child.GetProperties()
+            .Select(property => property.GetColumnName(childStore))
+            .OfType<string>()
+            .FirstOrDefault(column => rootPartitionColumns.Contains(column, StringComparer.OrdinalIgnoreCase));
+        if (collision is not null)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage child '{child.DisplayName()}' maps column '{collision}', which collides with an "
+                + "additional partition inherited from its aggregate root. Rename the child column so the root-owned "
+                + "Hive partition key can be propagated without replacing child data.");
+        }
     }
 
     private static void ValidatePrimaryKey(IReadOnlyEntityType entityType)
@@ -71,6 +210,16 @@ public class DuckDBModelValidator : RelationalModelValidator
 
     private static void ValidateReservedColumns(IModel model, IReadOnlyEntityType entityType, StoreObjectIdentifier storeObject)
     {
+        var root = entityType.GetTieredStoreRole() == "Root"
+            ? entityType
+            : model.FindEntityType(entityType.GetTieredStoreRoot()!);
+        if (root?.GetTieredStorePartitionDefinitions().Count > 0)
+        {
+            // Explicit plans are validated from their resolved physical names above; exact-value root keys
+            // intentionally reuse their mapped source column and child collisions are checked separately.
+            return;
+        }
+
         var granularity = ResolveGranularity(model, entityType);
         var reserved = granularity == TierGranularity.Day
             ? new[] { "year", "month", "day" }

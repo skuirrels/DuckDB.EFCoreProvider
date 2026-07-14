@@ -2,6 +2,7 @@ using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using System.Text.Json;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
 
@@ -21,12 +22,16 @@ public sealed class DuckDBTierAggregate
         string controlKey,
         TierGranularity granularity,
         string rootTimestampColumn,
+        IReadOnlyList<DuckDBTierPartitionColumn> rootPartitions,
         bool includeHotChildFilter)
     {
         Nodes = nodes;
         ControlKey = controlKey;
         Granularity = granularity;
         RootTimestampColumn = rootTimestampColumn;
+        RootPartitions = rootPartitions;
+        RootPartitionColumns = rootPartitions.Select(partition => partition.Name).ToArray();
+        PartitionSpec = JsonSerializer.Serialize(new DuckDBTierPartitionLayout(2, granularity, rootPartitions));
         IncludeHotChildFilter = includeHotChildFilter;
     }
 
@@ -41,6 +46,15 @@ public sealed class DuckDBTierAggregate
 
     /// <summary>The physical timestamp column on the root table.</summary>
     public string RootTimestampColumn { get; }
+
+    /// <summary>The physical root columns used as additional Hive partition keys, in declaration order.</summary>
+    public IReadOnlyList<string> RootPartitionColumns { get; }
+
+    /// <summary>The physical names and DuckDB store types of the additional root partition keys.</summary>
+    public IReadOnlyList<DuckDBTierPartitionColumn> RootPartitions { get; }
+
+    /// <summary>The persisted layout signature used to reject incompatible archive configuration changes.</summary>
+    public string PartitionSpec { get; }
 
     /// <summary>Whether child views include the "root is hot" semijoin guard.</summary>
     public bool IncludeHotChildFilter { get; }
@@ -68,6 +82,24 @@ public sealed class DuckDBTierAggregate
         var archivePath = root.GetTieredStoreArchivePath()!;
         var rootStore = StoreObjectIdentifier.Table(root.GetTableName()!, root.GetSchema());
         var rootTimestampColumn = root.FindProperty(root.GetTieredStoreTimestamp()!)!.GetColumnName(rootStore)!;
+        var rootPartitions = root.GetTieredStorePartitionDefinitions()
+            .Select(definition =>
+            {
+                var property = root.FindProperty(definition.PropertyName)!;
+                var sourceColumn = property.GetColumnName(rootStore)!;
+                return new DuckDBTierPartitionColumn(
+                    definition.PropertyName,
+                    sourceColumn,
+                    definition.Transform == TierPartitionTransform.Value
+                        ? sourceColumn
+                        : sourceColumn + "_" + definition.Transform.ToString().ToLowerInvariant(),
+                    definition.Transform == TierPartitionTransform.Value
+                        ? property.GetColumnType(rootStore) ?? property.GetRelationalTypeMapping().StoreType
+                        : "DATE",
+                    definition.Transform,
+                    definition.IsImplicit);
+            })
+            .ToList();
 
         var nodes = new List<DuckDBTierNode> { BuildNode(root, archivePath, []) };
 
@@ -82,7 +114,8 @@ public sealed class DuckDBTierAggregate
         }
 
         return new DuckDBTierAggregate(
-            nodes, root.GetTieredStoreControlKey()!, root.GetTieredStoreGranularity(), rootTimestampColumn, root.GetTieredStoreHotChildFilter());
+            nodes, root.GetTieredStoreControlKey()!, root.GetTieredStoreGranularity(), rootTimestampColumn,
+            rootPartitions, root.GetTieredStoreHotChildFilter());
     }
 
     private static DuckDBTierNode BuildNode(IEntityType entity, string archivePath, IReadOnlyList<DuckDBTierControl.TierJoinHop> chain)
@@ -130,6 +163,28 @@ public sealed class DuckDBTierAggregate
         return chain;
     }
 }
+
+/// <summary>A resolved root-owned Hive partition key and its physical transformation. Internal API.</summary>
+public sealed record DuckDBTierPartitionColumn(
+    string PropertyName,
+    string SourceColumn,
+    string Name,
+    string StoreType,
+    TierPartitionTransform Transform,
+    bool IsImplicit = false)
+{
+    /// <summary>Creates an exact-value partition used by compatibility SQL-building overloads.</summary>
+    public DuckDBTierPartitionColumn(string name, string storeType)
+        : this(name, name, name, storeType, TierPartitionTransform.Value)
+    {
+    }
+}
+
+/// <summary>The versioned physical partition layout persisted in the tier control table. Internal API.</summary>
+public sealed record DuckDBTierPartitionLayout(
+    int Version,
+    TierGranularity Granularity,
+    IReadOnlyList<DuckDBTierPartitionColumn> Columns);
 
 /// <summary>One resolved node (table) of a tiered aggregate. Internal API.</summary>
 public sealed record DuckDBTierNode(
