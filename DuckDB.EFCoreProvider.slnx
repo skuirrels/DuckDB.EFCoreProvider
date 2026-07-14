@@ -10,6 +10,7 @@
     <Project Path="src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj" />
   </Folder>
   <Folder Name="/samples/">
+    <Project Path="samples/DuckLake/DuckLake.csproj" />
     <Project Path="samples/Quickstart/Quickstart.csproj" />
     <Project Path="samples/TieredStorage/TieredStorage.csproj" />
   </Folder>

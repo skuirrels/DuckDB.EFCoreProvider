@@ -51,7 +51,7 @@ public static class DuckDBBulkExtensions
 
         if (openedHere)
         {
-            connection.Open();
+            context.Database.OpenConnection();
         }
 
         try
@@ -63,7 +63,7 @@ public static class DuckDBBulkExtensions
         {
             if (openedHere)
             {
-                connection.Close();
+                context.Database.CloseConnection();
             }
         }
     }
@@ -87,7 +87,7 @@ public static class DuckDBBulkExtensions
 
         if (openedHere)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await context.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
 
         try
@@ -99,7 +99,7 @@ public static class DuckDBBulkExtensions
         {
             if (openedHere)
             {
-                await connection.CloseAsync().ConfigureAwait(false);
+                await context.Database.CloseConnectionAsync().ConfigureAwait(false);
             }
         }
     }
@@ -208,7 +208,8 @@ public static class DuckDBBulkExtensions
     {
         using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT column_name FROM duckdb_columns() WHERE table_name = $t AND schema_name = $s ORDER BY column_index";
+            "SELECT column_name FROM duckdb_columns() "
+            + "WHERE database_name = current_database() AND table_name = $t AND schema_name = $s ORDER BY column_index";
         command.Parameters.Add(new DuckDBParameter("t", table));
         command.Parameters.Add(new DuckDBParameter("s", schema));
 

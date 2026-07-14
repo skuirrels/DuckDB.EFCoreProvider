@@ -14,6 +14,11 @@ namespace DuckDB.EFCoreProvider.Migrations.Internal;
 /// </summary>
 public class DuckDBHistoryRepository : HistoryRepository
 {
+    private const string DuckLakeMigrationsNotSupportedMessage =
+        "EF Core migrations are not supported by the DuckLake profile. DuckLake has no enforced primary keys, "
+        + "unique constraints, or portable database lock primitive for EF's migrations history contract. Use "
+        + "Database.EnsureCreated() for a new catalog, and apply reviewed DuckLake schema-evolution SQL explicitly.";
+
     private const string IdempotentScriptsNotSupportedMessage =
         "Generating idempotent scripts for migrations is not supported by DuckDB, which has no procedural"
         + " IF blocks to guard each migration. Generate a plain script ('dotnet ef migrations script'), or"
@@ -41,6 +46,7 @@ public class DuckDBHistoryRepository : HistoryRepository
 
     public override IMigrationsDatabaseLock AcquireDatabaseLock()
     {
+        EnsureMigrationsSupported();
         Dependencies.MigrationsLogger.AcquiringMigrationLock();
 
         if (!InterpretExistsResult(
@@ -79,8 +85,9 @@ public class DuckDBHistoryRepository : HistoryRepository
 
     public override async Task<IMigrationsDatabaseLock> AcquireDatabaseLockAsync(CancellationToken cancellationToken = new())
     {
+        EnsureMigrationsSupported();
         Dependencies.MigrationsLogger.AcquiringMigrationLock();
-        
+
         if (!InterpretExistsResult(
                 await Dependencies.RawSqlCommandBuilder.Build(CreateExistsSql(LockTableName))
                     .ExecuteScalarAsync(CreateRelationalCommandParameters(), cancellationToken).ConfigureAwait(false)))
@@ -119,6 +126,7 @@ public class DuckDBHistoryRepository : HistoryRepository
 
     public override string GetCreateIfNotExistsScript()
     {
+        EnsureMigrationsSupported();
         var script = GetCreateScript();
         return script.Insert(script.IndexOf("CREATE TABLE", StringComparison.Ordinal) + 12, " IF NOT EXISTS");
     }
@@ -140,7 +148,24 @@ public class DuckDBHistoryRepository : HistoryRepository
 
     public override LockReleaseBehavior LockReleaseBehavior => LockReleaseBehavior.Explicit;
 
-    protected override string ExistsSql => CreateExistsSql(TableName);
+    protected override string ExistsSql
+    {
+        get
+        {
+            EnsureMigrationsSupported();
+            return CreateExistsSql(TableName);
+        }
+    }
+
+    private void EnsureMigrationsSupported()
+    {
+        if (Dependencies.CurrentContext.Context
+                .GetService<IDbContextOptions>()
+                .FindExtension<DuckDBOptionsExtension>()?.DuckLakeOptions is not null)
+        {
+            throw new NotSupportedException(DuckLakeMigrationsNotSupportedMessage);
+        }
+    }
 
     /// <summary>
     ///     The name of the table that will serve as a database-wide lock for migrations.

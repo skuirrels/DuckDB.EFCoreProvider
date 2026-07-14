@@ -25,3 +25,23 @@ jobs:
 
     - name: Run production write test suite
       run: scripts/test-suite.sh all -- --verbosity normal
+
+  ducklake-external:
+    name: DuckLake PostgreSQL and MinIO integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: "1"
+      TERM: xterm
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Run DuckLake external integration suite
+      run: scripts/test-ducklake-external.sh --verbosity normal

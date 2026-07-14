@@ -1,0 +1,43 @@
+name: duckdb-efcore-ducklake-integration
+
+services:
+  postgres:
+    image: ${DUCKLAKE_POSTGRES_IMAGE:-postgres:17.10-alpine3.23}
+    ports:
+      - "${DUCKLAKE_POSTGRES_PORT:-15432}:5432"
+    environment:
+      POSTGRES_DB: ${DUCKLAKE_POSTGRES_DATABASE:-ducklake}
+      POSTGRES_USER: ${DUCKLAKE_POSTGRES_USER:-ducklake}
+      POSTGRES_PASSWORD: ${DUCKLAKE_POSTGRES_PASSWORD:-ducklake-integration}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  minio:
+    image: ${DUCKLAKE_MINIO_IMAGE:-minio/minio:RELEASE.2025-07-23T15-54-02Z}
+    command: server /data
+    ports:
+      - "${DUCKLAKE_S3_PORT:-19000}:9000"
+    environment:
+      MINIO_ROOT_USER: ${DUCKLAKE_S3_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${DUCKLAKE_S3_SECRET:-minioadmin}
+    volumes:
+      - minio-data:/data
+
+  createbucket:
+    image: ${DUCKLAKE_MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-07-16T15-35-03Z}
+    depends_on:
+      - minio
+    environment:
+      S3_KEY_ID: ${DUCKLAKE_S3_KEY_ID:-minioadmin}
+      S3_SECRET: ${DUCKLAKE_S3_SECRET:-minioadmin}
+      BUCKET_NAME: ${DUCKLAKE_S3_BUCKET:-ducklake-integration}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - >-
+        mc alias set integration http://minio:9000 "$${S3_KEY_ID}" "$${S3_SECRET}" &&
+        mc mb --ignore-existing "integration/$${BUCKET_NAME}"
+
+volumes:
+  postgres-data:
+  minio-data:

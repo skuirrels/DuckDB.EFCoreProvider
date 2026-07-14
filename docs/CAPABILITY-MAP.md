@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x. Last reviewed: 2026-07-04.
+**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-14.
 
 ---
 
@@ -22,7 +22,7 @@ This document is the published capability matrix for the provider. It serves two
 
 ---
 
-## 1. Supported ✅
+## 1. Native DuckDB support ✅
 
 | Area | Notes |
 |---|---|
@@ -40,6 +40,31 @@ This document is the published capability matrix for the provider. It serves two
 | Spatial (NetTopologySuite) | `UseNetTopologySuite()`; native DuckDB `GEOMETRY` columns (WKT is only the driver wire format) |
 | Raw SQL | EF Core relational raw-SQL APIs |
 | Database-first scaffolding | `dotnet ef dbcontext scaffold` (tables, columns, keys, indexes, sequences, FKs) |
+
+### DuckLake backend profile
+
+`UseDuckLake(...)` is included in the main package and configures DuckLake as an attached backend catalog.
+The profile is covered by real-extension functional tests, not inferred from native DuckDB behaviour.
+
+| Area | DuckLake profile |
+|---|---|
+| Connection lifecycle | ✅ extension load, secret callback, safe `ATTACH`, and `USE` before EF uses provider-owned or caller-owned connections, including already-open connections |
+| Queries / raw SQL | ✅ normal EF LINQ and relational raw SQL against the selected catalog |
+| Tracked writes | ✅ insert/update/delete without `RETURNING`; affected-row optimistic-concurrency checks |
+| Transactions | ✅ commit/rollback through DuckDB/DuckLake |
+| Initial schema | ✅ `EnsureCreated`; unsupported physical constraints and indexes are omitted |
+| Bulk insert | ✅ DuckDB appender after provider-controlled connection initialization |
+| Upsert | ✅ staged appender batch plus `MERGE INTO` |
+| Read-only / named secret | ✅ dedicated profile options; credentials remain in the connection initializer |
+| Physical PK/FK/unique/check/index | ⛔ not supported by DuckLake; EF metadata remains logical only |
+| Sequences/store-generated values/SQL defaults | ⛔ store generation rejected; client-assigned or client-generated values required (literal defaults may exist in DDL but cannot be read back) |
+| EF migrations | ⛔ explicitly rejected; no safe EF history/locking contract without enforced uniqueness and `RETURNING` |
+| `EnsureDeleted` | ⛔ explicitly rejected to avoid deleting shared/remote backing stores implicitly |
+| Database-first scaffolding | 🛠️ profile-aware `dotnet ef dbcontext scaffold` entry point not implemented |
+| SaveChanges batching | ⛔ profile rejects current batching; use `BulkInsert` or `Upsert` |
+| Provider tiered storage | ⛔ incompatible; DuckLake owns Parquet layout and file lifecycle |
+
+See [DUCKLAKE.md](DUCKLAKE.md) for configuration, security, model rules, and operational guidance.
 
 ---
 
@@ -176,7 +201,7 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 ### Write performance
 | DuckDB capability | Provider |
 |---|---|
-| `Appender` (high-throughput bulk load) | ✅ exposed via `DbContext.BulkInsert(...)` (raw fast path; bypasses change tracking / generated values). `SaveChanges` still uses `INSERT … RETURNING`. |
+| `Appender` (high-throughput bulk load) | ✅ exposed via `DbContext.BulkInsert(...)` (raw fast path; bypasses change tracking / generated values). Native DuckDB `SaveChanges` uses `RETURNING`; DuckLake uses non-returning commands plus affected-row checks. |
 
 ### Functions
 Only a subset of DuckDB's large function library is LINQ-translatable. In addition to common string / math /
@@ -192,5 +217,6 @@ through `EF.Functions`. Other DuckDB-specific functions (`list_*`, `map_*`, many
 | Analytical / reporting / dashboards (read-heavy) | ✅ Good fit |
 | Embedded / edge / desktop local store | ✅ Good fit |
 | ETL / Parquet querying | ✅ Strong fit |
+| Shared lakehouse catalog / object-storage analytics through DuckLake | ✅ Good fit when the application owns logical uniqueness and schema deployment |
 | Using DuckDB as a full analytical engine (PIVOT/ASOF/SUMMARIZE, CSV/JSON/remote ingestion, native nested types, bulk-load) | ➖ Largely via raw SQL only — see §4 |
 | Multi-instance / high-concurrency OLTP system-of-record | ⛔ Not suitable (engine) |

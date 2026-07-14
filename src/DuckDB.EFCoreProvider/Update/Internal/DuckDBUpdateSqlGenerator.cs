@@ -1,4 +1,5 @@
-﻿using DuckDB.EFCoreProvider.Metadata.Internal;
+﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 using System.Text;
@@ -13,8 +14,108 @@ namespace DuckDB.EFCoreProvider.Update.Internal;
 /// </summary>
 public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 {
-    public DuckDBUpdateSqlGenerator(UpdateSqlGeneratorDependencies dependencies) : base(dependencies)
+    private readonly bool _isDuckLake;
+
+    public DuckDBUpdateSqlGenerator(UpdateSqlGeneratorDependencies dependencies)
+        : this(dependencies, null)
     {
+    }
+
+    public DuckDBUpdateSqlGenerator(
+        UpdateSqlGeneratorDependencies dependencies,
+        IDuckLakeSingletonOptions? singletonOptions)
+        : base(dependencies)
+    {
+        _isDuckLake = singletonOptions?.IsDuckLake == true;
+    }
+
+    /// <inheritdoc />
+    public override ResultSetMapping AppendInsertOperation(
+        StringBuilder commandStringBuilder,
+        IReadOnlyModificationCommand command,
+        int commandPosition,
+        out bool requiresTransaction)
+    {
+        if (!_isDuckLake)
+        {
+            return base.AppendInsertOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
+        }
+
+        var operations = command.ColumnModifications;
+        var readOperations = operations.Where(operation => operation.IsRead).ToList();
+        EnsureNoStoreGeneratedValues(command, readOperations);
+
+        var writeOperations = operations.Where(operation => operation.IsWrite).ToList();
+        AppendInsertCommand(commandStringBuilder, command.TableName, command.Schema, writeOperations, []);
+        requiresTransaction = false;
+        return ResultSetMapping.NoResults;
+    }
+
+    /// <inheritdoc />
+    public override ResultSetMapping AppendUpdateOperation(
+        StringBuilder commandStringBuilder,
+        IReadOnlyModificationCommand command,
+        int commandPosition,
+        out bool requiresTransaction)
+    {
+        if (!_isDuckLake)
+        {
+            return base.AppendUpdateOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
+        }
+
+        var operations = command.ColumnModifications;
+        var readOperations = operations.Where(operation => operation.IsRead).ToList();
+        EnsureNoStoreGeneratedValues(command, readOperations);
+
+        AppendUpdateCommand(
+            commandStringBuilder,
+            command.TableName,
+            command.Schema,
+            operations.Where(operation => operation.IsWrite).ToList(),
+            [],
+            operations.Where(operation => operation.IsCondition).ToList());
+        // DuckLake does not physically enforce EF's logical keys. If duplicate key rows exist, an update can
+        // affect more than one row and the modification batch detects that only after execution. Require a
+        // transaction so EF can roll the statement back before surfacing DbUpdateConcurrencyException.
+        requiresTransaction = true;
+        return ResultSetMapping.NoResults;
+    }
+
+    /// <inheritdoc />
+    public override ResultSetMapping AppendDeleteOperation(
+        StringBuilder commandStringBuilder,
+        IReadOnlyModificationCommand command,
+        int commandPosition,
+        out bool requiresTransaction)
+    {
+        if (!_isDuckLake)
+        {
+            return base.AppendDeleteOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
+        }
+
+        AppendDeleteCommand(
+            commandStringBuilder,
+            command.TableName,
+            command.Schema,
+            [],
+            command.ColumnModifications.Where(operation => operation.IsCondition).ToList());
+        // As with updates, the affected-row check happens after execution and must be able to roll back a
+        // multi-row match caused by duplicate logical keys.
+        requiresTransaction = true;
+        return ResultSetMapping.NoResults;
+    }
+
+    private static void EnsureNoStoreGeneratedValues(
+        IReadOnlyModificationCommand command,
+        IReadOnlyList<IColumnModification> readOperations)
+    {
+        if (readOperations.Count > 0)
+        {
+            throw new NotSupportedException(
+                $"DuckLake does not support INSERT/UPDATE RETURNING. Table '{command.TableName}' has "
+                + $"store-generated column(s): {string.Join(", ", readOperations.Select(operation => operation.ColumnName))}. "
+                + "Configure client-assigned values or literal defaults that do not need to be read back.");
+        }
     }
 
     public override void AppendNextSequenceValueOperation(StringBuilder commandStringBuilder, string name, string? schema)

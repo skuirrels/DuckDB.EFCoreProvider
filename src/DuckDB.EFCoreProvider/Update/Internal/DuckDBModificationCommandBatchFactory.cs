@@ -32,6 +32,7 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
     private readonly bool _bulkInsertBatching;
     private readonly bool _bulkUpdateBatching;
     private readonly bool _bulkDeleteBatching;
+    private readonly bool _isDuckLake;
 
     public DuckDBModificationCommandBatchFactory(
         ModificationCommandBatchFactoryDependencies dependencies,
@@ -44,6 +45,7 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
         _bulkInsertBatching = optionsExtension?.BulkInsertBatching ?? false;
         _bulkUpdateBatching = optionsExtension?.BulkUpdateBatching ?? false;
         _bulkDeleteBatching = optionsExtension?.BulkDeleteBatching ?? false;
+        _isDuckLake = optionsExtension?.DuckLakeOptions is not null;
 
         if (_maxBatchSize <= 0)
         {
@@ -58,6 +60,18 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
 
     public ModificationCommandBatch Create()
     {
+        if (_isDuckLake)
+        {
+            if (_bulkInsertBatching || _bulkUpdateBatching || _bulkDeleteBatching)
+            {
+                throw new NotSupportedException(
+                    "SaveChanges batching is not supported by the DuckLake profile because DuckLake does not expose "
+                    + "RETURNING result sets. Use the appender-based BulkInsert or the MERGE-based Upsert API instead.");
+            }
+
+            return new DuckLakeModificationCommandBatch(Dependencies);
+        }
+
         // Insert/update/delete batching changes failure semantics to be atomic per merged run, so it is
         // opt-in. When none is enabled, fall back to EF Core's one-command-per-batch behaviour, preserving
         // standard semantics.
