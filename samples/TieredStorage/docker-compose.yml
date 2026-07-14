@@ -2,13 +2,17 @@
 #
 #   docker compose -f samples/TieredStorage/docker-compose.yml up -d
 #   dotnet run --project samples/TieredStorage -- s3       # uses the minio service
+#   dotnet run --project samples/TieredStorage -- gcs      # TYPE gcs + gcs:// via the minio service
 #   dotnet run --project samples/TieredStorage -- azure    # uses the azurite service
 #   docker compose -f samples/TieredStorage/docker-compose.yml down -v   # tear down + wipe data
 #
-# - minio    : S3-compatible store (API :9000, console :9001, minioadmin/minioadmin); createbucket makes 'tier'.
+# - minio    : S3-compatible store (API :9000, console :9001, minioadmin/minioadmin); createbucket makes
+#              'tier' for S3 mode and 'gcs-tier' for GCS mode.
 # - azurite  : Azure Blob emulator (:10000, well-known devstoreaccount1); the sample creates the 'tier' container.
 #
-# Defaults match samples/TieredStorage/Program.cs; override with TIER_S3_* or TIER_AZURE_* to point at real cloud.
+# MinIO is not a Google Cloud emulator. GCS mode deliberately uses its S3-compatible endpoint to validate
+# DuckDB's TYPE gcs secret, gcs:// paths, and archive round-trip. Validate Google IAM/HMAC against a real GCS
+# bucket before production. Defaults match Program.cs; override TIER_S3_*, TIER_GCS_*, or TIER_AZURE_*.
 
 services:
   minio:
@@ -21,7 +25,7 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9001"
 
-  # One-shot: wait for MinIO, then create the bucket the sample uses. Exits when done.
+  # One-shot: wait for MinIO, then create the buckets used by the S3 and GCS modes. Exits when done.
   createbucket:
     image: minio/mc
     depends_on:
@@ -30,7 +34,8 @@ services:
       /bin/sh -c "
       until mc alias set local http://minio:9000 minioadmin minioadmin; do echo 'waiting for minio...'; sleep 1; done &&
       mc mb --ignore-existing local/tier &&
-      echo 'bucket tier ready'
+      mc mb --ignore-existing local/gcs-tier &&
+      echo 'buckets tier and gcs-tier ready'
       "
 
   azurite:

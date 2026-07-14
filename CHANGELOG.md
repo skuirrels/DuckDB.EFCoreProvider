@@ -13,6 +13,10 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   scalar/date types, collision-free physical names, and a safe lifecycle bucket. A versioned signature persists
   the complete ordered transform/name/type layout before copying, preventing incompatible or orphaned layouts
   from being mixed silently.
+- Add a runnable Google Cloud Storage tiered-storage mode using DuckDB's `TYPE gcs` secret and `gcs://` paths.
+  The Docker sample provisions a separate MinIO interoperability bucket, integration coverage verifies archive
+  writes, reads, and idempotent re-runs, and production guidance documents GCS HMAC credentials and lifecycle
+  retention. No public API changes.
 
 ## 1.3.0
 

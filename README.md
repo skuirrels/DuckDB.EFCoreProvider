@@ -326,13 +326,14 @@ db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
 > ```bash
 > dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (no setup)
 >
-> # S3 or Azure mode: start the local MinIO + Azurite, then run against one of them:
+> # Remote modes: start local MinIO + Azurite, then run against one of them:
 > docker compose -f samples/TieredStorage/docker-compose.yml up -d
-> dotnet run --project samples/TieredStorage -- s3     # cold archive on S3      (via httpfs, MinIO)
-> dotnet run --project samples/TieredStorage -- azure  # cold archive on Azure   (via azure ext, Azurite)
+> dotnet run --project samples/TieredStorage -- s3     # S3       (httpfs + MinIO)
+> dotnet run --project samples/TieredStorage -- gcs    # GCS      (TYPE gcs + gcs:// through MinIO)
+> dotnet run --project samples/TieredStorage -- azure  # Azure    (azure extension + Azurite)
 > ```
-> The remote modes target that MinIO / Azurite by default; override the `TIER_S3_*` or `TIER_AZURE_*` environment
-> variables to point at real S3 / Azure.
+> The remote modes target MinIO / Azurite by default. Override `TIER_S3_*`, `TIER_GCS_*`, or `TIER_AZURE_*`
+> to point at real S3, Google Cloud Storage, or Azure.
 
 **See the two tiers for yourself.** After a run, the hot rows are `BASE TABLE`s in the `.duckdb` file and the
 cold rows are hive-partitioned Parquet in the archive; the generated `*_tiered` views union them. Inspect each
@@ -358,24 +359,25 @@ SELECT (SELECT count(*) FROM Invoices)                                     AS ho
 `EXPLAIN SELECT * FROM Invoices_tiered` makes the union structural: a `UNION` of a `SEQ_SCAN` on the hot
 `Invoices` table beside a `READ_PARQUET` over the archive. (In local mode the sample runs a retention purge at
 the end, so some archived partitions are already gone when you look — `hot + cold == union` still holds, with
-fewer cold rows; S3 mode skips the purge, so you see the full archive.)
+fewer cold rows; remote modes skip the purge, so you see the full archive.)
 
-**Cold storage on S3 (and Azure).** Point `archivePath` at an object-store URL — `s3://`, `gcs://`, `r2://` (all
-via DuckDB's `httpfs` extension), or `az://`/`azure://`/`abfss://` (via the separate `azure` extension) — and
-DuckDB reads and writes the archive there directly. Hot data stays in the local file, cold data on cheap durable
-storage, one set of views over both. Load the extension and configure credentials with a connection interceptor
-(the `httpfs`/`s3` form for S3, an `INSTALL azure` / `azure`-secret form for Azure). Verified against MinIO (S3)
-and Azurite (Azure). The two maintenance calls differ on remote storage:
+**Cold storage on S3, Google Cloud Storage, and Azure.** Point `archivePath` at an object-store URL — `s3://`,
+`gcs://`/`gs://`, `r2://` (all via DuckDB's `httpfs` extension), or `az://`/`azure://`/`abfss://` (via the
+separate `azure` extension) — and DuckDB reads and writes the archive there directly. Hot data stays in the
+local file, cold data on cheap durable storage, one set of views over both. S3 uses a `TYPE s3` secret; GCS uses
+a `TYPE gcs` secret with GCS interoperability (HMAC) credentials; Azure uses the `azure` extension and an
+Azure-typed secret.
 
-- **`ArchiveTierAsync` works against S3 exactly as on local disk** — archiving, incremental writes, idempotent
-  re-runs, and crash-safety all behave identically (verified against MinIO).
+- **`ArchiveTierAsync` works against S3, GCS, and Azure as on local disk.** The sample verifies S3 and the GCS
+  URL/secret path against MinIO and Azure against Azurite. MinIO is not a Google Cloud emulator, so use a real
+  GCS bucket to validate Google IAM/HMAC and service-specific behavior before production.
 - **`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive** — DuckDB can't delete objects
-  from an object store. Enforce retention with the store's own age-based expiry instead (an **S3 bucket lifecycle
-  rule** or an **Azure Blob lifecycle-management policy**) on the archive prefix; the hive-partitioned layout maps
-  cleanly onto it.
+  from an object store. Enforce upload-age retention with an **S3 lifecycle rule**, **GCS Object Lifecycle
+  Management**, or an **Azure Blob lifecycle-management policy**. If retention must follow the partition's
+  business date (including backfills), use a prefix-aware external cleanup job instead of upload age.
 
-Full guide: [Cold storage on S3](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-and-other-object-stores); the
-sample above runs against S3 with `-- s3`.
+Full guide: [Cold storage on S3 and GCS](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-google-cloud-storage-and-other-object-stores);
+the sample above runs the GCS path with `-- gcs`.
 
 **Child view guard (advanced).** In an aggregate, a child row is shown as hot only when its root is on the hot
 side of the boundary — a semijoin that keeps reports correct even in the brief window if an archive process

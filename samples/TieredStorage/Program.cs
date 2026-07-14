@@ -4,12 +4,14 @@
 //
 //   dotnet run --project samples/TieredStorage            # cold archive on the local filesystem (default)
 //   dotnet run --project samples/TieredStorage -- s3      # cold archive on S3 / an S3-compatible store (httpfs)
+//   dotnet run --project samples/TieredStorage -- gcs     # cold archive on Google Cloud Storage (httpfs)
 //   dotnet run --project samples/TieredStorage -- azure   # cold archive on Azure Blob Storage (azure extension)
 //
-// The s3/azure modes target a local MinIO / Azurite by default. Start them (and, for S3, auto-create the
-// bucket) with the compose file next to this sample:
+// The s3/gcs/azure modes target local MinIO / Azurite services by default. GCS uses MinIO's S3-compatible API
+// to exercise DuckDB's TYPE gcs secret and gcs:// URL path locally; use a real GCS bucket to validate Google IAM.
+// Start the services and auto-create the MinIO buckets with the compose file next to this sample:
 //   docker compose -f samples/TieredStorage/docker-compose.yml up -d
-// Override TIER_S3_* or TIER_AZURE_CONNECTION_STRING / TIER_AZURE_CONTAINER to point at real S3 / Azure.
+// Override TIER_S3_*, TIER_GCS_*, or TIER_AZURE_* to point at a real cloud store.
 
 using Azure.Storage.Blobs;
 using DuckDB.EFCoreProvider.Extensions;
@@ -20,17 +22,21 @@ using System.Data.Common;
 
 var mode = (args.Length > 0 ? args[0].Trim('-') : "local").ToLowerInvariant();
 var useS3 = mode == "s3";
+var useGcs = mode == "gcs";
 var useAzure = mode == "azure";
-var useRemote = useS3 || useAzure;
+var useRemote = useS3 || useGcs || useAzure;
 
 const string dbPath = "tiered_sample.duckdb";
 const string localArchiveRoot = "tiered_sample_archive";
 
-var s3 = useS3 ? S3Options.FromEnvironment() : null;
+var httpfs =
+    useS3 ? HttpfsOptions.FromS3Environment() :
+    useGcs ? HttpfsOptions.FromGcsEnvironment() :
+    null;
 var azure = useAzure ? AzureOptions.FromEnvironment() : null;
 
 var archiveRoot =
-    useS3 ? $"s3://{s3!.Bucket}/tiered_sample" :
+    httpfs is not null ? $"{httpfs.Scheme}://{httpfs.Bucket}/tiered_sample" :
     useAzure ? $"azure://{azure!.Container}/tiered_sample" :
     localArchiveRoot;
 var invoiceArchive = $"{archiveRoot}/invoices";   // each root aggregate gets its own, non-overlapping path
@@ -38,7 +44,7 @@ var auditArchive = $"{archiveRoot}/audit";
 
 // One connection interceptor prepares DuckDB for the chosen object store; local mode needs none.
 DbConnectionInterceptor? cloudSetup =
-    s3 is not null ? new HttpfsSetupInterceptor(s3) :
+    httpfs is not null ? new HttpfsSetupInterceptor(httpfs) :
     azure is not null ? new AzureSetupInterceptor(azure) :
     null;
 
@@ -49,10 +55,14 @@ if (!useRemote && Directory.Exists(localArchiveRoot)) Directory.Delete(localArch
 // Azure only: unlike a local directory, DuckDB does not create the blob container, so ensure it exists first.
 if (azure is not null) await new BlobContainerClient(azure.ConnectionString, azure.Container).CreateIfNotExistsAsync();
 
-Console.WriteLine(
-    useS3 ? $"Cold archive: {archiveRoot}  (S3 endpoint '{s3!.Endpoint}')\n" :
-    useAzure ? $"Cold archive: {archiveRoot}  (Azure Blob Storage)\n" :
-    $"Cold archive: ./{localArchiveRoot}  (local filesystem)\n");
+var coldArchiveDescription =
+    httpfs is not null
+        ? $"Cold archive: {archiveRoot}  ({httpfs.DisplayName}, "
+          + (string.IsNullOrEmpty(httpfs.Endpoint) ? "default cloud endpoint)\n" : $"endpoint '{httpfs.Endpoint}')\n")
+        : useAzure
+            ? $"Cold archive: {archiveRoot}  (Azure Blob Storage)\n"
+            : $"Cold archive: ./{localArchiveRoot}  (local filesystem)\n";
+Console.WriteLine(coldArchiveDescription);
 
 using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, cloudSetup))
 {
@@ -112,7 +122,7 @@ using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, cloudSet
     }
 
     // Retention: on local disk we purge partitions directly; on an object store, PurgeArchiveOlderThan is not
-    // supported (DuckDB can't delete objects) — use a bucket lifecycle rule / Azure lifecycle-management policy.
+    // supported (DuckDB can't delete objects) — use the cloud store's lifecycle-management policy.
     if (!useRemote)
     {
         db.Database.PurgeArchiveOlderThan<Invoice>(thisMonth.AddMonths(-18));
@@ -210,14 +220,17 @@ internal sealed class SampleContext(string dbPath, string invoiceArchive, string
     }
 }
 
-// --- S3 setup: loads httpfs and configures S3 credentials on every connection. ---
-internal sealed class HttpfsSetupInterceptor(S3Options s3) : DbConnectionInterceptor
+// --- S3/GCS setup: loads httpfs and configures credentials on every connection. ---
+internal sealed class HttpfsSetupInterceptor(HttpfsOptions options) : DbConnectionInterceptor
 {
     private string SetupSql =>
-        "INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET tiersample (TYPE s3, "
-        + $"KEY_ID '{s3.KeyId}', SECRET '{s3.Secret}', REGION '{s3.Region}'"
-        + (string.IsNullOrEmpty(s3.Endpoint) ? "" : $", ENDPOINT '{s3.Endpoint}', URL_STYLE 'path', USE_SSL {(s3.UseSsl ? "true" : "false")}")
+        $"INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET tiersample (TYPE {options.SecretType}, "
+        + $"KEY_ID {SqlLiteral(options.KeyId)}, SECRET {SqlLiteral(options.Secret)}"
+        + (string.IsNullOrEmpty(options.Region) ? "" : $", REGION {SqlLiteral(options.Region)}")
+        + (string.IsNullOrEmpty(options.Endpoint) ? "" : $", ENDPOINT {SqlLiteral(options.Endpoint)}, URL_STYLE 'path', USE_SSL {(options.UseSsl ? "true" : "false")}")
         + ");";
+
+    private static string SqlLiteral(string value) => $"'{value.Replace("'", "''")}'";
 
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
@@ -256,15 +269,38 @@ internal sealed class AzureSetupInterceptor(AzureOptions azure) : DbConnectionIn
     }
 }
 
-internal sealed record S3Options(string Endpoint, string KeyId, string Secret, string Region, string Bucket, bool UseSsl)
+internal sealed record HttpfsOptions(
+    string Scheme,
+    string SecretType,
+    string DisplayName,
+    string Endpoint,
+    string KeyId,
+    string Secret,
+    string? Region,
+    string Bucket,
+    bool UseSsl)
 {
-    public static S3Options FromEnvironment() => new(
+    public static HttpfsOptions FromS3Environment() => new(
+        "s3",
+        "s3",
+        "S3",
         Environment.GetEnvironmentVariable("TIER_S3_ENDPOINT") ?? "localhost:9000",
         Environment.GetEnvironmentVariable("TIER_S3_KEY") ?? "minioadmin",
         Environment.GetEnvironmentVariable("TIER_S3_SECRET") ?? "minioadmin",
         Environment.GetEnvironmentVariable("TIER_S3_REGION") ?? "us-east-1",
         Environment.GetEnvironmentVariable("TIER_S3_BUCKET") ?? "tier",
         string.Equals(Environment.GetEnvironmentVariable("TIER_S3_SSL"), "true", StringComparison.OrdinalIgnoreCase));
+
+    public static HttpfsOptions FromGcsEnvironment() => new(
+        "gcs",
+        "gcs",
+        "Google Cloud Storage",
+        Environment.GetEnvironmentVariable("TIER_GCS_ENDPOINT") ?? "localhost:9000",
+        Environment.GetEnvironmentVariable("TIER_GCS_KEY_ID") ?? "minioadmin",
+        Environment.GetEnvironmentVariable("TIER_GCS_SECRET") ?? "minioadmin",
+        null,
+        Environment.GetEnvironmentVariable("TIER_GCS_BUCKET") ?? "gcs-tier",
+        string.Equals(Environment.GetEnvironmentVariable("TIER_GCS_SSL"), "true", StringComparison.OrdinalIgnoreCase));
 }
 
 internal sealed record AzureOptions(string ConnectionString, string Container)

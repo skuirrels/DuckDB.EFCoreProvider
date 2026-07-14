@@ -7,9 +7,9 @@ using Xunit;
 namespace Microsoft.EntityFrameworkCore;
 
 /// <summary>
-///     Tests for tiering the cold archive to an object store (s3://, gcs://, …). The archive round-trip
-///     against a live S3-compatible endpoint is gated on environment variables (see
-///     <see cref="MinIoFactAttribute" />); the remote-purge guard runs everywhere because it never touches S3.
+///     Tests for tiering the cold archive to an object store (s3://, gcs://, …). The S3 and GCS archive
+///     round-trips against a live S3-compatible endpoint are gated on environment variables (see
+///     <see cref="MinIoFactAttribute" />); the remote-purge guard runs everywhere because it never connects.
 /// </summary>
 public sealed class TieredStorageS3Tests : IDisposable
 {
@@ -35,20 +35,29 @@ public sealed class TieredStorageS3Tests : IDisposable
     [Fact]
     public void Purge_on_a_remote_archive_is_rejected_with_guidance()
     {
-        // No S3 access: the guard fires on the archive path's URL scheme before any connection is opened.
-        using var context = new S3Context(Path.Combine(_root, "s.duckdb"), "s3://example-bucket/invoices", s3: null);
+        // No object-store access: the guard fires on the archive path's URL scheme before a connection opens.
+        using var context = new RemotePurgeContext(
+            Path.Combine(_root, "purge.duckdb"),
+            "gcs://example-bucket/invoices");
 
         var ex = Assert.Throws<NotSupportedException>(() => context.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow));
         Assert.Contains("lifecycle rule", ex.Message);
     }
 
     [MinIoFact]
-    public async Task Archives_and_reads_an_aggregate_on_s3()
-    {
-        var s3 = S3Options.FromEnvironment()!;
-        var archivePath = $"s3://{s3.Bucket}/tier-int-{Guid.NewGuid():N}";
+    public Task Archives_and_reads_an_aggregate_on_s3()
+        => ArchiveRoundTrip<S3Marker>("s3", "s3");
 
-        using var context = new S3Context(Path.Combine(_root, "s.duckdb"), archivePath, s3);
+    [MinIoFact]
+    public Task Archives_and_reads_an_aggregate_through_the_gcs_scheme()
+        => ArchiveRoundTrip<GcsMarker>("gcs", "gcs");
+
+    private async Task ArchiveRoundTrip<TMarker>(string scheme, string secretType)
+    {
+        var httpfs = HttpfsOptions.FromEnvironment(secretType)!;
+        var archivePath = $"{scheme}://{httpfs.Bucket}/tier-int-{Guid.NewGuid():N}";
+
+        using var context = new ObjectStoreContext<TMarker>(Path.Combine(_root, $"{scheme}.duckdb"), archivePath, httpfs);
         context.Database.EnsureCreated();
 
         var baseDate = new DateTime(2025, 7, 1);
@@ -71,7 +80,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         // The tiered read-models now read Parquet straight from the object store — full history, no dup/gap.
         Assert.Equal(expected, (context.InvoiceHistory.Count(), context.LineHistory.Count(), context.LineHistory.Sum(l => l.Amount)));
 
-        // Idempotent re-run against S3.
+        // Idempotent re-run against the remote store.
         var rerun = await context.Database.ArchiveTierAsync<Invoice>(baseDate.AddMonths(-12));
         Assert.True(rerun.NoOp);
         Assert.Equal(expected, (context.InvoiceHistory.Count(), context.LineHistory.Count(), context.LineHistory.Sum(l => l.Amount)));
@@ -82,7 +91,10 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed class InvoiceRm { public int Id { get; set; } public DateTime InvoiceDate { get; set; } }
     private sealed class InvoiceLineRm { public int Id { get; set; } public int InvoiceId { get; set; } public decimal Amount { get; set; } }
 
-    private sealed class S3Context(string dbPath, string archivePath, S3Options? s3) : DbContext
+    private sealed class S3Marker { }
+    private sealed class GcsMarker { }
+
+    private sealed class ObjectStoreContext<TMarker>(string dbPath, string archivePath, HttpfsOptions httpfs) : DbContext
     {
         public DbSet<Invoice> Invoices => Set<Invoice>();
         public DbSet<InvoiceRm> InvoiceHistory => Set<InvoiceRm>();
@@ -91,10 +103,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         protected override void OnConfiguring(DbContextOptionsBuilder options)
         {
             options.UseDuckDB($"Data Source={dbPath}");
-            if (s3 is not null)
-            {
-                options.AddInterceptors(new HttpfsSetupInterceptor(s3));
-            }
+            options.AddInterceptors(new HttpfsSetupInterceptor(httpfs));
         }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -111,13 +120,24 @@ public sealed class TieredStorageS3Tests : IDisposable
         }
     }
 
+    private sealed class RemotePurgeContext(string dbPath, string archivePath) : DbContext
+    {
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}");
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath, TierGranularity.Month);
+    }
+
     // Loads httpfs and configures object-store credentials on every connection open — the documented pattern.
-    private sealed class HttpfsSetupInterceptor(S3Options s3) : DbConnectionInterceptor
+    private sealed class HttpfsSetupInterceptor(HttpfsOptions options) : DbConnectionInterceptor
     {
         private string Sql =>
-            "INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET s3test (TYPE s3, "
-            + $"KEY_ID '{s3.KeyId}', SECRET '{s3.Secret}', ENDPOINT '{s3.Endpoint}', "
-            + $"URL_STYLE 'path', USE_SSL {(s3.UseSsl ? "true" : "false")}, REGION '{s3.Region}');";
+            $"INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET objectstoretest (TYPE {options.SecretType}, "
+            + $"KEY_ID {SqlLiteral(options.KeyId)}, SECRET {SqlLiteral(options.Secret)}, ENDPOINT {SqlLiteral(options.Endpoint)}, "
+            + $"URL_STYLE 'path', USE_SSL {(options.UseSsl ? "true" : "false")})";
+
+        private static string SqlLiteral(string value) => $"'{value.Replace("'", "''")}'";
 
         public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
         {
@@ -134,9 +154,9 @@ public sealed class TieredStorageS3Tests : IDisposable
         }
     }
 
-    private sealed record S3Options(string Endpoint, string KeyId, string Secret, string Region, string Bucket, bool UseSsl)
+    private sealed record HttpfsOptions(string SecretType, string Endpoint, string KeyId, string Secret, string Bucket, bool UseSsl)
     {
-        public static S3Options? FromEnvironment()
+        public static HttpfsOptions? FromEnvironment(string secretType)
         {
             var endpoint = Environment.GetEnvironmentVariable("DUCKDB_S3_TEST_ENDPOINT");
             var bucket = Environment.GetEnvironmentVariable("DUCKDB_S3_TEST_BUCKET");
@@ -145,11 +165,11 @@ public sealed class TieredStorageS3Tests : IDisposable
                 return null;
             }
 
-            return new S3Options(
+            return new HttpfsOptions(
+                secretType,
                 endpoint,
                 Environment.GetEnvironmentVariable("DUCKDB_S3_TEST_KEY") ?? "minioadmin",
                 Environment.GetEnvironmentVariable("DUCKDB_S3_TEST_SECRET") ?? "minioadmin",
-                Environment.GetEnvironmentVariable("DUCKDB_S3_TEST_REGION") ?? "us-east-1",
                 bucket,
                 string.Equals(Environment.GetEnvironmentVariable("DUCKDB_S3_TEST_SSL"), "true", StringComparison.OrdinalIgnoreCase));
         }
@@ -164,7 +184,7 @@ public sealed class MinIoFactAttribute : FactAttribute
         if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DUCKDB_S3_TEST_ENDPOINT"))
             || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DUCKDB_S3_TEST_BUCKET")))
         {
-            Skip = "Set DUCKDB_S3_TEST_ENDPOINT and DUCKDB_S3_TEST_BUCKET (plus optional _KEY/_SECRET/_REGION/_SSL) to run S3 tiered-storage integration tests.";
+            Skip = "Set DUCKDB_S3_TEST_ENDPOINT and DUCKDB_S3_TEST_BUCKET (plus optional _KEY/_SECRET/_SSL) to run S3/GCS interoperability tests.";
         }
     }
 }
