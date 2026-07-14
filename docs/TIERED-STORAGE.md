@@ -36,6 +36,7 @@ using Microsoft.EntityFrameworkCore;
 public class Invoice
 {
     public int Id { get; set; }
+    public int CustomerId { get; set; }
     public DateTime InvoiceDate { get; set; }
     public List<InvoiceLine> Lines { get; set; } = [];
 }
@@ -48,7 +49,7 @@ public class InvoiceLine
 }
 
 // Cold read-models — keyless projections for reporting (columns mirror the hot entity):
-public class InvoiceReport { public int Id { get; set; } public DateTime InvoiceDate { get; set; } }
+public class InvoiceReport { public int Id { get; set; } public int CustomerId { get; set; } public DateTime InvoiceDate { get; set; } }
 public class InvoiceLineReport { public int Id { get; set; } public int InvoiceId { get; set; } public decimal Amount { get; set; } }
 
 public class BillingContext : DbContext
@@ -62,8 +63,12 @@ public class BillingContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // i => i.InvoiceDate is this aggregate's timestamp property: the date that defines its hot/cold boundary (the watermark).
+        // InvoiceDate defines this aggregate's hot/cold boundary. The application separately declares
+        // the physical Hive hierarchy, in exact outer-to-inner directory order.
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
+            .PartitionBy(partitions => partitions
+                .By(i => i.CustomerId)
+                .ByMonth(i => i.InvoiceDate))
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
         // Deeper aggregates: nest another .Including(...) inside the line builder.
@@ -75,6 +80,56 @@ public class BillingContext : DbContext
 `i => i.InvoiceDate`). It governs that aggregate's entire hot/cold boundary and is chosen **per aggregate**, so
 `Invoice` can tier on `InvoiceDate`, `Order` on `PlacedUtc`, `AuditEvent` on `OccurredOn` — each independent, each
 with its own archive path.
+
+The ordered `PartitionBy` builder is the application's physical layout declaration. The example produces
+`CustomerId=42/InvoiceDate_month=2025-06-01/`; reversing the two calls reverses the directory hierarchy. Nothing in
+the provider is tied to customer or invoice terminology: each application chooses its own mapped root properties,
+their transformations, and their order:
+
+```csharp
+.PartitionBy(partitions => partitions
+    .By(order => order.TenantId)          // exact value
+    .ByYear(order => order.CreatedAt)     // calendar-year DATE bucket
+    .ByMonth(order => order.ReviewedAt)   // calendar-month DATE bucket
+    .ByDay(order => order.CompletedAt))   // calendar-day DATE bucket
+```
+
+An explicit plan must include the lifecycle property passed to `ToTieredStore` at a granularity at least as precise
+as the archive window (`ByMonth` or `ByDay` for monthly archives; `ByDay` for daily archives). This keeps incremental
+`OVERWRITE_OR_IGNORE` windows disjoint and crash-safe. `ByYear` is useful for another application date, but is not
+precise enough by itself to protect monthly or daily lifecycle windows.
+
+For the common exact-key-first layout, `.PartitionBy(i => i.CustomerId)` remains shorthand for an exact
+`CustomerId` key followed by an implicit bucket for the configured lifecycle property. Thus the shorthand above
+also produces `CustomerId=42/InvoiceDate_month=2025-06-01/`. Use the builder when the position or transformation
+must be explicit.
+
+Partition selectors must be direct mapped scalar properties on the aggregate root. Date transforms require
+`DateTime`, `DateTimeOffset`, or `DateOnly`. Child builders deliberately have no `PartitionBy` API: every included
+child obtains the root values through the existing child-to-root join and uses the same hierarchy. Use stable
+identifiers and avoid high-cardinality keys that would create many small files. Exact Hive values are cast back to
+their mapped DuckDB store type; derived date buckets are stored as `DATE`.
+
+### Query pruning follows the declared metadata
+
+Predicates stay application-shaped: query `CustomerId` and `InvoiceDate`, not the hidden Hive bucket column. For
+conjunctive equality/range predicates, the provider derives the corresponding bucket predicate from the model:
+
+```csharp
+var february = db.InvoiceHistory.Where(i =>
+    i.CustomerId == customerId
+    && i.InvoiceDate >= new DateTime(2025, 2, 1)
+    && i.InvoiceDate < new DateTime(2025, 3, 1));
+```
+
+With `CustomerId` then `InvoiceDate` month configured, DuckDB can prune to that customer's February directory.
+If the date predicate is omitted, it scans that customer's completed-date partitions; if the customer predicate is
+omitted, it scans the matching month across customers. Predicates beneath `OR` are deliberately not inferred,
+because adding a bucket filter there could change query semantics.
+
+`EXPLAIN ANALYZE` reports the result-bearing Parquet pruning as `Scanning Files: X/Y`. The crash/late-row guard may
+also show a separate key/timestamp probe over the cold files; that probe preserves the no-duplicate invariant and
+does not materialize the report's full projected columns.
 
 `.Including(...)` declares which navigations are **aggregate children** (archived with the root). Anything not
 included — e.g. an `InvoiceLine → Product` reference — stays hot.
@@ -163,8 +218,9 @@ var result = await db.Database.ArchiveTierAsync<Invoice>(DateTime.UtcNow.AddYear
 ```
 
 It is **idempotent and crash-safe**: the cutoff snaps down to the granularity so each period moves whole; each
-table's `COPY` overwrites only the partitions it writes; the views filter the hot side to `>= watermark` (roots)
-or "root is hot" (children) so reads never double-count or drop a row even before the delete runs; a re-run
+table's `COPY` overwrites only the partitions it writes; root views separate normal hot rows from late/backdated
+rows and suppress a hot row whose key is already cold, while child views use "root is hot", so reads never
+double-count or drop a row even before the delete runs; a re-run
 self-heals leftover hot rows. Deletes run leaf→root as separate autocommit statements because DuckDB checks
 foreign keys immediately and rejects deleting descendants and then their principals inside one transaction.
 Do not wrap `ArchiveTierAsync` for a multi-table aggregate in an application transaction; the provider rejects
@@ -262,16 +318,22 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
 - **Single writer.** DuckDB allows one writer. Run `ArchiveTierAsync` / `PurgeArchiveOlderThan` from the
   writing process with no other writer active (a maintenance window or the app's own scheduler).
 - **Absolute archive paths.** DuckDB resolves a relative archive path against the process working directory;
-  prefer an absolute path in production. Each table archives under `<archivePath>/<table>/year=…/month=…/`.
+  prefer an absolute path in production. Each table archives under
+  `<archivePath>/<table>/<declared-key-1>=…/<declared-key-2>=…/` (or the legacy temporal layout when no
+  `PartitionBy` is configured).
 - **Reference vs child.** Only `.Including`ed navigations archive. Archived rows are **snapshots** and may hold
   foreign keys into still-live tables (an archived line still points at a `Product` that could later be
   deleted) — correct for financial history, but a semantic to be aware of.
 - **Read-models mirror the hot columns.** A read-model whose column is missing on the source is rejected at
   model validation. Adding a column to the hot entity is safe (cold rows read `NULL` after the view is
   regenerated); renaming/retyping an archived column needs the affected partitions rewritten.
-- **Validation.** Reserved partition column names (`year`/`month`/`day`), a child without a single-column
-  foreign key to its declared parent, and overlapping aggregate archive paths are all rejected at model
-  validation.
+- **Validation.** Missing/duplicate partition properties, non-date bucket transforms, an explicit plan without a
+  safe lifecycle bucket, partitions declared anywhere except the aggregate root, physical-name collisions with
+  root or child columns, a child without a single-column foreign key to its declared parent, and overlapping
+  aggregate archive paths are rejected at model validation. Changing partition order, transforms, granularity,
+  mapped names, or mapped store types after cold files exist requires rewriting or clearing that aggregate's
+  archive. The provider records the complete versioned layout before copying files, so crash-orphaned or mixed
+  Hive layouts are rejected rather than opened with an incompatible schema.
 - **Child view guard.** A child row is shown as hot only when its root is hot (a semijoin), which keeps reads
   correct in the brief window if an archive crashes between its `COPY` and delete. For deep aggregates you can
   opt out with `ToTieredStore(...).WithoutHotChildFilter()` — child views become a plain `SELECT * FROM child`

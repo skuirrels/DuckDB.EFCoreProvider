@@ -1,6 +1,8 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using System.Data;
+using System.Text;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -45,6 +47,250 @@ public sealed class TieredStorageTests : IDisposable
         // Tiered read-models reproduce the full history exactly — no duplicates, no gaps, at every level.
         var (tInvoices, tLines, tAllocations, tAllocSum) = TieredTotals(context);
         Assert.Equal((invoices, lines, allocations, allocSum), (tInvoices, tLines, tAllocations, tAllocSum));
+    }
+
+    [Fact]
+    public async Task Additional_partition_is_declared_on_the_root_and_inherited_by_child_archives()
+    {
+        var dbPath = Path.Combine(_root, "customer.duckdb");
+        var archivePath = Path.Combine(_root, "customer-archive");
+        using var context = new CustomerPartitionContext(dbPath, archivePath);
+        context.Database.EnsureCreated();
+        context.Invoices.AddRange(
+            new Invoice
+            {
+                CustomerId = 10,
+                InvoiceDate = new DateTime(2024, 1, 10),
+                Lines = { new InvoiceLine { Amount = 10 } },
+            },
+            new Invoice
+            {
+                CustomerId = 20,
+                InvoiceDate = new DateTime(2024, 1, 20),
+                Lines = { new InvoiceLine { Amount = 20 } },
+            },
+            new Invoice
+            {
+                CustomerId = 30,
+                InvoiceDate = new DateTime(2024, 2, 10),
+                Lines = { new InvoiceLine { Amount = 30 } },
+            });
+        context.SaveChanges();
+
+        var result = await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+
+        Assert.Equal(2, result.RowsArchived);
+        foreach (var customerId in new[] { 10, 20 })
+        {
+            Assert.True(Directory.Exists(Path.Combine(
+                archivePath, "invoices", $"CustomerId={customerId}", "InvoiceDate_month=2024-01-01")));
+            Assert.True(Directory.Exists(Path.Combine(
+                archivePath, "invoice_lines", $"CustomerId={customerId}", "InvoiceDate_month=2024-01-01")));
+        }
+
+        Assert.Equal([10, 20, 30], context.InvoiceHistory.OrderBy(invoice => invoice.CustomerId).Select(invoice => invoice.CustomerId).ToList());
+        Assert.Equal(3, context.LineHistory.Count());
+        Assert.Equal(["CustomerId", "InvoiceDate"], context.Model.FindEntityType(typeof(Invoice))!.GetTieredStorePartitionProperties());
+        Assert.Empty(context.Model.FindEntityType(typeof(InvoiceLine))!.GetTieredStorePartitionProperties());
+    }
+
+    [Fact]
+    public async Task Declared_partition_order_controls_the_directory_hierarchy()
+    {
+        var archivePath = Path.Combine(_root, "month-first-archive");
+        using var context = new MonthFirstPartitionContext(Path.Combine(_root, "month-first.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Invoices.Add(new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 10) });
+        context.SaveChanges();
+
+        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+
+        Assert.True(Directory.Exists(Path.Combine(
+            archivePath, "invoices", "InvoiceDate_month=2024-01-01", "CustomerId=10")));
+    }
+
+    [Fact]
+    public async Task Date_partition_transforms_create_application_defined_year_month_and_day_buckets()
+    {
+        var archivePath = Path.Combine(_root, "date-buckets-archive");
+        using var context = new DateBucketPartitionContext(Path.Combine(_root, "date-buckets.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Records.Add(new DateBucketRecord
+        {
+            CustomerId = 10,
+            CreatedAt = new DateTime(2023, 12, 20),
+            ReviewedAt = new DateTime(2024, 1, 5),
+            CompletedAt = new DateTime(2024, 1, 10, 15, 30, 0),
+        });
+        context.SaveChanges();
+
+        await context.Database.ArchiveTierAsync<DateBucketRecord>(new DateTime(2024, 1, 11));
+
+        Assert.True(Directory.Exists(Path.Combine(
+            archivePath,
+            "date_bucket_records",
+            "CustomerId=10",
+            "CreatedAt_year=2023-01-01",
+            "ReviewedAt_month=2024-01-01",
+            "CompletedAt_day=2024-01-10")));
+    }
+
+    [Fact]
+    public async Task Customer_and_completed_month_predicates_prune_the_corresponding_parquet_partitions()
+    {
+        var archivePath = Path.Combine(_root, "pruning-archive");
+        using var context = new CustomerPartitionContext(Path.Combine(_root, "pruning.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Invoices.AddRange(
+            new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 10), Lines = { new InvoiceLine { Amount = 10 } } },
+            new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 2, 10), Lines = { new InvoiceLine { Amount = 10 } } },
+            new Invoice { CustomerId = 20, InvoiceDate = new DateTime(2024, 1, 10), Lines = { new InvoiceLine { Amount = 20 } } },
+            new Invoice { CustomerId = 20, InvoiceDate = new DateTime(2024, 2, 10), Lines = { new InvoiceLine { Amount = 20 } } });
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 3, 1));
+
+        var from = new DateTime(2024, 2, 1);
+        var to = new DateTime(2024, 2, 29);
+        var customerAndMonth = context.InvoiceHistory.Where(
+            invoice => invoice.CustomerId == 10 && invoice.InvoiceDate >= from && invoice.InvoiceDate < to);
+        var customerOnly = context.InvoiceHistory.Where(invoice => invoice.CustomerId == 10);
+        var monthOnly = context.InvoiceHistory.Where(invoice => invoice.InvoiceDate >= from && invoice.InvoiceDate < to);
+
+        var sql = customerAndMonth.ToQueryString();
+        Assert.Contains("InvoiceDate_month", sql);
+        Assert.Contains("date_trunc('month'", sql);
+        AssertFilesPruned(Explain(context, customerAndMonth), "1/4");
+        AssertFilesPruned(Explain(context, customerOnly), "2/4");
+        AssertFilesPruned(Explain(context, monthOnly), "2/4");
+        Assert.Equal([2], customerAndMonth.Select(invoice => invoice.Id).ToList());
+    }
+
+    [Fact]
+    public async Task Typed_partition_properties_preserve_store_types_across_hot_and_cold()
+    {
+        var dbPath = Path.Combine(_root, "typed.duckdb");
+        var archivePath = Path.Combine(_root, "typed-archive");
+        var coldTenant = Guid.Parse("550e8400-e29b-41d4-a716-446655440000");
+        var hotTenant = Guid.Parse("7c9e6679-7425-40de-944b-e07fc1f90ae7");
+        using var context = new TypedPartitionContext(dbPath, archivePath);
+        context.Database.EnsureCreated();
+        var preCopyPartitionSpec = context.Database.SqlQueryRaw<string>(
+            "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'typed_roots'").Single();
+        Assert.Contains("\"Version\":2", preCopyPartitionSpec);
+        context.Roots.AddRange(
+            new TypedPartitionRoot
+            {
+                ArchivedAt = new DateTime(2024, 1, 10),
+                CustomerId = 10,
+                Region = "EU/West",
+                IsPriority = true,
+                AmountBand = 12.34m,
+                SnapshotAt = new DateTime(2024, 1, 10, 12, 34, 56),
+                EffectiveDate = new DateOnly(2024, 1, 10),
+                TenantId = coldTenant,
+            },
+            new TypedPartitionRoot
+            {
+                ArchivedAt = new DateTime(2024, 2, 10),
+                CustomerId = 20,
+                Region = "US",
+                IsPriority = false,
+                AmountBand = 56.78m,
+                SnapshotAt = new DateTime(2024, 2, 10, 8, 0, 0),
+                EffectiveDate = new DateOnly(2024, 2, 10),
+                TenantId = hotTenant,
+            });
+        context.SaveChanges();
+
+        await context.Database.ArchiveTierAsync<TypedPartitionRoot>(new DateTime(2024, 2, 1));
+
+        Assert.Equal(69.12m, context.History.Sum(row => row.AmountBand));
+        Assert.Single(context.History.Where(row => row.IsPriority));
+        Assert.Single(context.History.Where(row => row.SnapshotAt < new DateTime(2024, 2, 1)));
+        Assert.Single(context.History.Where(row => row.EffectiveDate < new DateOnly(2024, 2, 1)));
+        Assert.Single(context.History.Where(row => row.TenantId == coldTenant));
+        Assert.Equal(["EU/West", "US"], context.History.OrderBy(row => row.CustomerId).Select(row => row.Region).ToList());
+
+        var coldFile = Assert.Single(Directory.GetFiles(archivePath, "*.parquet", SearchOption.AllDirectories));
+        Assert.Contains(Path.Combine("customer_id=10", "region_code=EU%2FWest"), coldFile);
+        Assert.Contains("ArchivedAt_month=2024-01-01", coldFile);
+        Assert.Equal(
+            ["CustomerId", "Region", "IsPriority", "AmountBand", "SnapshotAt", "EffectiveDate", "TenantId"],
+            context.Model.FindEntityType(typeof(TypedPartitionRoot))!.GetTieredStorePartitionProperties());
+
+        var partitionSpec = context.Database.SqlQueryRaw<string>(
+            "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'typed_roots'").Single();
+        Assert.Contains("\"Version\":2", partitionSpec);
+        Assert.Contains("\"Granularity\":0", partitionSpec);
+        Assert.Contains("\"Name\":\"AmountBand\",\"StoreType\":\"DECIMAL(10,2)\"", partitionSpec);
+        Assert.Contains("\"Name\":\"EffectiveDate\",\"StoreType\":\"DATE\"", partitionSpec);
+    }
+
+    [Fact]
+    public void Child_builder_does_not_expose_partition_configuration()
+        => Assert.DoesNotContain(
+            typeof(TieredChildBuilder<InvoiceLine>).GetMethods(),
+            method => method.Name == nameof(TieredStoreBuilder<Invoice>.PartitionBy));
+
+    [Fact]
+    public void Repeated_partition_calls_reject_duplicate_properties()
+    {
+        using var context = new DuplicatePartitionContext(Path.Combine(_root, "duplicate.duckdb"), Path.Combine(_root, "duplicate-archive"));
+        var exception = Assert.Throws<ArgumentException>(() => _ = context.Model);
+
+        Assert.Contains("can only be declared once", exception.Message);
+    }
+
+    [Fact]
+    public void Exact_value_shorthand_does_not_duplicate_the_lifecycle_property()
+    {
+        using var context = new ExactLifecyclePartitionContext(
+            Path.Combine(_root, "exact-lifecycle.duckdb"),
+            Path.Combine(_root, "exact-lifecycle-archive"));
+        using var repeated = new RepeatedExactLifecyclePartitionContext(
+            Path.Combine(_root, "repeated-exact-lifecycle.duckdb"),
+            Path.Combine(_root, "repeated-exact-lifecycle-archive"));
+
+        Assert.Equal(
+            ["InvoiceDate"],
+            context.Model.FindEntityType(typeof(Invoice))!.GetTieredStorePartitionProperties());
+        Assert.Equal(
+            ["CustomerId", "InvoiceDate"],
+            repeated.Model.FindEntityType(typeof(Invoice))!.GetTieredStorePartitionProperties());
+    }
+
+    [Fact]
+    public void Partition_metadata_on_a_child_is_rejected_at_model_validation()
+    {
+        using var context = new BadChildPartitionContext(Path.Combine(_root, "s.duckdb"), Path.Combine(_root, "a"));
+        var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
+
+        Assert.Contains("only be declared on an aggregate root", exception.Message);
+    }
+
+    [Fact]
+    public void Ordered_partition_plan_must_include_a_safe_lifecycle_bucket()
+    {
+        using var context = new MissingLifecyclePartitionContext(
+            Path.Combine(_root, "missing-lifecycle.duckdb"),
+            Path.Combine(_root, "missing-lifecycle-archive"));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
+
+        Assert.Contains("lifecycle property", exception.Message);
+        Assert.Contains("ByMonth", exception.Message);
+    }
+
+    [Fact]
+    public void Date_partition_transform_rejects_a_non_date_property()
+    {
+        using var context = new NonDateTransformContext(
+            Path.Combine(_root, "non-date.duckdb"),
+            Path.Combine(_root, "non-date-archive"));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
+
+        Assert.Contains("is not DateTime, DateTimeOffset, or DateOnly", exception.Message);
     }
 
     [Fact]
@@ -128,6 +374,26 @@ public sealed class TieredStorageTests : IDisposable
     }
 
     [Fact]
+    public void Existing_control_table_is_upgraded_with_partition_metadata()
+    {
+        using var context = CreateContext();
+        context.Database.ExecuteSqlRaw("DROP VIEW line_allocations_tiered;");
+        context.Database.ExecuteSqlRaw("DROP VIEW invoice_lines_tiered;");
+        context.Database.ExecuteSqlRaw("DROP VIEW invoices_tiered;");
+        context.Database.ExecuteSqlRaw("DROP TABLE __duckdb_tier_control;");
+        context.Database.ExecuteSqlRaw(
+            "CREATE TABLE __duckdb_tier_control (name TEXT PRIMARY KEY, watermark TIMESTAMP, archive_path TEXT, granularity TEXT);");
+
+        context.Database.EnsureTieredStoresCreated();
+
+        var partitionColumns = context.Database
+            .SqlQueryRaw<long>(
+                "SELECT count(*) AS \"Value\" FROM pragma_table_info('__duckdb_tier_control') WHERE name = 'partition_spec'")
+            .Single();
+        Assert.Equal(1, partitionColumns);
+    }
+
+    [Fact]
     public async Task Purge_drops_a_period_across_every_aggregate_table()
     {
         using var context = CreateContext();
@@ -187,6 +453,81 @@ public sealed class TieredStorageTests : IDisposable
         using var context = new BadReadModelContext(Path.Combine(_root, "s.duckdb"), Path.Combine(_root, "a"));
         var ex = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
         Assert.Contains("must mirror", ex.Message);
+    }
+
+    [Fact]
+    public async Task Changing_partition_layout_with_existing_cold_files_is_rejected()
+    {
+        var dbPath = Path.Combine(_root, "layout.duckdb");
+        var archivePath = Path.Combine(_root, "layout-archive");
+        using (var original = new InvoiceContext(dbPath, archivePath))
+        {
+            original.Database.EnsureCreated();
+            Seed(original, months: 2, baseDate: new DateTime(2024, 2, 1));
+            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        }
+
+        using var changed = new CustomerPartitionContext(dbPath, archivePath);
+        var exception = Assert.Throws<InvalidOperationException>(() => changed.Database.EnsureTieredStoresCreated());
+
+        Assert.Contains("different partition layout", exception.Message);
+        Assert.Contains("Rewrite or clear", exception.Message);
+    }
+
+    [Fact]
+    public async Task Unrecorded_cold_files_reject_a_new_partition_layout()
+    {
+        var dbPath = Path.Combine(_root, "orphan.duckdb");
+        var archivePath = Path.Combine(_root, "orphan-archive");
+        using (var original = new InvoiceContext(dbPath, archivePath))
+        {
+            original.Database.EnsureCreated();
+            Seed(original, months: 2, baseDate: new DateTime(2024, 2, 1));
+            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+            original.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control WHERE name = 'invoices';");
+        }
+
+        using var changed = new CustomerPartitionContext(dbPath, archivePath);
+        var exception = Assert.Throws<InvalidOperationException>(() => changed.Database.EnsureTieredStoresCreated());
+
+        Assert.Contains("unrecorded partition layout", exception.Message);
+        Assert.Contains("Rewrite or clear", exception.Message);
+    }
+
+    [Fact]
+    public async Task Changing_granularity_with_existing_cold_files_is_rejected()
+    {
+        var dbPath = Path.Combine(_root, "granularity.duckdb");
+        var archivePath = Path.Combine(_root, "granularity-archive");
+        using (var original = new InvoiceContext(dbPath, archivePath))
+        {
+            original.Database.EnsureCreated();
+            Seed(original, months: 2, baseDate: new DateTime(2024, 2, 1));
+            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        }
+
+        using var changed = new DayGranularityContext(dbPath, archivePath);
+        var exception = Assert.Throws<InvalidOperationException>(() => changed.Database.EnsureTieredStoresCreated());
+
+        Assert.Contains("different partition layout", exception.Message);
+        Assert.Contains("granularity", exception.Message);
+    }
+
+    [Fact]
+    public async Task Legacy_temporal_layout_is_backfilled_with_a_versioned_signature()
+    {
+        using var context = CreateContext();
+        Seed(context, months: 2, baseDate: new DateTime(2024, 2, 1));
+        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        context.Database.ExecuteSqlRaw(
+            "UPDATE __duckdb_tier_control SET partition_spec = NULL WHERE name = 'invoices';");
+
+        context.Database.EnsureTieredStoresCreated();
+
+        var partitionSpec = context.Database.SqlQueryRaw<string>(
+            "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'invoices'").Single();
+        Assert.Contains("\"Version\":2", partitionSpec);
+        Assert.Contains("\"Columns\":[]", partitionSpec);
     }
 
     [Fact]
@@ -331,12 +672,12 @@ public sealed class TieredStorageTests : IDisposable
             var glob = Path.Combine(archive, table).Replace("'", "''") + "/**/*.parquet";
 #pragma warning disable EF1002, EF1003 // table/columns/glob are test constants, not user input
             context.Database.ExecuteSqlRaw(
-                $"INSERT INTO {table} SELECT {columns} FROM read_parquet('{glob}', hive_partitioning=true, union_by_name=true);");
+                $"INSERT INTO {table} ({columns}) SELECT {columns} FROM read_parquet('{glob}', hive_partitioning=true, union_by_name=true);");
 #pragma warning restore EF1002, EF1003
         }
 
         // Foreign-key order: parents before children.
-        Copy("invoices", "\"Id\", \"InvoiceDate\"");
+        Copy("invoices", "\"Id\", \"CustomerId\", \"InvoiceDate\"");
         Copy("invoice_lines", "\"Id\", \"InvoiceId\", \"Amount\"");
         Copy("line_allocations", "\"Id\", \"InvoiceLineId\", \"Amount\"");
     }
@@ -361,6 +702,45 @@ public sealed class TieredStorageTests : IDisposable
         context.SaveChanges();
     }
 
+    private static string Explain<T>(DbContext context, IQueryable<T> query)
+    {
+        using var command = query.CreateDbCommand();
+        command.CommandText = "EXPLAIN ANALYZE " + command.CommandText;
+        var openedHere = command.Connection!.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            context.Database.OpenConnection();
+        }
+
+        try
+        {
+            using var reader = command.ExecuteReader();
+            var plan = new StringBuilder();
+            while (reader.Read())
+            {
+                for (var ordinal = 0; ordinal < reader.FieldCount; ordinal++)
+                {
+                    plan.AppendLine(reader.GetValue(ordinal)?.ToString());
+                }
+            }
+
+            return plan.ToString();
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                context.Database.CloseConnection();
+            }
+        }
+    }
+
+    private static void AssertFilesPruned(string plan, string expectedFraction)
+    {
+        Assert.Contains("Scanning Files:", plan);
+        Assert.Contains(expectedFraction, plan);
+    }
+
     private InvoiceContext CreateContext()
     {
         var context = new InvoiceContext(Path.Combine(_root, "store.duckdb"), Path.Combine(_root, "archive"));
@@ -371,6 +751,7 @@ public sealed class TieredStorageTests : IDisposable
     private sealed class Invoice
     {
         public int Id { get; set; }
+        public int CustomerId { get; set; }
         public DateTime InvoiceDate { get; set; }
         public List<InvoiceLine> Lines { get; set; } = [];
     }
@@ -395,6 +776,51 @@ public sealed class TieredStorageTests : IDisposable
     private sealed class InvoiceRm { public int Id { get; set; } public DateTime InvoiceDate { get; set; } }
     private sealed class InvoiceLineRm { public int Id { get; set; } public int InvoiceId { get; set; } public decimal Amount { get; set; } }
     private sealed class LineAllocationRm { public int Id { get; set; } public int InvoiceLineId { get; set; } public decimal Amount { get; set; } }
+    private sealed class CustomerInvoiceRm { public int Id { get; set; } public int CustomerId { get; set; } public DateTime InvoiceDate { get; set; } }
+
+    private sealed class DateBucketRecord
+    {
+        public int Id { get; set; }
+        public int CustomerId { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime ReviewedAt { get; set; }
+        public DateTime CompletedAt { get; set; }
+    }
+
+    private sealed class DateBucketRecordRm
+    {
+        public int Id { get; set; }
+        public int CustomerId { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime ReviewedAt { get; set; }
+        public DateTime CompletedAt { get; set; }
+    }
+
+    private sealed class TypedPartitionRoot
+    {
+        public int Id { get; set; }
+        public DateTime ArchivedAt { get; set; }
+        public int CustomerId { get; set; }
+        public string Region { get; set; } = null!;
+        public bool IsPriority { get; set; }
+        public decimal AmountBand { get; set; }
+        public DateTime SnapshotAt { get; set; }
+        public DateOnly EffectiveDate { get; set; }
+        public Guid TenantId { get; set; }
+    }
+
+    private sealed class TypedPartitionRm
+    {
+        public int Id { get; set; }
+        public DateTime ArchivedAt { get; set; }
+        public int CustomerId { get; set; }
+        public string Region { get; set; } = null!;
+        public bool IsPriority { get; set; }
+        public decimal AmountBand { get; set; }
+        public DateTime SnapshotAt { get; set; }
+        public DateOnly EffectiveDate { get; set; }
+        public Guid TenantId { get; set; }
+    }
 
     private interface IArchivePathContext
     {
@@ -436,6 +862,250 @@ public sealed class TieredStorageTests : IDisposable
         }
     }
 
+    private sealed class CustomerPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public DbSet<CustomerInvoiceRm> InvoiceHistory => Set<CustomerInvoiceRm>();
+        public DbSet<InvoiceLineRm> LineHistory => Set<InvoiceLineRm>();
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.HasMany(invoice => invoice.Lines).WithOne(line => line.Invoice).HasForeignKey(line => line.InvoiceId);
+            });
+            modelBuilder.Entity<InvoiceLine>(builder =>
+            {
+                builder.ToTable("invoice_lines");
+                builder.HasKey(line => line.Id);
+                builder.Ignore(line => line.Allocations);
+            });
+
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath, TierGranularity.Month)
+                .PartitionBy(partitions => partitions
+                    .By(invoice => invoice.CustomerId)
+                    .ByMonth(invoice => invoice.InvoiceDate))
+                .WithReadModel<CustomerInvoiceRm>()
+                .Including<InvoiceLine>(invoice => invoice.Lines, line => line.WithReadModel<InvoiceLineRm>());
+        }
+    }
+
+    private sealed class MonthFirstPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions
+                    .ByMonth(invoice => invoice.InvoiceDate)
+                    .By(invoice => invoice.CustomerId));
+        }
+    }
+
+    private sealed class DateBucketPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<DateBucketRecord> Records => Set<DateBucketRecord>();
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DateBucketRecord>(builder =>
+            {
+                builder.ToTable("date_bucket_records");
+                builder.HasKey(record => record.Id);
+            });
+            modelBuilder.ToTieredStore<DateBucketRecord>(record => record.CompletedAt, archivePath, TierGranularity.Day)
+                .PartitionBy(partitions => partitions
+                    .By(record => record.CustomerId)
+                    .ByYear(record => record.CreatedAt)
+                    .ByMonth(record => record.ReviewedAt)
+                    .ByDay(record => record.CompletedAt))
+                .WithReadModel<DateBucketRecordRm>();
+        }
+    }
+
+    private sealed class TypedPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<TypedPartitionRoot> Roots => Set<TypedPartitionRoot>();
+        public DbSet<TypedPartitionRm> History => Set<TypedPartitionRm>();
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<TypedPartitionRoot>(builder =>
+            {
+                builder.ToTable("typed_roots");
+                builder.HasKey(root => root.Id);
+                builder.Property(root => root.CustomerId).HasColumnName("customer_id");
+                builder.Property(root => root.Region).HasColumnName("region_code");
+                builder.Property(root => root.AmountBand).HasPrecision(10, 2);
+            });
+            modelBuilder.Entity<TypedPartitionRm>(builder =>
+            {
+                builder.Property(root => root.CustomerId).HasColumnName("customer_id");
+                builder.Property(root => root.Region).HasColumnName("region_code");
+                builder.Property(root => root.AmountBand).HasPrecision(10, 2);
+            });
+
+            modelBuilder.ToTieredStore<TypedPartitionRoot>(root => root.ArchivedAt, archivePath)
+                .PartitionBy(root => root.CustomerId, root => root.Region)
+                .PartitionBy(
+                    root => root.IsPriority,
+                    root => root.AmountBand,
+                    root => root.SnapshotAt,
+                    root => root.EffectiveDate,
+                    root => root.TenantId)
+                .WithReadModel<TypedPartitionRm>();
+        }
+    }
+
+    private sealed class DayGranularityContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath, TierGranularity.Day)
+                .WithReadModel<InvoiceRm>();
+        }
+    }
+
+    private sealed class DuplicatePartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(invoice => invoice.CustomerId)
+                .PartitionBy(invoice => invoice.CustomerId);
+        }
+    }
+
+    private sealed class ExactLifecyclePartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(invoice => invoice.InvoiceDate);
+        }
+    }
+
+    private sealed class RepeatedExactLifecyclePartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(invoice => invoice.CustomerId)
+                .PartitionBy(invoice => invoice.InvoiceDate);
+        }
+    }
+
+    private sealed class MissingLifecyclePartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions.By(invoice => invoice.CustomerId));
+        }
+    }
+
+    private sealed class NonDateTransformContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions
+                    .ByMonth(invoice => invoice.CustomerId)
+                    .ByMonth(invoice => invoice.InvoiceDate));
+        }
+    }
+
     private sealed class BadNavigationContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
         public string ArchivePath => archivePath;
@@ -450,6 +1120,35 @@ public sealed class TieredStorageTests : IDisposable
             modelBuilder.Entity<InvoiceLine>(b => { b.ToTable("invoice_lines"); b.HasKey(l => l.Id); b.Ignore(l => l.Allocations); });
             modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath)
                 .Including<InvoiceLine>(i => i.Lines);
+        }
+    }
+
+    private sealed class BadChildPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.HasMany(invoice => invoice.Lines).WithOne(line => line.Invoice).HasForeignKey(line => line.InvoiceId);
+            });
+            modelBuilder.Entity<InvoiceLine>(builder =>
+            {
+                builder.ToTable("invoice_lines");
+                builder.HasKey(line => line.Id);
+                builder.Ignore(line => line.Allocations);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .Including<InvoiceLine>(invoice => invoice.Lines);
+
+            // Simulates malformed metadata from a manually-authored convention or compiled model.
+            modelBuilder.Entity<InvoiceLine>().HasAnnotation("DuckDB:TieredStore:PartitionProperties", "Amount");
         }
     }
 

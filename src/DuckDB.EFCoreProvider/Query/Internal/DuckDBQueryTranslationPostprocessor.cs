@@ -34,6 +34,11 @@ public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPos
     {
         var result = base.Process(query);
 
+        result = new DuckDBTierPartitionPruningExpressionVisitor(
+                QueryCompilationContext.Model,
+                RelationalDependencies.SqlExpressionFactory,
+                RelationalDependencies.TypeMappingSource)
+            .Visit(result);
         result = new DuckDBUnnestPostprocessor().Visit(result);
 
         return result;

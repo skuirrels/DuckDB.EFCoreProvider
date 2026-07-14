@@ -43,16 +43,11 @@ public sealed class DuckDBParquetExportOptions<T>
 
         foreach (var property in properties)
         {
-            ArgumentNullException.ThrowIfNull(property);
-            var body = property.Body is UnaryExpression { NodeType: ExpressionType.Convert } conversion
-                ? conversion.Operand
-                : property.Body;
-            if (body is not MemberExpression { Expression: ParameterExpression } member)
-            {
-                throw new ArgumentException("Partition expressions must be direct property accesses.", nameof(properties));
-            }
-
-            _partitionMembers.Add(member.Member);
+            _partitionMembers.Add(
+                DuckDBTieredStoreExtensions.GetDirectMember(
+                    property,
+                    nameof(properties),
+                    "Partition expressions must be direct property accesses."));
         }
 
         return this;

@@ -2,6 +2,18 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.4.0
+
+- Add application-defined, root-owned partition plans to tiered Parquet archives. The ordered builder supports
+  exact values plus year/month/day date transforms, for example
+  `.PartitionBy(p => p.By(root => root.CustomerId).ByMonth(root => root.CompletedDate))`; every aggregate child
+  inherits the root values and exact directory order. The exact-value shorthand remains available and appends an
+  implicit lifecycle bucket for safe incremental writes. Query translation derives hidden bucket predicates from
+  model metadata so normal property filters drive Hive pruning. Model validation enforces root ownership, mapped
+  scalar/date types, collision-free physical names, and a safe lifecycle bucket. A versioned signature persists
+  the complete ordered transform/name/type layout before copying, preventing incompatible or orphaned layouts
+  from being mixed silently.
+
 ## 1.3.0
 
 - Fix nullable values in `ExecuteSqlInterpolated` by applying DuckDB parameter-name normalization centrally to untyped raw-SQL nulls.

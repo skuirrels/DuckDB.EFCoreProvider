@@ -11,12 +11,12 @@
 //   docker compose -f samples/TieredStorage/docker-compose.yml up -d
 // Override TIER_S3_* or TIER_AZURE_CONNECTION_STRING / TIER_AZURE_CONTAINER to point at real S3 / Azure.
 
-using System.Data.Common;
 using Azure.Storage.Blobs;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using System.Data.Common;
 
 var mode = (args.Length > 0 ? args[0].Trim('-') : "local").ToLowerInvariant();
 var useS3 = mode == "s3";
@@ -63,7 +63,7 @@ using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, cloudSet
     // Two years of invoices, two lines each — ordinary EF writes with a child graph.
     for (var m = 24; m >= 0; m--)
     {
-        var invoice = new Invoice { InvoiceDate = thisMonth.AddMonths(-m) };
+        var invoice = new Invoice { CustomerId = 100 + m % 3, InvoiceDate = thisMonth.AddMonths(-m) };
         invoice.Lines.Add(new InvoiceLine { Description = "Services", Amount = 100 + m });
         invoice.Lines.Add(new InvoiceLine { Description = "Expenses", Amount = 25 });
         db.Invoices.Add(invoice);
@@ -134,6 +134,7 @@ Console.WriteLine(useRemote
 internal sealed class Invoice
 {
     public int Id { get; set; }
+    public int CustomerId { get; set; }
     public DateTime InvoiceDate { get; set; }
     public List<InvoiceLine> Lines { get; set; } = [];
 }
@@ -158,6 +159,7 @@ internal sealed class AuditEvent
 internal sealed class InvoiceReport
 {
     public int Id { get; set; }
+    public int CustomerId { get; set; }
     public DateTime InvoiceDate { get; set; }
 }
 
@@ -197,6 +199,9 @@ internal sealed class SampleContext(string dbPath, string invoiceArchive, string
     {
         // Two independent roots, each tiering on its own timestamp property — the date that defines its hot/cold boundary.
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, invoiceArchive, TierGranularity.Month)
+            .PartitionBy(partitions => partitions
+                .By(i => i.CustomerId)
+                .ByMonth(i => i.InvoiceDate)) // exact application order; InvoiceLine inherits both root values
             .WithReadModel<InvoiceReport>()
             .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
 

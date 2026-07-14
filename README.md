@@ -263,8 +263,11 @@ public class BillingContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // InvoiceDate defines the watermark and monthly archive partitions.
+        // InvoiceDate defines the watermark; the ordered builder defines the physical Hive hierarchy.
         modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
+            .PartitionBy(partitions => partitions
+                .By(i => i.CustomerId)
+                .ByMonth(i => i.InvoiceDate))
             .WithReadModel<InvoiceHistory>()
             // Cold: InvoiceLines archive together with their Invoice.
             .Including<InvoiceLine>(i => i.Lines);
@@ -295,14 +298,18 @@ var rangedInvoices = await db.InvoiceHistory
     .ToListAsync();
 ```
 
-The `InvoiceDate` filter is optional. Use it when you only need a date range so DuckDB can skip irrelevant
-monthly Parquet data.
+The `InvoiceDate` filter is optional. With the declared `CustomerId` → invoice-month layout, customer-only queries
+scan that customer's month partitions; adding a date range lets DuckDB prune to the relevant months. The order is
+application-defined: reversing the builder calls reverses the directory hierarchy. The shorter
+`.PartitionBy(i => i.CustomerId)` form means an exact customer key followed by an implicit lifecycle month/day
+bucket.
 
 Notice `ArchiveTierAsync<Invoice>` (and `PurgeArchiveOlderThan<Invoice>`) take **no path** — only the cutoff. The
 *where* (the archive path) and the *which date* (the timestamp property) come from the `ToTieredStore<Invoice>(...)`
 configuration, looked up by the root type; the runtime call supplies only the *when*. Each table in the aggregate
-archives under `<archivePath>/<table>/year=…/month=…/`, and the generated views read back from the same path, so
-reads and writes always agree on the location.
+archives under `<archivePath>/<table>/CustomerId=…/InvoiceDate_month=…/`, and the generated views read back from
+the same path, so reads and writes always agree on the location. Partition configuration exists only on the
+aggregate root; declared children inherit the root values and order.
 
 Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
 

@@ -37,6 +37,12 @@ public static class DuckDBAnnotationNames
     public const string TieredStoreGranularity = Prefix + "TieredStore:Granularity";
 
     /// <summary>
+    ///     The serialized ordered partition descriptors declared for a tiered-storage aggregate root.
+    ///     Each descriptor identifies a property and its value/year/month/day transformation. Internal API.
+    /// </summary>
+    public const string TieredStorePartitionProperties = Prefix + "TieredStore:PartitionProperties";
+
+    /// <summary>
     ///     The name of the DuckDB view that unions the hot table and the cold archive for a tiered-storage
     ///     entity. This is also the shared-type entity name of the tiered read model. Internal API.
     /// </summary>
