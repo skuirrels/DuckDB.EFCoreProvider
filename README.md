@@ -1,6 +1,6 @@
 # DuckDB.EFCoreProvider
 
-**A native Entity Framework Core 10 provider for [DuckDB](https://duckdb.org), designed for analytical .NET workloads.**
+**An Entity Framework Core 10 provider with first-class support for [DuckDB](https://duckdb.org) and [DuckLake](https://ducklake.select), designed for analytical .NET workloads.**
 
 [![NuGet](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.svg)](https://www.nuget.org/packages/DuckDB.EFCoreProvider)
 [![NuGet (NTS)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.NTS.svg?label=NuGet%20%28NTS%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.NTS)
