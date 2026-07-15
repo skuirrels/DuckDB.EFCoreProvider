@@ -174,14 +174,17 @@ await context.Database.ExportToParquetAsync(
     context.Events.Where(e => e.Timestamp < cutoff),
     "/data/archive/events",
     options => options
-        .PartitionBy(e => e.Timestamp)
+        .PartitionBy(e => e.Category)
         .OverwriteOrIgnore()
         .Compression(DuckDBParquetCompression.Zstd),
     cancellationToken);
 ```
 
 Values in the LINQ query remain command parameters. Destination paths are escaped as SQL literals and typed
-partition expressions are resolved through EF's column mappings.
+partition expressions are resolved through EF's column mappings. `PartitionBy` uses exact projected column values,
+so prefer stable, low-cardinality keys such as category, tenant, or region rather than a high-cardinality timestamp.
+For provider-managed calendar partitions and unified hot+cold reads, use `ToTieredStore` with `ArchiveTierAsync`
+instead.
 
 ## Implementation patterns
 
@@ -323,8 +326,10 @@ public class BillingContext : DbContext
 db.Database.EnsureCreated();                 // creates the control table + hot/cold view
 // (when using Migrate() instead, call db.Database.EnsureTieredStoresCreated() once at startup)
 
-// Archive invoices older than one year. Their InvoiceLines move with them.
-var result = await db.Database.ArchiveTierAsync<Invoice>(DateTime.UtcNow.AddYears(-1));
+// Move invoices older than one year from hot DuckDB tables to cold Parquet.
+// On successful return, the archived Invoices and InvoiceLines have been deleted from DuckDB.
+var archiveCutoff = DateTime.UtcNow.AddYears(-1);
+var result = await db.Database.ArchiveTierAsync<Invoice>(archiveCutoff);
 
 // Invoices: hot only, with their InvoiceLines. Parquet is not queried.
 var hotInvoices = await db.Invoices
@@ -350,18 +355,47 @@ bucket.
 
 Notice `ArchiveTierAsync<Invoice>` (and `PurgeArchiveOlderThan<Invoice>`) take **no path** — only the cutoff. The
 *where* (the archive path) and the *which date* (the timestamp property) come from the `ToTieredStore<Invoice>(...)`
-configuration, looked up by the root type; the runtime call supplies only the *when*. Each table in the aggregate
-archives under `<archivePath>/<table>/CustomerId=…/InvoiceDate_month=…/`, and the generated views read back from
-the same path, so reads and writes always agree on the location. Partition configuration exists only on the
-aggregate root; declared children inherit the root values and order.
+configuration, looked up by the root type; the runtime call supplies only the *when*. The cutoff is an exclusive
+`DateTime` boundary, not a duration. The provider aligns it down to the configured granularity: with
+`TierGranularity.Month`, `new DateTime(2025, 7, 15)` becomes `2025-07-01`, and rows with an `InvoiceDate` before
+July are archived. To archive all of June 2025, pass `new DateTime(2025, 7, 1)`. Each table in the aggregate archives
+under `<archivePath>/<table>/CustomerId=…/InvoiceDate_month=…/`, and the generated views read back from the same
+path, so reads and writes always agree on the location. Partition configuration exists only on the aggregate root;
+declared children inherit the root values and order.
+
+`ArchiveTierAsync` is a complete hot-to-cold move, not a copy-only operation. It writes the root and all declared
+children to Parquet, advances the watermark, refreshes the hot+cold views, and then deletes the archived rows from
+the hot DuckDB tables before returning successfully. No separate `RemoveRange`, `ExecuteDelete`, or SQL `DELETE`
+is required. Queries through `Invoices` stop seeing those rows because that set is hot-only; queries through
+`InvoiceHistory` continue seeing them through Parquet.
 
 Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
 
-Enforce archive retention separately when required:
+#### Archiving versus purging
+
+`PurgeArchiveOlderThan<Invoice>` serves a different, optional retention phase: it permanently deletes cold Parquet
+partitions older than its cutoff. It does not delete hot rows, move rows to Parquet, or change the archive watermark.
+Call it only after `ArchiveTierAsync` completes successfully, and normally give it an older cutoff.
+
+For example, to keep invoices hot for 12 months and then cold for another 24 months:
 
 ```csharp
-db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
+var now = DateTime.UtcNow;
+
+// 0-12 months old: remain in hot DuckDB.
+// More than 12 months old: move to Parquet and delete from the hot tables.
+var archiveCutoff = now.AddMonths(-12);
+await db.Database.ArchiveTierAsync<Invoice>(archiveCutoff);
+
+// 12-36 months old: remain in cold Parquet.
+// More than 36 months old: permanently delete from cold Parquet.
+var purgeCutoff = now.AddMonths(-36); // equivalently: archiveCutoff.AddMonths(-24)
+db.Database.PurgeArchiveOlderThan<Invoice>(purgeCutoff);
 ```
+
+Do not use the same cutoff for both operations or calculate the purge boundary with
+`archiveCutoff.AddMonths(24)`: that moves the boundary forward and can immediately delete the history just archived.
+For remote S3, GCS, or Azure archives, enforce the purge boundary with an object-storage lifecycle rule instead.
 
 > **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app demonstrates archiving
 > and reporting across hot + cold:
