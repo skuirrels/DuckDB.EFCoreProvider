@@ -130,6 +130,56 @@ public sealed class TieredStorageFailureTests : IDisposable
         Assert.Equal(TierArchiveStage.Completed, retry.Stage);
     }
 
+    [Fact]
+    public async Task Restore_rolls_back_hot_rows_when_generation_publication_fails()
+    {
+        var archivePath = Path.Combine(_root, "restore");
+        using var context = new FailureContext(Path.Combine(_root, "restore.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.Add(new FailureOrder
+        {
+            ExternalId = "order-1",
+            CompletedDate = new DateTime(2024, 1, 15),
+            Status = "complete",
+            Items =
+            [
+                new FailureOrderItem
+                {
+                    ExternalOrderId = "order-1",
+                    LineCode = "A",
+                    Amount = 12m,
+                },
+            ],
+        });
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<FailureOrder>(new DateTime(2024, 2, 1));
+        TestTierFailureInjector.FailOnce(DuckDBTierFailurePoint.AfterPublication);
+        var options = new TierRestoreOptions
+        {
+            Scope = TierMaintenanceScope.ForRootMatchKeys(
+                TierRowIdentity.For<FailureOrder>(
+                    new Dictionary<string, object?> { ["ExternalId"] = "order-1" })),
+        };
+
+        var exception = await Assert.ThrowsAsync<TierArchiveOperationException>(
+            () => context.Database.RestoreArchiveTierAsync<FailureOrder>(options));
+
+        Assert.Equal(TierArchiveStage.Publish, exception.Stage);
+        context.ChangeTracker.Clear();
+        Assert.Empty(context.Orders);
+        Assert.Empty(context.Items);
+        Assert.Single(context.OrderHistory);
+        Assert.Single(context.ItemHistory);
+
+        var retry = await context.Database.RestoreArchiveTierAsync<FailureOrder>(options);
+
+        Assert.Equal(1, retry.RootsInserted);
+        Assert.Single(context.Orders);
+        Assert.Single(context.Items);
+        Assert.Single(context.OrderHistory);
+        Assert.Single(context.ItemHistory);
+    }
+
     private sealed class FailureOrder
     {
         public int Id { get; set; }

@@ -172,9 +172,11 @@ public sealed class DuckDBTierAggregate
 
             // A replayed child graph can receive a new provider-local parent key even though both nodes retain
             // their stable external identities. Do not turn that relationship plumbing into a false correction.
-            if (chain.Count > 0 && !keyColumns.Contains(chain[0].ForeignKeyColumn, StringComparer.Ordinal))
+            if (chain.Count > 0)
             {
-                comparisonColumns.Remove(chain[0].ForeignKeyColumn);
+                comparisonColumns.RemoveAll(
+                    column => chain[0].ForeignKeyColumns.Contains(column, StringComparer.Ordinal)
+                              && !keyColumns.Contains(column, StringComparer.Ordinal));
             }
         }
 
@@ -199,10 +201,10 @@ public sealed class DuckDBTierAggregate
             var parentStore = StoreObjectIdentifier.Table(parent.GetTableName()!, parent.GetSchema());
 
             chain.Add(new DuckDBTierControl.TierJoinHop(
-                foreignKey.Properties[0].GetColumnName(currentStore)!,
+                foreignKey.Properties.Select(property => property.GetColumnName(currentStore)!).ToArray(),
                 parent.GetTableName()!,
                 parent.GetSchema(),
-                foreignKey.PrincipalKey.Properties[0].GetColumnName(parentStore)!));
+                foreignKey.PrincipalKey.Properties.Select(property => property.GetColumnName(parentStore)!).ToArray()));
 
             current = parent;
         }

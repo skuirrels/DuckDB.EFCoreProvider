@@ -191,7 +191,7 @@ public class DuckDBModelValidator : RelationalModelValidator
                 throw new InvalidOperationException(
                     $"Tiered-storage partition '{root.DisplayName()}.{definition.PropertyName}' uses "
                     + $"{definition.Transform} bucketing, but its CLR type '{property.ClrType.ShortDisplayName()}' is not "
-                    + "DateTime, DateTimeOffset, or DateOnly.");
+                    + "DateTime or DateOnly.");
             }
 
             var column = definition.Transform == TierPartitionTransform.Value
@@ -235,7 +235,7 @@ public class DuckDBModelValidator : RelationalModelValidator
     private static bool IsDateProperty(Type clrType)
     {
         clrType = Nullable.GetUnderlyingType(clrType) ?? clrType;
-        return clrType == typeof(DateTime) || clrType == typeof(DateTimeOffset) || clrType == typeof(DateOnly);
+        return clrType == typeof(DateTime) || clrType == typeof(DateOnly);
     }
 
     private static bool IsSafeLifecyclePartition(
@@ -291,11 +291,11 @@ public class DuckDBModelValidator : RelationalModelValidator
         }
 
         var clrType = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
-        if (clrType != typeof(DateTime))
+        if (!IsDateProperty(clrType))
         {
             throw new InvalidOperationException(
-                $"Tiered-storage lifecycle property '{entityType.DisplayName()}.{property.Name}' must be DateTime or "
-                + $"nullable DateTime, but is '{property.ClrType.ShortDisplayName()}'.");
+                $"Tiered-storage lifecycle property '{entityType.DisplayName()}.{property.Name}' must be DateTime, "
+                + $"DateOnly, or a nullable form, but is '{property.ClrType.ShortDisplayName()}'.");
         }
     }
 
@@ -404,11 +404,12 @@ public class DuckDBModelValidator : RelationalModelValidator
                 $"Tiered child navigation '{child.GetTieredStoreParentNavigation()}' was not found on '{parent.DisplayName()}'. "
                 + "The .Including(...) navigation must be a real collection navigation with a foreign key to the parent.");
 
-        if (navigation.ForeignKey.Properties.Count != 1)
+        if (navigation.ForeignKey.Properties.Count == 0
+            || navigation.ForeignKey.Properties.Count != navigation.ForeignKey.PrincipalKey.Properties.Count)
         {
             throw new InvalidOperationException(
-                $"Tiered child '{child.DisplayName()}' must have a single-column foreign key to '{parent.DisplayName()}'; "
-                + "composite foreign keys are not supported by tiered storage.");
+                $"Tiered child '{child.DisplayName()}' has an invalid foreign key to '{parent.DisplayName()}'. "
+                + "The dependent and principal key column counts must be equal and non-zero.");
         }
     }
 

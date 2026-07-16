@@ -25,7 +25,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly bool _loadSpatial;
     private readonly string? _memoryLimit;
     private readonly string? _fileSearchPath;
-    private readonly IReadOnlyList<string> _extensionsToLoad;
+    private readonly IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions;
     private readonly Action<DuckDBConnection>? _connectionInitializer;
     private readonly DuckLakeOptions? _duckLakeOptions;
     private DuckDBConnection? _initializedDuckLakeConnection;
@@ -45,7 +45,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         _loadSpatial = optionsExtension?.LoadSpatialite == true;
         _memoryLimit = optionsExtension?.MemoryLimit;
         _fileSearchPath = optionsExtension?.FileSearchPath;
-        _extensionsToLoad = optionsExtension?.ExtensionsToLoad ?? [];
+        _configuredExtensions = optionsExtension?.ConfiguredExtensions ?? [];
         _connectionInitializer = optionsExtension?.ConnectionInitializer;
         _duckLakeOptions = optionsExtension?.DuckLakeOptions;
     }
@@ -164,7 +164,10 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             {
                 if (_memoryLimit is not null) options.MemoryLimit(_memoryLimit);
                 if (_fileSearchPath is not null) options.FileSearchPath(_fileSearchPath);
-                foreach (var extension in _extensionsToLoad) options.LoadExtension(extension);
+                foreach (var extension in _configuredExtensions)
+                {
+                    options.LoadExtension(extension.Name, extension.Mode);
+                }
                 if (_connectionInitializer is not null) options.ConfigureConnection(_connectionInitializer);
                 if (_duckLakeOptions is not null)
                 {
@@ -400,20 +403,34 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     private void LoadConfiguredExtensions()
     {
-        foreach (var extension in _extensionsToLoad)
+        foreach (var extension in _configuredExtensions)
         {
+            if (extension.Mode == DuckDBExtensionLoadMode.CallerManaged)
+            {
+                continue;
+            }
+
             using var command = DbConnection.CreateCommand();
-            command.CommandText = $"INSTALL {extension}; LOAD {extension};";
+            command.CommandText = extension.Mode == DuckDBExtensionLoadMode.LoadOnly
+                ? $"LOAD {extension.Name};"
+                : $"INSTALL {extension.Name}; LOAD {extension.Name};";
             command.ExecuteNonQuery();
         }
     }
 
     private async Task LoadConfiguredExtensionsAsync(CancellationToken cancellationToken)
     {
-        foreach (var extension in _extensionsToLoad)
+        foreach (var extension in _configuredExtensions)
         {
+            if (extension.Mode == DuckDBExtensionLoadMode.CallerManaged)
+            {
+                continue;
+            }
+
             await using var command = DbConnection.CreateCommand();
-            command.CommandText = $"INSTALL {extension}; LOAD {extension};";
+            command.CommandText = extension.Mode == DuckDBExtensionLoadMode.LoadOnly
+                ? $"LOAD {extension.Name};"
+                : $"INSTALL {extension.Name}; LOAD {extension.Name};";
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
     }
