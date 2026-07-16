@@ -322,6 +322,42 @@ public class BillingContext : DbContext
 }
 ```
 
+The lifecycle selector may target `DateTime?`; `NULL` roots and their children remain permanently hot until the
+application supplies a date. When the source system's stable identity differs from an EF surrogate primary key,
+add `.MatchBy(i => i.EdcId)` on the root and, independently, a single or anonymous-object composite key on each
+included child that needs it. Match keys require a declared EF key/unique index unless the application explicitly
+uses `TierMatchKeyUniqueness.ExternallyEnforced`; archiveable key values must still be non-null. See the
+[tiered-storage guide](docs/TIERED-STORAGE.md#stable-hotcold-match-keys) for correction/reopen behavior and the
+late-row boundary.
+
+For example, a nullable completion date stays hot while it is `NULL`, the Kafka identity is used instead of a
+generated EF key, and the child uses its own composite stable identity:
+
+```csharp
+modelBuilder.Entity<Order>()
+    .HasIndex(order => order.EdcId)
+    .IsUnique();
+modelBuilder.Entity<OrderItem>()
+    .HasIndex(item => new { item.OrderEdcId, item.LineNumber })
+    .IsUnique();
+
+modelBuilder
+    .ToTieredStore<Order>(
+        order => order.CompletedDate, // DateTime?: NULL remains hot
+        "s3://insights-archive/orders",
+        TierGranularity.Month)
+    .MatchBy(order => order.EdcId)
+    .PartitionBy(partitions => partitions
+        .By(order => order.OwnerId)
+        .ByMonth(order => order.CompletedDate))
+    .WithReadModel<OrderHistory>()
+    .Including<OrderItem>(
+        order => order.Items,
+        items => items
+            .MatchBy(item => new { item.OrderEdcId, item.LineNumber })
+            .WithReadModel<OrderItemHistory>());
+```
+
 ```csharp
 db.Database.EnsureCreated();                 // creates the control table + hot/cold view
 // (when using Migrate() instead, call db.Database.EnsureTieredStoresCreated() once at startup)
@@ -330,6 +366,16 @@ db.Database.EnsureCreated();                 // creates the control table + hot/
 // On successful return, the archived Invoices and InvoiceLines have been deleted from DuckDB.
 var archiveCutoff = DateTime.UtcNow.AddYears(-1);
 var result = await db.Database.ArchiveTierAsync<Invoice>(archiveCutoff);
+
+foreach (var node in result.Nodes)
+{
+    Console.WriteLine(
+        $"{node.Table}: selected={node.SelectedRows}, copied={node.CopiedRows}, "
+        + $"deleted={node.DeletedRows}, files={node.Files.Count}");
+}
+
+// After validating late rows or corrections below the watermark, publish a new immutable cold generation.
+var reconciliation = await db.Database.ReconcileArchiveTierAsync<Invoice>();
 
 // Invoices: hot only, with their InvoiceLines. Parquet is not queried.
 var hotInvoices = await db.Invoices
@@ -370,6 +416,26 @@ is required. Queries through `Invoices` stop seeing those rows because that set 
 `InvoiceHistory` continue seeing them through Parquet.
 
 Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
+Scheduling the cutoff one complete day/period behind the clock provides an ingestion grace window. It reduces
+late arrivals but does not move rows that arrive after the watermark. Normal archiving leaves those rows hot and
+stops on a same-key correction; after validation, `ReconcileArchiveTierAsync` writes and verifies a new immutable
+Parquet generation, atomically switches readers, and then safely cleans matching hot copies. Lifecycle-date clears
+or moves remain rejected because reopening requires restoring the complete aggregate. Successful operations return
+per-table selected/copied/deleted counts, paths/files, window and watermark details; operational failures expose the
+same safe partial evidence through `TierArchiveOperationException.PartialResult`.
+
+Conflict handling is deliberately conservative:
+
+- A new stable key below the watermark stays hot until reconciliation.
+- The same stable key with identical data is a harmless retry and can be cleaned up safely.
+- The same stable key with changed data throws `TierArchivedKeyConflictException`; the cold version remains
+  published and the hot correction remains untouched for application validation.
+- After approval, reconciliation writes a new Parquet generation and atomically switches readers to it.
+- Reconciliation is a key-wise upsert. An absent hot child is not treated as a deletion; child removal needs an
+  explicit tombstone or authoritative full-snapshot contract.
+
+`ArchiveTierAsync` and `ReconcileArchiveTierAsync` must run outside an application transaction. Their Parquet
+writes are external side effects and cannot be rolled back with a DuckDB transaction.
 
 #### Archiving versus purging
 
@@ -447,6 +513,10 @@ Azure-typed secret.
 - **`ArchiveTierAsync` works against S3, GCS, and Azure as on local disk.** The sample verifies S3 and the GCS
   URL/secret path against MinIO and Azure against Azurite. MinIO is not a Google Cloud emulator, so use a real
   GCS bucket to validate Google IAM/HMAC and service-specific behavior before production.
+- **The S3 failure matrix is reusable against MinIO and real AWS.** Run `scripts/test-tiered-storage-s3.sh` for
+  MinIO. Setting `DUCKDB_AWS_S3_TEST_BUCKET` (plus optional prefix/region or paired explicit credentials) runs the
+  same first-archive, no-op, restart, failure/retry, reconciliation, and schema-evolution scenarios against a
+  unique disposable AWS prefix.
 - **`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive** — DuckDB can't delete objects
   from an object store. Enforce upload-age retention with an **S3 lifecycle rule**, **GCS Object Lifecycle
   Management**, or an **Azure Blob lifecycle-management policy**. If retention must follow the partition's

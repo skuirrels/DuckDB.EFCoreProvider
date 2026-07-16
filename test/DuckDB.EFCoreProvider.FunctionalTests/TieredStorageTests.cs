@@ -301,10 +301,13 @@ public sealed class TieredStorageTests : IDisposable
         var before = TieredTotals(context);
         var cutoff = new DateTime(2025, 7, 1).AddMonths(-12);
 
-        await context.Database.ArchiveTierAsync<Invoice>(cutoff);
-        var second = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var first = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var second = await context.Database.ArchiveTierAsync<Invoice>(cutoff.AddMonths(-1));
 
         Assert.True(second.NoOp);
+        Assert.Equal(first.Watermark, second.WindowStart);
+        Assert.Equal(first.Watermark, second.WindowEnd);
+        Assert.All(second.Nodes, node => Assert.NotEmpty(node.Files));
         Assert.Equal(before, TieredTotals(context));
     }
 
@@ -320,6 +323,25 @@ public sealed class TieredStorageTests : IDisposable
 
         Assert.Contains("outside the caller transaction", exception.Message);
         Assert.False(Directory.Exists(Path.Combine(_root, "archive", "invoices")));
+    }
+
+    [Fact]
+    public async Task Single_table_archive_rejects_an_existing_transaction_before_copying()
+    {
+        var archivePath = Path.Combine(_root, "single-transaction-archive");
+        using var context = new MonthFirstPartitionContext(
+            Path.Combine(_root, "single-transaction.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Invoices.Add(new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 15) });
+        context.SaveChanges();
+        await using var transaction = await context.Database.BeginTransactionAsync();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1)));
+
+        Assert.Contains("cannot be rolled back", exception.Message);
+        Assert.False(Directory.Exists(Path.Combine(archivePath, "invoices")));
     }
 
     [Fact]
@@ -391,6 +413,11 @@ public sealed class TieredStorageTests : IDisposable
                 "SELECT count(*) AS \"Value\" FROM pragma_table_info('__duckdb_tier_control') WHERE name = 'partition_spec'")
             .Single();
         Assert.Equal(1, partitionColumns);
+        var archiveColumns = context.Database
+            .SqlQueryRaw<long>(
+                "SELECT count(*) AS \"Value\" FROM pragma_table_info('__duckdb_tier_control') WHERE name = 'archive_spec'")
+            .Single();
+        Assert.Equal(1, archiveColumns);
     }
 
     [Fact]
@@ -1210,7 +1237,32 @@ public sealed class TieredStorageTests : IDisposable
     }
 
     // Second-generation root model over the same "invoices" table/archive, with an added column.
-    private sealed class InvoiceV2 { public int Id { get; set; } public DateTime InvoiceDate { get; set; } public string? Note { get; set; } }
+    private sealed class InvoiceV2
+    {
+        public int Id { get; set; }
+        public int CustomerId { get; set; }
+        public DateTime InvoiceDate { get; set; }
+        public string? Note { get; set; }
+        public List<InvoiceLineV2> Lines { get; set; } = [];
+    }
+
+    private sealed class InvoiceLineV2
+    {
+        public int Id { get; set; }
+        public int InvoiceId { get; set; }
+        public InvoiceV2? Invoice { get; set; }
+        public decimal Amount { get; set; }
+        public List<LineAllocationV2> Allocations { get; set; } = [];
+    }
+
+    private sealed class LineAllocationV2
+    {
+        public int Id { get; set; }
+        public int InvoiceLineId { get; set; }
+        public InvoiceLineV2? InvoiceLine { get; set; }
+        public decimal Amount { get; set; }
+    }
+
     private sealed class InvoiceV2Rm { public int Id { get; set; } public DateTime InvoiceDate { get; set; } public string? Note { get; set; } }
 
     private sealed class EvolvedContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
@@ -1223,9 +1275,28 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<InvoiceV2>().ToTable("invoices");
+            modelBuilder.Entity<InvoiceV2>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.HasMany(invoice => invoice.Lines).WithOne(line => line.Invoice).HasForeignKey(line => line.InvoiceId);
+            });
+            modelBuilder.Entity<InvoiceLineV2>(builder =>
+            {
+                builder.ToTable("invoice_lines");
+                builder.HasKey(line => line.Id);
+                builder.HasMany(line => line.Allocations).WithOne(allocation => allocation.InvoiceLine)
+                    .HasForeignKey(allocation => allocation.InvoiceLineId);
+            });
+            modelBuilder.Entity<LineAllocationV2>(builder =>
+            {
+                builder.ToTable("line_allocations");
+                builder.HasKey(allocation => allocation.Id);
+            });
             modelBuilder.ToTieredStore<InvoiceV2>(i => i.InvoiceDate, archivePath, TierGranularity.Month)
-                .WithReadModel<InvoiceV2Rm>();
+                .WithReadModel<InvoiceV2Rm>()
+                .Including<InvoiceLineV2>(invoice => invoice.Lines, line => line
+                    .Including<LineAllocationV2>(item => item.Allocations));
         }
     }
 

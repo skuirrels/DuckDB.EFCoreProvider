@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.5.0</PackageVersion>
-    <FileVersion>1.5.0</FileVersion>
-    <Version>1.5.0</Version>
+    <PackageVersion>1.6.0</PackageVersion>
+    <FileVersion>1.6.0</FileVersion>
+    <Version>1.6.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,15 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.4.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.5.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.6.0
+- Support nullable tier lifecycle properties and nullable lifecycle partition transforms; NULL aggregates remain hot until completed and eligible.
+- Add configurable MatchBy(...) keys on roots and children, including composite keys and explicit externally-enforced uniqueness, with persisted archive-contract compatibility checks.
+- Detect corrections and reopened roots before normal archival. ReconcileArchiveTierAsync publishes approved late/corrected data through a verified immutable Parquet generation and an atomic control/view switch.
+- Return detailed TierArchiveResult evidence with per-table counts, archive windows, watermark transitions, revision, paths/files, no-op state, and safe partial failure results.
+- Add injected failure/retry coverage and a reusable MinIO/disposable real-AWS S3 matrix for archive, restart, publication, partial cleanup, reconciliation, and additive schema evolution.
+
 1.5.0
 - Add a first-class DuckLake backend profile in the main package through UseDuckLake(...): local metadata or named secrets, safe attachment before EF uses provider-owned or caller-owned connections, read-only mode, catalog creation controls, automatic metadata migration, and connection-scoped data-path override.
 - Support DuckLake LINQ, transactions, EnsureCreated, tracked CRUD with affected-row concurrency checks, appender BulkInsert, and MERGE-based Upsert.

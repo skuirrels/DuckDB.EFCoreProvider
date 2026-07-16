@@ -41,9 +41,9 @@ public sealed class TierControlTests
         // Cold branch uses SELECT * EXCLUDE so added columns are NULL-filled instead of erroring.
         Assert.Contains("SELECT * EXCLUDE (\"year\", \"month\")", sql);
         Assert.Contains("read_parquet('archive/events/**/*.parquet', hive_partitioning = true, union_by_name = true)", sql);
-        Assert.Contains("WHERE h.\"Ts\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+        Assert.Contains("WHERE (h.\"Ts\" IS NULL OR h.\"Ts\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered'))", sql);
         Assert.Contains("AND NOT EXISTS (SELECT 1 FROM (SELECT * EXCLUDE (\"year\", \"month\") FROM read_parquet", sql);
-        Assert.Contains("AS c WHERE c.\"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+        Assert.Contains("AS c WHERE c.\"Ts\" IS NOT NULL AND c.\"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
     }
 
     [Fact]
@@ -134,6 +134,25 @@ public sealed class TierControlTests
     }
 
     [Fact]
+    public void Archive_file_probe_lists_manifest_files_in_stable_order()
+        => Assert.Equal(
+            "SELECT file FROM glob('s3://bucket/archive/events/**/*.parquet') ORDER BY file;",
+            DuckDBArchiveFileProbe.ArchiveFileListSql("s3://bucket/archive/events/"));
+
+    [Fact]
+    public void Archive_file_probe_describes_the_union_schema()
+        => Assert.Equal(
+            "DESCRIBE SELECT * FROM read_parquet('s3://bucket/archive/events/**/*.parquet', "
+            + "hive_partitioning = true, union_by_name = true);",
+            DuckDBArchiveFileProbe.ArchiveColumnListSql("s3://bucket/archive/events/"));
+
+    [Theory]
+    [InlineData("s3://bucket/archive/events", "s3://bucket/archive/events")]
+    [InlineData("https://user:secret@example.test/archive?signature=secret", "https://example.test/archive")]
+    public void Archive_manifest_paths_do_not_expose_url_credentials(string path, string expected)
+        => Assert.Equal(expected, DuckDBTierArchiveManifest.RedactCredentials(path));
+
+    [Fact]
     public void ArchiveChildCopySql_joins_to_the_root_for_the_boundary_and_partitions()
     {
         var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
@@ -174,7 +193,7 @@ public sealed class TierControlTests
             Sql, "invoice_lines_tiered", "invoice_lines", null, ["Id", "InvoiceId", "Amount"], ["Id"], chain, "InvoiceDate",
             "invoices", "archive/invoice_lines", TierGranularity.Month, includeCold: true, includeHotChildFilter: true);
 
-        Assert.Contains("WHERE h.\"InvoiceId\" IN (SELECT r0.\"Id\" FROM invoices AS r0 WHERE r0.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')", sql);
+        Assert.Contains("WHERE h.\"InvoiceId\" IN (SELECT r0.\"Id\" FROM invoices AS r0 WHERE (r0.\"InvoiceDate\" IS NULL OR r0.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices'))", sql);
         Assert.Contains("OR NOT EXISTS (SELECT 1 FROM cold AS c WHERE c.\"Id\" = h.\"Id\")", sql);
         Assert.Contains("UNION ALL BY NAME", sql);
         Assert.Contains("SELECT * EXCLUDE (\"year\", \"month\")", sql);
@@ -193,7 +212,7 @@ public sealed class TierControlTests
             "invoices", "archive/line_allocations", TierGranularity.Month, includeCold: true, includeHotChildFilter: true);
 
         Assert.Contains(
-            "WHERE h.\"InvoiceLineId\" IN (SELECT r0.\"Id\" FROM invoice_lines AS r0 WHERE r0.\"InvoiceId\" IN (SELECT r1.\"Id\" FROM invoices AS r1 WHERE r1.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')))",
+            "WHERE h.\"InvoiceLineId\" IN (SELECT r0.\"Id\" FROM invoice_lines AS r0 WHERE r0.\"InvoiceId\" IN (SELECT r1.\"Id\" FROM invoices AS r1 WHERE (r1.\"InvoiceDate\" IS NULL OR r1.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices'))))",
             sql);
     }
 
@@ -227,12 +246,115 @@ public sealed class TierControlTests
     }
 
     [Fact]
+    public void ChildViewSql_only_publishes_partitions_before_the_watermark()
+    {
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
+        var sql = DuckDBTierControl.ChildViewSql(
+            Sql, "invoice_lines_tiered", "invoice_lines", null, ["Id", "InvoiceId", "Amount"], ["Id"], chain,
+            "InvoiceDate", "invoices", "archive/invoice_lines", TierGranularity.Month, includeCold: true,
+            includeHotChildFilter: true,
+            rootPartitions:
+            [
+                new DuckDBTierPartitionColumn(
+                    "InvoiceDate", "InvoiceDate", "InvoiceDate_month", "DATE", TierPartitionTransform.Month),
+            ]);
+
+        Assert.Contains(
+            "WHERE CAST(p.\"InvoiceDate_month\" AS DATE) < "
+            + "(SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')",
+            sql);
+    }
+
+    [Fact]
+    public void Match_key_sql_supports_composites_and_full_row_cleanup()
+    {
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
+        var sql = DuckDBTierControl.DeleteChildSql(
+            Sql, "invoice_lines", null, ["ExternalInvoiceId", "LineCode"], ["Amount"], chain,
+            "InvoiceDate", "archive/invoice_lines", new DateTime(2024, 6, 1));
+
+        Assert.Contains("c.\"ExternalInvoiceId\" = h.\"ExternalInvoiceId\"", sql);
+        Assert.Contains("c.\"LineCode\" = h.\"LineCode\"", sql);
+        Assert.Contains("c.\"Amount\" IS NOT DISTINCT FROM h.\"Amount\"", sql);
+    }
+
+    [Fact]
+    public void Full_row_comparison_treats_a_missing_nullable_cold_column_as_null()
+    {
+        var sql = DuckDBTierControl.RootConflictCountSql(
+            Sql,
+            "events",
+            null,
+            ["ExternalId"],
+            ["ExternalId", "Ts", "Note"],
+            "Ts",
+            "archive/events",
+            new DateTime(2024, 6, 1),
+            rootPartitions: null,
+            archiveColumns: ["ExternalId", "Ts"]);
+
+        Assert.Contains("c.\"Ts\" IS NOT DISTINCT FROM h.\"Ts\"", sql);
+        Assert.Contains("h.\"Note\" IS NULL", sql);
+        Assert.DoesNotContain("c.\"Note\"", sql);
+    }
+
+    [Fact]
     public void Control_table_ddl_upgrades_legacy_tables_with_a_partition_spec()
     {
         var sql = DuckDBTierControl.ControlTableDdl(Sql);
 
         Assert.Contains("partition_spec TEXT", sql);
         Assert.Contains("ADD COLUMN IF NOT EXISTS partition_spec TEXT", sql);
+        Assert.Contains("archive_spec TEXT", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS archive_spec TEXT", sql);
+        Assert.Contains("active_archive_path TEXT", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS active_archive_path TEXT", sql);
+        Assert.Contains("archive_revision TEXT", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS archive_revision TEXT", sql);
+    }
+
+    [Fact]
+    public void Archive_publication_persists_the_active_immutable_generation()
+    {
+        var sql = DuckDBTierControl.PublishArchiveSql(
+            Sql,
+            "events",
+            new DateTime(2024, 6, 1),
+            "archive/events",
+            "archive/_revisions/rev-1",
+            "rev-1",
+            TierGranularity.Month,
+            "{\"Version\":1}");
+
+        Assert.Contains("active_archive_path", sql);
+        Assert.Contains("archive_revision", sql);
+        Assert.Contains("'archive/_revisions/rev-1'", sql);
+        Assert.Contains("'rev-1'", sql);
+        Assert.Contains("active_archive_path = excluded.active_archive_path", sql);
+    }
+
+    [Fact]
+    public void Reconcile_root_source_lets_hot_rows_win_by_stable_key()
+    {
+        var sql = DuckDBTierControl.ReconcileRootSourceSql(
+            Sql,
+            "events",
+            null,
+            Columns,
+            ["ExternalId"],
+            "Ts",
+            "archive/events",
+            TierGranularity.Month,
+            new DateTime(2024, 6, 1),
+            includeCold: true,
+            rootPartitions: null);
+
+        Assert.Contains("FROM events AS h", sql);
+        Assert.Contains("UNION ALL BY NAME", sql);
+        Assert.Contains("read_parquet('archive/events/**/*.parquet'", sql);
+        Assert.Contains(
+            "AND NOT EXISTS (SELECT 1 FROM events AS h WHERE c.\"ExternalId\" = h.\"ExternalId\")",
+            sql);
     }
 
     [Fact]

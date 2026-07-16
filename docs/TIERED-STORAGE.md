@@ -81,6 +81,34 @@ public class BillingContext : DbContext
 `Invoice` can tier on `InvoiceDate`, `Order` on `PlacedUtc`, `AuditEvent` on `OccurredOn` — each independent, each
 with its own archive path.
 
+The lifecycle property may be `DateTime?`. A `NULL` value is never selected by `ArchiveTierAsync`, remains on
+the hot side of every generated view, and can participate in `ByMonth` / `ByDay` partition declarations. Once
+the application populates it, a later forward archive run selects it when the value falls inside that run's
+half-open watermark window. A value populated behind an already-advanced watermark is late data and remains
+hot; see the late-data policy below.
+
+### Stable hot/cold match keys
+
+By default each table's EF primary key suppresses retry duplicates. When that key is provider-local but the
+source system has a stable identity, configure `MatchBy` independently on the root and any included child that
+needs it:
+
+```csharp
+modelBuilder.ToTieredStore<Order>(order => order.CompletedDate, archivePath)
+    .MatchBy(order => order.EdcId)
+    .PartitionBy(partitions => partitions.ByMonth(order => order.CompletedDate))
+    .WithReadModel<OrderHistory>()
+    .Including<OrderItem>(order => order.Items, items => items
+        .MatchBy(item => new { item.OrderEdcId, item.LineNumber })
+        .WithReadModel<OrderItemHistory>());
+```
+
+Single and composite selectors must contain direct mapped scalar properties. By default the selected layout
+must be an EF key or unique index. If uniqueness is enforced by the ingestion pipeline instead, opt in explicitly
+with `TierMatchKeyUniqueness.ExternallyEnforced`. Every key component must still be non-null for rows selected by
+an archive run. The configured key is used consistently by hot/cold view suppression, retry cleanup, correction
+detection, and aggregate children; omitting `MatchBy` preserves primary-key behavior.
+
 The ordered `PartitionBy` builder is the application's physical layout declaration. The example produces
 `CustomerId=42/InvoiceDate_month=2025-06-01/`; reversing the two calls reverses the directory hierarchy. Nothing in
 the provider is tied to customer or invoice terminology: each application chooses its own mapped root properties,
@@ -223,8 +251,54 @@ rows and suppress a hot row whose key is already cold, while child views use "ro
 double-count or drop a row even before the delete runs; a re-run
 self-heals leftover hot rows. Deletes run leaf→root as separate autocommit statements because DuckDB checks
 foreign keys immediately and rejects deleting descendants and then their principals inside one transaction.
-Do not wrap `ArchiveTierAsync` for a multi-table aggregate in an application transaction; the provider rejects
-that combination before copying. A crash between delete statements remains safe and a rerun removes leftovers.
+Do not wrap `ArchiveTierAsync` in an application transaction. Parquet writes are external side effects and cannot
+be rolled back with the DuckDB transaction, so the provider rejects that combination before copying. A crash
+between delete statements remains safe and a rerun removes leftovers.
+
+`TierArchiveResult` contains the published watermark transition and table-level evidence: selected, verified-copy,
+and deleted row counts; the archive window; active generation/revision; archive paths and visible Parquet files;
+no-op state; and the final workflow stage. A failure after preflight throws `TierArchiveOperationException`, whose
+`Stage` and `PartialResult` show how far the operation reached without including object-store credentials.
+
+### Late rows, corrections, and reopened aggregates
+
+Ordinary archive runs only advance the watermark. A previously unseen row whose lifecycle value arrives behind
+that watermark stays visible and hot. A practical first defence is to delay the cutoff by one complete period.
+For daily archives, running after midnight with yesterday's midnight as the cutoff archives through the day before
+yesterday, leaving a full extra day for delayed ingestion. For monthly archives, running on the second day of the
+month with the first day as the cutoff gives the completed month an extra day. This grace period reduces late rows;
+it does not catch a row that arrives after the watermark has already advanced.
+
+Before an archive or no-op retry changes data, the provider compares hot rows whose stable key already exists in
+published Parquet. In simple terms:
+
+- Same key and same data means a harmless retry duplicate; cleanup can remove the hot copy.
+- Same key and different data means a correction; normal archiving stops and leaves the hot copy untouched.
+- A previously unseen key below the watermark is late data; normal archiving leaves it hot.
+- Clearing or moving the lifecycle date of an archived root means reopening it; reconciliation rejects that
+  because the whole aggregate must first be restored to the hot model.
+
+After the application has approved the hot corrections and late rows, run the explicit reconciliation operation:
+
+```csharp
+TierArchiveResult reconciliation =
+    await db.Database.ReconcileArchiveTierAsync<Invoice>(); // + sync ReconcileArchiveTier
+```
+
+Reconciliation reads the complete active cold range, lets hot rows win by the configured stable match key, writes
+a **new immutable Parquet generation**, verifies every node's row count, and atomically switches the control row and
+generated views to that generation. Only then does it delete hot rows whose complete representation matches the
+published generation. It never overwrites the currently active generation in place, so a failure before publication
+leaves readers on the old generation and a failure after publication is safe to retry. The previous generation is
+retained under the archive prefix for recovery. Cleanup must consult `active_archive_path` in
+`__duckdb_tier_control`, retain the active generation plus the required rollback/audit set, and delete or tag only
+generations proven obsolete. Do not apply blind age expiry to the entire `_revisions/` prefix: the active generation
+also lives there after reconciliation and could otherwise be deleted.
+
+Reconciliation is a key-wise upsert, not an inferred graph deletion. A hot child replaces a cold child with the
+same configured match key, and a new hot child is added, but the absence of a hot child does not delete its cold
+representation. Do not use reconciliation to remove archived children until the application and provider define
+an explicit tombstone or authoritative full-snapshot contract.
 
 ## 5. Retention
 
@@ -347,6 +421,20 @@ TIER_GCS_BUCKET="my-archive-bucket" \
 dotnet run --project samples/TieredStorage -- gcs
 ```
 
+**Failure/retry acceptance matrix.** Run the provider's dedicated MinIO lane with:
+
+```bash
+scripts/test-tiered-storage-s3.sh
+```
+
+It covers first archive, no-op rerun, restart/read, failure after copy, failure after control/view publication,
+partial child deletion, reconciliation publication failure, and nullable-column schema evolution. The same test
+class runs against a unique disposable real-AWS prefix when `DUCKDB_AWS_S3_TEST_BUCKET` is set. Optional variables
+are `DUCKDB_AWS_S3_TEST_PREFIX`, `DUCKDB_AWS_S3_TEST_REGION`, and the paired
+`DUCKDB_AWS_S3_TEST_KEY`/`DUCKDB_AWS_S3_TEST_SECRET` plus `DUCKDB_AWS_S3_TEST_SESSION_TOKEN`; when explicit keys
+are omitted, DuckDB's AWS credential chain is used. Configure lifecycle expiry on the test prefix because the
+provider intentionally does not delete remote objects.
+
 **How remote reads stay cheap.** A scoped cold query prunes to the partitions it needs and range-reads only the
 Parquet byte ranges within them — it never downloads whole files. `EXPLAIN ANALYZE` shows the pruning, e.g.
 `Scanning Files: 1/60` for a single-month query. To measure this on your own S3 / Azure endpoints (cold vs warm
@@ -355,7 +443,8 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
 
 ## Production notes
 
-- **Single writer.** DuckDB allows one writer. Run `ArchiveTierAsync` / `PurgeArchiveOlderThan` from the
+- **Single writer.** DuckDB allows one writer. Run `ArchiveTierAsync`, `ReconcileArchiveTierAsync`, and
+  `PurgeArchiveOlderThan` from the
   writing process with no other writer active (a maintenance window or the app's own scheduler).
 - **Absolute archive paths.** DuckDB resolves a relative archive path against the process working directory;
   prefer an absolute path in production. Each table archives under
@@ -366,14 +455,16 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
   deleted) — correct for financial history, but a semantic to be aware of.
 - **Read-models mirror the hot columns.** A read-model whose column is missing on the source is rejected at
   model validation. Adding a column to the hot entity is safe (cold rows read `NULL` after the view is
-  regenerated); renaming/retyping an archived column needs the affected partitions rewritten.
+  regenerated) when the new column is nullable; removing, renaming, retyping, or adding a required archived
+  column needs the affected archive migrated.
 - **Validation.** Missing/duplicate partition properties, non-date bucket transforms, an explicit plan without a
   safe lifecycle bucket, partitions declared anywhere except the aggregate root, physical-name collisions with
   root or child columns, a child without a single-column foreign key to its declared parent, and overlapping
   aggregate archive paths are rejected at model validation. Changing partition order, transforms, granularity,
-  mapped names, or mapped store types after cold files exist requires rewriting or clearing that aggregate's
-  archive. The provider records the complete versioned layout before copying files, so crash-orphaned or mixed
-  Hive layouts are rejected rather than opened with an incompatible schema.
+  archive path, match keys, include layout, mapped names, or mapped store types after cold files exist requires
+  rewriting or clearing that aggregate's archive. The provider records the complete versioned partition and
+  aggregate contract before copying files, so crash-orphaned or mixed layouts are rejected rather than opened
+  with an incompatible schema.
 - **Child view guard.** A child row is shown as hot only when its root is hot (a semijoin), which keeps reads
   correct in the brief window if an archive crashes between its `COPY` and delete. For deep aggregates you can
   opt out with `ToTieredStore(...).WithoutHotChildFilter()` — child views become a plain `SELECT * FROM child`
