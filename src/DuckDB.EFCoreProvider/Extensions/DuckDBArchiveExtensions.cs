@@ -22,9 +22,38 @@ namespace DuckDB.EFCoreProvider.Extensions;
 public readonly record struct TierArchiveResult(long RowsArchived, DateTime Watermark, string ArchivePath, bool NoOp);
 
 /// <summary>
+///     Raised when a hot row uses a stable tier match key that is already published in the cold archive but
+///     carries a different representation. The provider rejects corrections and reopened aggregates rather
+///     than silently hiding the hot version or deleting it during retry cleanup.
+/// </summary>
+public sealed class TierArchivedKeyConflictException : InvalidOperationException
+{
+    /// <summary>Creates a conflict exception for a tiered table.</summary>
+    public TierArchivedKeyConflictException(Type entityType, string table, long conflictingRows)
+        : base(
+            $"Tiered-storage table '{table}' has {conflictingRows} hot row(s) whose configured match key is "
+            + "already present in the published cold archive with different values. Corrections and reopened "
+            + "aggregates require quarantine or an explicit archive-migration workflow; no rows were archived or deleted.")
+    {
+        EntityType = entityType;
+        Table = table;
+        ConflictingRows = conflictingRows;
+    }
+
+    /// <summary>The mapped entity type whose hot rows conflict with cold data.</summary>
+    public Type EntityType { get; }
+
+    /// <summary>The physical hot table.</summary>
+    public string Table { get; }
+
+    /// <summary>The number of conflicting hot rows detected.</summary>
+    public long ConflictingRows { get; }
+}
+
+/// <summary>
 ///     DuckDB tiered-storage maintenance on <see cref="DatabaseFacade" />: create the control table and union
 ///     views, offload aged aggregates (root + children) to Parquet, and purge expired partitions. Configure
-///     with <see cref="DuckDBTieredStoreExtensions.ToTieredStore{TRoot}" />.
+///     with <c>ToTieredStore</c>.
 /// </summary>
 /// <remarks>
 ///     DuckDB is single-writer: run these from the writing process with no other writer active.
@@ -53,6 +82,7 @@ public static partial class DuckDBArchiveExtensions
             ExecuteNonQuery(connection, DuckDBTierControl.ControlTableDdl(sql));
             foreach (var aggregate in aggregates)
             {
+                EnsureArchiveSpecCompatible(connection, sql, archiveFileProbe, aggregate);
                 EnsurePartitionSpecCompatible(connection, sql, archiveFileProbe, aggregate);
                 ExecuteNonQuery(
                     connection,
@@ -62,6 +92,10 @@ public static partial class DuckDBArchiveExtensions
                         aggregate.Root.ArchiveSubPath,
                         aggregate.Granularity,
                         aggregate.PartitionSpec));
+                ExecuteNonQuery(
+                    connection,
+                    DuckDBTierControl.UpsertArchiveSpecSql(
+                        sql, aggregate.ControlKey, aggregate.Root.ArchiveSubPath, aggregate.ArchiveSpec));
                 RegenerateViews(connection, sql, archiveFileProbe, aggregate);
             }
         }
@@ -104,17 +138,35 @@ public static partial class DuckDBArchiveExtensions
         try
         {
             await ExecuteNonQueryAsync(connection, DuckDBTierControl.ControlTableDdl(sql), cancellationToken).ConfigureAwait(false);
+            EnsureArchiveSpecCompatible(connection, sql, archiveFileProbe, aggregate);
             EnsurePartitionSpecCompatible(connection, sql, archiveFileProbe, aggregate);
             await ExecuteNonQueryAsync(
                 connection,
                 DuckDBTierControl.UpsertPartitionLayoutSql(
                     sql, aggregate.ControlKey, archivePath, aggregate.Granularity, aggregate.PartitionSpec),
                 cancellationToken).ConfigureAwait(false);
+            await ExecuteNonQueryAsync(
+                connection,
+                DuckDBTierControl.UpsertArchiveSpecSql(
+                    sql, aggregate.ControlKey, archivePath, aggregate.ArchiveSpec),
+                cancellationToken).ConfigureAwait(false);
 
             var current = ReadWatermark(connection, sql, aggregate.ControlKey);
+            if (current is { } publishedWatermark)
+            {
+                await ThrowIfArchivedConflictsAsync(
+                    connection, sql, archiveFileProbe, aggregate, publishedWatermark, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             if (current is { } watermark && aligned <= watermark)
             {
-                await DeleteAggregateAsync(connection, sql, aggregate, watermark, cancellationToken).ConfigureAwait(false);
+                // A process may stop after publishing the watermark but before every view is regenerated. Repair
+                // the read surface before retry cleanup can remove the last hot copy of any archived row.
+                RegenerateViews(connection, sql, archiveFileProbe, aggregate);
+                await DeleteAggregateAsync(
+                    connection, sql, archiveFileProbe, aggregate, watermark, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, "CHECKPOINT;", cancellationToken).ConfigureAwait(false);
                 return new TierArchiveResult(0, watermark, archivePath, NoOp: true);
             }
 
@@ -125,6 +177,26 @@ public static partial class DuckDBArchiveExtensions
 
             if (rows > 0)
             {
+                foreach (var node in aggregate.Nodes)
+                {
+                    var nullMatchKeys = Convert.ToInt64(
+                        await ExecuteScalarAsync(
+                                connection,
+                                DuckDBTierControl.NullMatchKeyCountSql(
+                                    sql, node.Table, node.Schema, node.KeyColumns, node.ChainToRoot,
+                                    aggregate.RootTimestampColumn, from, aligned),
+                                cancellationToken)
+                            .ConfigureAwait(false),
+                        CultureInfo.InvariantCulture);
+                    if (nullMatchKeys > 0)
+                    {
+                        throw new InvalidOperationException(
+                            $"Tiered-storage table '{node.Table}' has {nullMatchKeys} archiveable row(s) with a NULL "
+                            + "configured match-key component. Match keys must be non-null for every archiveable row; "
+                            + "no archive files were written by this run.");
+                    }
+                }
+
                 foreach (var node in aggregate.Nodes)
                 {
                     // DuckDB does not create the archive root's parent directories for a local COPY, so create
@@ -145,7 +217,8 @@ public static partial class DuckDBArchiveExtensions
                     sql, aggregate.ControlKey, aligned, archivePath, aggregate.Granularity, aggregate.PartitionSpec),
                 cancellationToken).ConfigureAwait(false);
             RegenerateViews(connection, sql, archiveFileProbe, aggregate);
-            await DeleteAggregateAsync(connection, sql, aggregate, aligned, cancellationToken).ConfigureAwait(false);
+            await DeleteAggregateAsync(
+                connection, sql, archiveFileProbe, aggregate, aligned, cancellationToken).ConfigureAwait(false);
             await ExecuteNonQueryAsync(connection, "CHECKPOINT;", cancellationToken).ConfigureAwait(false);
 
             return new TierArchiveResult(rows, aligned, archivePath, NoOp: false);
@@ -273,6 +346,236 @@ public static partial class DuckDBArchiveExtensions
             + "before changing PartitionBy(...) or granularity; mixed Hive layouts are not supported.");
     }
 
+    private static void EnsureArchiveSpecCompatible(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        IDuckDBArchiveFileProbe archiveFileProbe,
+        DuckDBTierAggregate aggregate)
+    {
+        var recordedPath = ExecuteScalar(
+            connection,
+            DuckDBTierControl.ReadArchivePathSql(sql, aggregate.ControlKey)) as string;
+        var recordedJson = ExecuteScalar(
+            connection,
+            DuckDBTierControl.ReadArchiveSpecSql(sql, aggregate.ControlKey)) as string;
+
+        DuckDBTierArchiveContract? recorded = null;
+        if (recordedJson is not null)
+        {
+            try
+            {
+                recorded = JsonSerializer.Deserialize<DuckDBTierArchiveContract>(recordedJson);
+                if (recorded is null
+                    || recorded.Nodes is null
+                    || recorded.Nodes.Any(node => node.Columns is null || node.MatchKeyColumns is null))
+                {
+                    throw new JsonException("The archive contract is missing required fields.");
+                }
+            }
+            catch (JsonException exception)
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage aggregate '{aggregate.ControlKey}' has unreadable persisted archive metadata. "
+                    + "Repair or migrate the control row before writing more Parquet files.",
+                    exception);
+            }
+        }
+
+        if (!HasExistingArchive(connection, archiveFileProbe, aggregate, recordedPath, recorded))
+        {
+            return;
+        }
+
+        var configuredPath = NormalizeArchivePath(aggregate.Root.ArchiveSubPath);
+        var existingPath = NormalizeArchivePath(recorded?.ArchivePath ?? recordedPath ?? configuredPath);
+        if (!string.Equals(existingPath, configuredPath, StringComparison.Ordinal))
+        {
+            throw ArchiveContractChanged(
+                aggregate,
+                $"archive path changed from '{existingPath}' to '{configuredPath}'");
+        }
+
+        // Archives created before the versioned contract was introduced can be adopted at their existing path.
+        // The older partition metadata is still checked separately; subsequent changes are protected once the
+        // current contract is persisted by the caller.
+        if (recorded is null)
+        {
+            if (aggregate.Nodes.Any(node => node.Entity.GetTieredStoreMatchProperties().Count > 0))
+            {
+                throw ArchiveContractChanged(
+                    aggregate,
+                    "the existing legacy archive predates match-key metadata and cannot prove the configured MatchBy(...) layout");
+            }
+
+            return;
+        }
+
+        var configured = JsonSerializer.Deserialize<DuckDBTierArchiveContract>(aggregate.ArchiveSpec)
+            ?? throw new InvalidOperationException("The generated tiered-storage archive contract is empty.");
+        if (!ArchiveContractsMatch(recorded, configured, out var reason))
+        {
+            throw ArchiveContractChanged(aggregate, reason);
+        }
+    }
+
+    private static bool HasExistingArchive(
+        DuckDBConnection connection,
+        IDuckDBArchiveFileProbe archiveFileProbe,
+        DuckDBTierAggregate aggregate,
+        string? recordedPath,
+        DuckDBTierArchiveContract? recorded)
+    {
+        if (aggregate.Nodes.Any(node => archiveFileProbe.HasArchiveFiles(connection, node.ArchiveSubPath)))
+        {
+            return true;
+        }
+
+        var oldRootPath = recorded?.ArchivePath ?? recordedPath;
+        if (oldRootPath is null)
+        {
+            return false;
+        }
+
+        if (archiveFileProbe.HasArchiveFiles(connection, oldRootPath))
+        {
+            return true;
+        }
+
+        if (recorded is null || recorded.Nodes.Count == 0)
+        {
+            return false;
+        }
+
+        var oldBasePath = ArchiveBasePath(oldRootPath, recorded.Nodes[0].Table);
+        return recorded.Nodes.Any(
+            node => archiveFileProbe.HasArchiveFiles(
+                connection,
+                oldBasePath + "/" + node.Table));
+    }
+
+    private static bool ArchiveContractsMatch(
+        DuckDBTierArchiveContract recorded,
+        DuckDBTierArchiveContract configured,
+        out string reason)
+    {
+        if (recorded.Version != configured.Version)
+        {
+            reason = $"contract version changed from {recorded.Version} to {configured.Version}";
+            return false;
+        }
+
+        // Partition and granularity compatibility have their own persisted layout validator and more actionable
+        // migration error. Let it report those differences before comparing the remaining aggregate contract.
+        if (recorded.Granularity != configured.Granularity
+            || !string.Equals(recorded.PartitionSpec, configured.PartitionSpec, StringComparison.Ordinal))
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        if (!string.Equals(recorded.ControlKey, configured.ControlKey, StringComparison.Ordinal)
+            || !string.Equals(recorded.LifecycleColumn, configured.LifecycleColumn, StringComparison.Ordinal))
+        {
+            reason = "the lifecycle, granularity, control key, or partition layout changed";
+            return false;
+        }
+
+        var recordedNodes = recorded.Nodes.ToDictionary(NodeIdentity, StringComparer.Ordinal);
+        var configuredNodes = configured.Nodes.ToDictionary(NodeIdentity, StringComparer.Ordinal);
+        if (recordedNodes.Count != configuredNodes.Count
+            || recordedNodes.Keys.Any(key => !configuredNodes.ContainsKey(key)))
+        {
+            reason = "the aggregate table/include layout changed";
+            return false;
+        }
+
+        foreach (var (identity, oldNode) in recordedNodes)
+        {
+            var newNode = configuredNodes[identity];
+            if (!oldNode.MatchKeyColumns.SequenceEqual(newNode.MatchKeyColumns, StringComparer.Ordinal))
+            {
+                reason = $"match-key layout changed for '{identity}'";
+                return false;
+            }
+
+            var oldComparisonColumns = oldNode.ComparisonColumns
+                                       ?? oldNode.Columns.Select(column => column.Name).ToArray();
+            var newComparisonColumns = newNode.ComparisonColumns ?? [];
+            if (oldComparisonColumns.Any(
+                    column => !newComparisonColumns.Contains(column, StringComparer.Ordinal))
+                || newComparisonColumns.Any(
+                    column => !oldComparisonColumns.Contains(column, StringComparer.Ordinal)
+                              && oldNode.Columns.Any(
+                                  oldColumn => string.Equals(oldColumn.Name, column, StringComparison.Ordinal))))
+            {
+                reason = $"match-key comparison layout changed for '{identity}'";
+                return false;
+            }
+
+            var newColumns = newNode.Columns.ToDictionary(column => column.Name, StringComparer.Ordinal);
+            foreach (var oldColumn in oldNode.Columns)
+            {
+                if (!newColumns.TryGetValue(oldColumn.Name, out var newColumn))
+                {
+                    reason = $"archived column '{identity}.{oldColumn.Name}' was removed or renamed";
+                    return false;
+                }
+
+                if (!StoreTypesMatch(oldColumn.StoreType, newColumn.StoreType))
+                {
+                    reason = $"archived column '{identity}.{oldColumn.Name}' changed type from "
+                             + $"'{oldColumn.StoreType}' to '{newColumn.StoreType}'";
+                    return false;
+                }
+
+                if (oldColumn.IsNullable && !newColumn.IsNullable)
+                {
+                    reason = $"archived column '{identity}.{oldColumn.Name}' changed from nullable to required";
+                    return false;
+                }
+            }
+
+            var oldColumnNames = oldNode.Columns.Select(column => column.Name).ToHashSet(StringComparer.Ordinal);
+            var unsafeAddition = newNode.Columns.FirstOrDefault(
+                column => !oldColumnNames.Contains(column.Name) && !column.IsNullable);
+            if (unsafeAddition is not null)
+            {
+                reason = $"new archived column '{identity}.{unsafeAddition.Name}' is required; only nullable columns "
+                         + "can be added without migrating existing Parquet files";
+                return false;
+            }
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private static string NodeIdentity(DuckDBTierArchiveNodeContract node)
+        => (node.Schema is null ? string.Empty : node.Schema + ".") + node.Table;
+
+    private static bool StoreTypesMatch(string left, string right)
+        => string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static InvalidOperationException ArchiveContractChanged(
+        DuckDBTierAggregate aggregate,
+        string reason)
+        => new(
+            $"Tiered-storage aggregate '{aggregate.ControlKey}' cannot use its existing Parquet archive because "
+            + $"{reason}. Migrate or clear the cold archive before changing the path, MatchBy(...), included tables, "
+            + "or archived schema.");
+
+    private static string ArchiveBasePath(string rootArchivePath, string rootTable)
+    {
+        var normalized = NormalizeArchivePath(rootArchivePath);
+        var suffix = "/" + rootTable;
+        return normalized.EndsWith(suffix, StringComparison.Ordinal)
+            ? normalized[..^suffix.Length]
+            : normalized[..Math.Max(0, normalized.LastIndexOf('/'))];
+    }
+
+    private static string NormalizeArchivePath(string path)
+        => path.Replace('\\', '/').TrimEnd('/');
+
     private static bool PartitionLayoutsMatch(
         string? recordedSpec,
         string? recordedGranularity,
@@ -314,6 +617,7 @@ public static partial class DuckDBArchiveExtensions
     private static async Task DeleteAggregateAsync(
         DuckDBConnection connection,
         ISqlGenerationHelper sql,
+        IDuckDBArchiveFileProbe archiveFileProbe,
         DuckDBTierAggregate aggregate,
         DateTime cutoff,
         CancellationToken cancellationToken)
@@ -325,12 +629,52 @@ public static partial class DuckDBArchiveExtensions
         for (var i = aggregate.Nodes.Count - 1; i >= 0; i--)
         {
             var node = aggregate.Nodes[i];
+            if (!archiveFileProbe.HasArchiveFiles(connection, node.ArchiveSubPath))
+            {
+                continue;
+            }
+
             var deleteSql = node.IsRoot
                 ? DuckDBTierControl.DeleteHotSql(
-                    sql, node.Table, node.Schema, node.KeyColumns, aggregate.RootTimestampColumn,
+                    sql, node.Table, node.Schema, node.KeyColumns, node.ComparisonColumns, aggregate.RootTimestampColumn,
                     node.ArchiveSubPath, cutoff, aggregate.RootPartitions)
-                : DuckDBTierControl.DeleteChildSql(sql, node.Table, node.Schema, node.KeyColumns, node.ChainToRoot, aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff);
+                : DuckDBTierControl.DeleteChildSql(
+                    sql, node.Table, node.Schema, node.KeyColumns, node.ComparisonColumns, node.ChainToRoot,
+                    aggregate.RootTimestampColumn, node.ArchiveSubPath, cutoff);
             await ExecuteNonQueryAsync(connection, deleteSql, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ThrowIfArchivedConflictsAsync(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        IDuckDBArchiveFileProbe archiveFileProbe,
+        DuckDBTierAggregate aggregate,
+        DateTime watermark,
+        CancellationToken cancellationToken)
+    {
+        foreach (var node in aggregate.Nodes)
+        {
+            if (!archiveFileProbe.HasArchiveFiles(connection, node.ArchiveSubPath))
+            {
+                continue;
+            }
+
+            var commandText = node.IsRoot
+                ? DuckDBTierControl.RootConflictCountSql(
+                    sql, node.Table, node.Schema, node.KeyColumns, node.ComparisonColumns,
+                    aggregate.RootTimestampColumn, node.ArchiveSubPath, watermark, aggregate.RootPartitions)
+                : DuckDBTierControl.ChildConflictCountSql(
+                    sql, node.Table, node.Schema, node.KeyColumns, node.ComparisonColumns,
+                    aggregate.RootTimestampColumn, aggregate.ControlKey, node.ArchiveSubPath,
+                    aggregate.Granularity, aggregate.RootPartitions);
+            var conflicts = Convert.ToInt64(
+                await ExecuteScalarAsync(connection, commandText, cancellationToken).ConfigureAwait(false),
+                CultureInfo.InvariantCulture);
+            if (conflicts > 0)
+            {
+                throw new TierArchivedKeyConflictException(node.Entity.ClrType, node.Table, conflicts);
+            }
         }
     }
 
@@ -338,7 +682,7 @@ public static partial class DuckDBArchiveExtensions
     {
         var ts = sql.DelimitIdentifier(aggregate.RootTimestampColumn);
         return $"SELECT count(*) FROM {sql.DelimitIdentifier(aggregate.Root.Table)} "
-               + $"WHERE {ts} >= TIMESTAMP '{from.ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}' "
+               + $"WHERE {ts} IS NOT NULL AND {ts} >= TIMESTAMP '{from.ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}' "
                + $"AND {ts} < TIMESTAMP '{cutoff.ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}';";
     }
 

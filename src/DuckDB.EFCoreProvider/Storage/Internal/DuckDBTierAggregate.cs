@@ -32,6 +32,19 @@ public sealed class DuckDBTierAggregate
         RootPartitions = rootPartitions;
         RootPartitionColumns = rootPartitions.Select(partition => partition.Name).ToArray();
         PartitionSpec = JsonSerializer.Serialize(new DuckDBTierPartitionLayout(2, granularity, rootPartitions));
+        ArchiveSpec = JsonSerializer.Serialize(new DuckDBTierArchiveContract(
+            1,
+            controlKey,
+            nodes[0].ArchiveSubPath,
+            granularity,
+            rootTimestampColumn,
+            PartitionSpec,
+            nodes.Select(node => new DuckDBTierArchiveNodeContract(
+                node.Table,
+                node.Schema,
+                node.ColumnDefinitions.OrderBy(column => column.Name, StringComparer.Ordinal).ToArray(),
+                node.KeyColumns.ToArray(),
+                node.ComparisonColumns.ToArray())).ToArray()));
         IncludeHotChildFilter = includeHotChildFilter;
     }
 
@@ -55,6 +68,9 @@ public sealed class DuckDBTierAggregate
 
     /// <summary>The persisted layout signature used to reject incompatible archive configuration changes.</summary>
     public string PartitionSpec { get; }
+
+    /// <summary>The persisted aggregate contract used to reject unsafe path, key, and schema changes.</summary>
+    public string ArchiveSpec { get; }
 
     /// <summary>Whether child views include the "root is hot" semijoin guard.</summary>
     public bool IncludeHotChildFilter { get; }
@@ -106,7 +122,8 @@ public sealed class DuckDBTierAggregate
         var children = model.GetEntityTypes()
             .Where(e => e.GetTieredStoreRole() == "Child" && e.GetTieredStoreRoot() == root.Name)
             .Select(child => (Entity: child, Chain: BuildChain(model, child, root)))
-            .OrderBy(x => x.Chain.Count); // parents (shorter chains) before their children
+            .OrderBy(x => x.Chain.Count)
+            .ThenBy(x => x.Entity.Name, StringComparer.Ordinal); // parents before children, stable within a depth
 
         foreach (var (entity, chain) in children)
         {
@@ -122,18 +139,43 @@ public sealed class DuckDBTierAggregate
     {
         var table = entity.GetTableName()!;
         var store = StoreObjectIdentifier.Table(table, entity.GetSchema());
-        var columns = entity.GetProperties()
+        var columnDefinitions = entity.GetProperties()
+            .Select(property => (Property: property, Column: property.GetColumnName(store)))
+            .Where(mapped => mapped.Column is not null)
+            .Select(mapped => new DuckDBTierColumn(
+                mapped.Property.Name,
+                mapped.Column!,
+                mapped.Property.GetColumnType(store) ?? mapped.Property.GetRelationalTypeMapping().StoreType,
+                mapped.Property.IsNullable))
+            .ToList();
+        var configuredMatchKey = entity.GetTieredStoreMatchProperties();
+        var keyProperties = configuredMatchKey.Count == 0
+            ? entity.FindPrimaryKey()?.Properties ?? []
+            : configuredMatchKey.Select(name => entity.FindProperty(name)!).ToArray();
+        var keyColumns = keyProperties
             .Select(p => p.GetColumnName(store))
             .OfType<string>()
             .ToList();
-        var keyColumns = entity.FindPrimaryKey()?.Properties
-            .Select(p => p.GetColumnName(store))
-            .OfType<string>()
-            .ToList()
-            ?? [];
+        var comparisonColumns = columnDefinitions.Select(column => column.Name).ToList();
+        if (configuredMatchKey.Count > 0)
+        {
+            var localIdentityColumns = entity.FindPrimaryKey()!.Properties
+                .Select(property => property.GetColumnName(store))
+                .OfType<string>()
+                .Where(column => !keyColumns.Contains(column, StringComparer.Ordinal));
+            comparisonColumns.RemoveAll(column => localIdentityColumns.Contains(column, StringComparer.Ordinal));
+
+            // A replayed child graph can receive a new provider-local parent key even though both nodes retain
+            // their stable external identities. Do not turn that relationship plumbing into a false correction.
+            if (chain.Count > 0 && !keyColumns.Contains(chain[0].ForeignKeyColumn, StringComparer.Ordinal))
+            {
+                comparisonColumns.Remove(chain[0].ForeignKeyColumn);
+            }
+        }
 
         return new DuckDBTierNode(
-            entity, table, entity.GetSchema(), columns, keyColumns, entity.GetTieredStoreView(),
+            entity, table, entity.GetSchema(), columnDefinitions.Select(column => column.Name).ToArray(),
+            columnDefinitions, keyColumns, comparisonColumns, entity.GetTieredStoreView(),
             archivePath.TrimEnd('/', '\\') + "/" + table, chain);
     }
 
@@ -186,13 +228,36 @@ public sealed record DuckDBTierPartitionLayout(
     TierGranularity Granularity,
     IReadOnlyList<DuckDBTierPartitionColumn> Columns);
 
+/// <summary>A mapped column recorded in the tiered archive contract. Internal API.</summary>
+public sealed record DuckDBTierColumn(string PropertyName, string Name, string StoreType, bool IsNullable);
+
+/// <summary>The versioned aggregate-wide archive contract. Internal API.</summary>
+public sealed record DuckDBTierArchiveContract(
+    int Version,
+    string ControlKey,
+    string ArchivePath,
+    TierGranularity Granularity,
+    string LifecycleColumn,
+    string PartitionSpec,
+    IReadOnlyList<DuckDBTierArchiveNodeContract> Nodes);
+
+/// <summary>A table-level entry in the versioned tiered archive contract. Internal API.</summary>
+public sealed record DuckDBTierArchiveNodeContract(
+    string Table,
+    string? Schema,
+    IReadOnlyList<DuckDBTierColumn> Columns,
+    IReadOnlyList<string> MatchKeyColumns,
+    IReadOnlyList<string> ComparisonColumns);
+
 /// <summary>One resolved node (table) of a tiered aggregate. Internal API.</summary>
 public sealed record DuckDBTierNode(
     IEntityType Entity,
     string Table,
     string? Schema,
     IReadOnlyList<string> Columns,
+    IReadOnlyList<DuckDBTierColumn> ColumnDefinitions,
     IReadOnlyList<string> KeyColumns,
+    IReadOnlyList<string> ComparisonColumns,
     string? ViewName,
     string ArchiveSubPath,
     IReadOnlyList<DuckDBTierControl.TierJoinHop> ChainToRoot)

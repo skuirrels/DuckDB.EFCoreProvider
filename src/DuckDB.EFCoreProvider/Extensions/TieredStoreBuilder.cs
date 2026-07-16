@@ -38,6 +38,18 @@ public sealed class TieredStoreBuilder<TRoot>
     }
 
     /// <summary>
+    ///     Selects the stable property or composite properties used to match hot and cold root representations.
+    ///     The primary key remains the default when this method is not called.
+    /// </summary>
+    public TieredStoreBuilder<TRoot> MatchBy(
+        Expression<Func<TRoot, object?>> key,
+        TierMatchKeyUniqueness uniqueness = TierMatchKeyUniqueness.Model)
+    {
+        _root.SetTieredStoreMatchKey(DuckDBTieredStoreExtensions.GetPropertyNames(key), uniqueness);
+        return this;
+    }
+
+    /// <summary>
     ///     Adds mapped root properties as exact-value Hive partition keys, in declaration order. This shorthand
     ///     retains the configured lifecycle date bucket as the final safety partition; use the ordered-builder
     ///     overload to place that bucket explicitly elsewhere. Every child archive inherits the root values.
@@ -231,6 +243,18 @@ public sealed class TieredChildBuilder<TChild>
         where TReadModel : class
     {
         DuckDBTieredStoreExtensions.MapReadModel(_modelBuilder, _child, typeof(TReadModel));
+        return this;
+    }
+
+    /// <summary>
+    ///     Selects the stable property or composite properties used to match hot and cold child representations.
+    ///     The primary key remains the default when this method is not called.
+    /// </summary>
+    public TieredChildBuilder<TChild> MatchBy(
+        Expression<Func<TChild, object?>> key,
+        TierMatchKeyUniqueness uniqueness = TierMatchKeyUniqueness.Model)
+    {
+        _child.SetTieredStoreMatchKey(DuckDBTieredStoreExtensions.GetPropertyNames(key), uniqueness);
         return this;
     }
 

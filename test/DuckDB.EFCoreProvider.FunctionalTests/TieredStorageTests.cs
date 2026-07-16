@@ -391,6 +391,11 @@ public sealed class TieredStorageTests : IDisposable
                 "SELECT count(*) AS \"Value\" FROM pragma_table_info('__duckdb_tier_control') WHERE name = 'partition_spec'")
             .Single();
         Assert.Equal(1, partitionColumns);
+        var archiveColumns = context.Database
+            .SqlQueryRaw<long>(
+                "SELECT count(*) AS \"Value\" FROM pragma_table_info('__duckdb_tier_control') WHERE name = 'archive_spec'")
+            .Single();
+        Assert.Equal(1, archiveColumns);
     }
 
     [Fact]
@@ -1210,7 +1215,32 @@ public sealed class TieredStorageTests : IDisposable
     }
 
     // Second-generation root model over the same "invoices" table/archive, with an added column.
-    private sealed class InvoiceV2 { public int Id { get; set; } public DateTime InvoiceDate { get; set; } public string? Note { get; set; } }
+    private sealed class InvoiceV2
+    {
+        public int Id { get; set; }
+        public int CustomerId { get; set; }
+        public DateTime InvoiceDate { get; set; }
+        public string? Note { get; set; }
+        public List<InvoiceLineV2> Lines { get; set; } = [];
+    }
+
+    private sealed class InvoiceLineV2
+    {
+        public int Id { get; set; }
+        public int InvoiceId { get; set; }
+        public InvoiceV2? Invoice { get; set; }
+        public decimal Amount { get; set; }
+        public List<LineAllocationV2> Allocations { get; set; } = [];
+    }
+
+    private sealed class LineAllocationV2
+    {
+        public int Id { get; set; }
+        public int InvoiceLineId { get; set; }
+        public InvoiceLineV2? InvoiceLine { get; set; }
+        public decimal Amount { get; set; }
+    }
+
     private sealed class InvoiceV2Rm { public int Id { get; set; } public DateTime InvoiceDate { get; set; } public string? Note { get; set; } }
 
     private sealed class EvolvedContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
@@ -1223,9 +1253,28 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<InvoiceV2>().ToTable("invoices");
+            modelBuilder.Entity<InvoiceV2>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.HasMany(invoice => invoice.Lines).WithOne(line => line.Invoice).HasForeignKey(line => line.InvoiceId);
+            });
+            modelBuilder.Entity<InvoiceLineV2>(builder =>
+            {
+                builder.ToTable("invoice_lines");
+                builder.HasKey(line => line.Id);
+                builder.HasMany(line => line.Allocations).WithOne(allocation => allocation.InvoiceLine)
+                    .HasForeignKey(allocation => allocation.InvoiceLineId);
+            });
+            modelBuilder.Entity<LineAllocationV2>(builder =>
+            {
+                builder.ToTable("line_allocations");
+                builder.HasKey(allocation => allocation.Id);
+            });
             modelBuilder.ToTieredStore<InvoiceV2>(i => i.InvoiceDate, archivePath, TierGranularity.Month)
-                .WithReadModel<InvoiceV2Rm>();
+                .WithReadModel<InvoiceV2Rm>()
+                .Including<InvoiceLineV2>(invoice => invoice.Lines, line => line
+                    .Including<LineAllocationV2>(item => item.Allocations));
         }
     }
 

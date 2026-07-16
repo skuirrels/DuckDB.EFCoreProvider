@@ -129,7 +129,7 @@ public class DuckDBModelValidator : RelationalModelValidator
 
             var storeObject = StoreObjectIdentifier.Table(table, entityType.GetSchema());
 
-            ValidatePrimaryKey(entityType);
+            ValidateMatchKey(entityType, storeObject);
             ValidatePartitionOwnership(entityType, role);
             ValidateReservedColumns(model, entityType, storeObject);
             ValidateReadModelColumns(model, entityType, storeObject);
@@ -144,6 +144,7 @@ public class DuckDBModelValidator : RelationalModelValidator
             }
             else
             {
+                ValidateLifecycleProperty(entityType, storeObject);
                 rootArchives.Add((NormalizeArchivePath(entityType.GetTieredStoreArchivePath()!), entityType.DisplayName()));
             }
         }
@@ -278,13 +279,67 @@ public class DuckDBModelValidator : RelationalModelValidator
         }
     }
 
-    private static void ValidatePrimaryKey(IReadOnlyEntityType entityType)
+    private static void ValidateLifecycleProperty(IReadOnlyEntityType entityType, StoreObjectIdentifier storeObject)
+    {
+        var propertyName = entityType.GetTieredStoreTimestamp();
+        var property = propertyName is null ? null : entityType.FindProperty(propertyName);
+        if (property is null || property.GetColumnName(storeObject) is null)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage lifecycle selector '{entityType.DisplayName()}.{propertyName}' must resolve to a "
+                + "direct scalar property mapped to the aggregate root table.");
+        }
+
+        var clrType = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
+        if (clrType != typeof(DateTime))
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage lifecycle property '{entityType.DisplayName()}.{property.Name}' must be DateTime or "
+                + $"nullable DateTime, but is '{property.ClrType.ShortDisplayName()}'.");
+        }
+    }
+
+    private static void ValidateMatchKey(IReadOnlyEntityType entityType, StoreObjectIdentifier storeObject)
     {
         if (entityType.FindPrimaryKey() is null)
         {
             throw new InvalidOperationException(
                 $"Tiered-storage entity '{entityType.DisplayName()}' must have a primary key. The generated hot/cold "
                 + "union views use the key to suppress crash-retry duplicates while keeping late hot rows visible.");
+        }
+
+        var configured = entityType.GetTieredStoreMatchProperties();
+        var properties = configured.Count == 0
+            ? entityType.FindPrimaryKey()!.Properties
+            : configured.Select(name => entityType.FindProperty(name)
+                ?? throw new InvalidOperationException(
+                    $"Tiered-storage match-key property '{entityType.DisplayName()}.{name}' is not a mapped scalar property."))
+                .ToArray();
+
+        foreach (var property in properties)
+        {
+            if (property.GetColumnName(storeObject) is null)
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage match-key property '{entityType.DisplayName()}.{property.Name}' is not mapped to "
+                    + $"table '{entityType.GetTableName()}'.");
+            }
+        }
+
+        if (configured.Count == 0
+            || entityType.GetTieredStoreMatchKeyUniqueness() == TierMatchKeyUniqueness.ExternallyEnforced)
+        {
+            return;
+        }
+
+        var declaredUnique = entityType.GetKeys().Any(key => key.Properties.SequenceEqual(properties))
+            || entityType.GetIndexes().Any(index => index.IsUnique && index.Properties.SequenceEqual(properties));
+        if (!declaredUnique)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage match key for '{entityType.DisplayName()}' must be a primary key, alternate key, or "
+                + "unique index. If uniqueness is enforced outside EF, pass TierMatchKeyUniqueness.ExternallyEnforced "
+                + "to MatchBy(...).");
         }
     }
 

@@ -79,4 +79,10 @@ public static class DuckDBAnnotationNames
     ///     Internal API.
     /// </summary>
     public const string TieredStoreHotChildFilter = Prefix + "TieredStore:HotChildFilter";
+
+    /// <summary>The serialized property names used to match hot and cold representations. Internal API.</summary>
+    public const string TieredStoreMatchKey = Prefix + "TieredStore:MatchKey";
+
+    /// <summary>How uniqueness of the configured tiered-store match key is guaranteed. Internal API.</summary>
+    public const string TieredStoreMatchKeyUniqueness = Prefix + "TieredStore:MatchKeyUniqueness";
 }

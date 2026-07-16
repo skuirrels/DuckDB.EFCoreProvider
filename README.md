@@ -322,6 +322,14 @@ public class BillingContext : DbContext
 }
 ```
 
+The lifecycle selector may target `DateTime?`; `NULL` roots and their children remain permanently hot until the
+application supplies a date. When the source system's stable identity differs from an EF surrogate primary key,
+add `.MatchBy(i => i.EdcId)` on the root and, independently, a single or anonymous-object composite key on each
+included child that needs it. Match keys require a declared EF key/unique index unless the application explicitly
+uses `TierMatchKeyUniqueness.ExternallyEnforced`; archiveable key values must still be non-null. See the
+[tiered-storage guide](docs/TIERED-STORAGE.md#stable-hotcold-match-keys) for correction/reopen behavior and the
+late-row boundary.
+
 ```csharp
 db.Database.EnsureCreated();                 // creates the control table + hot/cold view
 // (when using Migrate() instead, call db.Database.EnsureTieredStoresCreated() once at startup)

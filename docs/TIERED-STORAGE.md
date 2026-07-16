@@ -81,6 +81,34 @@ public class BillingContext : DbContext
 `Invoice` can tier on `InvoiceDate`, `Order` on `PlacedUtc`, `AuditEvent` on `OccurredOn` — each independent, each
 with its own archive path.
 
+The lifecycle property may be `DateTime?`. A `NULL` value is never selected by `ArchiveTierAsync`, remains on
+the hot side of every generated view, and can participate in `ByMonth` / `ByDay` partition declarations. Once
+the application populates it, a later forward archive run selects it when the value falls inside that run's
+half-open watermark window. A value populated behind an already-advanced watermark is late data and remains
+hot; see the late-data policy below.
+
+### Stable hot/cold match keys
+
+By default each table's EF primary key suppresses retry duplicates. When that key is provider-local but the
+source system has a stable identity, configure `MatchBy` independently on the root and any included child that
+needs it:
+
+```csharp
+modelBuilder.ToTieredStore<Order>(order => order.CompletedDate, archivePath)
+    .MatchBy(order => order.EdcId)
+    .PartitionBy(partitions => partitions.ByMonth(order => order.CompletedDate))
+    .WithReadModel<OrderHistory>()
+    .Including<OrderItem>(order => order.Items, items => items
+        .MatchBy(item => new { item.OrderEdcId, item.LineNumber })
+        .WithReadModel<OrderItemHistory>());
+```
+
+Single and composite selectors must contain direct mapped scalar properties. By default the selected layout
+must be an EF key or unique index. If uniqueness is enforced by the ingestion pipeline instead, opt in explicitly
+with `TierMatchKeyUniqueness.ExternallyEnforced`. Every key component must still be non-null for rows selected by
+an archive run. The configured key is used consistently by hot/cold view suppression, retry cleanup, correction
+detection, and aggregate children; omitting `MatchBy` preserves primary-key behavior.
+
 The ordered `PartitionBy` builder is the application's physical layout declaration. The example produces
 `CustomerId=42/InvoiceDate_month=2025-06-01/`; reversing the two calls reverses the directory hierarchy. Nothing in
 the provider is tied to customer or invoice terminology: each application chooses its own mapped root properties,
@@ -226,6 +254,18 @@ foreign keys immediately and rejects deleting descendants and then their princip
 Do not wrap `ArchiveTierAsync` for a multi-table aggregate in an application transaction; the provider rejects
 that combination before copying. A crash between delete statements remains safe and a rerun removes leftovers.
 
+### Late rows, corrections, and reopened aggregates
+
+Ordinary archive runs only advance the watermark. A previously unseen row whose lifecycle value arrives behind
+that watermark stays visible and hot; this release does not sweep it into an already-published partition.
+
+Before an archive or no-op retry changes data, the provider compares hot rows whose stable key already exists in
+published Parquet. An identical replay is safe and is removed by retry cleanup. A differing representation—such
+as a correction or a cleared/moved lifecycle value on a reopened aggregate—throws
+`TierArchivedKeyConflictException` and remains hot for the application to quarantine or investigate. The
+provider does not overwrite or hide-and-delete that change. Replacing cold data requires an explicit recoverable
+partition migration/publication workflow and is not implemented by `ArchiveTierAsync`.
+
 ## 5. Retention
 
 ```csharp
@@ -366,14 +406,16 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
   deleted) — correct for financial history, but a semantic to be aware of.
 - **Read-models mirror the hot columns.** A read-model whose column is missing on the source is rejected at
   model validation. Adding a column to the hot entity is safe (cold rows read `NULL` after the view is
-  regenerated); renaming/retyping an archived column needs the affected partitions rewritten.
+  regenerated) when the new column is nullable; removing, renaming, retyping, or adding a required archived
+  column needs the affected archive migrated.
 - **Validation.** Missing/duplicate partition properties, non-date bucket transforms, an explicit plan without a
   safe lifecycle bucket, partitions declared anywhere except the aggregate root, physical-name collisions with
   root or child columns, a child without a single-column foreign key to its declared parent, and overlapping
   aggregate archive paths are rejected at model validation. Changing partition order, transforms, granularity,
-  mapped names, or mapped store types after cold files exist requires rewriting or clearing that aggregate's
-  archive. The provider records the complete versioned layout before copying files, so crash-orphaned or mixed
-  Hive layouts are rejected rather than opened with an incompatible schema.
+  archive path, match keys, include layout, mapped names, or mapped store types after cold files exist requires
+  rewriting or clearing that aggregate's archive. The provider records the complete versioned partition and
+  aggregate contract before copying files, so crash-orphaned or mixed layouts are rejected rather than opened
+  with an incompatible schema.
 - **Child view guard.** A child row is shown as hot only when its root is hot (a semijoin), which keeps reads
   correct in the brief window if an archive crashes between its `COPY` and delete. For deep aggregates you can
   opt out with `ToTieredStore(...).WithoutHotChildFilter()` — child views become a plain `SELECT * FROM child`

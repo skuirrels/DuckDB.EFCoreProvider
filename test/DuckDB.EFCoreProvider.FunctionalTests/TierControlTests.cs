@@ -41,9 +41,9 @@ public sealed class TierControlTests
         // Cold branch uses SELECT * EXCLUDE so added columns are NULL-filled instead of erroring.
         Assert.Contains("SELECT * EXCLUDE (\"year\", \"month\")", sql);
         Assert.Contains("read_parquet('archive/events/**/*.parquet', hive_partitioning = true, union_by_name = true)", sql);
-        Assert.Contains("WHERE h.\"Ts\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+        Assert.Contains("WHERE (h.\"Ts\" IS NULL OR h.\"Ts\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered'))", sql);
         Assert.Contains("AND NOT EXISTS (SELECT 1 FROM (SELECT * EXCLUDE (\"year\", \"month\") FROM read_parquet", sql);
-        Assert.Contains("AS c WHERE c.\"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+        Assert.Contains("AS c WHERE c.\"Ts\" IS NOT NULL AND c.\"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
     }
 
     [Fact]
@@ -174,7 +174,7 @@ public sealed class TierControlTests
             Sql, "invoice_lines_tiered", "invoice_lines", null, ["Id", "InvoiceId", "Amount"], ["Id"], chain, "InvoiceDate",
             "invoices", "archive/invoice_lines", TierGranularity.Month, includeCold: true, includeHotChildFilter: true);
 
-        Assert.Contains("WHERE h.\"InvoiceId\" IN (SELECT r0.\"Id\" FROM invoices AS r0 WHERE r0.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')", sql);
+        Assert.Contains("WHERE h.\"InvoiceId\" IN (SELECT r0.\"Id\" FROM invoices AS r0 WHERE (r0.\"InvoiceDate\" IS NULL OR r0.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices'))", sql);
         Assert.Contains("OR NOT EXISTS (SELECT 1 FROM cold AS c WHERE c.\"Id\" = h.\"Id\")", sql);
         Assert.Contains("UNION ALL BY NAME", sql);
         Assert.Contains("SELECT * EXCLUDE (\"year\", \"month\")", sql);
@@ -193,7 +193,7 @@ public sealed class TierControlTests
             "invoices", "archive/line_allocations", TierGranularity.Month, includeCold: true, includeHotChildFilter: true);
 
         Assert.Contains(
-            "WHERE h.\"InvoiceLineId\" IN (SELECT r0.\"Id\" FROM invoice_lines AS r0 WHERE r0.\"InvoiceId\" IN (SELECT r1.\"Id\" FROM invoices AS r1 WHERE r1.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')))",
+            "WHERE h.\"InvoiceLineId\" IN (SELECT r0.\"Id\" FROM invoice_lines AS r0 WHERE r0.\"InvoiceId\" IN (SELECT r1.\"Id\" FROM invoices AS r1 WHERE (r1.\"InvoiceDate\" IS NULL OR r1.\"InvoiceDate\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices'))))",
             sql);
     }
 
@@ -227,12 +227,47 @@ public sealed class TierControlTests
     }
 
     [Fact]
+    public void ChildViewSql_only_publishes_partitions_before_the_watermark()
+    {
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
+        var sql = DuckDBTierControl.ChildViewSql(
+            Sql, "invoice_lines_tiered", "invoice_lines", null, ["Id", "InvoiceId", "Amount"], ["Id"], chain,
+            "InvoiceDate", "invoices", "archive/invoice_lines", TierGranularity.Month, includeCold: true,
+            includeHotChildFilter: true,
+            rootPartitions:
+            [
+                new DuckDBTierPartitionColumn(
+                    "InvoiceDate", "InvoiceDate", "InvoiceDate_month", "DATE", TierPartitionTransform.Month),
+            ]);
+
+        Assert.Contains(
+            "WHERE CAST(p.\"InvoiceDate_month\" AS DATE) < "
+            + "(SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')",
+            sql);
+    }
+
+    [Fact]
+    public void Match_key_sql_supports_composites_and_full_row_cleanup()
+    {
+        var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
+        var sql = DuckDBTierControl.DeleteChildSql(
+            Sql, "invoice_lines", null, ["ExternalInvoiceId", "LineCode"], ["Amount"], chain,
+            "InvoiceDate", "archive/invoice_lines", new DateTime(2024, 6, 1));
+
+        Assert.Contains("c.\"ExternalInvoiceId\" = h.\"ExternalInvoiceId\"", sql);
+        Assert.Contains("c.\"LineCode\" = h.\"LineCode\"", sql);
+        Assert.Contains("c.\"Amount\" IS NOT DISTINCT FROM h.\"Amount\"", sql);
+    }
+
+    [Fact]
     public void Control_table_ddl_upgrades_legacy_tables_with_a_partition_spec()
     {
         var sql = DuckDBTierControl.ControlTableDdl(Sql);
 
         Assert.Contains("partition_spec TEXT", sql);
         Assert.Contains("ADD COLUMN IF NOT EXISTS partition_spec TEXT", sql);
+        Assert.Contains("archive_spec TEXT", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS archive_spec TEXT", sql);
     }
 
     [Fact]

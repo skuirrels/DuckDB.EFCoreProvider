@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Text.Json;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -15,7 +16,7 @@ namespace DuckDB.EFCoreProvider.Extensions;
 /// <remarks>
 ///     <para>
 ///         The <em>hot</em> side is your ordinary EF Core model — regular entities with normal keys,
-///         relationships, <c>SaveChanges</c>, and <c>Include</c>. <see cref="ToTieredStore{TRoot}" /> only
+///         relationships, <c>SaveChanges</c>, and <c>Include</c>. <c>ToTieredStore</c> only
 ///         annotates an existing entity as a tiered aggregate root and (via <see cref="TieredStoreBuilder{TRoot}" />)
 ///         declares its aggregate children and the read-model types used to query hot+cold together.
 ///     </para>
@@ -44,6 +45,28 @@ public static class DuckDBTieredStoreExtensions
         string archivePath,
         TierGranularity granularity = TierGranularity.Month,
         string? controlKey = null)
+        where TRoot : class
+        => ConfigureTieredStore(modelBuilder, timestamp, archivePath, granularity, controlKey);
+
+    /// <summary>
+    ///     Marks an existing entity as a tiered-storage aggregate root using a nullable lifecycle property.
+    ///     A <see langword="null" /> lifecycle value remains hot and is not selected for archival.
+    /// </summary>
+    public static TieredStoreBuilder<TRoot> ToTieredStore<TRoot>(
+        this ModelBuilder modelBuilder,
+        Expression<Func<TRoot, DateTime?>> timestamp,
+        string archivePath,
+        TierGranularity granularity = TierGranularity.Month,
+        string? controlKey = null)
+        where TRoot : class
+        => ConfigureTieredStore(modelBuilder, timestamp, archivePath, granularity, controlKey);
+
+    private static TieredStoreBuilder<TRoot> ConfigureTieredStore<TRoot, TTimestamp>(
+        ModelBuilder modelBuilder,
+        Expression<Func<TRoot, TTimestamp>> timestamp,
+        string archivePath,
+        TierGranularity granularity,
+        string? controlKey)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -155,6 +178,35 @@ public static class DuckDBTieredStoreExtensions
     public static bool GetTieredStoreHotChildFilter(this IReadOnlyEntityType entityType)
         => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreHotChildFilter)?.Value as bool? ?? true;
 
+    /// <summary>
+    ///     Gets the configured match-key property names. An empty result means the entity's primary key is used.
+    /// </summary>
+    public static IReadOnlyList<string> GetTieredStoreMatchProperties(this IReadOnlyEntityType entityType)
+        => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreMatchKey)?.Value is string json
+            ? JsonSerializer.Deserialize<string[]>(json) ?? []
+            : [];
+
+    /// <summary>Gets how uniqueness of the configured match key is guaranteed.</summary>
+    public static TierMatchKeyUniqueness GetTieredStoreMatchKeyUniqueness(this IReadOnlyEntityType entityType)
+        => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreMatchKeyUniqueness)?.Value is string name
+           && Enum.TryParse<TierMatchKeyUniqueness>(name, out var uniqueness)
+            ? uniqueness
+            : TierMatchKeyUniqueness.Model;
+
+    internal static void SetTieredStoreMatchKey(
+        this IMutableEntityType entityType,
+        IReadOnlyList<string> properties,
+        TierMatchKeyUniqueness uniqueness)
+    {
+        if (!Enum.IsDefined(uniqueness))
+        {
+            throw new ArgumentOutOfRangeException(nameof(uniqueness), uniqueness, null);
+        }
+
+        entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreMatchKey, JsonSerializer.Serialize(properties));
+        entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreMatchKeyUniqueness, uniqueness.ToString());
+    }
+
     internal static string GetPropertyName<TEntity, TValue>(Expression<Func<TEntity, TValue>> expression)
         => GetDirectMember(
             expression,
@@ -179,4 +231,43 @@ public static class DuckDBTieredStoreExtensions
             ? member.Member
             : throw new ArgumentException(errorMessage, parameterName);
     }
+
+    internal static IReadOnlyList<string> GetPropertyNames<TEntity>(Expression<Func<TEntity, object?>> expression)
+    {
+        ArgumentNullException.ThrowIfNull(expression);
+        var body = UnwrapConvert(expression.Body);
+        MemberExpression[] members = body switch
+        {
+            MemberExpression member => [member],
+            NewExpression @new => @new.Arguments.Select(UnwrapConvert).OfType<MemberExpression>().ToArray(),
+            _ => [],
+        };
+
+        if (members.Length == 0
+            || body is NewExpression newExpression && members.Length != newExpression.Arguments.Count
+            || members.Any(member => member.Expression is not ParameterExpression))
+        {
+            throw new ArgumentException(
+                "The match-key selector must contain direct property accesses, for example "
+                + "'e => e.ExternalId' or 'e => new { e.ParentId, e.Sequence }'.",
+                nameof(expression));
+        }
+
+        var names = members.Select(member => member.Member.Name).ToArray();
+        if (names.Distinct(StringComparer.Ordinal).Count() != names.Length)
+        {
+            throw new ArgumentException("A match-key property can only be selected once.", nameof(expression));
+        }
+
+        return names;
+    }
+
+    private static Expression UnwrapConvert(Expression expression)
+        => expression is UnaryExpression
+        {
+            NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+            Operand: var operand,
+        }
+            ? operand
+            : expression;
 }
