@@ -114,14 +114,14 @@ public static partial class DuckDBArchiveExtensions
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
         var aligned = DuckDBTierControl.AlignCutoff(cutoff, aggregate.Granularity);
-        // DuckDB's immediate foreign-key checks do not allow a dependent and then its principal to be
-        // deleted in the same transaction. Multi-table aggregates therefore delete leaf-to-root in separate
-        // autocommit statements; the hot/cold anti-join makes every partial-cleanup state crash-safe.
-        if (database.CurrentTransaction is not null && aggregate.Nodes.Count > 1)
+        // Parquet writes are external side effects and cannot be rolled back with a caller-owned database
+        // transaction. Multi-table aggregates also require leaf-to-root autocommit deletes because DuckDB
+        // checks foreign keys immediately. Keep the complete archive workflow outside caller transactions.
+        if (database.CurrentTransaction is not null)
         {
             throw new InvalidOperationException(
-                "Archiving a multi-table tiered aggregate cannot run inside an existing transaction because "
-                + "DuckDB checks foreign keys immediately. Run ArchiveTierAsync outside the caller transaction.");
+                "ArchiveTierAsync cannot run inside an existing transaction because external Parquet writes "
+                + "cannot be rolled back with the database transaction. Run it outside the caller transaction.");
         }
 
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
@@ -147,14 +147,18 @@ public static partial class DuckDBArchiveExtensions
 
             var current = ReadWatermark(connection, sql, aggregate.ControlKey);
             var from = current ?? DateTime.MinValue;
+            var windowEnd = current is { } currentWatermark && aligned <= currentWatermark
+                ? currentWatermark
+                : aligned;
             var manifest = new DuckDBTierArchiveManifest(
                 aggregate,
                 TierArchiveOperation.Archive,
                 current,
                 from,
-                aligned,
+                windowEnd,
                 activeArchiveBasePath,
                 revision);
+            CaptureArchiveFiles(connection, archiveFileProbe, aggregate, manifest);
             var stage = TierArchiveStage.Preflight;
 
             try
@@ -248,7 +252,7 @@ public static partial class DuckDBArchiveExtensions
                 stage = TierArchiveStage.Publish;
                 await PublishArchiveAsync(
                         connection, sql, archiveFileProbe, aggregate, activeArchiveBasePath, revision, aligned,
-                        useInternalTransaction: database.CurrentTransaction is null, cancellationToken)
+                        useInternalTransaction: true, cancellationToken)
                     .ConfigureAwait(false);
                 failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterPublication, table: null);
                 stage = TierArchiveStage.DeleteHot;
@@ -331,6 +335,7 @@ public static partial class DuckDBArchiveExtensions
                     DateTime.MinValue,
                     activeArchiveBasePath,
                     currentRevision);
+                CaptureArchiveFiles(connection, archiveFileProbe, aggregate, empty);
                 return empty.Build(DateTime.MinValue, noOp: true, TierArchiveStage.Completed);
             }
 
@@ -392,6 +397,7 @@ public static partial class DuckDBArchiveExtensions
                         watermark.Value,
                         activeArchiveBasePath,
                         currentRevision);
+                    CaptureArchiveFiles(connection, archiveFileProbe, aggregate, noOp);
                     return noOp.Build(watermark.Value, noOp: true, TierArchiveStage.Completed);
                 }
 
@@ -1021,6 +1027,22 @@ public static partial class DuckDBArchiveExtensions
                     $"Tiered-storage table '{node.Table}' has {nullMatchKeys} archiveable row(s) with a NULL "
                     + "configured match-key component. Match keys must be non-null for every archiveable row; "
                     + "no archive files were written by this run.");
+            }
+        }
+    }
+
+    private static void CaptureArchiveFiles(
+        DuckDBConnection connection,
+        IDuckDBArchiveFileProbe archiveFileProbe,
+        DuckDBTierAggregate aggregate,
+        DuckDBTierArchiveManifest manifest)
+    {
+        foreach (var node in aggregate.Nodes)
+        {
+            var archivePath = manifest.ArchivePath(node);
+            if (archiveFileProbe.HasArchiveFiles(connection, archivePath))
+            {
+                manifest.SetFiles(node, archiveFileProbe.GetArchiveFiles(connection, archivePath));
             }
         }
     }

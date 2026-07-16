@@ -2,6 +2,22 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.6.0
+
+- Support nullable tier lifecycle properties, including lifecycle partition transforms. `NULL` roots and their
+  aggregate children remain hot and visible until the lifecycle value is populated and reaches an archive window.
+- Add configurable stable hot/cold match keys with `MatchBy(...)` on roots and included children, including
+  composite keys and explicit externally-enforced uniqueness. The persisted archive contract prevents a key or
+  partition-layout change from being mixed with existing Parquet.
+- Detect changed stable keys and reopened archived roots before normal archival. Approved late rows and corrections
+  can be published with `ReconcileArchiveTierAsync`, which builds and verifies a new immutable Parquet generation,
+  atomically switches the active views, and performs crash-safe hot cleanup.
+- Return detailed `TierArchiveResult` evidence for archives and reconciliations, including per-table
+  selected/copied/deleted counts, window and watermark transitions, revision, archive paths/files, no-op state,
+  and safe partial failure results.
+- Add injected failure/retry coverage plus a reusable MinIO and disposable real-AWS S3 matrix for archive,
+  restart/read, publication failure, partial child cleanup, reconciliation, and additive schema evolution.
+
 ## 1.5.0
 
 - Add a first-class DuckLake backend profile in the main package. `UseDuckLake(...)` configures a local metadata

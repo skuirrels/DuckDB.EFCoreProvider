@@ -251,8 +251,9 @@ rows and suppress a hot row whose key is already cold, while child views use "ro
 double-count or drop a row even before the delete runs; a re-run
 self-heals leftover hot rows. Deletes run leaf→root as separate autocommit statements because DuckDB checks
 foreign keys immediately and rejects deleting descendants and then their principals inside one transaction.
-Do not wrap `ArchiveTierAsync` for a multi-table aggregate in an application transaction; the provider rejects
-that combination before copying. A crash between delete statements remains safe and a rerun removes leftovers.
+Do not wrap `ArchiveTierAsync` in an application transaction. Parquet writes are external side effects and cannot
+be rolled back with the DuckDB transaction, so the provider rejects that combination before copying. A crash
+between delete statements remains safe and a rerun removes leftovers.
 
 `TierArchiveResult` contains the published watermark transition and table-level evidence: selected, verified-copy,
 and deleted row counts; the archive window; active generation/revision; archive paths and visible Parquet files;
@@ -293,6 +294,11 @@ retained under the archive prefix for recovery. Cleanup must consult `active_arc
 `__duckdb_tier_control`, retain the active generation plus the required rollback/audit set, and delete or tag only
 generations proven obsolete. Do not apply blind age expiry to the entire `_revisions/` prefix: the active generation
 also lives there after reconciliation and could otherwise be deleted.
+
+Reconciliation is a key-wise upsert, not an inferred graph deletion. A hot child replaces a cold child with the
+same configured match key, and a new hot child is added, but the absence of a hot child does not delete its cold
+representation. Do not use reconciliation to remove archived children until the application and provider define
+an explicit tombstone or authoritative full-snapshot contract.
 
 ## 5. Retention
 

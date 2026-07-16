@@ -267,6 +267,75 @@ public sealed record DuckDBTierNode(
     string ArchiveSubPath,
     IReadOnlyList<DuckDBTierControl.TierJoinHop> ChainToRoot)
 {
+    /// <summary>Creates a node using the pre-1.6 internal constructor shape.</summary>
+    public DuckDBTierNode(
+        IEntityType entity,
+        string table,
+        string? schema,
+        IReadOnlyList<string> columns,
+        IReadOnlyList<string> keyColumns,
+        string? viewName,
+        string archiveSubPath,
+        IReadOnlyList<DuckDBTierControl.TierJoinHop> chainToRoot)
+        : this(
+            entity,
+            table,
+            schema,
+            columns,
+            CreateColumnDefinitions(entity, table, schema, columns),
+            keyColumns,
+            columns,
+            viewName,
+            archiveSubPath,
+            chainToRoot)
+    {
+    }
+
     /// <summary><see langword="true" /> for the aggregate root (no chain to a parent).</summary>
     public bool IsRoot => ChainToRoot.Count == 0;
+
+    /// <summary>Deconstructs a node using the pre-1.6 internal member shape.</summary>
+    public void Deconstruct(
+        out IEntityType entity,
+        out string table,
+        out string? schema,
+        out IReadOnlyList<string> columns,
+        out IReadOnlyList<string> keyColumns,
+        out string? viewName,
+        out string archiveSubPath,
+        out IReadOnlyList<DuckDBTierControl.TierJoinHop> chainToRoot)
+    {
+        entity = Entity;
+        table = Table;
+        schema = Schema;
+        columns = Columns;
+        keyColumns = KeyColumns;
+        viewName = ViewName;
+        archiveSubPath = ArchiveSubPath;
+        chainToRoot = ChainToRoot;
+    }
+
+    private static IReadOnlyList<DuckDBTierColumn> CreateColumnDefinitions(
+        IEntityType entity,
+        string table,
+        string? schema,
+        IReadOnlyList<string> columns)
+    {
+        var store = StoreObjectIdentifier.Table(table, schema);
+        var mapped = entity.GetProperties()
+            .Select(property => (Property: property, Column: property.GetColumnName(store)))
+            .Where(item => item.Column is not null)
+            .GroupBy(item => item.Column!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Property, StringComparer.Ordinal);
+
+        return columns.Select(column =>
+        {
+            var property = mapped[column];
+            return new DuckDBTierColumn(
+                property.Name,
+                column,
+                property.GetColumnType(store) ?? property.GetRelationalTypeMapping().StoreType,
+                property.IsNullable);
+        }).ToArray();
+    }
 }

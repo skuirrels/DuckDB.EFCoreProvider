@@ -44,6 +44,9 @@ internal sealed class DuckDBTierArchiveManifest
         _nodes[node].Files = files;
     }
 
+    public void SetFiles(DuckDBTierNode node, IReadOnlyList<string> files)
+        => _nodes[node].Files = files;
+
     public void AddDeleted(DuckDBTierNode node, long rows) => _nodes[node].DeletedRows += rows;
 
     public TierArchiveResult Build(DateTime watermark, bool noOp, TierArchiveStage stage)

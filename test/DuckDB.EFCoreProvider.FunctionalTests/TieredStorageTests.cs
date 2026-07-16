@@ -301,10 +301,13 @@ public sealed class TieredStorageTests : IDisposable
         var before = TieredTotals(context);
         var cutoff = new DateTime(2025, 7, 1).AddMonths(-12);
 
-        await context.Database.ArchiveTierAsync<Invoice>(cutoff);
-        var second = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var first = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var second = await context.Database.ArchiveTierAsync<Invoice>(cutoff.AddMonths(-1));
 
         Assert.True(second.NoOp);
+        Assert.Equal(first.Watermark, second.WindowStart);
+        Assert.Equal(first.Watermark, second.WindowEnd);
+        Assert.All(second.Nodes, node => Assert.NotEmpty(node.Files));
         Assert.Equal(before, TieredTotals(context));
     }
 
@@ -320,6 +323,25 @@ public sealed class TieredStorageTests : IDisposable
 
         Assert.Contains("outside the caller transaction", exception.Message);
         Assert.False(Directory.Exists(Path.Combine(_root, "archive", "invoices")));
+    }
+
+    [Fact]
+    public async Task Single_table_archive_rejects_an_existing_transaction_before_copying()
+    {
+        var archivePath = Path.Combine(_root, "single-transaction-archive");
+        using var context = new MonthFirstPartitionContext(
+            Path.Combine(_root, "single-transaction.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Invoices.Add(new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 15) });
+        context.SaveChanges();
+        await using var transaction = await context.Database.BeginTransactionAsync();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1)));
+
+        Assert.Contains("cannot be rolled back", exception.Message);
+        Assert.False(Directory.Exists(Path.Combine(archivePath, "invoices")));
     }
 
     [Fact]

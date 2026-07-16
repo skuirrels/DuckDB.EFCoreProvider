@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.TestUtilities;
+﻿using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -30,6 +31,10 @@ public class MaterializationInterceptionDuckDBTest : MaterializationInterception
             modelBuilder.Entity<TestEntity30244>().OwnsMany(e => e.Settings, b => b.ToJson());
         }
     }
+
+    protected override DbContextOptionsBuilder AddOptions(DbContextOptionsBuilder builder)
+        => base.AddOptions(builder).ConfigureWarnings(
+            warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
 
     protected override ITestStoreFactory TestStoreFactory
         => DuckDBTestStoreFactory.Instance;
