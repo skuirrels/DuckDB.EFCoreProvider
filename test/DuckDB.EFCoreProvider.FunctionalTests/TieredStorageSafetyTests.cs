@@ -166,6 +166,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         Assert.Equal(typeof(StableOrder), exception.EntityType);
         Assert.Equal(1, exception.ConflictingRows);
+        Assert.Equal("stable_orders", exception.Binding?.ControlKey);
+        Assert.Contains("control 'stable_orders'", exception.Message);
         Assert.Equal("corrected", context.Orders.Single().Status);
     }
 

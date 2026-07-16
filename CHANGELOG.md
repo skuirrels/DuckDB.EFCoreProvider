@@ -2,6 +2,13 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.8.0
+
+- Support one physical child entity/table beneath multiple independently archived roots through deterministic
+  root-scoped bindings and one combined hot+cold child view. Archive and maintenance operations remain scoped to
+  the selected root; ambiguous rows reachable through more than one root fail before external writes or hot
+  deletion, with bounded binding evidence.
+
 ## 1.7.0
 
 - Add technically bounded reconciliation by configured root match keys or declared partition values, together with

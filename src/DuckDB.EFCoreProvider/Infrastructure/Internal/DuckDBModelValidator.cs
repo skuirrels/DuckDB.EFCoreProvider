@@ -112,8 +112,11 @@ public class DuckDBModelValidator : RelationalModelValidator
     private static void ValidateTieredStores(IModel model)
     {
         var rootArchives = new List<(string Path, string Entity)>();
-        var rootPartitionColumns = model.GetEntityTypes()
+        var roots = model.GetEntityTypes()
             .Where(entityType => entityType.GetTieredStoreRole() == "Root" && entityType.GetTableName() is not null)
+            .ToArray();
+        ValidateUniqueRootControlKeys(roots);
+        var rootPartitionColumns = roots
             .ToDictionary(
                 entityType => entityType.Name,
                 entityType => ValidateRootPartitionProperties(
@@ -131,25 +134,98 @@ public class DuckDBModelValidator : RelationalModelValidator
 
             ValidateMatchKey(entityType, storeObject);
             ValidatePartitionOwnership(entityType, role);
-            ValidateReservedColumns(model, entityType, storeObject);
             ValidateReadModelColumns(model, entityType, storeObject);
 
             if (role == "Child")
             {
-                ValidateChildForeignKey(model, entityType);
-                ValidateChildPartitionColumnCollisions(
-                    entityType,
-                    storeObject,
-                    rootPartitionColumns.GetValueOrDefault(entityType.GetTieredStoreRoot()!) ?? []);
+                var bindings = entityType.GetTieredStoreBindings();
+                if (bindings.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Tiered-storage child '{entityType.DisplayName()}' has no relationship binding.");
+                }
+
+                var duplicateRoot = bindings
+                    .GroupBy(binding => binding.RootEntityName, StringComparer.Ordinal)
+                    .FirstOrDefault(group => group.Count() > 1);
+                if (duplicateRoot is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"Tiered-storage child '{entityType.DisplayName()}' is configured through more than one "
+                        + $"relationship path beneath root '{duplicateRoot.Key}'. Multiple independently archived "
+                        + "roots are supported, but multiple paths to the same physical table beneath one root "
+                        + "require distinct table mappings.");
+                }
+
+                var bindingRoots = new List<IReadOnlyEntityType>(bindings.Count);
+                foreach (var binding in bindings)
+                {
+                    var root = model.FindEntityType(binding.RootEntityName)
+                        ?? throw new InvalidOperationException(
+                            $"Tiered-storage binding '{binding.BindingId}' on '{entityType.DisplayName()}' cannot "
+                            + $"resolve root '{binding.RootEntityName}'.");
+                    if (root.GetTieredStoreRole() != "Root")
+                    {
+                        throw new InvalidOperationException(
+                            $"Tiered-storage binding '{binding.BindingId}' on '{entityType.DisplayName()}' references "
+                            + $"'{root.DisplayName()}', which is not configured as a tiered root.");
+                    }
+
+                    if (!string.Equals(root.GetTieredStoreControlKey(), binding.ControlKey, StringComparison.Ordinal)
+                        || !string.Equals(root.GetTieredStoreArchivePath(), binding.ArchivePath, StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException(
+                            $"Tiered-storage binding '{binding.BindingId}' on '{entityType.DisplayName()}' does not "
+                            + $"match root '{root.DisplayName()}' archive metadata.");
+                    }
+
+                    ValidateChildForeignKey(model, entityType, binding);
+                    ValidateChildPartitionColumnCollisions(
+                        entityType,
+                        storeObject,
+                        rootPartitionColumns.GetValueOrDefault(binding.RootEntityName) ?? []);
+                    bindingRoots.Add(root);
+                }
+
+                ValidateReservedColumns(entityType, storeObject, bindingRoots);
             }
             else
             {
                 ValidateLifecycleProperty(entityType, storeObject);
+                ValidateReservedColumns(entityType, storeObject, [entityType]);
                 rootArchives.Add((NormalizeArchivePath(entityType.GetTieredStoreArchivePath()!), entityType.DisplayName()));
             }
         }
 
         ValidateNoOverlappingArchivePaths(rootArchives);
+    }
+
+    private static void ValidateUniqueRootControlKeys(IReadOnlyList<IEntityType> roots)
+    {
+        var missing = roots.FirstOrDefault(root => string.IsNullOrWhiteSpace(root.GetTieredStoreControlKey()));
+        if (missing is not null)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage root '{missing.DisplayName()}' must have a non-empty control key.");
+        }
+
+        var duplicate = roots
+            .GroupBy(root => root.GetTieredStoreControlKey()!, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is null)
+        {
+            return;
+        }
+
+        var rootNames = string.Join(
+            ", ",
+            duplicate
+                .OrderBy(root => root.Name, StringComparer.Ordinal)
+                .Select(root => $"'{root.DisplayName()}'"));
+        throw new InvalidOperationException(
+            $"Tiered-storage roots {rootNames} use the same control key '{duplicate.Key}'. Each configured root "
+            + "must have a unique control key because watermarks, active generations, and archive contracts are "
+            + "persisted by that key.");
     }
 
     private static IReadOnlyList<string> ValidateRootPartitionProperties(
@@ -343,32 +419,36 @@ public class DuckDBModelValidator : RelationalModelValidator
         }
     }
 
-    private static void ValidateReservedColumns(IModel model, IReadOnlyEntityType entityType, StoreObjectIdentifier storeObject)
+    private static void ValidateReservedColumns(
+        IReadOnlyEntityType entityType,
+        StoreObjectIdentifier storeObject,
+        IEnumerable<IReadOnlyEntityType> roots)
     {
-        var root = entityType.GetTieredStoreRole() == "Root"
-            ? entityType
-            : model.FindEntityType(entityType.GetTieredStoreRoot()!);
-        if (root?.GetTieredStorePartitionDefinitions().Count > 0)
+        foreach (var root in roots.DistinctBy(root => root.Name))
         {
-            // Explicit plans are validated from their resolved physical names above; exact-value root keys
-            // intentionally reuse their mapped source column and child collisions are checked separately.
-            return;
-        }
-
-        var granularity = ResolveGranularity(model, entityType);
-        var reserved = granularity == TierGranularity.Day
-            ? new[] { "year", "month", "day" }
-            : new[] { "year", "month" };
-
-        foreach (var property in entityType.GetProperties())
-        {
-            if (property.GetColumnName(storeObject) is { } column
-                && reserved.Contains(column, StringComparer.OrdinalIgnoreCase))
+            if (root.GetTieredStorePartitionDefinitions().Count > 0)
             {
-                throw new InvalidOperationException(
-                    $"Tiered-storage entity '{entityType.DisplayName()}' maps a property to column '{column}', which "
-                    + $"collides with the hive partition column DuckDB adds for {granularity} granularity. Rename the "
-                    + $"column (for example with HasColumnName) so it is none of: {string.Join(", ", reserved)}.");
+                // Explicit plans are validated from their resolved physical names above; exact-value root keys
+                // intentionally reuse their mapped source column and child collisions are checked separately.
+                continue;
+            }
+
+            var granularity = root.GetTieredStoreGranularity();
+            var reserved = granularity == TierGranularity.Day
+                ? new[] { "year", "month", "day" }
+                : new[] { "year", "month" };
+
+            foreach (var property in entityType.GetProperties())
+            {
+                if (property.GetColumnName(storeObject) is { } column
+                    && reserved.Contains(column, StringComparer.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        $"Tiered-storage entity '{entityType.DisplayName()}' maps a property to column '{column}', which "
+                        + $"collides with the hive partition column DuckDB adds for {granularity} granularity beneath "
+                        + $"root '{root.DisplayName()}'. Rename the column (for example with HasColumnName) so it is "
+                        + $"none of: {string.Join(", ", reserved)}.");
+                }
             }
         }
     }
@@ -390,18 +470,16 @@ public class DuckDBModelValidator : RelationalModelValidator
         }
     }
 
-    private static TierGranularity ResolveGranularity(IModel model, IReadOnlyEntityType entityType)
-        => entityType.GetTieredStoreRole() == "Root"
-            ? entityType.GetTieredStoreGranularity()
-            : model.FindEntityType(entityType.GetTieredStoreRoot()!)?.GetTieredStoreGranularity() ?? TierGranularity.Month;
-
-    private static void ValidateChildForeignKey(IModel model, IReadOnlyEntityType child)
+    private static void ValidateChildForeignKey(
+        IModel model,
+        IReadOnlyEntityType child,
+        TieredStoreBinding binding)
     {
-        var parent = model.FindEntityType(child.GetTieredStoreParent()!)
+        var parent = model.FindEntityType(binding.ParentEntityName)
             ?? throw new InvalidOperationException($"Tiered child '{child.DisplayName()}' has no resolvable parent entity.");
-        var navigation = parent.FindNavigation(child.GetTieredStoreParentNavigation()!)
+        var navigation = parent.FindNavigation(binding.ParentNavigationName)
             ?? throw new InvalidOperationException(
-                $"Tiered child navigation '{child.GetTieredStoreParentNavigation()}' was not found on '{parent.DisplayName()}'. "
+                $"Tiered child navigation '{binding.ParentNavigationName}' was not found on '{parent.DisplayName()}'. "
                 + "The .Including(...) navigation must be a real collection navigation with a foreign key to the parent.");
 
         if (navigation.ForeignKey.Properties.Count == 0
@@ -410,6 +488,32 @@ public class DuckDBModelValidator : RelationalModelValidator
             throw new InvalidOperationException(
                 $"Tiered child '{child.DisplayName()}' has an invalid foreign key to '{parent.DisplayName()}'. "
                 + "The dependent and principal key column counts must be equal and non-zero.");
+        }
+
+        if (parent.Name == binding.RootEntityName)
+        {
+            var rootBindingId = DuckDBTieredStoreBinding.CreateRootBindingId(
+                binding.RootEntityName,
+                binding.ControlKey);
+            if (!string.Equals(binding.ParentBindingId, rootBindingId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage binding '{binding.BindingId}' on '{child.DisplayName()}' has an invalid root "
+                    + "parent binding identifier.");
+            }
+
+            return;
+        }
+
+        var parentBindings = parent.GetTieredStoreBindings()
+            .Where(candidate => candidate.RootEntityName == binding.RootEntityName)
+            .ToArray();
+        if (!parentBindings.Any(candidate => candidate.BindingId == binding.ParentBindingId)
+            && parentBindings.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage binding '{binding.BindingId}' on '{child.DisplayName()}' cannot resolve parent "
+                + $"binding '{binding.ParentBindingId}' on '{parent.DisplayName()}'.");
         }
     }
 

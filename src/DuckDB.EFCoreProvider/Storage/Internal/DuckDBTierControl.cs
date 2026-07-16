@@ -18,6 +18,24 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public static class DuckDBTierControl
 {
+    /// <summary>One root-scoped cold branch used to compose a shared child hot+cold view.</summary>
+    public sealed record TierChildViewBinding(
+        string BindingId,
+        IReadOnlyList<TierJoinHop> Chain,
+        string RootTimestampColumn,
+        string ControlKey,
+        string ArchivePath,
+        TierGranularity Granularity,
+        bool IncludeCold,
+        bool IncludeHotChildFilter,
+        IReadOnlyList<DuckDBTierPartitionColumn>? RootPartitions,
+        IReadOnlyList<string>? ArchiveFiles);
+
+    /// <summary>One child-to-root relationship path used by archive-ownership ambiguity preflight.</summary>
+    public sealed record TierOwnershipBinding(
+        string BindingId,
+        IReadOnlyList<TierJoinHop> Chain);
+
     /// <summary>The name of the provider-managed table that stores each tiered entity's archive watermark.</summary>
     public const string ControlTable = "__duckdb_tier_control";
 
@@ -1070,6 +1088,139 @@ public static class DuckDBTierControl
     }
 
     /// <summary>
+    ///     Builds one hot+cold view for a physical child table shared by independently archived roots. The hot
+    ///     table appears once and every published root-specific cold branch participates in a stable binding order.
+    /// </summary>
+    public static string SharedChildViewSql(
+        ISqlGenerationHelper sql,
+        string viewName,
+        string childTable,
+        string? childSchema,
+        IReadOnlyList<string> childColumns,
+        IReadOnlyList<string> childKeyColumns,
+        IReadOnlyList<TierChildViewBinding> bindings)
+    {
+        ArgumentNullException.ThrowIfNull(bindings);
+        if (bindings.Count == 0)
+        {
+            throw new ArgumentException("At least one child binding is required.", nameof(bindings));
+        }
+
+        var ordered = bindings.OrderBy(binding => binding.BindingId, StringComparer.Ordinal).ToArray();
+        if (ordered.Length == 1)
+        {
+            var binding = ordered[0];
+            return ChildViewSql(
+                sql,
+                viewName,
+                childTable,
+                childSchema,
+                childColumns,
+                childKeyColumns,
+                binding.Chain,
+                binding.RootTimestampColumn,
+                binding.ControlKey,
+                binding.ArchivePath,
+                binding.Granularity,
+                binding.IncludeCold,
+                binding.IncludeHotChildFilter,
+                binding.RootPartitions,
+                binding.ArchiveFiles);
+        }
+
+        const string hotAlias = "h";
+        var columnList = ColumnList(sql, childColumns, hotAlias);
+        var viewHeader = new StringBuilder()
+            .Append("CREATE OR REPLACE VIEW ").Append(sql.DelimitIdentifier(viewName)).Append(" AS\n");
+        var coldBindings = ordered.Where(binding => binding.IncludeCold).ToArray();
+        if (coldBindings.Length == 0)
+        {
+            return viewHeader
+                .Append("SELECT ").Append(columnList).Append(" FROM ")
+                .Append(Table(sql, childTable, childSchema)).Append(" AS ").Append(hotAlias).Append(';')
+                .ToString();
+        }
+
+        EnsureKeyColumns(childKeyColumns, childTable);
+        var coldAliases = new List<string>(coldBindings.Length);
+        viewHeader.Append("WITH\n");
+        for (var i = 0; i < coldBindings.Length; i++)
+        {
+            var binding = coldBindings[i];
+            var alias = "cold_binding_" + i.ToString(CultureInfo.InvariantCulture);
+            coldAliases.Add(alias);
+            var excludeList = string.Join(
+                ", ",
+                PartitionColumns(binding.Granularity, binding.RootPartitions).Select(sql.DelimitIdentifier));
+            viewHeader
+                .Append(alias).Append(" AS (\n")
+                .Append("SELECT * EXCLUDE (").Append(excludeList).Append(')')
+                .Append("\n  FROM read_parquet(")
+                .Append(ParquetFileArgument(binding.ArchivePath, binding.ArchiveFiles))
+                .Append(", hive_partitioning = true, union_by_name = true) AS p\n  WHERE ")
+                .Append(ChildColdPublicationPredicate(
+                    sql,
+                    binding.RootTimestampColumn,
+                    binding.ControlKey,
+                    binding.Granularity,
+                    binding.RootPartitions))
+                .Append("\n),\n");
+        }
+
+        viewHeader.Append("cold AS (\n");
+        for (var i = 0; i < coldAliases.Count; i++)
+        {
+            if (i > 0)
+            {
+                viewHeader.Append("\nUNION ALL BY NAME\n");
+            }
+
+            viewHeader.Append("SELECT * FROM ").Append(coldAliases[i]);
+        }
+
+        viewHeader.Append("\n)\n");
+        var hotKeyMatch = KeyMatchPredicate(sql, childKeyColumns, "c", hotAlias);
+        var hotPredicates = ordered
+            .Where(binding => binding.IncludeHotChildFilter)
+            .Select(binding => HotRootPredicate(sql, hotAlias, binding))
+            .Append($"NOT EXISTS (SELECT 1 FROM cold AS c WHERE {hotKeyMatch})")
+            .ToArray();
+
+        return viewHeader
+            .Append("SELECT ").Append(columnList).Append(" FROM ")
+            .Append(Table(sql, childTable, childSchema)).Append(" AS ").Append(hotAlias)
+            .Append("\n  WHERE ")
+            .Append(string.Join(" OR ", hotPredicates.Select(predicate => $"({predicate})")))
+            .Append("\nUNION ALL BY NAME\n")
+            .Append("SELECT * FROM cold;")
+            .ToString();
+    }
+
+    /// <summary>
+    ///     Counts physical child rows reachable through more than one independently archived root binding.
+    /// </summary>
+    public static string AmbiguousChildBindingCountSql(
+        ISqlGenerationHelper sql,
+        string childTable,
+        string? childSchema,
+        IReadOnlyList<TierOwnershipBinding> bindings)
+    {
+        ArgumentNullException.ThrowIfNull(bindings);
+        if (bindings.Count < 2)
+        {
+            throw new ArgumentException("At least two ownership bindings are required.", nameof(bindings));
+        }
+
+        var ownershipCount = string.Join(
+            " + ",
+            bindings.OrderBy(binding => binding.BindingId, StringComparer.Ordinal)
+                .Select(binding =>
+                    $"CASE WHEN {BindingExistsPredicate(sql, binding.Chain, "h")} THEN 1 ELSE 0 END"));
+        return $"SELECT COUNT(*) FROM {Table(sql, childTable, childSchema)} AS h "
+               + $"WHERE ({ownershipCount}) > 1;";
+    }
+
+    /// <summary>
     ///     Builds the child <c>DELETE</c> for rows whose root has aged past the cutoff, matched by chaining the
     ///     FK <paramref name="chain" /> up to the root. Run leaf→root so foreign keys stay satisfied.
     /// </summary>
@@ -1169,6 +1320,45 @@ public static class DuckDBTierControl
             .Append(includeNullRoot
                 ? $"({rootTimestamp} IS NULL OR {rootTimestamp} {rootCondition})"
                 : $"{rootTimestamp} {rootCondition}")
+            .Append(')')
+            .ToString();
+    }
+
+    private static string BindingExistsPredicate(
+        ISqlGenerationHelper sql,
+        IReadOnlyList<TierJoinHop> chain,
+        string childAlias)
+    {
+        if (chain.Count == 0)
+        {
+            throw new ArgumentException("A child-to-root relationship chain cannot be empty.", nameof(chain));
+        }
+
+        var builder = new StringBuilder("EXISTS (SELECT 1 FROM ")
+            .Append(Table(sql, chain[0].PrincipalTable, chain[0].PrincipalSchema))
+            .Append(" AS r0");
+        for (var i = 1; i < chain.Count; i++)
+        {
+            builder.Append(" JOIN ")
+                .Append(Table(sql, chain[i].PrincipalTable, chain[i].PrincipalSchema))
+                .Append(" AS r").Append(i)
+                .Append(" ON ")
+                .Append(JoinPredicate(
+                    sql,
+                    chain[i].ForeignKeyColumns,
+                    "r" + (i - 1).ToString(CultureInfo.InvariantCulture),
+                    chain[i].PrincipalKeyColumns,
+                    "r" + i.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        return builder
+            .Append(" WHERE ")
+            .Append(JoinPredicate(
+                sql,
+                chain[0].ForeignKeyColumns,
+                childAlias,
+                chain[0].PrincipalKeyColumns,
+                "r0"))
             .Append(')')
             .ToString();
     }
@@ -1542,6 +1732,31 @@ public static class DuckDBTierControl
             ? $"CAST(p.{sql.DelimitIdentifier("day")} AS INTEGER)"
             : "1";
         return $"make_date({year}, {month}, {day}) < CAST({watermark} AS DATE)";
+    }
+
+    private static string HotRootPredicate(
+        ISqlGenerationHelper sql,
+        string hotAlias,
+        TierChildViewBinding binding)
+    {
+        var watermark = $">= (SELECT watermark FROM {sql.DelimitIdentifier(ControlTable)} "
+                        + $"WHERE name = {Literal(binding.ControlKey)})";
+        return IsSingleColumnChain(binding.Chain)
+            ? hotAlias + "." + sql.DelimitIdentifier(binding.Chain[0].ForeignKeyColumn)
+              + " IN (" + RootSemijoin(
+                  sql,
+                  binding.Chain,
+                  binding.RootTimestampColumn,
+                  0,
+                  watermark,
+                  includeNullRoot: true) + ")"
+            : RootExistsPredicate(
+                sql,
+                binding.Chain,
+                binding.RootTimestampColumn,
+                hotAlias,
+                watermark,
+                includeNullRoot: true);
     }
 
     private static string ArchivePartitionRangePredicate(

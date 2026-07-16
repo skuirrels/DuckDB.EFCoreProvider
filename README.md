@@ -360,6 +360,13 @@ modelBuilder
             .WithReadModel<InvoiceLineHistory>());
 ```
 
+A shared child entity/table can be included beneath multiple independent tiered roots. The provider retains a
+deterministic binding for every root relationship and builds one combined child history view over the hot table
+plus all published root-specific archives. Archive and maintenance operations remain root-scoped. Each physical
+child row must resolve to at most one root; preflight and mutating operations reject ambiguous rows before any
+Parquet write or hot deletion. See
+[sharing one child entity across independent roots](docs/TIERED-STORAGE.md#sharing-one-child-entity-across-independent-roots).
+
 ```csharp
 db.Database.EnsureCreated();                 // creates the control table + hot/cold view
 // (when using Migrate() instead, call db.Database.EnsureTieredStoresCreated() once at startup)

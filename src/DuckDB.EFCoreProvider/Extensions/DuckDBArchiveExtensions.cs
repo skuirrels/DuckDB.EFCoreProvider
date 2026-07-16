@@ -24,15 +24,31 @@ public sealed class TierArchivedKeyConflictException : InvalidOperationException
 {
     /// <summary>Creates a conflict exception for a tiered table.</summary>
     public TierArchivedKeyConflictException(Type entityType, string table, long conflictingRows)
-        : base(
-            $"Tiered-storage table '{table}' has {conflictingRows} changed hot row(s) whose stable key already "
-            + "exists in cold Parquet. The normal archive stopped and left the hot rows untouched. Validate the "
-            + "change, then use ReconcileArchiveTierAsync for an approved cold correction; reopened lifecycle "
-            + "changes still require a separate restore workflow.")
+        : this(entityType, table, conflictingRows, binding: null)
+    {
+    }
+
+    /// <summary>Creates a conflict exception with the root-scoped binding that detected it.</summary>
+    public TierArchivedKeyConflictException(
+        Type entityType,
+        string table,
+        long conflictingRows,
+        TieredStorageBindingInfo binding)
+        : this(entityType, table, conflictingRows, (TieredStorageBindingInfo?)binding)
+    {
+    }
+
+    private TierArchivedKeyConflictException(
+        Type entityType,
+        string table,
+        long conflictingRows,
+        TieredStorageBindingInfo? binding)
+        : base(CreateMessage(table, conflictingRows, binding))
     {
         EntityType = entityType;
         Table = table;
         ConflictingRows = conflictingRows;
+        Binding = binding;
     }
 
     /// <summary>The mapped entity type whose hot rows conflict with cold data.</summary>
@@ -43,6 +59,23 @@ public sealed class TierArchivedKeyConflictException : InvalidOperationException
 
     /// <summary>The number of conflicting hot rows detected.</summary>
     public long ConflictingRows { get; }
+
+    /// <summary>The root-scoped binding that detected the conflict, when supplied by the provider.</summary>
+    public TieredStorageBindingInfo? Binding { get; }
+
+    private static string CreateMessage(
+        string table,
+        long conflictingRows,
+        TieredStorageBindingInfo? binding)
+    {
+        var bindingEvidence = binding is { } value
+            ? $" for binding {TieredStorageBindingEvidence.Describe(value)}"
+            : string.Empty;
+        return $"Tiered-storage table '{table}'{bindingEvidence} has {conflictingRows} changed hot row(s) whose "
+               + "stable key already exists in cold Parquet. The normal archive stopped and left the hot rows "
+               + "untouched. Validate the change, then use ReconcileArchiveTierAsync for an approved cold "
+               + "correction; reopened lifecycle changes still require a separate restore workflow.";
+    }
 }
 
 /// <summary>
@@ -195,6 +228,13 @@ public static partial class DuckDBArchiveExtensions
 
             try
             {
+                await ThrowIfAmbiguousSharedBindingsAsync(
+                        connection,
+                        sql,
+                        aggregate,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
                 if (current is { } publishedWatermark)
                 {
                     await ThrowIfArchivedConflictsAsync(
@@ -408,6 +448,13 @@ public static partial class DuckDBArchiveExtensions
             var stage = TierArchiveStage.Preflight;
             try
             {
+                await ThrowIfAmbiguousSharedBindingsAsync(
+                        connection,
+                        sql,
+                        aggregate,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
                 var activeRootPath = DuckDBTierArchiveManifest.NodeArchivePath(
                     activeArchiveBasePath, aggregate.Root.Table);
                 if (archiveFileProbe.HasArchiveFiles(connection, activeRootPath))
@@ -816,7 +863,10 @@ public static partial class DuckDBArchiveExtensions
             return new TierArchiveGenerationInventory(
                 aggregate.ControlKey,
                 activeGenerationId,
-                generations.OrderByDescending(generation => generation.CreatedAtUtc).ToArray());
+                generations.OrderByDescending(generation => generation.CreatedAtUtc).ToArray())
+            {
+                Binding = BindingInfo(aggregate),
+            };
         }
         finally
         {
@@ -894,7 +944,10 @@ public static partial class DuckDBArchiveExtensions
             inventory.ControlKey,
             inventory.ActiveGenerationId,
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintInput))),
-            candidates);
+            candidates)
+        {
+            Binding = inventory.Binding,
+        };
     }
 
     /// <summary>
@@ -909,7 +962,7 @@ public static partial class DuckDBArchiveExtensions
     {
         ArgumentNullException.ThrowIfNull(database);
         options ??= new TierStoragePreflightOptions();
-        var (context, _, _, _) = Services(database);
+        var (context, sql, _, _) = Services(database);
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
         var scheme = ArchiveScheme(aggregate.ArchiveBasePath);
@@ -926,6 +979,19 @@ public static partial class DuckDBArchiveExtensions
         var connection = (DuckDBConnection)database.GetDbConnection();
         try
         {
+            var ambiguity = await FindAmbiguousSharedBindingAsync(
+                    connection,
+                    sql,
+                    aggregate,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            capabilities.Add(new TierStorageCapabilityResult(
+                TierStorageCapability.BindingOwnership,
+                ambiguity is null,
+                ambiguity is null
+                    ? "Every shared child row belongs to at most one configured root binding."
+                    : ambiguity.Message));
+
             var requiredExtensions = RequiredArchiveExtensions(scheme);
             if (requiredExtensions.Count == 0)
             {
@@ -1035,7 +1101,10 @@ public static partial class DuckDBArchiveExtensions
         return new TierStoragePreflightResult(
             scheme,
             RedactArchivePath(aggregate.ArchiveBasePath),
-            capabilities);
+            capabilities)
+        {
+            Binding = BindingInfo(aggregate),
+        };
     }
 
     /// <summary>
@@ -1110,8 +1179,7 @@ public static partial class DuckDBArchiveExtensions
     {
         var hasWatermark = ReadWatermark(connection, sql, aggregate.ControlKey) is not null;
         var activeGenerationId = ReadArchiveRevision(connection, sql, aggregate.ControlKey) ?? "base";
-
-        foreach (var node in aggregate.Nodes)
+        foreach (var node in aggregate.Nodes.Where(node => node.IsRoot))
         {
             if (node.ViewName is null)
             {
@@ -1128,16 +1196,81 @@ public static partial class DuckDBArchiveExtensions
                     activeGenerationId,
                     node.Table)
                 : null;
-            var viewSql = node.IsRoot
-                ? DuckDBTierControl.ViewSql(
+            ExecuteNonQuery(
+                connection,
+                DuckDBTierControl.ViewSql(
                     sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns,
                     aggregate.RootTimestampColumn, aggregate.ControlKey, archivePath,
-                    aggregate.Granularity, includeCold, aggregate.RootPartitions, cataloguedFiles)
-                : DuckDBTierControl.ChildViewSql(
-                    sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns, node.ChainToRoot,
-                    aggregate.RootTimestampColumn, aggregate.ControlKey, archivePath, aggregate.Granularity,
-                    includeCold, aggregate.IncludeHotChildFilter, aggregate.RootPartitions, cataloguedFiles);
-            ExecuteNonQuery(connection, viewSql);
+                    aggregate.Granularity, includeCold, aggregate.RootPartitions, cataloguedFiles));
+        }
+
+        var allAggregates = DuckDBTierAggregate.ResolveAll(aggregate.Model);
+        var childEntities = aggregate.Nodes
+            .Where(node => !node.IsRoot && node.ViewName is not null)
+            .Select(node => node.Entity.Name)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        foreach (var entityName in childEntities)
+        {
+            var entries = allAggregates
+                .SelectMany(candidate => candidate.Nodes
+                    .Where(node => !node.IsRoot
+                                   && node.Entity.Name == entityName
+                                   && node.ViewName is not null)
+                    .Select(node => (Aggregate: candidate, Node: node)))
+                .OrderBy(entry => entry.Node.BindingId, StringComparer.Ordinal)
+                .ToArray();
+            if (entries.Length == 0)
+            {
+                continue;
+            }
+
+            var prototype = entries[0].Node;
+            var bindings = new List<DuckDBTierControl.TierChildViewBinding>(entries.Length);
+            foreach (var entry in entries)
+            {
+                var candidate = entry.Aggregate;
+                var candidateActiveBasePath = candidate.ControlKey == aggregate.ControlKey
+                    ? activeArchiveBasePath
+                    : ReadActiveArchiveBasePath(connection, sql, candidate);
+                var candidateHasWatermark = ReadWatermark(connection, sql, candidate.ControlKey) is not null;
+                var candidateGenerationId = ReadArchiveRevision(connection, sql, candidate.ControlKey) ?? "base";
+                var candidateArchivePath = DuckDBTierArchiveManifest.NodeArchivePath(
+                    candidateActiveBasePath,
+                    entry.Node.Table);
+                var candidateIncludeCold = candidateHasWatermark
+                                           && archiveFileProbe.HasArchiveFiles(connection, candidateArchivePath);
+                var candidateFiles = candidateIncludeCold && IsRemoteArchive(candidateArchivePath)
+                    ? ReadCataloguedNodeFiles(
+                        connection,
+                        sql,
+                        candidate.ControlKey,
+                        candidateGenerationId,
+                        entry.Node.Table)
+                    : null;
+                bindings.Add(new DuckDBTierControl.TierChildViewBinding(
+                    entry.Node.BindingId,
+                    entry.Node.ChainToRoot,
+                    candidate.RootTimestampColumn,
+                    candidate.ControlKey,
+                    candidateArchivePath,
+                    candidate.Granularity,
+                    candidateIncludeCold,
+                    candidate.IncludeHotChildFilter,
+                    candidate.RootPartitions,
+                    candidateFiles));
+            }
+
+            ExecuteNonQuery(
+                connection,
+                DuckDBTierControl.SharedChildViewSql(
+                    sql,
+                    prototype.ViewName!,
+                    prototype.Table,
+                    prototype.Schema,
+                    prototype.Columns,
+                    prototype.KeyColumns,
+                    bindings));
         }
     }
 
@@ -1523,7 +1656,11 @@ public static partial class DuckDBArchiveExtensions
             var conflicts = await ExecuteCountAsync(connection, commandText, cancellationToken).ConfigureAwait(false);
             if (conflicts > 0)
             {
-                throw new TierArchivedKeyConflictException(node.Entity.ClrType, node.Table, conflicts);
+                throw new TierArchivedKeyConflictException(
+                    node.Entity.ClrType,
+                    node.Table,
+                    conflicts,
+                    BindingInfo(aggregate));
             }
         }
     }
@@ -1554,6 +1691,86 @@ public static partial class DuckDBArchiveExtensions
             }
         }
     }
+
+    private static async Task ThrowIfAmbiguousSharedBindingsAsync(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        DuckDBTierAggregate aggregate,
+        CancellationToken cancellationToken)
+    {
+        var ambiguity = await FindAmbiguousSharedBindingAsync(
+                connection,
+                sql,
+                aggregate,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (ambiguity is not null)
+        {
+            throw ambiguity;
+        }
+    }
+
+    private static async Task<TierAmbiguousBindingException?> FindAmbiguousSharedBindingAsync(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        DuckDBTierAggregate aggregate,
+        CancellationToken cancellationToken)
+    {
+        var sharedChildren = DuckDBTierAggregate.ResolveAll(aggregate.Model)
+            .SelectMany(candidate => candidate.Nodes
+                .Where(node => !node.IsRoot)
+                .Select(node => (Aggregate: candidate, Node: node)))
+            .GroupBy(entry => entry.Node.Entity.Name, StringComparer.Ordinal)
+            .Where(group => group.Select(entry => entry.Aggregate.BindingId).Distinct(StringComparer.Ordinal).Count() > 1
+                            && group.Any(entry => entry.Aggregate.BindingId == aggregate.BindingId))
+            .ToArray();
+
+        foreach (var sharedChild in sharedChildren)
+        {
+            var entries = sharedChild
+                .OrderBy(entry => entry.Node.BindingId, StringComparer.Ordinal)
+                .ToArray();
+            var prototype = entries[0].Node;
+            if (!await TableExistsAsync(
+                    connection,
+                    prototype.Table,
+                    prototype.Schema,
+                    cancellationToken)
+                .ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            var count = await ExecuteCountAsync(
+                    connection,
+                    DuckDBTierControl.AmbiguousChildBindingCountSql(
+                        sql,
+                        prototype.Table,
+                        prototype.Schema,
+                        entries.Select(entry => new DuckDBTierControl.TierOwnershipBinding(
+                            entry.Node.BindingId,
+                            entry.Node.ChainToRoot)).ToArray()),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (count == 0)
+            {
+                continue;
+            }
+
+            return new TierAmbiguousBindingException(
+                prototype.Table,
+                count,
+                entries.Select(entry => new TieredStorageBindingInfo(
+                    entry.Node.BindingId,
+                    entry.Aggregate.Root.Entity.ClrType,
+                    entry.Aggregate.ControlKey)));
+        }
+
+        return null;
+    }
+
+    private static TieredStorageBindingInfo BindingInfo(DuckDBTierAggregate aggregate)
+        => new(aggregate.BindingId, aggregate.Root.Entity.ClrType, aggregate.ControlKey);
 
     private static void CaptureArchiveFiles(
         DuckDBConnection connection,
@@ -2163,11 +2380,20 @@ public static partial class DuckDBArchiveExtensions
         DuckDBConnection connection,
         string table,
         CancellationToken cancellationToken)
+        => await TableExistsAsync(connection, table, schema: null, cancellationToken).ConfigureAwait(false);
+
+    private static async Task<bool> TableExistsAsync(
+        DuckDBConnection connection,
+        string table,
+        string? schema,
+        CancellationToken cancellationToken)
         => Convert.ToInt64(
                 await ExecuteScalarAsync(
                         connection,
                         "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_database() "
-                        + "AND schema_name = current_schema() AND table_name = "
+                        + "AND schema_name = "
+                        + (schema is null ? "current_schema()" : $"'{schema.Replace("'", "''")}'")
+                        + " AND table_name = "
                         + $"'{table.Replace("'", "''")}';",
                         cancellationToken)
                     .ConfigureAwait(false),

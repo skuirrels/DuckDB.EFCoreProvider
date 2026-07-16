@@ -48,7 +48,11 @@ public readonly record struct TierArchiveGenerationInfo(
 public readonly record struct TierArchiveGenerationInventory(
     string ControlKey,
     string ActiveGenerationId,
-    IReadOnlyList<TierArchiveGenerationInfo> Generations);
+    IReadOnlyList<TierArchiveGenerationInfo> Generations)
+{
+    /// <summary>The root-scoped binding represented by this inventory.</summary>
+    public TieredStorageBindingInfo? Binding { get; init; }
+}
 
 /// <summary>The result of moving a selected cold aggregate set back into mapped hot tables.</summary>
 public readonly record struct TierRestoreResult(
@@ -63,25 +67,28 @@ public readonly record struct TierRestoreResult(
 public enum TierStorageCapability
 {
     /// <summary>The configured URL scheme is understood by the provider.</summary>
-    Scheme,
+    Scheme = 0,
 
     /// <summary>Required DuckDB extensions are installed.</summary>
-    ExtensionInstalled,
+    ExtensionInstalled = 1,
 
     /// <summary>Required DuckDB extensions are loaded.</summary>
-    ExtensionLoaded,
+    ExtensionLoaded = 2,
 
     /// <summary>The configured archive path can be listed.</summary>
-    List,
+    List = 3,
 
     /// <summary>Existing objects below the configured path can be read.</summary>
-    Read,
+    Read = 4,
 
     /// <summary>A disposable probe object can be written.</summary>
-    Write,
+    Write = 5,
 
     /// <summary>A disposable probe object can be deleted.</summary>
-    Delete,
+    Delete = 6,
+
+    /// <summary>Every physical shared child row belongs to at most one configured root binding.</summary>
+    BindingOwnership = 7,
 }
 
 /// <summary>The outcome of one non-secret preflight capability check.</summary>
@@ -113,6 +120,9 @@ public readonly record struct TierStoragePreflightResult(
     string RedactedArchivePath,
     IReadOnlyList<TierStorageCapabilityResult> Capabilities)
 {
+    /// <summary>The root-scoped binding checked by this preflight.</summary>
+    public TieredStorageBindingInfo? Binding { get; init; }
+
     /// <summary><see langword="true" /> when every capability that was tested succeeded.</summary>
     public bool Succeeded => Capabilities.All(result => !result.WasTested || result.Supported);
 }
@@ -214,4 +224,8 @@ public readonly record struct TierArchiveCleanupPlan(
     string ControlKey,
     string ActiveGenerationId,
     string Fingerprint,
-    IReadOnlyList<TierArchiveCleanupCandidate> Candidates);
+    IReadOnlyList<TierArchiveCleanupCandidate> Candidates)
+{
+    /// <summary>The root-scoped binding represented by this plan.</summary>
+    public TieredStorageBindingInfo? Binding { get; init; }
+}
