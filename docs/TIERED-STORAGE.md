@@ -116,11 +116,19 @@ their transformations, and their order:
 
 ```csharp
 .PartitionBy(partitions => partitions
-    .By(order => order.TenantId)          // exact value
-    .ByYear(order => order.CreatedAt)     // calendar-year DATE bucket
-    .ByMonth(order => order.ReviewedAt)   // calendar-month DATE bucket
-    .ByDay(order => order.CompletedAt))   // calendar-day DATE bucket
+    .By(order => order.TenantId, "tenant_key")              // exact value
+    .ByYear(order => order.CreatedAt, "created_year")        // calendar-year DATE bucket
+    .ByMonth(order => order.ReviewedAt, "reviewed_month")    // calendar-month DATE bucket
+    .ByDay(order => order.CompletedAt, "completed_day"))     // calendar-day DATE bucket
 ```
+
+The second argument is optional. When omitted, exact partitions use the mapped column name and date buckets use
+`{column}_{transform}`. When supplied, it becomes the physical Hive directory and virtual-column name while the
+EF property remains the source for archive values, maintenance scopes, and LINQ query pruning. Aliases are
+especially useful when a descendant maps the same column name as a root partition: for example,
+`.By(order => order.OwnerId, "root_owner_id")` lets a child retain its own `OwnerId` column. Names must be
+non-empty and unique within the plan (case-insensitively). A name that differs from its source must also be distinct
+from mapped root columns and inherited child columns; an exact-value key may retain its own source-column name.
 
 An explicit plan must include the lifecycle property passed to `ToTieredStore` at a granularity at least as precise
 as the archive window (`ByMonth` or `ByDay` for monthly archives; `ByDay` for daily archives). This keeps incremental
@@ -128,9 +136,10 @@ as the archive window (`ByMonth` or `ByDay` for monthly archives; `ByDay` for da
 precise enough by itself to protect monthly or daily lifecycle windows.
 
 For the common exact-key-first layout, `.PartitionBy(i => i.CustomerId)` remains shorthand for an exact
-`CustomerId` key followed by an implicit bucket for the configured lifecycle property. Thus the shorthand above
-also produces `CustomerId=42/InvoiceDate_month=2025-06-01/`. Use the builder when the position or transformation
-must be explicit.
+`CustomerId` key followed by an implicit bucket for the configured lifecycle property. The named form
+`.PartitionBy(i => i.CustomerId, "customer_key")` produces
+`customer_key=42/InvoiceDate_month=2025-06-01/`. Use the builder when the position, transformation, or lifecycle
+partition name must be explicit.
 
 Partition selectors must be direct mapped scalar properties on the aggregate root. Date transforms require
 `DateTime` or `DateOnly`. Child builders deliberately have no `PartitionBy` API: every included
@@ -151,6 +160,7 @@ var february = db.InvoiceHistory.Where(i =>
 ```
 
 With `CustomerId` then `InvoiceDate` month configured, DuckDB can prune to that customer's February directory.
+The same applies when those Hive keys are aliased; the provider adds predicates for the configured physical names.
 If the date predicate is omitted, it scans that customer's completed-date partitions; if the customer predicate is
 omitted, it scans the matching month across customers. Predicates beneath `OR` are deliberately not inferred,
 because adding a bucket filter there could change query semantics.

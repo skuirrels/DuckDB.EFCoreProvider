@@ -120,9 +120,7 @@ public sealed class DuckDBTierAggregate
                 return new DuckDBTierPartitionColumn(
                     definition.PropertyName,
                     sourceColumn,
-                    definition.Transform == TierPartitionTransform.Value
-                        ? sourceColumn
-                        : sourceColumn + "_" + definition.Transform.ToString().ToLowerInvariant(),
+                    definition.ResolveName(sourceColumn),
                     definition.Transform == TierPartitionTransform.Value
                         ? property.GetColumnType(rootStore) ?? property.GetRelationalTypeMapping().StoreType
                         : "DATE",
@@ -292,6 +290,10 @@ public sealed record DuckDBTierPartitionColumn(
         : this(name, name, name, storeType, TierPartitionTransform.Value)
     {
     }
+
+    /// <summary>Whether the Hive key uses a physical name distinct from its mapped source column.</summary>
+    public bool IsAliased
+        => !string.Equals(Name, SourceColumn, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>The versioned physical partition layout persisted in the tier control table. Internal API.</summary>

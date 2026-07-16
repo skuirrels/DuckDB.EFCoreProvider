@@ -95,6 +95,189 @@ public sealed class TieredStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task Aliased_partitions_archive_and_preserve_hot_cold_reads_with_pruning()
+    {
+        var archivePath = Path.Combine(_root, "owner-alias-archive");
+        using var context = new OwnerAliasPartitionContext(
+            Path.Combine(_root, "owner-alias.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.AddRange(
+            new OwnerOrder
+            {
+                OwnerId = 10,
+                CompletedAt = new DateTime(2024, 1, 10),
+                Items = { new OwnerOrderItem { OwnerId = 101 } },
+            },
+            new OwnerOrder
+            {
+                OwnerId = 10,
+                CompletedAt = new DateTime(2024, 2, 10),
+                Items = { new OwnerOrderItem { OwnerId = 102 } },
+            },
+            new OwnerOrder
+            {
+                OwnerId = 20,
+                CompletedAt = new DateTime(2024, 1, 10),
+                Items = { new OwnerOrderItem { OwnerId = 201 } },
+            },
+            new OwnerOrder
+            {
+                OwnerId = 20,
+                CompletedAt = new DateTime(2024, 2, 10),
+                Items = { new OwnerOrderItem { OwnerId = 202 } },
+            },
+            new OwnerOrder
+            {
+                OwnerId = 30,
+                CompletedAt = new DateTime(2024, 3, 10),
+                Items = { new OwnerOrderItem { OwnerId = 301 } },
+            });
+        context.SaveChanges();
+
+        var result = await context.Database.ArchiveTierAsync<OwnerOrder>(new DateTime(2024, 3, 1));
+
+        Assert.Equal(4, result.RowsArchived);
+        Assert.True(Directory.Exists(Path.Combine(
+            archivePath, "owner_orders", "root_owner_id=10", "completed_month=2024-01-01")));
+        Assert.True(Directory.Exists(Path.Combine(
+            archivePath, "owner_order_items", "root_owner_id=10", "completed_month=2024-01-01")));
+        Assert.Equal(30, Assert.Single(context.Orders).OwnerId);
+        Assert.Equal(301, Assert.Single(context.Items).OwnerId);
+        Assert.Equal([10, 10, 20, 20, 30], context.OrderHistory.OrderBy(order => order.Id).Select(order => order.OwnerId).ToList());
+        Assert.Equal([101, 102, 201, 202, 301], context.ItemHistory.OrderBy(item => item.Id).Select(item => item.OwnerId).ToList());
+
+        var from = new DateTime(2024, 2, 1);
+        var to = new DateTime(2024, 3, 1);
+        var query = context.OrderHistory.Where(
+            order => order.OwnerId == 10 && order.CompletedAt >= from && order.CompletedAt < to);
+        var sql = query.ToQueryString();
+        Assert.Contains("root_owner_id", sql);
+        Assert.Contains("completed_month", sql);
+        AssertFilesPruned(Explain(context, query), "1/4");
+        Assert.Single(query);
+
+        var partitionSpec = context.Database.SqlQueryRaw<string>(
+            "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'owner_orders'").Single();
+        Assert.Contains("\"Name\":\"root_owner_id\"", partitionSpec);
+        Assert.Contains("\"Name\":\"completed_month\"", partitionSpec);
+    }
+
+    [Fact]
+    public async Task Restoration_by_an_aliased_partition_moves_the_exact_graph_back_to_hot()
+    {
+        var archivePath = Path.Combine(_root, "owner-alias-restore-archive");
+        using var context = new OwnerAliasPartitionContext(
+            Path.Combine(_root, "owner-alias-restore.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.AddRange(
+            new OwnerOrder
+            {
+                OwnerId = 10,
+                CompletedAt = new DateTime(2024, 1, 10),
+                Items = { new OwnerOrderItem { OwnerId = 101 } },
+            },
+            new OwnerOrder
+            {
+                OwnerId = 20,
+                CompletedAt = new DateTime(2024, 1, 20),
+                Items = { new OwnerOrderItem { OwnerId = 201 } },
+            });
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<OwnerOrder>(new DateTime(2024, 2, 1));
+
+        var result = await context.Database.RestoreArchiveTierAsync<OwnerOrder>(
+            new TierRestoreOptions
+            {
+                Scope = TierMaintenanceScope.ForPartitionValues(
+                    new Dictionary<string, object?> { ["OwnerId"] = 10 }),
+            });
+
+        Assert.Equal(TierArchiveOperation.Restore, result.Publication.Operation);
+        Assert.Equal(1, result.RootsSelected);
+        Assert.Equal(1, result.RootsInserted);
+        Assert.Equal(2, result.RowsInserted);
+        Assert.Equal(10, Assert.Single(context.Orders).OwnerId);
+        Assert.Equal(101, Assert.Single(context.Items).OwnerId);
+        Assert.Equal([10, 20], context.OrderHistory.OrderBy(order => order.OwnerId).Select(order => order.OwnerId).ToList());
+        Assert.Equal([101, 201], context.ItemHistory.OrderBy(item => item.OwnerId).Select(item => item.OwnerId).ToList());
+        Assert.True(Directory.Exists(Path.Combine(
+            result.Publication.ArchivePath, "root_owner_id=20", "completed_month=2024-01-01")));
+        Assert.False(Directory.Exists(Path.Combine(
+            result.Publication.ArchivePath, "root_owner_id=10", "completed_month=2024-01-01")));
+        var child = Assert.Single(result.Publication.Nodes, node => node.Table == "owner_order_items");
+        Assert.True(Directory.Exists(Path.Combine(
+            child.ArchivePath, "root_owner_id=20", "completed_month=2024-01-01")));
+    }
+
+    [Fact]
+    public async Task Reconciliation_repartitions_corrected_rows_using_aliased_partition_names()
+    {
+        var archivePath = Path.Combine(_root, "owner-alias-reconcile-archive");
+        using var context = new OwnerAliasPartitionContext(
+            Path.Combine(_root, "owner-alias-reconcile.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        var order = new OwnerOrder
+        {
+            OwnerId = 10,
+            CompletedAt = new DateTime(2024, 1, 10),
+            Items = { new OwnerOrderItem { OwnerId = 101 } },
+        };
+        context.Orders.Add(order);
+        context.SaveChanges();
+        var orderId = order.Id;
+        var itemId = order.Items[0].Id;
+        await context.Database.ArchiveTierAsync<OwnerOrder>(new DateTime(2024, 2, 1));
+        context.ChangeTracker.Clear();
+        context.Database.ExecuteSqlInterpolated(
+            $"""
+             INSERT INTO owner_orders ("Id", "CompletedAt", "OwnerId")
+             VALUES ({orderId}, {new DateTime(2024, 1, 10)}, {20});
+             """);
+        context.Database.ExecuteSqlInterpolated(
+            $"""
+             INSERT INTO owner_order_items ("Id", "OwnerId", "OwnerOrderId")
+             VALUES ({itemId}, {999}, {orderId});
+             """);
+
+        var result = await context.Database.ReconcileArchiveTierAsync<OwnerOrder>();
+
+        Assert.Equal(TierArchiveOperation.Reconcile, result.Operation);
+        Assert.False(result.NoOp);
+        Assert.Equal(1, result.RowsArchived);
+        Assert.Empty(context.Orders);
+        Assert.Empty(context.Items);
+        Assert.Equal(20, context.OrderHistory.Single().OwnerId);
+        Assert.Equal(999, context.ItemHistory.Single().OwnerId);
+        Assert.True(Directory.Exists(Path.Combine(
+            result.ArchivePath, "root_owner_id=20", "completed_month=2024-01-01")));
+        Assert.False(Directory.Exists(Path.Combine(
+            result.ArchivePath, "root_owner_id=10", "completed_month=2024-01-01")));
+        var child = Assert.Single(result.Nodes, node => node.Table == "owner_order_items");
+        Assert.True(Directory.Exists(Path.Combine(
+            child.ArchivePath, "root_owner_id=20", "completed_month=2024-01-01")));
+    }
+
+    [Fact]
+    public async Task Exact_partition_alias_shorthand_retains_the_implicit_lifecycle_bucket()
+    {
+        var archivePath = Path.Combine(_root, "shorthand-alias-archive");
+        using var context = new ShorthandAliasPartitionContext(
+            Path.Combine(_root, "shorthand-alias.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Invoices.Add(new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 10) });
+        context.SaveChanges();
+
+        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+
+        Assert.True(Directory.Exists(Path.Combine(
+            archivePath, "invoices", "customer_key=10", "InvoiceDate_month=2024-01-01")));
+    }
+
+    [Fact]
     public async Task Declared_partition_order_controls_the_directory_hierarchy()
     {
         var archivePath = Path.Combine(_root, "month-first-archive");
@@ -291,6 +474,42 @@ public sealed class TieredStorageTests : IDisposable
         var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
 
         Assert.Contains("is not DateTime or DateOnly", exception.Message);
+    }
+
+    [Fact]
+    public void Partition_alias_must_be_non_empty()
+    {
+        using var context = new EmptyPartitionAliasContext(
+            Path.Combine(_root, "empty-alias.duckdb"),
+            Path.Combine(_root, "empty-alias-archive"));
+
+        var exception = Assert.Throws<ArgumentException>(() => _ = context.Model);
+
+        Assert.Contains("cannot be empty or whitespace", exception.Message);
+    }
+
+    [Fact]
+    public void Partition_alias_must_not_collide_with_a_mapped_root_column()
+    {
+        using var context = new RootColumnAliasCollisionContext(
+            Path.Combine(_root, "root-column-alias.duckdb"),
+            Path.Combine(_root, "root-column-alias-archive"));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
+
+        Assert.Contains("collides with a mapped root column", exception.Message);
+    }
+
+    [Fact]
+    public void Partition_aliases_must_be_physically_distinct()
+    {
+        using var context = new DuplicatePartitionAliasContext(
+            Path.Combine(_root, "duplicate-alias.duckdb"),
+            Path.Combine(_root, "duplicate-alias-archive"));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
+
+        Assert.Contains("distinct physical column", exception.Message);
     }
 
     [Fact]
@@ -497,6 +716,36 @@ public sealed class TieredStorageTests : IDisposable
         using var changed = new CustomerPartitionContext(dbPath, archivePath);
         var exception = Assert.Throws<InvalidOperationException>(() => changed.Database.EnsureTieredStoresCreated());
 
+        Assert.Contains("different partition layout", exception.Message);
+        Assert.Contains("Rewrite or clear", exception.Message);
+    }
+
+    [Fact]
+    public async Task Changing_an_aliased_partition_name_is_rejected_as_partition_layout_drift()
+    {
+        var dbPath = Path.Combine(_root, "alias-layout.duckdb");
+        var archivePath = Path.Combine(_root, "alias-layout-archive");
+        using (var original = new OwnerAliasPartitionContext(dbPath, archivePath))
+        {
+            original.Database.EnsureCreated();
+            original.Orders.Add(new OwnerOrder
+            {
+                OwnerId = 10,
+                CompletedAt = new DateTime(2024, 1, 10),
+                Items = { new OwnerOrderItem { OwnerId = 101 } },
+            });
+            original.SaveChanges();
+            await original.Database.ArchiveTierAsync<OwnerOrder>(new DateTime(2024, 2, 1));
+            var partitionSpec = original.Database.SqlQueryRaw<string>(
+                "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'owner_orders'").Single();
+            Assert.Contains("\"Name\":\"root_owner_id\"", partitionSpec);
+        }
+
+        using var changed = new ChangedOwnerAliasPartitionContext(dbPath, archivePath);
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => changed.Database.EnsureTieredStoresCreated());
+
+        Assert.Contains("root_owner_key", exception.Message);
         Assert.Contains("different partition layout", exception.Message);
         Assert.Contains("Rewrite or clear", exception.Message);
     }
@@ -730,6 +979,45 @@ public sealed class TieredStorageTests : IDisposable
         Assert.Equal(TierArchiveOperation.Compact, laterMaintenance.Operation);
     }
 
+    [Fact]
+    public async Task Aliased_partitions_survive_contract_drift_inspection_and_rewrite()
+    {
+        var dbPath = Path.Combine(_root, "aliased-contract-rewrite.duckdb");
+        var archivePath = Path.Combine(_root, "aliased-contract-rewrite-archive");
+        using (var original = new AliasedContractContext(dbPath, archivePath))
+        {
+            original.Database.EnsureCreated();
+            original.Invoices.Add(new Invoice
+            {
+                CustomerId = 7,
+                InvoiceDate = new DateTime(2024, 1, 15),
+            });
+            original.SaveChanges();
+            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        }
+
+        using var evolved = new AliasedContractEvolvedContext(dbPath, archivePath);
+        evolved.Database.ExecuteSqlRaw("ALTER TABLE invoices ADD COLUMN \"Note\" TEXT;");
+        var inspection = await evolved.Database.InspectArchiveContractAsync<InvoiceV2>();
+
+        var difference = Assert.Single(inspection.Differences, item =>
+            item.Kind == TierArchiveContractDifferenceKind.ColumnAdded);
+        Assert.Equal("Note", difference.Column);
+        Assert.True(inspection.IsCompatible);
+
+        var plan = await evolved.Database.PlanArchiveContractRewriteAsync<InvoiceV2>(
+            new TierArchiveRewriteOptions());
+        var result = await evolved.Database.RewriteArchiveContractAsync<InvoiceV2>(plan);
+
+        Assert.Equal(TierArchiveOperation.RewriteContract, result.Operation);
+        Assert.True(Directory.Exists(Path.Combine(
+            result.ArchivePath, "customer_key=7", "invoice_month=2024-01-01")));
+        Assert.Null(evolved.InvoiceHistory.Single().Note);
+        var afterRewrite = await evolved.Database.InspectArchiveContractAsync<InvoiceV2>();
+        Assert.True(afterRewrite.IsCompatible);
+        Assert.Empty(afterRewrite.Differences);
+    }
+
     private void ReinsertArchivedIntoHot(InvoiceContext context)
     {
         var archive = Path.Combine(_root, "archive");
@@ -844,6 +1132,36 @@ public sealed class TieredStorageTests : IDisposable
     private sealed class InvoiceLineRm { public int Id { get; set; } public int InvoiceId { get; set; } public decimal Amount { get; set; } }
     private sealed class LineAllocationRm { public int Id { get; set; } public int InvoiceLineId { get; set; } public decimal Amount { get; set; } }
     private sealed class CustomerInvoiceRm { public int Id { get; set; } public int CustomerId { get; set; } public DateTime InvoiceDate { get; set; } }
+
+    private sealed class OwnerOrder
+    {
+        public int Id { get; set; }
+        public int OwnerId { get; set; }
+        public DateTime CompletedAt { get; set; }
+        public List<OwnerOrderItem> Items { get; set; } = [];
+    }
+
+    private sealed class OwnerOrderItem
+    {
+        public int Id { get; set; }
+        public int OwnerOrderId { get; set; }
+        public int OwnerId { get; set; }
+        public OwnerOrder? Order { get; set; }
+    }
+
+    private sealed class OwnerOrderRm
+    {
+        public int Id { get; set; }
+        public int OwnerId { get; set; }
+        public DateTime CompletedAt { get; set; }
+    }
+
+    private sealed class OwnerOrderItemRm
+    {
+        public int Id { get; set; }
+        public int OwnerOrderId { get; set; }
+        public int OwnerId { get; set; }
+    }
 
     private sealed class DateBucketRecord
     {
@@ -960,6 +1278,79 @@ public sealed class TieredStorageTests : IDisposable
                     .ByMonth(invoice => invoice.InvoiceDate))
                 .WithReadModel<CustomerInvoiceRm>()
                 .Including<InvoiceLine>(invoice => invoice.Lines, line => line.WithReadModel<InvoiceLineRm>());
+        }
+    }
+
+    private sealed class OwnerAliasPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<OwnerOrder> Orders => Set<OwnerOrder>();
+        public DbSet<OwnerOrderItem> Items => Set<OwnerOrderItem>();
+        public DbSet<OwnerOrderRm> OrderHistory => Set<OwnerOrderRm>();
+        public DbSet<OwnerOrderItemRm> ItemHistory => Set<OwnerOrderItemRm>();
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => ConfigureOwnerAliasModel(modelBuilder, archivePath, "root_owner_id");
+    }
+
+    private sealed class ChangedOwnerAliasPartitionContext(
+        string dbPath,
+        string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => ConfigureOwnerAliasModel(modelBuilder, archivePath, "root_owner_key");
+    }
+
+    private sealed class ShorthandAliasPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(invoice => invoice.CustomerId, "customer_key");
+        }
+    }
+
+    private sealed class AliasedContractContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public string ArchivePath => archivePath + "|aliased-contract";
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions
+                    .By(invoice => invoice.CustomerId, "customer_key")
+                    .ByMonth(invoice => invoice.InvoiceDate, "invoice_month"))
+                .WithReadModel<InvoiceRm>();
         }
     }
 
@@ -1173,6 +1564,72 @@ public sealed class TieredStorageTests : IDisposable
         }
     }
 
+    private sealed class EmptyPartitionAliasContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions
+                    .By(invoice => invoice.CustomerId, " ")
+                    .ByMonth(invoice => invoice.InvoiceDate));
+        }
+    }
+
+    private sealed class RootColumnAliasCollisionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions
+                    .By(invoice => invoice.CustomerId, "Id")
+                    .ByMonth(invoice => invoice.InvoiceDate));
+        }
+    }
+
+    private sealed class DuplicatePartitionAliasContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    {
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions
+                    .By(invoice => invoice.CustomerId, "bucket")
+                    .ByMonth(invoice => invoice.InvoiceDate, "BUCKET"));
+        }
+    }
+
     private sealed class BadNavigationContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
         public string ArchivePath => archivePath;
@@ -1340,6 +1797,32 @@ public sealed class TieredStorageTests : IDisposable
         }
     }
 
+    private sealed class AliasedContractEvolvedContext(
+        string dbPath,
+        string archivePath) : DbContext, IArchivePathContext
+    {
+        public DbSet<InvoiceV2Rm> InvoiceHistory => Set<InvoiceV2Rm>();
+        public string ArchivePath => archivePath + "|aliased-contract-evolved";
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<InvoiceV2>(builder =>
+            {
+                builder.ToTable("invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+            });
+            modelBuilder.ToTieredStore<InvoiceV2>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions
+                    .By(invoice => invoice.CustomerId, "customer_key")
+                    .ByMonth(invoice => invoice.InvoiceDate, "invoice_month"))
+                .WithReadModel<InvoiceV2Rm>();
+        }
+    }
+
     private sealed class SchemaContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
         public DbSet<Invoice> Invoices => Set<Invoice>();
@@ -1367,5 +1850,32 @@ public sealed class TieredStorageTests : IDisposable
     {
         public object Create(DbContext context, bool designTime)
             => (context.GetType(), (context as IArchivePathContext)?.ArchivePath, designTime);
+    }
+
+    private static void ConfigureOwnerAliasModel(
+        ModelBuilder modelBuilder,
+        string archivePath,
+        string ownerPartitionName)
+    {
+        modelBuilder.Entity<OwnerOrder>(builder =>
+        {
+            builder.ToTable("owner_orders");
+            builder.HasKey(order => order.Id);
+            builder.HasMany(order => order.Items).WithOne(item => item.Order).HasForeignKey(item => item.OwnerOrderId);
+        });
+        modelBuilder.Entity<OwnerOrderItem>(builder =>
+        {
+            builder.ToTable("owner_order_items");
+            builder.HasKey(item => item.Id);
+        });
+
+        modelBuilder.ToTieredStore<OwnerOrder>(order => order.CompletedAt, archivePath)
+            .PartitionBy(partitions => partitions
+                .By(order => order.OwnerId, ownerPartitionName)
+                .ByMonth(order => order.CompletedAt, "completed_month"))
+            .WithReadModel<OwnerOrderRm>()
+            .Including<OwnerOrderItem>(
+                order => order.Items,
+                items => items.WithReadModel<OwnerOrderItemRm>());
     }
 }

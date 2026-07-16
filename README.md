@@ -350,8 +350,8 @@ modelBuilder
         TierGranularity.Month)
     .MatchBy(invoice => invoice.EdcId)
     .PartitionBy(partitions => partitions
-        .By(invoice => invoice.OwnerId)
-        .ByMonth(invoice => invoice.CompletedDate))
+        .By(invoice => invoice.OwnerId, "root_owner_id")
+        .ByMonth(invoice => invoice.CompletedDate, "completed_month"))
     .WithReadModel<InvoiceHistory>()
     .Including<InvoiceLine>(
         invoice => invoice.Lines,
@@ -359,6 +359,11 @@ modelBuilder
             .MatchBy(line => new { line.InvoiceEdcId, line.LineNumber })
             .WithReadModel<InvoiceLineHistory>());
 ```
+
+The optional names are physical Hive directory/virtual-column aliases; EF queries continue to use `OwnerId` and
+`CompletedDate`. This is useful when a child already maps a column such as `OwnerId`: naming the inherited root
+partition `root_owner_id` avoids replacing or colliding with the child's own data. For one exact key plus the
+implicit lifecycle bucket, use `.PartitionBy(invoice => invoice.OwnerId, "root_owner_id")`.
 
 A shared child entity/table can be included beneath multiple independent tiered roots. The provider retains a
 deterministic binding for every root relationship and builds one combined child history view over the hot table
