@@ -17,13 +17,20 @@ public sealed class TieredStoreBuilder<TRoot>
     private readonly IMutableEntityType _root;
     private readonly string _archivePath;
     private readonly string _controlKey;
+    private readonly string _bindingId;
 
-    internal TieredStoreBuilder(ModelBuilder modelBuilder, IMutableEntityType root, string archivePath, string controlKey)
+    internal TieredStoreBuilder(
+        ModelBuilder modelBuilder,
+        IMutableEntityType root,
+        string archivePath,
+        string controlKey,
+        string bindingId)
     {
         _modelBuilder = modelBuilder;
         _root = root;
         _archivePath = archivePath;
         _controlKey = controlKey;
+        _bindingId = bindingId;
     }
 
     /// <summary>
@@ -167,8 +174,21 @@ public sealed class TieredStoreBuilder<TRoot>
     {
         var navigationName = DuckDBTieredStoreExtensions.GetPropertyName(navigation);
         var child = DuckDBTieredStoreExtensions.AddChild(
-            _modelBuilder, _root, _root, typeof(TChild), navigationName, _archivePath, _controlKey);
-        configure?.Invoke(new TieredChildBuilder<TChild>(_modelBuilder, child, _root, _archivePath, _controlKey));
+            _modelBuilder,
+            _root,
+            _root,
+            typeof(TChild),
+            navigationName,
+            _archivePath,
+            _controlKey,
+            _bindingId);
+        configure?.Invoke(new TieredChildBuilder<TChild>(
+            _modelBuilder,
+            child.Entity,
+            _root,
+            _archivePath,
+            _controlKey,
+            child.Binding.BindingId));
         return this;
     }
 }
@@ -228,14 +248,22 @@ public sealed class TieredChildBuilder<TChild>
     private readonly IMutableEntityType _root;
     private readonly string _archivePath;
     private readonly string _controlKey;
+    private readonly string _bindingId;
 
-    internal TieredChildBuilder(ModelBuilder modelBuilder, IMutableEntityType child, IMutableEntityType root, string archivePath, string controlKey)
+    internal TieredChildBuilder(
+        ModelBuilder modelBuilder,
+        IMutableEntityType child,
+        IMutableEntityType root,
+        string archivePath,
+        string controlKey,
+        string bindingId)
     {
         _modelBuilder = modelBuilder;
         _child = child;
         _root = root;
         _archivePath = archivePath;
         _controlKey = controlKey;
+        _bindingId = bindingId;
     }
 
     /// <summary>Declares the keyless read-model type used to query this child's hot table and cold archive together.</summary>
@@ -266,8 +294,21 @@ public sealed class TieredChildBuilder<TChild>
     {
         var navigationName = DuckDBTieredStoreExtensions.GetPropertyName(navigation);
         var grandchild = DuckDBTieredStoreExtensions.AddChild(
-            _modelBuilder, _child, _root, typeof(TGrandchild), navigationName, _archivePath, _controlKey);
-        configure?.Invoke(new TieredChildBuilder<TGrandchild>(_modelBuilder, grandchild, _root, _archivePath, _controlKey));
+            _modelBuilder,
+            _child,
+            _root,
+            typeof(TGrandchild),
+            navigationName,
+            _archivePath,
+            _controlKey,
+            _bindingId);
+        configure?.Invoke(new TieredChildBuilder<TGrandchild>(
+            _modelBuilder,
+            grandchild.Entity,
+            _root,
+            _archivePath,
+            _controlKey,
+            grandchild.Binding.BindingId));
         return this;
     }
 }

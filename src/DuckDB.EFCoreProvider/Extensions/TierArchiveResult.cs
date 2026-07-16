@@ -61,6 +61,9 @@ public readonly record struct TierArchiveNodeResult(
     string ArchivePath,
     IReadOnlyList<string> Files)
 {
+    /// <summary>The deterministic relationship binding used to select and maintain this table.</summary>
+    public string? BindingId { get; init; }
+
     /// <summary>The complete number of Parquet files represented by this result.</summary>
     public long FileCount { get; init; } = Files.Count;
 
@@ -87,6 +90,9 @@ public readonly record struct TierArchiveResult(
     string ArchivePath,
     bool NoOp)
 {
+    /// <summary>The root-scoped binding that produced this result.</summary>
+    public TieredStorageBindingInfo? Binding { get; init; }
+
     /// <summary>The operation that produced the result.</summary>
     public TierArchiveOperation Operation { get; init; }
 
@@ -118,7 +124,8 @@ public sealed class TierArchiveOperationException : InvalidOperationException
     /// <summary>Creates an archive failure with its safe partial manifest.</summary>
     public TierArchiveOperationException(TierArchiveStage stage, TierArchiveResult partialResult, Exception innerException)
         : base(
-            $"Tiered-storage operation failed during the '{stage}' stage. The active archive remains recoverable; "
+            $"Tiered-storage operation{BindingEvidence(partialResult)} failed during the '{stage}' stage. "
+            + "The active archive remains recoverable; "
             + "inspect PartialResult and retry after correcting the underlying error.",
             innerException)
     {
@@ -131,4 +138,9 @@ public sealed class TierArchiveOperationException : InvalidOperationException
 
     /// <summary>The evidence collected before the failure.</summary>
     public TierArchiveResult PartialResult { get; }
+
+    private static string BindingEvidence(TierArchiveResult result)
+        => result.Binding is { } binding
+            ? $" for binding {TieredStorageBindingEvidence.Describe(binding)}"
+            : string.Empty;
 }

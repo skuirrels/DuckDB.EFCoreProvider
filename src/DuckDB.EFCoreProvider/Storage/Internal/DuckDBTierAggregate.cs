@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using System.Text.Json;
@@ -18,6 +19,7 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 public sealed class DuckDBTierAggregate
 {
     private DuckDBTierAggregate(
+        IModel model,
         IReadOnlyList<DuckDBTierNode> nodes,
         string archiveBasePath,
         string controlKey,
@@ -26,6 +28,7 @@ public sealed class DuckDBTierAggregate
         IReadOnlyList<DuckDBTierPartitionColumn> rootPartitions,
         bool includeHotChildFilter)
     {
+        Model = model;
         Nodes = nodes;
         ArchiveBasePath = archiveBasePath.TrimEnd('/', '\\');
         ControlKey = controlKey;
@@ -52,6 +55,12 @@ public sealed class DuckDBTierAggregate
 
     /// <summary>The aggregate nodes, root first, every parent before its children.</summary>
     public IReadOnlyList<DuckDBTierNode> Nodes { get; }
+
+    /// <summary>The EF Core model from which this aggregate was resolved.</summary>
+    public IModel Model { get; }
+
+    /// <summary>The deterministic binding identifier of this aggregate root.</summary>
+    public string BindingId => Root.BindingId;
 
     /// <summary>The tier control-table key (shared by the whole aggregate).</summary>
     public string ControlKey { get; }
@@ -122,25 +131,44 @@ public sealed class DuckDBTierAggregate
             })
             .ToList();
 
-        var nodes = new List<DuckDBTierNode> { BuildNode(root, archivePath, []) };
+        var rootBindingId = DuckDBTieredStoreBinding.CreateRootBindingId(
+            root.Name,
+            root.GetTieredStoreControlKey()!);
+        var nodes = new List<DuckDBTierNode> { BuildNode(root, archivePath, [], rootBindingId) };
 
         var children = model.GetEntityTypes()
-            .Where(e => e.GetTieredStoreRole() == "Child" && e.GetTieredStoreRoot() == root.Name)
-            .Select(child => (Entity: child, Chain: BuildChain(model, child, root)))
+            .Where(entity => entity.GetTieredStoreRole() == "Child")
+            .SelectMany(
+                entity => entity.GetTieredStoreBindings()
+                    .Where(binding => binding.RootEntityName == root.Name)
+                    .Select(binding => (
+                        Entity: entity,
+                        Binding: binding,
+                        Chain: BuildChain(model, entity, root, binding))))
             .OrderBy(x => x.Chain.Count)
-            .ThenBy(x => x.Entity.Name, StringComparer.Ordinal); // parents before children, stable within a depth
+            .ThenBy(x => x.Entity.Name, StringComparer.Ordinal)
+            .ThenBy(x => x.Binding.BindingId, StringComparer.Ordinal); // parents before children, stable within a depth
 
-        foreach (var (entity, chain) in children)
+        foreach (var (entity, binding, chain) in children)
         {
-            nodes.Add(BuildNode(entity, archivePath, chain));
+            nodes.Add(BuildNode(entity, archivePath, chain, binding.BindingId));
         }
 
         return new DuckDBTierAggregate(
-            nodes, archivePath, root.GetTieredStoreControlKey()!, root.GetTieredStoreGranularity(), rootTimestampColumn,
+            model,
+            nodes,
+            archivePath,
+            root.GetTieredStoreControlKey()!,
+            root.GetTieredStoreGranularity(),
+            rootTimestampColumn,
             rootPartitions, root.GetTieredStoreHotChildFilter());
     }
 
-    private static DuckDBTierNode BuildNode(IEntityType entity, string archivePath, IReadOnlyList<DuckDBTierControl.TierJoinHop> chain)
+    private static DuckDBTierNode BuildNode(
+        IEntityType entity,
+        string archivePath,
+        IReadOnlyList<DuckDBTierControl.TierJoinHop> chain,
+        string bindingId)
     {
         var table = entity.GetTableName()!;
         var store = StoreObjectIdentifier.Table(table, entity.GetSchema());
@@ -183,18 +211,32 @@ public sealed class DuckDBTierAggregate
         return new DuckDBTierNode(
             entity, table, entity.GetSchema(), columnDefinitions.Select(column => column.Name).ToArray(),
             columnDefinitions, keyColumns, comparisonColumns, entity.GetTieredStoreView(),
-            archivePath.TrimEnd('/', '\\') + "/" + table, chain);
+            archivePath.TrimEnd('/', '\\') + "/" + table, chain)
+        {
+            BindingId = bindingId,
+        };
     }
 
-    private static List<DuckDBTierControl.TierJoinHop> BuildChain(IModel model, IEntityType child, IEntityType root)
+    private static List<DuckDBTierControl.TierJoinHop> BuildChain(
+        IModel model,
+        IEntityType child,
+        IEntityType root,
+        TieredStoreBinding binding)
     {
         var chain = new List<DuckDBTierControl.TierJoinHop>();
         var current = child;
+        var currentBinding = binding;
 
         while (current.Name != root.Name)
         {
-            var parent = model.FindEntityType(current.GetTieredStoreParent()!)!;
-            var navigation = parent.FindNavigation(current.GetTieredStoreParentNavigation()!)!;
+            var parent = model.FindEntityType(currentBinding.ParentEntityName)
+                ?? throw new InvalidOperationException(
+                    $"Tiered-storage binding '{currentBinding.BindingId}' cannot resolve parent "
+                    + $"'{currentBinding.ParentEntityName}'.");
+            var navigation = parent.FindNavigation(currentBinding.ParentNavigationName)
+                ?? throw new InvalidOperationException(
+                    $"Tiered-storage binding '{currentBinding.BindingId}' cannot resolve navigation "
+                    + $"'{currentBinding.ParentNavigationName}' on '{parent.DisplayName()}'.");
             var foreignKey = navigation.ForeignKey;
 
             var currentStore = StoreObjectIdentifier.Table(current.GetTableName()!, current.GetSchema());
@@ -207,6 +249,29 @@ public sealed class DuckDBTierAggregate
                 foreignKey.PrincipalKey.Properties.Select(property => property.GetColumnName(parentStore)!).ToArray()));
 
             current = parent;
+            if (current.Name == root.Name)
+            {
+                break;
+            }
+
+            var parentBindingId = currentBinding.ParentBindingId;
+            var parentBindings = current.GetTieredStoreBindings()
+                .Where(candidate => candidate.RootEntityName == root.Name)
+                .ToArray();
+            currentBinding = parentBindings.SingleOrDefault(
+                candidate => candidate.BindingId == parentBindingId);
+            if (string.IsNullOrEmpty(currentBinding.BindingId) && parentBindings.Length == 1)
+            {
+                // Compatibility for a compiled model produced before binding-path metadata was introduced.
+                currentBinding = parentBindings[0];
+            }
+
+            if (string.IsNullOrEmpty(currentBinding.BindingId))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage binding '{binding.BindingId}' cannot resolve parent binding "
+                    + $"'{parentBindingId}' on '{current.DisplayName()}'.");
+            }
         }
 
         return chain;
@@ -269,6 +334,9 @@ public sealed record DuckDBTierNode(
     string ArchiveSubPath,
     IReadOnlyList<DuckDBTierControl.TierJoinHop> ChainToRoot)
 {
+    /// <summary>The deterministic root or child relationship binding represented by this node.</summary>
+    public string BindingId { get; init; } = string.Empty;
+
     /// <summary>Creates a node using the pre-1.6 internal constructor shape.</summary>
     public DuckDBTierNode(
         IEntityType entity,

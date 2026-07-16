@@ -78,6 +78,10 @@ internal sealed class DuckDBTierArchiveManifest
         var root = _nodes[_aggregate.Root];
         return new TierArchiveResult(root.SelectedRows, watermark, RedactCredentials(root.ArchivePath), noOp)
         {
+            Binding = new TieredStorageBindingInfo(
+                _aggregate.BindingId,
+                _aggregate.Root.Entity.ClrType,
+                _aggregate.ControlKey),
             Operation = _operation,
             PreviousWatermark = _previousWatermark,
             WindowStart = _windowStart,
@@ -96,6 +100,7 @@ internal sealed class DuckDBTierArchiveManifest
                     RedactCredentials(progress.ArchivePath),
                     progress.Files.Select(RedactCredentials).ToArray())
                 {
+                    BindingId = node.BindingId,
                     FileCount = progress.FileCount,
                     TotalBytes = progress.TotalBytes,
                     FilesTruncated = progress.FilesTruncated,

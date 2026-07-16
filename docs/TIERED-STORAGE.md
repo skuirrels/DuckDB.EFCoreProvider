@@ -162,6 +162,45 @@ does not materialize the report's full projected columns.
 `.Including(...)` declares which navigations are **aggregate children** (archived with the root). Anything not
 included — e.g. an `InvoiceLine → Product` reference — stays hot.
 
+### Sharing one child entity across independent roots
+
+The same physical child entity/table may be included beneath more than one independently archived root. Each
+`.Including(...)` creates a deterministic root-scoped binding, so archive, reconciliation, restoration,
+compaction, inventory, and cleanup continue to use the selected root's control key and archive path:
+
+Every configured root must use a unique `controlKey`, because the provider persists its watermark, active
+generation, and archive contract under that key.
+
+```csharp
+modelBuilder.ToTieredStore<ImportJob>(
+        job => job.CompletedAt,
+        "s3://archive/imports",
+        controlKey: "imports")
+    .WithReadModel<ImportJobHistory>()
+    .Including<JobEvent>(job => job.Events, events => events.WithReadModel<JobEventHistory>());
+
+modelBuilder.ToTieredStore<ExportJob>(
+        job => job.CompletedAt,
+        "s3://archive/exports",
+        controlKey: "exports")
+    .WithReadModel<ExportJobHistory>()
+    .Including<JobEvent>(job => job.Events, events => events.WithReadModel<JobEventHistory>());
+```
+
+The provider creates one stable child view containing the hot table once plus every published root-specific
+Parquet branch. Configuration order and archive order do not change that view. `MatchBy(...)` belongs to the
+shared entity, so its key must be globally stable across all of those branches.
+
+Each physical child row must belong to **at most one** configured root binding. If, for example, one `JobEvent`
+has both an import-job FK and an export-job FK that resolve to existing roots, storage preflight reports
+`TierStorageCapability.BindingOwnership` as unsupported and mutating tier operations throw
+`TierAmbiguousBindingException` before writing Parquet or deleting hot rows.
+
+For metadata inspection, call `GetTieredStoreBindings()` on the child entity type. The older singular getters
+(`GetTieredStoreRoot()`, `GetTieredStoreParent()`, `GetTieredStoreParentNavigation()`,
+`GetTieredStoreArchivePath()`, and `GetTieredStoreControlKey()`) remain compatible for a single binding and
+return `null` when the child is shared.
+
 ## 2. Create the physical objects
 
 `EnsureCreated()` builds the control table and all union views automatically:
@@ -255,9 +294,10 @@ Do not wrap `ArchiveTierAsync` in an application transaction. Parquet writes are
 be rolled back with the DuckDB transaction, so the provider rejects that combination before copying. A crash
 between delete statements remains safe and a rerun removes leftovers.
 
-`TierArchiveResult` contains the published watermark transition and table-level evidence: selected, verified-copy,
-and deleted row counts; the archive window; active generation/revision; archive paths and visible Parquet files;
-no-op state; and the final workflow stage. A failure after preflight throws `TierArchiveOperationException`, whose
+`TierArchiveResult` contains the published watermark transition and table-level evidence: the deterministic
+root binding, selected, verified-copy, and deleted row counts; the archive window; active generation/revision;
+archive paths and visible Parquet files; no-op state; and the final workflow stage. A failure after preflight
+throws `TierArchiveOperationException`, whose
 `Stage` and `PartialResult` show how far the operation reached without including object-store credentials.
 Use `TierManifestOptions` to return summary-only evidence, a bounded representative set, or all paths. Writer
 controls are strongly typed through `TierParquetWriterOptions` (compression, compression level, row-group sizing,
@@ -369,6 +409,9 @@ Inventory classifies the active generation, prior provider-published generations
 unpublished candidates. Cleanup planning is read-only: retention, legal hold, rollback depth, and actual object
 deletion remain application/deployment policy. For remote active generations, generated views use the provider's
 persisted exact file catalogue when available and fall back compatibly to recursive glob discovery.
+Archive results, restoration publication results, inventory, cleanup plans, and preflight results expose
+non-secret `Binding` evidence (`BindingId`, root CLR type, and control key) so callers can prove which root-scoped
+operation was performed.
 
 `CompactArchiveTierAsync` rewrites the complete active cold range into a verified immutable generation using new
 writer controls. Archive schema changes use a separate reviewable flow:
@@ -559,7 +602,8 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
   column needs the affected archive migrated.
 - **Validation.** Missing/duplicate partition properties, non-date bucket transforms, an explicit plan without a
   safe lifecycle bucket, partitions declared anywhere except the aggregate root, physical-name collisions with
-  root or child columns, an invalid child foreign key to its declared parent, and overlapping
+  root or child columns, duplicate or empty root control keys, an invalid child foreign key to its declared
+  parent, multiple relationship paths from one root to the same physical child entity, and overlapping
   aggregate archive paths are rejected at model validation. Changing partition order, transforms, granularity,
   archive path, match keys, include layout, mapped names, or mapped store types after cold files exist requires
   rewriting or clearing that aggregate's archive. The provider records the complete versioned partition and
@@ -569,4 +613,7 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
   correct in the brief window if an archive crashes between its `COPY` and delete. For deep aggregates you can
   opt out with `ToTieredStore(...).WithoutHotChildFilter()` — child views become a plain `SELECT * FROM child`
   (faster) and the next archive self-heals any transient double-count.
+- **Shared-child ownership.** A child table can participate in multiple independently archived roots, but each
+  physical row must resolve to at most one binding. Preflight and mutating operations reject ambiguous ownership
+  before external writes or hot deletion.
 - **Backups.** The archive directory is part of your data — back it up alongside the `.duckdb` file.

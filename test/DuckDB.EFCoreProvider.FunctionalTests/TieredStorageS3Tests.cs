@@ -61,6 +61,51 @@ public sealed class TieredStorageS3Tests : IDisposable
     public Task Minio_archive_failure_retry_and_schema_evolution_matrix()
         => RunFailureMatrix<MinIoMatrixMarker>(ObjectStoreOptions.FromMinIoEnvironment("s3")!, "s3");
 
+    [MinIoFact]
+    public async Task Shared_child_bindings_are_root_scoped_on_disposable_object_storage()
+    {
+        var objectStore = ObjectStoreOptions.FromMinIoEnvironment("s3")!;
+        var archivePath = objectStore.CreateArchivePath("s3");
+        var dbPath = Path.Combine(_root, "shared-bindings.duckdb");
+        using (var context = new ObjectStoreSharedContext<SharedBindingMarker>(
+                   dbPath,
+                   archivePath,
+                   objectStore))
+        {
+            context.Database.EnsureCreated();
+            context.RootAs.Add(new SharedRootA
+            {
+                Id = 1,
+                ArchivedAt = new DateTime(2024, 1, 10),
+                Children = [new ObjectSharedChild { Id = 101, Value = "a" }],
+            });
+            context.RootBs.Add(new SharedRootB
+            {
+                Id = 2,
+                ArchivedAt = new DateTime(2024, 1, 11),
+                Children = [new ObjectSharedChild { Id = 202, Value = "b" }],
+            });
+            context.SaveChanges();
+
+            var rootB = await context.Database.ArchiveTierAsync<SharedRootB>(new DateTime(2024, 2, 1));
+            Assert.Equal("object-root-b", rootB.Binding?.ControlKey);
+            Assert.Single(context.SharedChildren);
+            Assert.Equal([101, 202], context.SharedHistory.OrderBy(child => child.Id).Select(child => child.Id).ToArray());
+
+            var rootA = await context.Database.ArchiveTierAsync<SharedRootA>(new DateTime(2024, 2, 1));
+            Assert.Equal("object-root-a", rootA.Binding?.ControlKey);
+            Assert.Empty(context.SharedChildren);
+            Assert.Equal([101, 202], context.SharedHistory.OrderBy(child => child.Id).Select(child => child.Id).ToArray());
+        }
+
+        using var restarted = new ObjectStoreSharedContext<SharedBindingMarker>(
+            dbPath,
+            archivePath,
+            objectStore);
+        restarted.Database.EnsureTieredStoresCreated();
+        Assert.Equal([101, 202], restarted.SharedHistory.OrderBy(child => child.Id).Select(child => child.Id).ToArray());
+    }
+
     [RealAwsFact]
     public Task Real_aws_archive_failure_retry_and_schema_evolution_matrix()
         => RunFailureMatrix<RealAwsMatrixMarker>(ObjectStoreOptions.FromAwsEnvironment()!, "s3");
@@ -300,8 +345,53 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed class GcsMarker;
     private sealed class MinIoMatrixMarker;
     private sealed class RealAwsMatrixMarker;
+    private sealed class SharedBindingMarker;
     private sealed class SchemaV1;
     private sealed class SchemaV2;
+
+    private sealed class SharedRootA
+    {
+        public int Id { get; set; }
+        public DateTime ArchivedAt { get; set; }
+        public List<ObjectSharedChild> Children { get; set; } = [];
+    }
+
+    private sealed class SharedRootB
+    {
+        public int Id { get; set; }
+        public DateTime ArchivedAt { get; set; }
+        public List<ObjectSharedChild> Children { get; set; } = [];
+    }
+
+    private sealed class ObjectSharedChild
+    {
+        public int Id { get; set; }
+        public int? RootAId { get; set; }
+        public SharedRootA? RootA { get; set; }
+        public int? RootBId { get; set; }
+        public SharedRootB? RootB { get; set; }
+        public string Value { get; set; } = null!;
+    }
+
+    private sealed class SharedRootARm
+    {
+        public int Id { get; set; }
+        public DateTime ArchivedAt { get; set; }
+    }
+
+    private sealed class SharedRootBRm
+    {
+        public int Id { get; set; }
+        public DateTime ArchivedAt { get; set; }
+    }
+
+    private sealed class ObjectSharedChildRm
+    {
+        public int Id { get; set; }
+        public int? RootAId { get; set; }
+        public int? RootBId { get; set; }
+        public string Value { get; set; } = null!;
+    }
 
     private abstract class DbContextWithHistory : DbContext
     {
@@ -360,6 +450,66 @@ public sealed class TieredStorageS3Tests : IDisposable
                         item => new { item.ExternalInvoiceId, item.LineCode },
                         TierMatchKeyUniqueness.ExternallyEnforced)
                     .WithReadModel<InvoiceLineRm>());
+        }
+    }
+
+    private sealed class ObjectStoreSharedContext<TMarker>(
+        string dbPath,
+        string archivePath,
+        ObjectStoreOptions objectStore) : DbContext
+    {
+        public DbSet<SharedRootA> RootAs => Set<SharedRootA>();
+        public DbSet<SharedRootB> RootBs => Set<SharedRootB>();
+        public DbSet<ObjectSharedChild> SharedChildren => Set<ObjectSharedChild>();
+        public DbSet<ObjectSharedChildRm> SharedHistory => Set<ObjectSharedChildRm>();
+        public string ModelKey => archivePath + "|" + typeof(TMarker).Name;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+        {
+            options.UseDuckDB($"Data Source={dbPath}");
+            options.AddInterceptors(new HttpfsSetupInterceptor(objectStore));
+            options.ReplaceService<IModelCacheKeyFactory, ObjectStoreModelCacheKeyFactory>();
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<SharedRootA>(builder =>
+            {
+                builder.ToTable("object_root_a");
+                builder.HasKey(root => root.Id);
+                builder.HasMany(root => root.Children)
+                    .WithOne(child => child.RootA)
+                    .HasForeignKey(child => child.RootAId);
+            });
+            modelBuilder.Entity<SharedRootB>(builder =>
+            {
+                builder.ToTable("object_root_b");
+                builder.HasKey(root => root.Id);
+                builder.HasMany(root => root.Children)
+                    .WithOne(child => child.RootB)
+                    .HasForeignKey(child => child.RootBId);
+            });
+            modelBuilder.Entity<ObjectSharedChild>(builder =>
+            {
+                builder.ToTable("object_shared_children");
+                builder.HasKey(child => child.Id);
+            });
+            modelBuilder.ToTieredStore<SharedRootB>(
+                    root => root.ArchivedAt,
+                    archivePath + "/b",
+                    controlKey: "object-root-b")
+                .WithReadModel<SharedRootBRm>()
+                .Including<ObjectSharedChild>(
+                    root => root.Children,
+                    child => child.WithReadModel<ObjectSharedChildRm>());
+            modelBuilder.ToTieredStore<SharedRootA>(
+                    root => root.ArchivedAt,
+                    archivePath + "/a",
+                    controlKey: "object-root-a")
+                .WithReadModel<SharedRootARm>()
+                .Including<ObjectSharedChild>(
+                    root => root.Children,
+                    child => child.WithReadModel<ObjectSharedChildRm>());
         }
     }
 

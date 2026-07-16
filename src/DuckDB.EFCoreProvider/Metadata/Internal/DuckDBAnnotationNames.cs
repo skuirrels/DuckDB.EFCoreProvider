@@ -75,6 +75,12 @@ public static class DuckDBAnnotationNames
     public const string TieredStoreParentNavigation = Prefix + "TieredStore:ParentNavigation";
 
     /// <summary>
+    ///     The serialized deterministic relationship bindings through which a child participates in one or more
+    ///     tiered-storage aggregates. Internal API.
+    /// </summary>
+    public const string TieredStoreBindings = Prefix + "TieredStore:Bindings";
+
+    /// <summary>
     ///     Whether child union views include the "root is hot" semijoin guard (default <see langword="true" />).
     ///     Internal API.
     /// </summary>

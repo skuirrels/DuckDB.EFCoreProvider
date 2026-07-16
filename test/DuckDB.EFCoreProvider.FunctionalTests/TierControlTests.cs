@@ -23,6 +23,19 @@ public sealed class TierControlTests
         => Assert.Equal(new DateTime(2024, 3, 17), DuckDBTierControl.AlignCutoff(new DateTime(2024, 3, 17, 9, 30, 0), TierGranularity.Day));
 
     [Fact]
+    public void TierStorageCapability_preserves_existing_numeric_values()
+    {
+        Assert.Equal(0, (int)TierStorageCapability.Scheme);
+        Assert.Equal(1, (int)TierStorageCapability.ExtensionInstalled);
+        Assert.Equal(2, (int)TierStorageCapability.ExtensionLoaded);
+        Assert.Equal(3, (int)TierStorageCapability.List);
+        Assert.Equal(4, (int)TierStorageCapability.Read);
+        Assert.Equal(5, (int)TierStorageCapability.Write);
+        Assert.Equal(6, (int)TierStorageCapability.Delete);
+        Assert.Equal(7, (int)TierStorageCapability.BindingOwnership);
+    }
+
+    [Fact]
     public void ViewSql_hot_only_selects_only_the_hot_table()
     {
         var sql = DuckDBTierControl.ViewSql(Sql, "events_tiered", "events", null, Columns, ["Id"], "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: false);
@@ -263,6 +276,74 @@ public sealed class TierControlTests
             "WHERE CAST(p.\"InvoiceDate_month\" AS DATE) < "
             + "(SELECT watermark FROM __duckdb_tier_control WHERE name = 'invoices')",
             sql);
+    }
+
+    [Fact]
+    public void SharedChildViewSql_unions_each_root_archive_but_reads_the_hot_table_once()
+    {
+        var sql = DuckDBTierControl.SharedChildViewSql(
+            Sql,
+            "events_tiered",
+            "events",
+            null,
+            ["Id", "RootAId", "RootBId"],
+            ["Id"],
+            [
+                new DuckDBTierControl.TierChildViewBinding(
+                    "binding-b",
+                    [new DuckDBTierControl.TierJoinHop("RootBId", "root_b", null, "Id")],
+                    "ArchivedAt",
+                    "root-b",
+                    "archive/b/events",
+                    TierGranularity.Month,
+                    IncludeCold: true,
+                    IncludeHotChildFilter: true,
+                    RootPartitions: [],
+                    ArchiveFiles: null),
+                new DuckDBTierControl.TierChildViewBinding(
+                    "binding-a",
+                    [new DuckDBTierControl.TierJoinHop("RootAId", "root_a", null, "Id")],
+                    "ArchivedAt",
+                    "root-a",
+                    "archive/a/events",
+                    TierGranularity.Month,
+                    IncludeCold: true,
+                    IncludeHotChildFilter: true,
+                    RootPartitions: [],
+                    ArchiveFiles: null),
+            ]);
+
+        Assert.Equal(1, sql.Split("FROM events AS h", StringSplitOptions.None).Length - 1);
+        Assert.Contains("read_parquet('archive/a/events/**/*.parquet'", sql);
+        Assert.Contains("read_parquet('archive/b/events/**/*.parquet'", sql);
+        Assert.True(
+            sql.IndexOf("archive/a/events", StringComparison.Ordinal)
+            < sql.IndexOf("archive/b/events", StringComparison.Ordinal));
+        Assert.Contains("h.\"RootAId\" IN (SELECT r0.\"Id\" FROM root_a AS r0", sql);
+        Assert.Contains("h.\"RootBId\" IN (SELECT r0.\"Id\" FROM root_b AS r0", sql);
+        Assert.Contains("OR (NOT EXISTS (SELECT 1 FROM cold AS c WHERE c.\"Id\" = h.\"Id\"))", sql);
+    }
+
+    [Fact]
+    public void AmbiguousChildBindingCountSql_counts_rows_reachable_from_more_than_one_root()
+    {
+        var sql = DuckDBTierControl.AmbiguousChildBindingCountSql(
+            Sql,
+            "events",
+            null,
+            [
+                new DuckDBTierControl.TierOwnershipBinding(
+                    "binding-b",
+                    [new DuckDBTierControl.TierJoinHop("RootBId", "root_b", null, "Id")]),
+                new DuckDBTierControl.TierOwnershipBinding(
+                    "binding-a",
+                    [new DuckDBTierControl.TierJoinHop("RootAId", "root_a", null, "Id")]),
+            ]);
+
+        Assert.Contains("CASE WHEN EXISTS", sql);
+        Assert.Contains("root_a", sql);
+        Assert.Contains("root_b", sql);
+        Assert.EndsWith("> 1;", sql);
     }
 
     [Fact]

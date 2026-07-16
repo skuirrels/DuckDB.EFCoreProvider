@@ -37,7 +37,9 @@ public static class DuckDBTieredStoreExtensions
     /// <param name="timestamp">The temporal property that partitions the aggregate between hot and cold.</param>
     /// <param name="archivePath">The root directory of the cold Parquet archive.</param>
     /// <param name="granularity">The archive partition granularity. Defaults to <see cref="TierGranularity.Month" />.</param>
-    /// <param name="controlKey">The tier control-table key. Defaults to the root table name.</param>
+    /// <param name="controlKey">
+    ///     The tier control-table key. Defaults to the root table name and must be unique across configured roots.
+    /// </param>
     /// <returns>A builder for declaring the read model and aggregate children.</returns>
     public static TieredStoreBuilder<TRoot> ToTieredStore<TRoot>(
         this ModelBuilder modelBuilder,
@@ -106,7 +108,12 @@ public static class DuckDBTieredStoreExtensions
         entity.Metadata.SetAnnotation(DuckDBAnnotationNames.TieredStoreGranularity, granularity.ToString());
         entity.Metadata.SetAnnotation(DuckDBAnnotationNames.TieredStoreControlKey, key);
 
-        return new TieredStoreBuilder<TRoot>(modelBuilder, entity.Metadata, archivePath, key);
+        return new TieredStoreBuilder<TRoot>(
+            modelBuilder,
+            entity.Metadata,
+            archivePath,
+            key,
+            DuckDBTieredStoreBinding.CreateRootBindingId(entity.Metadata.Name, key));
     }
 
     internal static void MapReadModel(ModelBuilder modelBuilder, IMutableEntityType hot, Type readModel)
@@ -117,23 +124,46 @@ public static class DuckDBTieredStoreExtensions
         modelBuilder.Entity(readModel).HasNoKey().ToView(view);
     }
 
-    internal static IMutableEntityType AddChild(
+    internal static (IMutableEntityType Entity, TieredStoreBinding Binding) AddChild(
         ModelBuilder modelBuilder,
         IMutableEntityType parent,
         IMutableEntityType root,
         Type childClrType,
         string navigationName,
         string archivePath,
-        string controlKey)
+        string controlKey,
+        string parentBindingId)
     {
         var child = modelBuilder.Entity(childClrType).Metadata;
+        var binding = new TieredStoreBinding(
+            DuckDBTieredStoreBinding.CreateChildBindingId(
+                root.Name,
+                controlKey,
+                parentBindingId,
+                parent.Name,
+                navigationName,
+                child.Name),
+            root.Name,
+            parent.Name,
+            navigationName,
+            parentBindingId,
+            archivePath,
+            controlKey);
+        var bindings = child.GetTieredStoreBindings().ToList();
+        var existing = bindings.FindIndex(candidate => candidate.BindingId == binding.BindingId);
+        if (existing >= 0)
+        {
+            bindings[existing] = binding;
+        }
+        else
+        {
+            bindings.Add(binding);
+        }
+
+        child.SetTieredStoreBindings(bindings);
         child.SetAnnotation(DuckDBAnnotationNames.TieredStoreRole, "Child");
-        child.SetAnnotation(DuckDBAnnotationNames.TieredStoreParent, parent.Name);
-        child.SetAnnotation(DuckDBAnnotationNames.TieredStoreRoot, root.Name);
-        child.SetAnnotation(DuckDBAnnotationNames.TieredStoreParentNavigation, navigationName);
-        child.SetAnnotation(DuckDBAnnotationNames.TieredStoreArchivePath, archivePath);
-        child.SetAnnotation(DuckDBAnnotationNames.TieredStoreControlKey, controlKey);
-        return child;
+        SetCompatibleBindingAnnotations(child, bindings);
+        return (child, binding);
     }
 
     /// <summary>Gets the tiered-storage role (<c>Root</c>/<c>Child</c>) of an entity, or <see langword="null" />.</summary>
@@ -142,7 +172,9 @@ public static class DuckDBTieredStoreExtensions
 
     /// <summary>Gets the cold-archive root directory for a tiered entity, or <see langword="null" />.</summary>
     public static string? GetTieredStoreArchivePath(this IReadOnlyEntityType entityType)
-        => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreArchivePath)?.Value as string;
+        => entityType.GetTieredStoreRole() == "Child"
+            ? entityType.GetSingleTieredStoreBinding()?.ArchivePath
+            : entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreArchivePath)?.Value as string;
 
     /// <summary>Gets the temporal property name of a tiered root, or <see langword="null" />.</summary>
     public static string? GetTieredStoreTimestamp(this IReadOnlyEntityType entityType)
@@ -180,19 +212,64 @@ public static class DuckDBTieredStoreExtensions
 
     /// <summary>Gets the tier control-table key for a tiered entity, or <see langword="null" />.</summary>
     public static string? GetTieredStoreControlKey(this IReadOnlyEntityType entityType)
-        => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreControlKey)?.Value as string;
+        => entityType.GetTieredStoreRole() == "Child"
+            ? entityType.GetSingleTieredStoreBinding()?.ControlKey
+            : entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreControlKey)?.Value as string;
 
     /// <summary>Gets the immediate parent hot entity name of a tiered child, or <see langword="null" />.</summary>
     public static string? GetTieredStoreParent(this IReadOnlyEntityType entityType)
-        => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreParent)?.Value as string;
+        => entityType.GetSingleTieredStoreBinding()?.ParentEntityName;
 
     /// <summary>Gets the aggregate-root hot entity name of a tiered child, or <see langword="null" />.</summary>
     public static string? GetTieredStoreRoot(this IReadOnlyEntityType entityType)
-        => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreRoot)?.Value as string;
+        => entityType.GetSingleTieredStoreBinding()?.RootEntityName;
 
     /// <summary>Gets the parent navigation name that points to a tiered child, or <see langword="null" />.</summary>
     public static string? GetTieredStoreParentNavigation(this IReadOnlyEntityType entityType)
-        => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreParentNavigation)?.Value as string;
+        => entityType.GetSingleTieredStoreBinding()?.ParentNavigationName;
+
+    /// <summary>
+    ///     Gets every deterministic tiered-storage relationship binding configured for a child entity. Roots and
+    ///     non-tiered entities return an empty list.
+    /// </summary>
+    public static IReadOnlyList<TieredStoreBinding> GetTieredStoreBindings(this IReadOnlyEntityType entityType)
+    {
+        var configured = DuckDBTieredStoreBinding.Deserialize(
+            entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreBindings)?.Value as string);
+        if (configured.Count > 0)
+        {
+            return configured.OrderBy(binding => binding.BindingId, StringComparer.Ordinal).ToArray();
+        }
+
+        if (entityType.GetTieredStoreRole() != "Child"
+            || entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreRoot)?.Value is not string root
+            || entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreParent)?.Value is not string parent
+            || entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreParentNavigation)?.Value is not string navigation
+            || entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreArchivePath)?.Value is not string archivePath
+            || entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreControlKey)?.Value is not string controlKey)
+        {
+            return [];
+        }
+
+        var parentBindingId = DuckDBTieredStoreBinding.CreateRootBindingId(root, controlKey);
+        return
+        [
+            new TieredStoreBinding(
+                DuckDBTieredStoreBinding.CreateChildBindingId(
+                    root,
+                    controlKey,
+                    parentBindingId,
+                    parent,
+                    navigation,
+                    entityType.Name),
+                root,
+                parent,
+                navigation,
+                parentBindingId,
+                archivePath,
+                controlKey),
+        ];
+    }
 
     /// <summary>
     ///     Gets whether child union views include the "root is hot" semijoin guard. Defaults to
@@ -229,6 +306,13 @@ public static class DuckDBTieredStoreExtensions
         entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreMatchKey, JsonSerializer.Serialize(properties));
         entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreMatchKeyUniqueness, uniqueness.ToString());
     }
+
+    internal static void SetTieredStoreBindings(
+        this IMutableEntityType entityType,
+        IReadOnlyList<TieredStoreBinding> bindings)
+        => entityType.SetAnnotation(
+            DuckDBAnnotationNames.TieredStoreBindings,
+            DuckDBTieredStoreBinding.Serialize(bindings));
 
     internal static string GetPropertyName<TEntity, TValue>(Expression<Func<TEntity, TValue>> expression)
         => GetDirectMember(
@@ -293,4 +377,22 @@ public static class DuckDBTieredStoreExtensions
         }
             ? operand
             : expression;
+
+    private static TieredStoreBinding? GetSingleTieredStoreBinding(this IReadOnlyEntityType entityType)
+    {
+        var bindings = entityType.GetTieredStoreBindings();
+        return bindings.Count == 1 ? bindings[0] : null;
+    }
+
+    private static void SetCompatibleBindingAnnotations(
+        IMutableEntityType entityType,
+        IReadOnlyList<TieredStoreBinding> bindings)
+    {
+        var binding = bindings.OrderBy(candidate => candidate.BindingId, StringComparer.Ordinal).First();
+        entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreParent, binding.ParentEntityName);
+        entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreRoot, binding.RootEntityName);
+        entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreParentNavigation, binding.ParentNavigationName);
+        entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreArchivePath, binding.ArchivePath);
+        entityType.SetAnnotation(DuckDBAnnotationNames.TieredStoreControlKey, binding.ControlKey);
+    }
 }

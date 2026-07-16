@@ -161,6 +161,13 @@ public static partial class DuckDBArchiveExtensions
             var stage = TierArchiveStage.Preflight;
             try
             {
+                await ThrowIfAmbiguousSharedBindingsAsync(
+                        connection,
+                        sql,
+                        aggregate,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
                 var sources = new Dictionary<DuckDBTierNode, string>();
                 foreach (var node in aggregate.Nodes)
                 {
@@ -267,7 +274,15 @@ public static partial class DuckDBArchiveExtensions
             {
                 throw;
             }
-            catch (Exception exception) when (exception is not TierArchiveOperationException)
+            catch (TierAmbiguousBindingException)
+            {
+                throw;
+            }
+            catch (TierArchiveOperationException)
+            {
+                throw;
+            }
+            catch (Exception exception)
             {
                 throw new TierArchiveOperationException(
                     stage,
