@@ -227,15 +227,28 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     /// </remarks>
     /// <param name="extension">The DuckDB extension name.</param>
     public virtual DuckDBDbContextOptionsBuilder LoadExtension(string extension)
+        => LoadExtension(extension, DuckDBExtensionLoadMode.InstallAndLoad);
+
+    /// <summary>Configures a DuckDB extension using an explicit installation/loading mode.</summary>
+    /// <param name="extension">The DuckDB extension name.</param>
+    /// <param name="mode">Whether the provider installs and loads, only loads, or leaves setup to the caller.</param>
+    public virtual DuckDBDbContextOptionsBuilder LoadExtension(
+        string extension,
+        DuckDBExtensionLoadMode mode)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(extension);
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
+        }
+
         if (!char.IsAsciiLetter(extension[0])
             || extension.Any(character => !char.IsAsciiLetterOrDigit(character) && character != '_'))
         {
             throw new ArgumentException("DuckDB extension names may contain only ASCII letters, digits, and underscores.", nameof(extension));
         }
 
-        return WithOption(e => e.WithExtension(extension));
+        return WithOption(e => e.WithExtension(extension, mode));
     }
 
     /// <summary>

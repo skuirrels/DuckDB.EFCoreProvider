@@ -148,6 +148,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.MigrationLockTimeout(TimeSpan.FromMinutes(10))` | Maximum wait for the migrations lock before failing with guidance (use `Timeout.InfiniteTimeSpan` to wait forever). | 5 minutes |
 | `.EnableMigrationTableRebuilds()` | Opt in to rebuilding tables for constraint changes DuckDB cannot apply in place. | off |
 | `.LoadExtension("httpfs")` | Install and load a DuckDB extension whenever the connection opens. | none |
+| `.LoadExtension("httpfs", DuckDBExtensionLoadMode.LoadOnly)` | Load a preinstalled extension without downloading it; `CallerManaged` records the dependency without running SQL. | install and load |
 | `.ConfigureConnection(connection => …)` | Run provider-owned connection setup after extensions load; intended for `CREATE SECRET` and similar setup. | none |
 | `.UseNetTopologySuite()` | Enable spatial support (requires the `DuckDB.EFCoreProvider.NTS` package). | off |
 | `.MaxBatchSize(n)` | Tune the batching merge size (standard EF Core option). | 100 |
@@ -196,16 +197,16 @@ Use `UseAutoIncrement()` for DuckDB-backed generated integer keys. The provider 
 using DuckDB.EFCoreProvider.Extensions;
 using Microsoft.EntityFrameworkCore;
 
-public class OrdersContext : DbContext
+public class InvoicesContext : DbContext
 {
-    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<Invoice> Invoices => Set<Invoice>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
-        => options.UseDuckDB("Data Source=orders.duckdb");
+        => options.UseDuckDB("Data Source=invoices.duckdb");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Order>(entity =>
+        modelBuilder.Entity<Invoice>(entity =>
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).UseAutoIncrement();
@@ -214,7 +215,7 @@ public class OrdersContext : DbContext
     }
 }
 
-public class Order
+public class Invoice
 {
     public int Id { get; set; }
     public required string CustomerReference { get; set; }
@@ -229,8 +230,8 @@ Map an entity directly to a file (or glob pattern) and DuckDB reads it as a tabl
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
 
-[FromParquet("data/orders/*.parquet")]
-public class OrderSnapshot
+[FromParquet("data/invoices/*.parquet")]
+public class InvoiceSnapshot
 {
     public int Id { get; set; }
     public required string CustomerReference { get; set; }
@@ -252,7 +253,7 @@ public class AuditEvent
 
 public class AnalyticsContext : DbContext
 {
-    public DbSet<OrderSnapshot> OrderSnapshots => Set<OrderSnapshot>();
+    public DbSet<InvoiceSnapshot> InvoiceSnapshots => Set<InvoiceSnapshot>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
@@ -268,7 +269,7 @@ using DuckDB.EFCoreProvider.Extensions;
 
 protected override void OnModelCreating(ModelBuilder modelBuilder)
 {
-    modelBuilder.Entity<OrderSnapshot>().FromParquet("data/orders/*.parquet");
+    modelBuilder.Entity<InvoiceSnapshot>().FromParquet("data/invoices/*.parquet");
     modelBuilder.Entity<Customer>().FromCsv("data/customers.csv");
     modelBuilder.Entity<AuditEvent>().FromJsonFile("data/events.json");
 }
@@ -322,8 +323,9 @@ public class BillingContext : DbContext
 }
 ```
 
-The lifecycle selector may target `DateTime?`; `NULL` roots and their children remain permanently hot until the
-application supplies a date. When the source system's stable identity differs from an EF surrogate primary key,
+The lifecycle selector may target `DateTime`, `DateOnly`, or their nullable forms; `NULL` roots
+and their children remain permanently hot until the application supplies a date. When the source system's stable
+identity differs from an EF surrogate primary key,
 add `.MatchBy(i => i.EdcId)` on the root and, independently, a single or anonymous-object composite key on each
 included child that needs it. Match keys require a declared EF key/unique index unless the application explicitly
 uses `TierMatchKeyUniqueness.ExternallyEnforced`; archiveable key values must still be non-null. See the
@@ -365,7 +367,22 @@ db.Database.EnsureCreated();                 // creates the control table + hot/
 // Move invoices older than one year from hot DuckDB tables to cold Parquet.
 // On successful return, the archived Invoices and InvoiceLines have been deleted from DuckDB.
 var archiveCutoff = DateTime.UtcNow.AddYears(-1);
-var result = await db.Database.ArchiveTierAsync<Invoice>(archiveCutoff);
+var result = await db.Database.ArchiveTierAsync<Invoice>(
+    archiveCutoff,
+    new TierArchiveOptions
+    {
+        Writer = new TierParquetWriterOptions
+        {
+            Compression = "zstd",
+            CompressionLevel = 5,
+            RowGroupSize = 122_880,
+        },
+        Manifest = new TierManifestOptions
+        {
+            Detail = TierManifestDetail.RepresentativeFiles,
+            MaxFilesPerNode = 10,
+        },
+    });
 
 foreach (var node in result.Nodes)
 {
@@ -376,6 +393,44 @@ foreach (var node in result.Nodes)
 
 // After validating late rows or corrections below the watermark, publish a new immutable cold generation.
 var reconciliation = await db.Database.ReconcileArchiveTierAsync<Invoice>();
+
+// Limit an approved correction to exact configured root match keys.
+var scoped = await db.Database.ReconcileArchiveTierAsync<Invoice>(
+    new TierReconciliationOptions
+    {
+        Scope = TierMaintenanceScope.ForRootMatchKeys(
+            TierRowIdentity.For<Invoice>(
+                new Dictionary<string, object?> { ["EdcId"] = invoiceEdcId })),
+    });
+
+// Explicitly remove a provider row; absence from a hot collection is never interpreted as deletion.
+var deleted = await db.Database.ReconcileArchiveTierAsync<Invoice>(
+    new TierReconciliationOptions
+    {
+        Tombstones =
+        [
+            TierRowIdentity.For<InvoiceLine>(
+                new Dictionary<string, object?>
+                {
+                    ["InvoiceEdcId"] = invoiceEdcId,
+                    ["LineNumber"] = lineNumber,
+                }),
+        ],
+    });
+
+// Restore one archived aggregate graph to mapped hot tables without changing domain values.
+var restored = await db.Database.RestoreArchiveTierAsync<Invoice>(
+    new TierRestoreOptions
+    {
+        Scope = TierMaintenanceScope.ForRootMatchKeys(
+            TierRowIdentity.For<Invoice>(
+                new Dictionary<string, object?> { ["EdcId"] = invoiceEdcId })),
+    });
+
+// Operational diagnostics stay bounded.
+var conflicts = await db.Database.GetArchiveConflictsAsync<Invoice>(offset: 0, limit: 100);
+var inventory = await db.Database.GetArchiveGenerationInventoryAsync<Invoice>();
+var preflight = await db.Database.PreflightTieredStorageAsync<Invoice>();
 
 // Invoices: hot only, with their InvoiceLines. Parquet is not queried.
 var hotInvoices = await db.Invoices
@@ -434,8 +489,10 @@ Conflict handling is deliberately conservative:
 - Reconciliation is a key-wise upsert. An absent hot child is not treated as a deletion; child removal needs an
   explicit tombstone or authoritative full-snapshot contract.
 
-`ArchiveTierAsync` and `ReconcileArchiveTierAsync` must run outside an application transaction. Their Parquet
-writes are external side effects and cannot be rolled back with a DuckDB transaction.
+`ArchiveTierAsync`, `ReconcileArchiveTierAsync`, and `RestoreArchiveTierAsync` must run outside an application
+transaction. Their Parquet writes are external side effects and cannot be rolled back with a DuckDB transaction.
+Restore nevertheless commits its hot-table inserts and active-generation metadata/view switch in one internal
+DuckDB transaction; a failed publication leaves the previous generation active and rolls the hot inserts back.
 
 #### Archiving versus purging
 

@@ -2,6 +2,21 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.7.0
+
+- Add technically bounded reconciliation by configured root match keys or declared partition values, together with
+  caller-supplied root/child tombstones. The provider validates the supplied identities and never infers deletion
+  from an absent collection.
+- Add idempotent cold-to-hot restoration of selected roots and declared children, bounded/streaming conflict-key
+  diagnostics, and immutable full-generation Parquet compaction.
+- Add archive-contract inspection, fingerprinted rewrite planning, explicit column source/constant mappings, and
+  verified immutable contract migration without opening incompatible files silently.
+- Support composite child foreign keys plus `DateOnly` and nullable `DateOnly` lifecycle selectors.
+- Add strongly typed Parquet writer controls, bounded manifest evidence, persisted generation/node/file catalogues,
+  read-only generation inventory and cleanup planning, catalogue-backed remote file discovery, and non-secret
+  storage capability preflight.
+- Add explicit extension provisioning modes: install-and-load, load-only/preinstalled, and caller-managed.
+
 ## 1.6.0
 
 - Support nullable tier lifecycle properties, including lifecycle partition transforms. `NULL` roots and their

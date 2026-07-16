@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
@@ -7,6 +8,8 @@ using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -52,6 +55,21 @@ public sealed class TierArchivedKeyConflictException : InvalidOperationException
 /// </remarks>
 public static partial class DuckDBArchiveExtensions
 {
+    private static readonly HashSet<string> KnownArchiveSchemes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "file",
+        "s3",
+        "gs",
+        "gcs",
+        "r2",
+        "http",
+        "https",
+        "azure",
+        "az",
+        "abfs",
+        "abfss",
+    };
+
     /// <summary>
     ///     Creates the tier control table and the union view for every configured tiered table (roots and
     ///     children) that has a read model, if they do not already exist. Called automatically by
@@ -103,13 +121,26 @@ public static partial class DuckDBArchiveExtensions
     ///     (root and all declared children), advances the watermark, refreshes the views, and deletes the
     ///     archived rows leaf→root. Idempotent and crash-safe.
     /// </summary>
-    public static async Task<TierArchiveResult> ArchiveTierAsync<TRoot>(
+    public static Task<TierArchiveResult> ArchiveTierAsync<TRoot>(
         this DatabaseFacade database,
         DateTime cutoff,
         CancellationToken cancellationToken = default)
         where TRoot : class
+        => database.ArchiveTierAsync<TRoot>(cutoff, new TierArchiveOptions(), cancellationToken);
+
+    /// <summary>
+    ///     Offloads an archive window using explicit provider-owned Parquet writer and manifest controls.
+    /// </summary>
+    public static async Task<TierArchiveResult> ArchiveTierAsync<TRoot>(
+        this DatabaseFacade database,
+        DateTime cutoff,
+        TierArchiveOptions options,
+        CancellationToken cancellationToken = default)
+        where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
         var (context, sql, archiveFileProbe, failureInjector) = Services(database);
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
@@ -157,7 +188,8 @@ public static partial class DuckDBArchiveExtensions
                 from,
                 windowEnd,
                 activeArchiveBasePath,
-                revision);
+                revision,
+                options.Manifest);
             CaptureArchiveFiles(connection, archiveFileProbe, aggregate, manifest);
             var stage = TierArchiveStage.Preflight;
 
@@ -211,7 +243,7 @@ public static partial class DuckDBArchiveExtensions
                         EnsureLocalArchiveDirectory(nodeArchivePath);
                         await ExecuteNonQueryAsync(
                                 connection,
-                                CopySql(sql, aggregate, node, nodeArchivePath, from, aligned),
+                                CopySql(sql, aggregate, node, nodeArchivePath, from, aligned, options.Writer),
                                 cancellationToken)
                             .ConfigureAwait(false);
                     }
@@ -241,8 +273,11 @@ public static partial class DuckDBArchiveExtensions
                             node,
                             copied,
                             archiveFileProbe.HasArchiveFiles(connection, nodeArchivePath)
-                                ? archiveFileProbe.GetArchiveFiles(connection, nodeArchivePath)
-                                : []);
+                                ? archiveFileProbe.GetArchiveFileSummary(
+                                    connection,
+                                    nodeArchivePath,
+                                    manifest.ManifestOptions)
+                                : new DuckDBArchiveFileSummary(0, 0, [], IsTruncated: false));
                     }
 
                     stage = TierArchiveStage.Copy;
@@ -299,12 +334,25 @@ public static partial class DuckDBArchiveExtensions
     ///     watermark win by the configured stable match key, so approved corrections and unseen late rows are
     ///     incorporated without overwriting the active Parquet files in place.
     /// </summary>
+    public static Task<TierArchiveResult> ReconcileArchiveTierAsync<TRoot>(
+        this DatabaseFacade database,
+        CancellationToken cancellationToken = default)
+        where TRoot : class
+        => database.ReconcileArchiveTierAsync<TRoot>(new TierReconciliationOptions(), cancellationToken);
+
+    /// <summary>
+    ///     Rebuilds the published cold range using an explicit technical scope, caller-authorised tombstones,
+    ///     Parquet writer controls, and bounded manifest evidence.
+    /// </summary>
     public static async Task<TierArchiveResult> ReconcileArchiveTierAsync<TRoot>(
         this DatabaseFacade database,
+        TierReconciliationOptions options,
         CancellationToken cancellationToken = default)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
         if (database.CurrentTransaction is not null)
         {
             throw new InvalidOperationException(
@@ -314,6 +362,12 @@ public static partial class DuckDBArchiveExtensions
         var (context, sql, archiveFileProbe, failureInjector) = Services(database);
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
+        var boundary = DuckDBTierMaintenanceBoundary.Create(
+            sql,
+            aggregate,
+            options.Scope,
+            options.Tombstones,
+            options.OmitScopeFromCold);
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
         var connection = (DuckDBConnection)database.GetDbConnection();
         try
@@ -334,7 +388,8 @@ public static partial class DuckDBArchiveExtensions
                     DateTime.MinValue,
                     DateTime.MinValue,
                     activeArchiveBasePath,
-                    currentRevision);
+                    currentRevision,
+                    options.Manifest);
                 CaptureArchiveFiles(connection, archiveFileProbe, aggregate, empty);
                 return empty.Build(DateTime.MinValue, noOp: true, TierArchiveStage.Completed);
             }
@@ -348,7 +403,8 @@ public static partial class DuckDBArchiveExtensions
                 DateTime.MinValue,
                 watermark.Value,
                 replacementBasePath,
-                revision);
+                revision,
+                options.Manifest);
             var stage = TierArchiveStage.Preflight;
             try
             {
@@ -361,7 +417,10 @@ public static partial class DuckDBArchiveExtensions
                             DuckDBTierControl.RootLifecycleChangeCountSql(
                                 sql, aggregate.Root.Table, aggregate.Root.Schema, aggregate.Root.KeyColumns,
                                 aggregate.RootTimestampColumn, activeRootPath, watermark.Value,
-                                aggregate.RootPartitions),
+                                aggregate.RootPartitions,
+                                CombineAnd(
+                                    boundary.RootScopePredicate("h"),
+                                    Negate(boundary.RootTombstonePredicate("h")))),
                             cancellationToken)
                         .ConfigureAwait(false);
                     if (lifecycleChanges > 0)
@@ -377,16 +436,46 @@ public static partial class DuckDBArchiveExtensions
                 var hotRows = 0L;
                 foreach (var node in aggregate.Nodes)
                 {
+                    var hotSource = node.IsRoot
+                        ? DuckDBTierControl.ReconcileRootSourceSql(
+                            sql,
+                            node.Table,
+                            node.Schema,
+                            node.Columns,
+                            node.KeyColumns,
+                            aggregate.RootTimestampColumn,
+                            string.Empty,
+                            aggregate.Granularity,
+                            watermark.Value,
+                            false,
+                            aggregate.RootPartitions,
+                            boundary.RootScopePredicate("h"),
+                            boundary.DirectTombstonePredicate(node, "h"))
+                        : DuckDBTierControl.ReconcileChildSourceSql(
+                            sql,
+                            node.Table,
+                            node.Schema,
+                            node.Columns,
+                            node.KeyColumns,
+                            node.ChainToRoot,
+                            aggregate.RootTimestampColumn,
+                            string.Empty,
+                            aggregate.Granularity,
+                            watermark.Value,
+                            false,
+                            aggregate.RootPartitions,
+                            boundary.RootScopePredicate("t" + node.ChainToRoot.Count.ToString(CultureInfo.InvariantCulture)),
+                            boundary.DirectTombstonePredicate(node, "t0"),
+                            boundary.RootTombstonePredicate(
+                                "t" + node.ChainToRoot.Count.ToString(CultureInfo.InvariantCulture)));
                     hotRows += await ExecuteCountAsync(
                             connection,
-                            DuckDBTierControl.HotWindowCountSql(
-                                sql, node.Table, node.Schema, node.ChainToRoot, aggregate.RootTimestampColumn,
-                                DateTime.MinValue, watermark.Value),
+                            DuckDBTierControl.ReconcileSourceCountSql(hotSource),
                             cancellationToken)
                         .ConfigureAwait(false);
                 }
 
-                if (hotRows == 0)
+                if (hotRows == 0 && !boundary.HasTombstones && !options.ForceRewrite)
                 {
                     RegenerateViews(connection, sql, archiveFileProbe, aggregate, activeArchiveBasePath);
                     var noOp = new DuckDBTierArchiveManifest(
@@ -396,7 +485,8 @@ public static partial class DuckDBArchiveExtensions
                         DateTime.MinValue,
                         watermark.Value,
                         activeArchiveBasePath,
-                        currentRevision);
+                        currentRevision,
+                        options.Manifest);
                     CaptureArchiveFiles(connection, archiveFileProbe, aggregate, noOp);
                     return noOp.Build(watermark.Value, noOp: true, TierArchiveStage.Completed);
                 }
@@ -414,11 +504,23 @@ public static partial class DuckDBArchiveExtensions
                         ? DuckDBTierControl.ReconcileRootSourceSql(
                             sql, node.Table, node.Schema, node.Columns, node.KeyColumns,
                             aggregate.RootTimestampColumn, activeNodePath, aggregate.Granularity,
-                            watermark.Value, includeCold, aggregate.RootPartitions)
+                            watermark.Value, includeCold, aggregate.RootPartitions,
+                            boundary.RootScopePredicate("h"),
+                            boundary.DirectTombstonePredicate(node, "h"),
+                            boundary.DirectTombstonePredicate(node, "c"))
                         : DuckDBTierControl.ReconcileChildSourceSql(
                             sql, node.Table, node.Schema, node.Columns, node.KeyColumns, node.ChainToRoot,
                             aggregate.RootTimestampColumn, activeNodePath, aggregate.Granularity,
-                            watermark.Value, includeCold, aggregate.RootPartitions);
+                            watermark.Value, includeCold, aggregate.RootPartitions,
+                            boundary.RootScopePredicate(
+                                "t" + node.ChainToRoot.Count.ToString(CultureInfo.InvariantCulture)),
+                            boundary.DirectTombstonePredicate(node, "t0"),
+                            boundary.RootTombstonePredicate(
+                                "t" + node.ChainToRoot.Count.ToString(CultureInfo.InvariantCulture)),
+                            boundary.DirectTombstonePredicate(node, "c"),
+                            boundary.RootTombstonePredicate(
+                                "r" + (node.ChainToRoot.Count - 1).ToString(CultureInfo.InvariantCulture)),
+                            activeArchiveBasePath);
                     sources[node] = source;
                     manifest.SetSelected(
                         node,
@@ -441,10 +543,10 @@ public static partial class DuckDBArchiveExtensions
                     var copySql = node.IsRoot
                         ? DuckDBTierControl.ReconcileRootCopySql(
                             sql, sources[node], node.Columns, aggregate.RootTimestampColumn,
-                            replacementNodePath, aggregate.Granularity, aggregate.RootPartitions)
+                            replacementNodePath, aggregate.Granularity, aggregate.RootPartitions, options.Writer)
                         : DuckDBTierControl.ReconcileChildCopySql(
                             sql, sources[node], replacementNodePath, aggregate.Granularity,
-                            aggregate.RootPartitions);
+                            aggregate.RootPartitions, options.Writer);
                     await ExecuteNonQueryAsync(connection, copySql, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -468,7 +570,12 @@ public static partial class DuckDBArchiveExtensions
                     manifest.SetCopied(
                         node,
                         copied,
-                        copied == 0 ? [] : archiveFileProbe.GetArchiveFiles(connection, nodePath));
+                        copied == 0
+                            ? new DuckDBArchiveFileSummary(0, 0, [], IsTruncated: false)
+                            : archiveFileProbe.GetArchiveFileSummary(
+                                connection,
+                                nodePath,
+                                manifest.ManifestOptions));
                 }
 
                 stage = TierArchiveStage.Copy;
@@ -476,16 +583,24 @@ public static partial class DuckDBArchiveExtensions
                 stage = TierArchiveStage.Publish;
                 await PublishArchiveAsync(
                         connection, sql, archiveFileProbe, aggregate, replacementBasePath, revision,
-                        watermark.Value, useInternalTransaction: true, cancellationToken)
+                        watermark.Value, useInternalTransaction: !options.UseExistingTransaction, cancellationToken)
                     .ConfigureAwait(false);
                 failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterPublication, table: null);
-                stage = TierArchiveStage.DeleteHot;
-                await DeleteAggregateAsync(
-                        connection, sql, archiveFileProbe, failureInjector, aggregate, manifest, watermark.Value,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                stage = TierArchiveStage.Checkpoint;
-                await ExecuteNonQueryAsync(connection, "CHECKPOINT;", cancellationToken).ConfigureAwait(false);
+                if (boundary.IsUnbounded)
+                {
+                    stage = TierArchiveStage.DeleteHot;
+                    await DeleteAggregateAsync(
+                            connection, sql, archiveFileProbe, failureInjector, aggregate, manifest, watermark.Value,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                if (!options.UseExistingTransaction)
+                {
+                    stage = TierArchiveStage.Checkpoint;
+                    await ExecuteNonQueryAsync(connection, "CHECKPOINT;", cancellationToken).ConfigureAwait(false);
+                }
+
                 return manifest.Build(watermark.Value, noOp: false, TierArchiveStage.Completed);
             }
             catch (OperationCanceledException)
@@ -514,15 +629,414 @@ public static partial class DuckDBArchiveExtensions
         }
     }
 
-    /// <summary>Synchronous version of <see cref="ReconcileArchiveTierAsync{TRoot}" />.</summary>
+    /// <summary>Synchronous version of <c>ReconcileArchiveTierAsync</c>.</summary>
     public static TierArchiveResult ReconcileArchiveTier<TRoot>(this DatabaseFacade database)
         where TRoot : class
         => database.ReconcileArchiveTierAsync<TRoot>().GetAwaiter().GetResult();
 
-    /// <summary>Synchronous version of <see cref="ArchiveTierAsync{TRoot}" />.</summary>
+    /// <summary>Synchronous reconciliation with explicit maintenance options.</summary>
+    public static TierArchiveResult ReconcileArchiveTier<TRoot>(
+        this DatabaseFacade database,
+        TierReconciliationOptions options)
+        where TRoot : class
+        => database.ReconcileArchiveTierAsync<TRoot>(options).GetAwaiter().GetResult();
+
+    /// <summary>Synchronous version of <c>ArchiveTierAsync</c>.</summary>
     public static TierArchiveResult ArchiveTier<TRoot>(this DatabaseFacade database, DateTime cutoff)
         where TRoot : class
         => database.ArchiveTierAsync<TRoot>(cutoff).GetAwaiter().GetResult();
+
+    /// <summary>Synchronous forward archive with explicit writer and manifest options.</summary>
+    public static TierArchiveResult ArchiveTier<TRoot>(
+        this DatabaseFacade database,
+        DateTime cutoff,
+        TierArchiveOptions options)
+        where TRoot : class
+        => database.ArchiveTierAsync<TRoot>(cutoff, options).GetAwaiter().GetResult();
+
+    /// <summary>
+    ///     Returns read-only provider evidence for active, previously published, and locally discoverable
+    ///     unpublished archive generations. No cleanup or retention decision is made.
+    /// </summary>
+    public static async Task<TierArchiveGenerationInventory> GetArchiveGenerationInventoryAsync<TRoot>(
+        this DatabaseFacade database,
+        int representativeFiles = 25,
+        CancellationToken cancellationToken = default)
+        where TRoot : class
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        if (representativeFiles <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(representativeFiles),
+                representativeFiles,
+                "The representative-file limit must be greater than zero.");
+        }
+
+        var (context, sql, archiveFileProbe, _) = Services(database);
+        var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
+            ?? throw NotConfigured(typeof(TRoot));
+        var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
+        var connection = (DuckDBConnection)database.GetDbConnection();
+        try
+        {
+            var hasControlTable = await TableExistsAsync(
+                    connection,
+                    DuckDBTierControl.ControlTable,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var watermark = hasControlTable
+                ? ReadWatermark(connection, sql, aggregate.ControlKey)
+                : null;
+            var activePath = hasControlTable
+                             && await TableColumnExistsAsync(
+                                     connection,
+                                     DuckDBTierControl.ControlTable,
+                                     "active_archive_path",
+                                     cancellationToken)
+                                 .ConfigureAwait(false)
+                ? ReadActiveArchiveBasePath(connection, sql, aggregate)
+                : aggregate.ArchiveBasePath;
+            var activeGenerationId = watermark is null
+                ? string.Empty
+                : hasControlTable
+                  && await TableColumnExistsAsync(
+                          connection,
+                          DuckDBTierControl.ControlTable,
+                          "archive_revision",
+                          cancellationToken)
+                      .ConfigureAwait(false)
+                    ? ReadArchiveRevision(connection, sql, aggregate.ControlKey) ?? "base"
+                    : "base";
+            var generations = new List<TierArchiveGenerationInfo>();
+            var recordedIds = new HashSet<string>(StringComparer.Ordinal);
+            var recorded = new List<(string Id, string Path, DateTime Watermark, DateTime CreatedAt, long Files, long Bytes)>();
+
+            var hasGenerationCatalogue = await TableExistsAsync(
+                    connection,
+                    DuckDBTierControl.GenerationTable,
+                    cancellationToken)
+                .ConfigureAwait(false)
+                && await TableExistsAsync(
+                        connection,
+                        DuckDBTierControl.GenerationNodeTable,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                && await TableExistsAsync(
+                        connection,
+                        DuckDBTierControl.GenerationFileTable,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            if (hasGenerationCatalogue)
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = DuckDBTierControl.ReadGenerationInventorySql(sql, aggregate.ControlKey);
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var generationId = reader.GetString(0);
+                    recordedIds.Add(generationId);
+                    recorded.Add((
+                        generationId,
+                        reader.GetString(1),
+                        reader.GetDateTime(2),
+                        reader.GetDateTime(3),
+                        reader.GetInt64(4),
+                        reader.GetInt64(5)));
+                }
+            }
+
+            foreach (var generation in recorded)
+            {
+                var files = await ReadGenerationFilesAsync(
+                        connection,
+                        sql,
+                        aggregate.ControlKey,
+                        generation.Id,
+                        representativeFiles,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                generations.Add(new TierArchiveGenerationInfo(
+                    generation.Id,
+                    generation.Id == activeGenerationId
+                        ? TierArchiveGenerationState.Active
+                        : TierArchiveGenerationState.Published,
+                    generation.Path,
+                    generation.Watermark,
+                    generation.CreatedAt,
+                    generation.Files,
+                    generation.Bytes,
+                    files));
+            }
+
+            if (watermark is { } activeWatermark && !recordedIds.Contains(activeGenerationId))
+            {
+                long fileCount = 0;
+                long totalBytes = 0;
+                var files = new List<string>();
+                foreach (var node in aggregate.Nodes)
+                {
+                    var nodePath = DuckDBTierArchiveManifest.NodeArchivePath(activePath, node.Table);
+                    if (!archiveFileProbe.HasArchiveFiles(connection, nodePath))
+                    {
+                        continue;
+                    }
+
+                    var summary = archiveFileProbe.GetArchiveFileSummary(
+                        connection,
+                        nodePath,
+                        new TierManifestOptions
+                        {
+                            Detail = TierManifestDetail.RepresentativeFiles,
+                            MaxFilesPerNode = representativeFiles,
+                        });
+                    fileCount += summary.FileCount;
+                    totalBytes += summary.TotalBytes;
+                    files.AddRange(summary.Files.Take(Math.Max(0, representativeFiles - files.Count)));
+                }
+
+                generations.Add(new TierArchiveGenerationInfo(
+                    activeGenerationId,
+                    TierArchiveGenerationState.Active,
+                    activePath,
+                    activeWatermark,
+                    DateTime.MinValue,
+                    fileCount,
+                    totalBytes,
+                    files));
+            }
+
+            AddLocalUnpublishedCandidates(
+                aggregate,
+                watermark ?? DateTime.MinValue,
+                activeGenerationId,
+                recordedIds,
+                representativeFiles,
+                generations);
+            return new TierArchiveGenerationInventory(
+                aggregate.ControlKey,
+                activeGenerationId,
+                generations.OrderByDescending(generation => generation.CreatedAtUtc).ToArray());
+        }
+        finally
+        {
+            await CloseTrackedAsync(database, openedHere).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Synchronous version of <c>GetArchiveGenerationInventoryAsync</c>.</summary>
+    public static TierArchiveGenerationInventory GetArchiveGenerationInventory<TRoot>(
+        this DatabaseFacade database,
+        int representativeFiles = 25)
+        where TRoot : class
+        => database.GetArchiveGenerationInventoryAsync<TRoot>(representativeFiles).GetAwaiter().GetResult();
+
+    /// <summary>
+    ///     Creates a read-only cleanup plan for caller-selected non-active generations. The application remains
+    ///     responsible for retention, legal hold, and object-store deletion policy.
+    /// </summary>
+    public static async Task<TierArchiveCleanupPlan> PlanArchiveGenerationCleanupAsync<TRoot>(
+        this DatabaseFacade database,
+        IEnumerable<string> generationIds,
+        CancellationToken cancellationToken = default)
+        where TRoot : class
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(generationIds);
+        var selected = generationIds
+            .Select(id => id?.Trim())
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Cast<string>()
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (selected.Length == 0)
+        {
+            throw new ArgumentException("At least one generation identifier is required.", nameof(generationIds));
+        }
+
+        var inventory = await database.GetArchiveGenerationInventoryAsync<TRoot>(
+                representativeFiles: 1,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var byId = inventory.Generations.ToDictionary(generation => generation.GenerationId, StringComparer.Ordinal);
+        var candidates = new List<TierArchiveCleanupCandidate>(selected.Length);
+        foreach (var generationId in selected)
+        {
+            if (!byId.TryGetValue(generationId, out var generation))
+            {
+                throw new InvalidOperationException(
+                    $"Archive generation '{generationId}' is not present in provider inventory.");
+            }
+
+            if (generation.State == TierArchiveGenerationState.Active)
+            {
+                throw new InvalidOperationException(
+                    $"Archive generation '{generationId}' is active and cannot be a cleanup candidate.");
+            }
+
+            candidates.Add(new TierArchiveCleanupCandidate(
+                generation.GenerationId,
+                generation.State,
+                generation.ArchivePath,
+                generation.FileCount,
+                generation.TotalBytes));
+        }
+
+        var fingerprintInput = inventory.ControlKey + "\n"
+                               + inventory.ActiveGenerationId + "\n"
+                               + string.Join(
+                                   "\n",
+                                   candidates.Select(candidate =>
+                                       $"{candidate.GenerationId}|{candidate.State}|{candidate.ArchivePath}|"
+                                       + $"{candidate.FileCount}|{candidate.TotalBytes}"));
+        return new TierArchiveCleanupPlan(
+            inventory.ControlKey,
+            inventory.ActiveGenerationId,
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintInput))),
+            candidates);
+    }
+
+    /// <summary>
+    ///     Checks non-secret storage capabilities for a configured tiered aggregate. The default is read-only;
+    ///     no credentials, secret definitions, or signed URLs are returned.
+    /// </summary>
+    public static async Task<TierStoragePreflightResult> PreflightTieredStorageAsync<TRoot>(
+        this DatabaseFacade database,
+        TierStoragePreflightOptions? options = null,
+        CancellationToken cancellationToken = default)
+        where TRoot : class
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        options ??= new TierStoragePreflightOptions();
+        var (context, _, _, _) = Services(database);
+        var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
+            ?? throw NotConfigured(typeof(TRoot));
+        var scheme = ArchiveScheme(aggregate.ArchiveBasePath);
+        var capabilities = new List<TierStorageCapabilityResult>();
+        var knownScheme = KnownArchiveSchemes.Contains(scheme);
+        capabilities.Add(new TierStorageCapabilityResult(
+            TierStorageCapability.Scheme,
+            knownScheme,
+            knownScheme
+                ? $"Archive scheme '{scheme}' is supported."
+                : $"Archive scheme '{scheme}' is not recognised by tiered storage."));
+
+        var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
+        var connection = (DuckDBConnection)database.GetDbConnection();
+        try
+        {
+            var requiredExtensions = RequiredArchiveExtensions(scheme);
+            if (requiredExtensions.Count == 0)
+            {
+                capabilities.Add(new TierStorageCapabilityResult(
+                    TierStorageCapability.ExtensionInstalled,
+                    true,
+                    "No external storage extension is required for this scheme."));
+                capabilities.Add(new TierStorageCapabilityResult(
+                    TierStorageCapability.ExtensionLoaded,
+                    true,
+                    "No external storage extension is required for this scheme."));
+            }
+            else
+            {
+                foreach (var extension in requiredExtensions)
+                {
+                    var installed = ReadExtensionState(connection, extension, "installed");
+                    var loaded = ReadExtensionState(connection, extension, "loaded");
+                    capabilities.Add(new TierStorageCapabilityResult(
+                        TierStorageCapability.ExtensionInstalled,
+                        installed,
+                        $"DuckDB extension '{extension}' is {(installed ? "installed" : "not installed")}."));
+                    capabilities.Add(new TierStorageCapabilityResult(
+                        TierStorageCapability.ExtensionLoaded,
+                        loaded,
+                        $"DuckDB extension '{extension}' is {(loaded ? "loaded" : "not loaded")}."));
+                }
+            }
+
+            long listedFiles;
+            var listingSucceeded = false;
+            try
+            {
+                listedFiles = Convert.ToInt64(
+                    await ExecuteScalarAsync(
+                            connection,
+                            $"SELECT count(*) FROM glob('{DuckDBTierControl.ReadGlob(aggregate.ArchiveBasePath).Replace("'", "''")}');",
+                            cancellationToken)
+                        .ConfigureAwait(false),
+                    CultureInfo.InvariantCulture);
+                listingSucceeded = true;
+                capabilities.Add(new TierStorageCapabilityResult(
+                    TierStorageCapability.List,
+                    true,
+                    $"Archive prefix listing succeeded and found {listedFiles} Parquet object(s)."));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                listedFiles = 0;
+                capabilities.Add(new TierStorageCapabilityResult(
+                    TierStorageCapability.List,
+                    false,
+                    "Archive prefix listing failed: " + RedactDiagnosticMessage(exception)));
+            }
+
+            if (listedFiles == 0)
+            {
+                capabilities.Add(new TierStorageCapabilityResult(
+                    TierStorageCapability.Read,
+                    false,
+                    listingSucceeded
+                        ? "Read capability was not tested because no existing Parquet object was available."
+                        : "Read capability was not tested because archive prefix listing failed.")
+                {
+                    WasTested = false,
+                });
+            }
+            else
+            {
+                try
+                {
+                    await ExecuteScalarAsync(
+                            connection,
+                            $"SELECT 1 FROM read_parquet('{DuckDBTierControl.ReadGlob(aggregate.ArchiveBasePath).Replace("'", "''")}', "
+                            + "hive_partitioning = true, union_by_name = true) LIMIT 1;",
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    capabilities.Add(new TierStorageCapabilityResult(
+                        TierStorageCapability.Read,
+                        true,
+                        "An existing Parquet object was read successfully."));
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    capabilities.Add(new TierStorageCapabilityResult(
+                        TierStorageCapability.Read,
+                        false,
+                        "Archive read failed: " + RedactDiagnosticMessage(exception)));
+                }
+            }
+
+            if (options.ProbeWriteAndDelete)
+            {
+                await ProbeWriteAndDeleteAsync(
+                        connection,
+                        aggregate.ArchiveBasePath,
+                        capabilities,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await CloseTrackedAsync(database, openedHere).ConfigureAwait(false);
+        }
+
+        return new TierStoragePreflightResult(
+            scheme,
+            RedactArchivePath(aggregate.ArchiveBasePath),
+            capabilities);
+    }
 
     /// <summary>
     ///     Deletes cold-archive partitions of the whole aggregate whose period is before <paramref name="olderThan" />
@@ -577,14 +1091,15 @@ public static partial class DuckDBArchiveExtensions
         DuckDBTierNode node,
         string archivePath,
         DateTime from,
-        DateTime cutoff)
+        DateTime cutoff,
+        TierParquetWriterOptions writerOptions)
         => node.IsRoot
             ? DuckDBTierControl.ArchiveCopySql(
                 sql, node.Table, node.Schema, node.Columns, aggregate.RootTimestampColumn, archivePath,
-                aggregate.Granularity, from, cutoff, aggregate.RootPartitions)
+                aggregate.Granularity, from, cutoff, aggregate.RootPartitions, writerOptions)
             : DuckDBTierControl.ArchiveChildCopySql(
                 sql, node.Table, node.Schema, node.Columns, node.ChainToRoot, aggregate.RootTimestampColumn,
-                archivePath, aggregate.Granularity, from, cutoff, aggregate.RootPartitions);
+                archivePath, aggregate.Granularity, from, cutoff, aggregate.RootPartitions, writerOptions);
 
     private static void RegenerateViews(
         DuckDBConnection connection,
@@ -594,6 +1109,7 @@ public static partial class DuckDBArchiveExtensions
         string activeArchiveBasePath)
     {
         var hasWatermark = ReadWatermark(connection, sql, aggregate.ControlKey) is not null;
+        var activeGenerationId = ReadArchiveRevision(connection, sql, aggregate.ControlKey) ?? "base";
 
         foreach (var node in aggregate.Nodes)
         {
@@ -604,15 +1120,23 @@ public static partial class DuckDBArchiveExtensions
 
             var archivePath = DuckDBTierArchiveManifest.NodeArchivePath(activeArchiveBasePath, node.Table);
             var includeCold = hasWatermark && archiveFileProbe.HasArchiveFiles(connection, archivePath);
+            var cataloguedFiles = includeCold && IsRemoteArchive(archivePath)
+                ? ReadCataloguedNodeFiles(
+                    connection,
+                    sql,
+                    aggregate.ControlKey,
+                    activeGenerationId,
+                    node.Table)
+                : null;
             var viewSql = node.IsRoot
                 ? DuckDBTierControl.ViewSql(
                     sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns,
                     aggregate.RootTimestampColumn, aggregate.ControlKey, archivePath,
-                    aggregate.Granularity, includeCold, aggregate.RootPartitions)
+                    aggregate.Granularity, includeCold, aggregate.RootPartitions, cataloguedFiles)
                 : DuckDBTierControl.ChildViewSql(
                     sql, node.ViewName, node.Table, node.Schema, node.Columns, node.KeyColumns, node.ChainToRoot,
                     aggregate.RootTimestampColumn, aggregate.ControlKey, archivePath, aggregate.Granularity,
-                    includeCold, aggregate.IncludeHotChildFilter, aggregate.RootPartitions);
+                    includeCold, aggregate.IncludeHotChildFilter, aggregate.RootPartitions, cataloguedFiles);
             ExecuteNonQuery(connection, viewSql);
         }
     }
@@ -1042,7 +1566,12 @@ public static partial class DuckDBArchiveExtensions
             var archivePath = manifest.ArchivePath(node);
             if (archiveFileProbe.HasArchiveFiles(connection, archivePath))
             {
-                manifest.SetFiles(node, archiveFileProbe.GetArchiveFiles(connection, archivePath));
+                manifest.SetFileSummary(
+                    node,
+                    archiveFileProbe.GetArchiveFileSummary(
+                        connection,
+                        archivePath,
+                        manifest.ManifestOptions));
             }
         }
     }
@@ -1065,6 +1594,59 @@ public static partial class DuckDBArchiveExtensions
 
         try
         {
+            var generationId = revision ?? "base";
+            await ExecuteNonQueryAsync(
+                    connection,
+                    DuckDBTierControl.UpsertArchiveSpecSql(
+                        sql,
+                        aggregate.ControlKey,
+                        aggregate.Root.ArchiveSubPath,
+                        aggregate.ArchiveSpec),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await ExecuteNonQueryAsync(
+                    connection,
+                    DuckDBTierControl.UpsertGenerationSql(
+                        sql,
+                        aggregate.ControlKey,
+                        generationId,
+                        activeArchiveBasePath,
+                        watermark,
+                        DateTime.UtcNow,
+                        aggregate.ArchiveSpec,
+                        aggregate.PartitionSpec),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            foreach (var node in aggregate.Nodes)
+            {
+                var archivePath = DuckDBTierArchiveManifest.NodeArchivePath(activeArchiveBasePath, node.Table);
+                var hasFiles = archiveFileProbe.HasArchiveFiles(connection, archivePath);
+                await ExecuteNonQueryAsync(
+                        connection,
+                        DuckDBTierControl.UpsertGenerationNodeSql(
+                            sql,
+                            aggregate.ControlKey,
+                            generationId,
+                            node.Entity.Name,
+                            node.Table,
+                            node.Schema,
+                            archivePath,
+                            hasFiles),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                await ExecuteNonQueryAsync(
+                        connection,
+                        DuckDBTierControl.ReplaceGenerationFilesSql(
+                            sql,
+                            aggregate.ControlKey,
+                            generationId,
+                            node.Table,
+                            archivePath,
+                            hasFiles),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             await ExecuteNonQueryAsync(
                     connection,
                     DuckDBTierControl.PublishArchiveSql(
@@ -1123,6 +1705,241 @@ public static partial class DuckDBArchiveExtensions
            + "-"
            + Guid.NewGuid().ToString("N");
 
+    private static async Task<IReadOnlyList<string>> ReadGenerationFilesAsync(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        string controlKey,
+        string generationId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = DuckDBTierControl.ReadGenerationFilesSql(
+            sql,
+            controlKey,
+            generationId,
+            limit);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var files = new List<string>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            files.Add(reader.GetString(0));
+        }
+
+        return files;
+    }
+
+    private static string ArchiveScheme(string archivePath)
+    {
+        var match = RemoteArchiveSchemeRegex().Match(archivePath);
+        return match.Success
+            ? archivePath[..archivePath.IndexOf("://", StringComparison.Ordinal)].ToLowerInvariant()
+            : "file";
+    }
+
+    private static IReadOnlyList<string> RequiredArchiveExtensions(string scheme)
+        => scheme.ToLowerInvariant() switch
+        {
+            "s3" or "gs" or "gcs" or "r2" or "http" or "https" => ["httpfs"],
+            "azure" or "az" or "abfs" or "abfss" => ["azure"],
+            _ => [],
+        };
+
+    private static bool ReadExtensionState(
+        DuckDBConnection connection,
+        string extension,
+        string stateColumn)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT {stateColumn} FROM duckdb_extensions() "
+                              + $"WHERE extension_name = '{extension.Replace("'", "''")}';";
+        var result = command.ExecuteScalar();
+        return result is not null and not DBNull && Convert.ToBoolean(result, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task ProbeWriteAndDeleteAsync(
+        DuckDBConnection connection,
+        string archiveBasePath,
+        ICollection<TierStorageCapabilityResult> capabilities,
+        CancellationToken cancellationToken)
+    {
+        if (IsRemoteArchive(archiveBasePath))
+        {
+            capabilities.Add(new TierStorageCapabilityResult(
+                TierStorageCapability.Write,
+                false,
+                "A remote write probe was not attempted because DuckDB exposes no storage-neutral object delete operation."));
+            capabilities.Add(new TierStorageCapabilityResult(
+                TierStorageCapability.Delete,
+                false,
+                "Remote deletion must be validated through the consuming application's object-store control plane."));
+            return;
+        }
+
+        var directory = Path.Combine(
+            archiveBasePath,
+            "_preflight",
+            Guid.NewGuid().ToString("N"));
+        var file = Path.Combine(directory, "probe.parquet");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            await ExecuteNonQueryAsync(
+                    connection,
+                    $"COPY (SELECT 1 AS provider_probe) TO '{file.Replace("'", "''")}' (FORMAT PARQUET);",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            capabilities.Add(new TierStorageCapabilityResult(
+                TierStorageCapability.Write,
+                File.Exists(file),
+                File.Exists(file)
+                    ? "A disposable local Parquet probe was written successfully."
+                    : "DuckDB completed the write command but the local probe file was not visible."));
+
+            File.Delete(file);
+            Directory.Delete(directory, recursive: true);
+            capabilities.Add(new TierStorageCapabilityResult(
+                TierStorageCapability.Delete,
+                !File.Exists(file),
+                !File.Exists(file)
+                    ? "The disposable local probe was deleted successfully."
+                    : "The disposable local probe remains after deletion."));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            capabilities.Add(new TierStorageCapabilityResult(
+                TierStorageCapability.Write,
+                false,
+                "Disposable local write failed: " + RedactDiagnosticMessage(exception)));
+            capabilities.Add(new TierStorageCapabilityResult(
+                TierStorageCapability.Delete,
+                false,
+                "Disposable local cleanup could not be verified."));
+            try
+            {
+                if (Directory.Exists(directory))
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+            }
+            catch
+            {
+                // Preserve the original preflight result. The unique _preflight directory is deliberately
+                // isolated so the application can remove it without touching archive data.
+            }
+        }
+    }
+
+    private static string RedactArchivePath(string archivePath)
+    {
+        if (!IsRemoteArchive(archivePath))
+        {
+            return archivePath;
+        }
+
+        if (!Uri.TryCreate(archivePath, UriKind.Absolute, out var uri))
+        {
+            var separator = archivePath.IndexOf("://", StringComparison.Ordinal);
+            return separator < 0
+                ? "[REDACTED_URI]"
+                : archivePath[..(separator + 3)] + "[REDACTED]";
+        }
+
+        var authority = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
+        return $"{uri.Scheme}://{authority}{uri.AbsolutePath}";
+    }
+
+    private static string OneLineMessage(Exception exception)
+        => exception.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+
+    internal static string RedactDiagnosticMessage(Exception exception)
+        => UriTokenRegex().Replace(
+            OneLineMessage(exception),
+            match =>
+            {
+                var token = match.Value;
+                return Uri.TryCreate(token, UriKind.Absolute, out var uri)
+                    ? RedactArchivePath(uri.GetLeftPart(UriPartial.Path))
+                    : "[REDACTED_URI]";
+            });
+
+    private static string? CombineAnd(params string?[] predicates)
+    {
+        var selected = predicates.Where(predicate => !string.IsNullOrWhiteSpace(predicate)).ToArray();
+        return selected.Length == 0
+            ? null
+            : string.Join(" AND ", selected.Select(predicate => $"({predicate})"));
+    }
+
+    private static string? Negate(string? predicate)
+        => string.IsNullOrWhiteSpace(predicate) ? null : $"NOT ({predicate})";
+
+    private static IReadOnlyList<string>? ReadCataloguedNodeFiles(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        string controlKey,
+        string generationId,
+        string table)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = DuckDBTierControl.ReadGenerationFilesSql(
+            sql,
+            controlKey,
+            generationId,
+            int.MaxValue,
+            table);
+        using var reader = command.ExecuteReader();
+        var files = new List<string>();
+        while (reader.Read())
+        {
+            files.Add(reader.GetString(0));
+        }
+
+        return files.Count == 0 ? null : files;
+    }
+
+    private static void AddLocalUnpublishedCandidates(
+        DuckDBTierAggregate aggregate,
+        DateTime watermark,
+        string activeGenerationId,
+        IReadOnlySet<string> recordedIds,
+        int representativeFiles,
+        ICollection<TierArchiveGenerationInfo> generations)
+    {
+        if (IsRemoteArchive(aggregate.ArchiveBasePath))
+        {
+            return;
+        }
+
+        var revisionsPath = Path.Combine(aggregate.ArchiveBasePath, "_revisions");
+        if (!Directory.Exists(revisionsPath))
+        {
+            return;
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(revisionsPath))
+        {
+            var generationId = Path.GetFileName(directory);
+            if (generationId == activeGenerationId || recordedIds.Contains(generationId))
+            {
+                continue;
+            }
+
+            var files = Directory.EnumerateFiles(directory, "*.parquet", SearchOption.AllDirectories)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            generations.Add(new TierArchiveGenerationInfo(
+                generationId,
+                TierArchiveGenerationState.UnpublishedCandidate,
+                directory,
+                watermark,
+                Directory.GetCreationTimeUtc(directory),
+                files.LongLength,
+                files.Sum(file => new FileInfo(file).Length),
+                files.Take(representativeFiles).ToArray()));
+        }
+    }
+
     private static void EnsureLocalArchiveDirectory(string archivePath)
     {
         if (!IsRemoteArchive(archivePath))
@@ -1149,6 +1966,9 @@ public static partial class DuckDBArchiveExtensions
 
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9+.-]*://")]
     private static partial Regex RemoteArchiveSchemeRegex();
+
+    [GeneratedRegex("[A-Za-z][A-Za-z0-9+.-]*://[^\\s'\"\\)\\]]+")]
+    private static partial Regex UriTokenRegex();
 
     private static int PurgePartitions(string archivePath, DuckDBTierAggregate aggregate, DateTime cutoff)
     {
@@ -1338,4 +2158,35 @@ public static partial class DuckDBArchiveExtensions
         var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return result is DBNull ? null : result;
     }
+
+    private static async Task<bool> TableExistsAsync(
+        DuckDBConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+        => Convert.ToInt64(
+                await ExecuteScalarAsync(
+                        connection,
+                        "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_database() "
+                        + "AND schema_name = current_schema() AND table_name = "
+                        + $"'{table.Replace("'", "''")}';",
+                        cancellationToken)
+                    .ConfigureAwait(false),
+                CultureInfo.InvariantCulture)
+            > 0;
+
+    private static async Task<bool> TableColumnExistsAsync(
+        DuckDBConnection connection,
+        string table,
+        string column,
+        CancellationToken cancellationToken)
+        => Convert.ToInt64(
+                await ExecuteScalarAsync(
+                        connection,
+                        "SELECT count(*) FROM duckdb_columns() WHERE database_name = current_database() "
+                        + "AND schema_name = current_schema() AND table_name = "
+                        + $"'{table.Replace("'", "''")}' AND column_name = '{column.Replace("'", "''")}';",
+                        cancellationToken)
+                    .ConfigureAwait(false),
+                CultureInfo.InvariantCulture)
+            > 0;
 }

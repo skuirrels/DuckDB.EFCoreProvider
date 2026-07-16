@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.6.0</PackageVersion>
-    <FileVersion>1.6.0</FileVersion>
-    <Version>1.6.0</Version>
+    <PackageVersion>1.7.0</PackageVersion>
+    <FileVersion>1.7.0</FileVersion>
+    <Version>1.7.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
@@ -21,6 +21,12 @@
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
     <PackageValidationBaselineVersion>1.5.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.7.0
+- Add generic scoped reconciliation, explicit root/child tombstones, cold-to-hot aggregate restoration, bounded conflict diagnostics, and immutable full-generation compaction.
+- Add archive-contract inspection, fingerprinted rewrite plans, caller-supplied column mappings, verified immutable contract rewrites, and composite child foreign-key traversal.
+- Add strongly typed Parquet writer controls, summary/representative manifests, persisted generation/file inventory, read-only cleanup planning, remote catalogue-backed active file discovery, and storage capability preflight.
+- Add install-and-load, load-only, and caller-managed extension provisioning modes plus DateOnly lifecycle selectors.
+
 1.6.0
 - Support nullable tier lifecycle properties and nullable lifecycle partition transforms; NULL aggregates remain hot until completed and eligible.
 - Add configurable MatchBy(...) keys on roots and children, including composite keys and explicit externally-enforced uniqueness, with persisted archive-contract compatibility checks.

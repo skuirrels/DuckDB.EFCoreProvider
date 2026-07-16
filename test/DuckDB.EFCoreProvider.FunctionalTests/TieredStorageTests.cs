@@ -290,7 +290,7 @@ public sealed class TieredStorageTests : IDisposable
 
         var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
 
-        Assert.Contains("is not DateTime, DateTimeOffset, or DateOnly", exception.Message);
+        Assert.Contains("is not DateTime or DateOnly", exception.Message);
     }
 
     [Fact]
@@ -688,6 +688,46 @@ public sealed class TieredStorageTests : IDisposable
             Assert.Equal(18, all.Count);
             Assert.All(all.Where(i => i.Id <= 5), i => Assert.Null(i.Note)); // the 5 archived (cold) invoices
         }
+    }
+
+    [Fact]
+    public async Task Nullable_column_contract_change_can_be_planned_and_rewritten_immutably()
+    {
+        var dbPath = Path.Combine(_root, "contract-rewrite.duckdb");
+        var archivePath = Path.Combine(_root, "contract-rewrite-archive");
+        using (var original = new InvoiceContext(dbPath, archivePath))
+        {
+            original.Database.EnsureCreated();
+            original.Invoices.Add(new Invoice
+            {
+                CustomerId = 7,
+                InvoiceDate = new DateTime(2024, 1, 15),
+            });
+            original.SaveChanges();
+            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        }
+
+        using var evolved = new EvolvedContext(dbPath, archivePath);
+        evolved.Database.ExecuteSqlRaw("ALTER TABLE invoices ADD COLUMN \"Note\" TEXT;");
+        var inspection = await evolved.Database.InspectArchiveContractAsync<InvoiceV2>();
+
+        var difference = Assert.Single(inspection.Differences, item =>
+            item.Kind == TierArchiveContractDifferenceKind.ColumnAdded);
+        Assert.Equal("Note", difference.Column);
+        Assert.True(inspection.IsCompatible);
+
+        var plan = await evolved.Database.PlanArchiveContractRewriteAsync<InvoiceV2>(
+            new TierArchiveRewriteOptions());
+        var result = await evolved.Database.RewriteArchiveContractAsync<InvoiceV2>(plan);
+
+        Assert.Equal(TierArchiveOperation.RewriteContract, result.Operation);
+        Assert.NotNull(result.Revision);
+        Assert.Null(evolved.InvoiceHistory.Single().Note);
+        var afterRewrite = await evolved.Database.InspectArchiveContractAsync<InvoiceV2>();
+        Assert.True(afterRewrite.IsCompatible);
+        Assert.Empty(afterRewrite.Differences);
+        var laterMaintenance = await evolved.Database.CompactArchiveTierAsync<InvoiceV2>();
+        Assert.Equal(TierArchiveOperation.Compact, laterMaintenance.Operation);
     }
 
     private void ReinsertArchivedIntoHot(InvoiceContext context)

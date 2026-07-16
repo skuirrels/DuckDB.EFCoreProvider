@@ -78,10 +78,10 @@ public class BillingContext : DbContext
 
 **Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (here,
 `i => i.InvoiceDate`). It governs that aggregate's entire hot/cold boundary and is chosen **per aggregate**, so
-`Invoice` can tier on `InvoiceDate`, `Order` on `PlacedUtc`, `AuditEvent` on `OccurredOn` — each independent, each
+`Invoice` can tier on `InvoiceDate` and `AuditEvent` on `OccurredOn` — each independent, each
 with its own archive path.
 
-The lifecycle property may be `DateTime?`. A `NULL` value is never selected by `ArchiveTierAsync`, remains on
+The lifecycle property may be `DateTime`, `DateOnly`, or a nullable form. A `NULL` value is never selected by `ArchiveTierAsync`, remains on
 the hot side of every generated view, and can participate in `ByMonth` / `ByDay` partition declarations. Once
 the application populates it, a later forward archive run selects it when the value falls inside that run's
 half-open watermark window. A value populated behind an already-advanced watermark is late data and remains
@@ -133,7 +133,7 @@ also produces `CustomerId=42/InvoiceDate_month=2025-06-01/`. Use the builder whe
 must be explicit.
 
 Partition selectors must be direct mapped scalar properties on the aggregate root. Date transforms require
-`DateTime`, `DateTimeOffset`, or `DateOnly`. Child builders deliberately have no `PartitionBy` API: every included
+`DateTime` or `DateOnly`. Child builders deliberately have no `PartitionBy` API: every included
 child obtains the root values through the existing child-to-root join and uses the same hierarchy. Use stable
 identifiers and avoid high-cardinality keys that would create many small files. Exact Hive values are cast back to
 their mapped DuckDB store type; derived date buckets are stored as `DATE`.
@@ -259,6 +259,10 @@ between delete statements remains safe and a rerun removes leftovers.
 and deleted row counts; the archive window; active generation/revision; archive paths and visible Parquet files;
 no-op state; and the final workflow stage. A failure after preflight throws `TierArchiveOperationException`, whose
 `Stage` and `PartialResult` show how far the operation reached without including object-store credentials.
+Use `TierManifestOptions` to return summary-only evidence, a bounded representative set, or all paths. Writer
+controls are strongly typed through `TierParquetWriterOptions` (compression, compression level, row-group sizing,
+and partition-safe filename patterns). DuckDB's file-rotation and per-thread controls cannot be combined with the
+partitioned `COPY` used by tiered storage, so the provider does not expose them.
 
 ### Late rows, corrections, and reopened aggregates
 
@@ -297,8 +301,104 @@ also lives there after reconciliation and could otherwise be deleted.
 
 Reconciliation is a key-wise upsert, not an inferred graph deletion. A hot child replaces a cold child with the
 same configured match key, and a new hot child is added, but the absence of a hot child does not delete its cold
-representation. Do not use reconciliation to remove archived children until the application and provider define
-an explicit tombstone or authoritative full-snapshot contract.
+representation. When the application has authorised an actual deletion, supply exact configured match keys:
+
+```csharp
+await db.Database.ReconcileArchiveTierAsync<Invoice>(
+    new TierReconciliationOptions
+    {
+        Scope = TierMaintenanceScope.ForRootMatchKeys(
+            TierRowIdentity.For<Invoice>(
+                new Dictionary<string, object?> { ["InvoiceNumber"] = "INV-1001" })),
+        Tombstones =
+        [
+            TierRowIdentity.For<InvoiceLine>(
+                new Dictionary<string, object?>
+                {
+                    ["InvoiceNumber"] = "INV-1001",
+                    ["LineNumber"] = 2,
+                }),
+        ],
+    });
+```
+
+`Scope` may instead be a leading prefix of the declared root partition plan. Tombstones can identify roots or
+children; a root tombstone is propagated through the declared cold aggregate so the replacement generation stays
+graph-consistent. The provider validates technical identity and publication safety only—the application decides
+whether deletion is genuine and authorised.
+
+### Restoration, diagnostics, compaction, and contract migration
+
+Restore an exact root-key or declared-partition scope to the mapped hot tables before performing a domain state
+transition:
+
+```csharp
+TierRestoreResult restore = await db.Database.RestoreArchiveTierAsync<Invoice>(
+    new TierRestoreOptions
+    {
+        Scope = TierMaintenanceScope.ForRootMatchKeys(
+            TierRowIdentity.For<Invoice>(
+                new Dictionary<string, object?> { ["InvoiceNumber"] = "INV-1001" })),
+    });
+```
+
+The provider copies the root and declared children parents-first, rejects differing existing hot
+representations, and then publishes a replacement cold generation that omits exactly that root scope. The hot
+inserts and active-generation metadata/view switch commit in one internal DuckDB transaction; if publication
+fails, the hot inserts roll back and the previously active generation remains selected. The immutable Parquet
+candidate can remain unpublished for inventory and caller-controlled cleanup. Restore does not clear or otherwise
+change the lifecycle property.
+
+Operational reads are bounded:
+
+```csharp
+TierConflictPage conflicts =
+    await db.Database.GetArchiveConflictsAsync<Invoice>(offset: 0, limit: 100);
+
+TierArchiveGenerationInventory inventory =
+    await db.Database.GetArchiveGenerationInventoryAsync<Invoice>();
+
+TierArchiveCleanupPlan cleanup =
+    await db.Database.PlanArchiveGenerationCleanupAsync<Invoice>(selectedGenerationIds);
+
+TierStoragePreflightResult preflight =
+    await db.Database.PreflightTieredStorageAsync<Invoice>();
+```
+
+Inventory classifies the active generation, prior provider-published generations, and locally discoverable
+unpublished candidates. Cleanup planning is read-only: retention, legal hold, rollback depth, and actual object
+deletion remain application/deployment policy. For remote active generations, generated views use the provider's
+persisted exact file catalogue when available and fall back compatibly to recursive glob discovery.
+
+`CompactArchiveTierAsync` rewrites the complete active cold range into a verified immutable generation using new
+writer controls. Archive schema changes use a separate reviewable flow:
+
+```csharp
+TierArchiveContractInspection inspection =
+    await db.Database.InspectArchiveContractAsync<Invoice>();
+
+TierArchiveRewritePlan plan =
+    await db.Database.PlanArchiveContractRewriteAsync<Invoice>(
+        new TierArchiveRewriteOptions
+        {
+            Columns =
+            [
+                new TierArchiveColumnRewrite
+                {
+                    EntityType = typeof(Invoice),
+                    TargetProperty = nameof(Invoice.Currency),
+                    ConstantValue = "GBP",
+                },
+            ],
+        });
+
+TierArchiveResult migration =
+    await db.Database.RewriteArchiveContractAsync<Invoice>(plan);
+```
+
+Nullable additions need no mapping. Required additions, renamed/retyped columns, and nullability tightening require
+an explicit source column or constant. Aggregate-layout, match-key, lifecycle, path, granularity, and partition
+changes are rejected as ambiguous rather than inferred.
 
 ## 5. Retention
 
@@ -443,8 +543,8 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
 
 ## Production notes
 
-- **Single writer.** DuckDB allows one writer. Run `ArchiveTierAsync`, `ReconcileArchiveTierAsync`, and
-  `PurgeArchiveOlderThan` from the
+- **Single writer.** DuckDB allows one writer. Run archive, reconciliation, restoration, compaction, contract
+  rewrite, and `PurgeArchiveOlderThan` from the
   writing process with no other writer active (a maintenance window or the app's own scheduler).
 - **Absolute archive paths.** DuckDB resolves a relative archive path against the process working directory;
   prefer an absolute path in production. Each table archives under
@@ -459,7 +559,7 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
   column needs the affected archive migrated.
 - **Validation.** Missing/duplicate partition properties, non-date bucket transforms, an explicit plan without a
   safe lifecycle bucket, partitions declared anywhere except the aggregate root, physical-name collisions with
-  root or child columns, a child without a single-column foreign key to its declared parent, and overlapping
+  root or child columns, an invalid child foreign key to its declared parent, and overlapping
   aggregate archive paths are rejected at model validation. Changing partition order, transforms, granularity,
   archive path, match keys, include layout, mapped names, or mapped store types after cold files exist requires
   rewriting or clearing that aggregate's archive. The provider records the complete versioned partition and

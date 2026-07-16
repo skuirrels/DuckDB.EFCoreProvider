@@ -25,7 +25,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private string? _fileSearchPath;
     private TimeSpan? _migrationLockTimeout;
     private bool _migrationTableRebuilds;
-    private IReadOnlyList<string> _extensionsToLoad = [];
+    private IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions = [];
     private Action<DuckDBConnection>? _connectionInitializer;
     private DuckLakeOptions? _duckLakeOptions;
 
@@ -45,7 +45,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _fileSearchPath = copyFrom._fileSearchPath;
         _migrationLockTimeout = copyFrom._migrationLockTimeout;
         _migrationTableRebuilds = copyFrom._migrationTableRebuilds;
-        _extensionsToLoad = copyFrom._extensionsToLoad;
+        _configuredExtensions = copyFrom._configuredExtensions;
         _connectionInitializer = copyFrom._connectionInitializer;
         _duckLakeOptions = copyFrom._duckLakeOptions;
     }
@@ -138,8 +138,12 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     /// </summary>
     public virtual bool MigrationTableRebuilds => _migrationTableRebuilds;
 
-    /// <summary>DuckDB extensions installed and loaded whenever a provider-owned connection opens.</summary>
-    public virtual IReadOnlyList<string> ExtensionsToLoad => _extensionsToLoad;
+    /// <summary>DuckDB extension names configured for compatibility with the original one-mode API.</summary>
+    public virtual IReadOnlyList<string> ExtensionsToLoad
+        => _configuredExtensions.Select(extension => extension.Name).ToArray();
+
+    /// <summary>DuckDB extension dependencies and their connection-open modes.</summary>
+    public virtual IReadOnlyList<DuckDBExtensionConfiguration> ConfiguredExtensions => _configuredExtensions;
 
     /// <summary>An optional provider-owned connection initializer invoked after extensions are loaded.</summary>
     public virtual Action<DuckDBConnection>? ConnectionInitializer => _connectionInitializer;
@@ -255,11 +259,24 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
 
     /// <summary>Returns a copy that installs and loads the specified DuckDB extension.</summary>
     public virtual DuckDBOptionsExtension WithExtension(string extension)
+        => WithExtension(extension, DuckDBExtensionLoadMode.InstallAndLoad);
+
+    /// <summary>Returns a copy configured with the specified DuckDB extension and load mode.</summary>
+    public virtual DuckDBOptionsExtension WithExtension(
+        string extension,
+        DuckDBExtensionLoadMode mode)
     {
         var clone = (DuckDBOptionsExtension)Clone();
-        clone._extensionsToLoad = _extensionsToLoad.Contains(extension, StringComparer.OrdinalIgnoreCase)
-            ? _extensionsToLoad
-            : [.. _extensionsToLoad, extension];
+        var existing = Array.FindIndex(
+            _configuredExtensions.ToArray(),
+            configured => string.Equals(configured.Name, extension, StringComparison.OrdinalIgnoreCase));
+        clone._configuredExtensions = existing < 0
+            ? [.. _configuredExtensions, new DuckDBExtensionConfiguration(extension, mode)]
+            : _configuredExtensions.Select(
+                    (configured, index) => index == existing
+                        ? new DuckDBExtensionConfiguration(configured.Name, mode)
+                        : configured)
+                .ToArray();
         return clone;
     }
 
@@ -276,9 +293,16 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     {
         var clone = (DuckDBOptionsExtension)Clone();
         clone._duckLakeOptions = options;
-        clone._extensionsToLoad = clone._extensionsToLoad.Contains("ducklake", StringComparer.OrdinalIgnoreCase)
-            ? clone._extensionsToLoad
-            : [.. clone._extensionsToLoad, "ducklake"];
+        if (!clone._configuredExtensions.Any(
+                extension => string.Equals(extension.Name, "ducklake", StringComparison.OrdinalIgnoreCase)))
+        {
+            clone._configuredExtensions =
+            [
+                .. clone._configuredExtensions,
+                new DuckDBExtensionConfiguration("ducklake", DuckDBExtensionLoadMode.InstallAndLoad),
+            ];
+        }
+
         return clone;
     }
 

@@ -61,6 +61,29 @@ public static class DuckDBTieredStoreExtensions
         where TRoot : class
         => ConfigureTieredStore(modelBuilder, timestamp, archivePath, granularity, controlKey);
 
+    /// <summary>Marks an aggregate root using a <see cref="DateOnly" /> lifecycle property.</summary>
+    public static TieredStoreBuilder<TRoot> ToTieredStore<TRoot>(
+        this ModelBuilder modelBuilder,
+        Expression<Func<TRoot, DateOnly>> timestamp,
+        string archivePath,
+        TierGranularity granularity = TierGranularity.Month,
+        string? controlKey = null)
+        where TRoot : class
+        => ConfigureTieredStore(modelBuilder, timestamp, archivePath, granularity, controlKey);
+
+    /// <summary>
+    ///     Marks an aggregate root using a nullable <see cref="DateOnly" /> lifecycle property.
+    ///     A <see langword="null" /> value remains hot.
+    /// </summary>
+    public static TieredStoreBuilder<TRoot> ToTieredStore<TRoot>(
+        this ModelBuilder modelBuilder,
+        Expression<Func<TRoot, DateOnly?>> timestamp,
+        string archivePath,
+        TierGranularity granularity = TierGranularity.Month,
+        string? controlKey = null)
+        where TRoot : class
+        => ConfigureTieredStore(modelBuilder, timestamp, archivePath, granularity, controlKey);
+
     private static TieredStoreBuilder<TRoot> ConfigureTieredStore<TRoot, TTimestamp>(
         ModelBuilder modelBuilder,
         Expression<Func<TRoot, TTimestamp>> timestamp,

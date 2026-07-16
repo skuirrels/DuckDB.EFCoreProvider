@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Globalization;
@@ -20,6 +21,15 @@ public static class DuckDBTierControl
     /// <summary>The name of the provider-managed table that stores each tiered entity's archive watermark.</summary>
     public const string ControlTable = "__duckdb_tier_control";
 
+    /// <summary>The provider catalogue of successfully published immutable archive generations.</summary>
+    public const string GenerationTable = "__duckdb_tier_generations";
+
+    /// <summary>The provider catalogue of per-table evidence for published archive generations.</summary>
+    public const string GenerationNodeTable = "__duckdb_tier_generation_nodes";
+
+    /// <summary>The provider catalogue of exact Parquet objects belonging to published archive generations.</summary>
+    public const string GenerationFileTable = "__duckdb_tier_generation_files";
+
     private const string TimestampLiteralFormat = "yyyy-MM-dd HH:mm:ss.ffffff";
 
     /// <summary>
@@ -40,7 +50,109 @@ public static class DuckDBTierControl
            + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS partition_spec TEXT; "
            + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS archive_spec TEXT; "
            + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS active_archive_path TEXT; "
-           + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS archive_revision TEXT;";
+           + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS archive_revision TEXT; "
+           + $"CREATE TABLE IF NOT EXISTS {sql.DelimitIdentifier(GenerationTable)} ("
+           + "control_key TEXT NOT NULL, generation_id TEXT NOT NULL, archive_path TEXT NOT NULL, "
+           + "watermark TIMESTAMP NOT NULL, created_at_utc TIMESTAMP NOT NULL, archive_spec TEXT NOT NULL, "
+           + "partition_spec TEXT NOT NULL, PRIMARY KEY (control_key, generation_id)); "
+           + $"CREATE TABLE IF NOT EXISTS {sql.DelimitIdentifier(GenerationNodeTable)} ("
+           + "control_key TEXT NOT NULL, generation_id TEXT NOT NULL, entity_name TEXT NOT NULL, "
+           + "table_name TEXT NOT NULL, schema_name TEXT, archive_path TEXT NOT NULL, "
+           + "file_count BIGINT NOT NULL, total_bytes BIGINT NOT NULL, "
+           + "PRIMARY KEY (control_key, generation_id, table_name)); "
+           + $"CREATE TABLE IF NOT EXISTS {sql.DelimitIdentifier(GenerationFileTable)} ("
+           + "control_key TEXT NOT NULL, generation_id TEXT NOT NULL, table_name TEXT NOT NULL, "
+           + "file_path TEXT NOT NULL, PRIMARY KEY (control_key, generation_id, table_name, file_path));";
+
+    /// <summary>Records or refreshes one successfully published generation.</summary>
+    public static string UpsertGenerationSql(
+        ISqlGenerationHelper sql,
+        string controlKey,
+        string generationId,
+        string archivePath,
+        DateTime watermark,
+        DateTime createdAtUtc,
+        string archiveSpec,
+        string partitionSpec)
+        => $"INSERT INTO {sql.DelimitIdentifier(GenerationTable)} "
+           + "(control_key, generation_id, archive_path, watermark, created_at_utc, archive_spec, partition_spec) "
+           + $"VALUES ({Literal(controlKey)}, {Literal(generationId)}, {Literal(NormalizePath(archivePath))}, "
+           + $"{TimestampLiteral(watermark)}, {TimestampLiteral(createdAtUtc)}, {Literal(archiveSpec)}, {Literal(partitionSpec)}) "
+           + "ON CONFLICT (control_key, generation_id) DO UPDATE SET archive_path = excluded.archive_path, "
+           + "watermark = excluded.watermark, archive_spec = excluded.archive_spec, partition_spec = excluded.partition_spec;";
+
+    /// <summary>Records per-table file counts and bytes for one published generation.</summary>
+    public static string UpsertGenerationNodeSql(
+        ISqlGenerationHelper sql,
+        string controlKey,
+        string generationId,
+        string entityName,
+        string table,
+        string? schema,
+        string archivePath,
+        bool hasFiles)
+    {
+        var evidence = hasFiles
+            ? "SELECT COUNT(*), COALESCE(SUM(CAST(file_size_bytes AS BIGINT)), 0) "
+              + $"FROM parquet_file_metadata({Literal(ReadGlob(archivePath))})"
+            : "SELECT CAST(0 AS BIGINT), CAST(0 AS BIGINT)";
+        return $"INSERT INTO {sql.DelimitIdentifier(GenerationNodeTable)} "
+               + "(control_key, generation_id, entity_name, table_name, schema_name, archive_path, file_count, total_bytes) "
+               + $"SELECT {Literal(controlKey)}, {Literal(generationId)}, {Literal(entityName)}, {Literal(table)}, "
+               + $"{(schema is null ? "NULL" : Literal(schema))}, {Literal(NormalizePath(archivePath))}, evidence.* "
+               + $"FROM ({evidence}) AS evidence(file_count, total_bytes) "
+               + "ON CONFLICT (control_key, generation_id, table_name) DO UPDATE SET "
+               + "entity_name = excluded.entity_name, schema_name = excluded.schema_name, "
+               + "archive_path = excluded.archive_path, file_count = excluded.file_count, "
+               + "total_bytes = excluded.total_bytes;";
+    }
+
+    /// <summary>Replaces the exact file membership recorded for one table in a published generation.</summary>
+    public static string ReplaceGenerationFilesSql(
+        ISqlGenerationHelper sql,
+        string controlKey,
+        string generationId,
+        string table,
+        string archivePath,
+        bool hasFiles)
+    {
+        var delete = $"DELETE FROM {sql.DelimitIdentifier(GenerationFileTable)} "
+                     + $"WHERE control_key = {Literal(controlKey)} AND generation_id = {Literal(generationId)} "
+                     + $"AND table_name = {Literal(table)};";
+        if (!hasFiles)
+        {
+            return delete;
+        }
+
+        return delete + " "
+               + $"INSERT INTO {sql.DelimitIdentifier(GenerationFileTable)} "
+               + "(control_key, generation_id, table_name, file_path) "
+               + $"SELECT {Literal(controlKey)}, {Literal(generationId)}, {Literal(table)}, file "
+               + $"FROM glob({Literal(ReadGlob(archivePath))});";
+    }
+
+    /// <summary>Reads all provider-recorded generations and their aggregate file evidence.</summary>
+    public static string ReadGenerationInventorySql(ISqlGenerationHelper sql, string controlKey)
+        => $"SELECT g.generation_id, g.archive_path, g.watermark, g.created_at_utc, "
+           + "COALESCE(SUM(n.file_count), 0), COALESCE(SUM(n.total_bytes), 0) "
+           + $"FROM {sql.DelimitIdentifier(GenerationTable)} AS g "
+           + $"LEFT JOIN {sql.DelimitIdentifier(GenerationNodeTable)} AS n "
+           + "ON n.control_key = g.control_key AND n.generation_id = g.generation_id "
+           + $"WHERE g.control_key = {Literal(controlKey)} "
+           + "GROUP BY g.generation_id, g.archive_path, g.watermark, g.created_at_utc "
+           + "ORDER BY g.created_at_utc DESC;";
+
+    /// <summary>Reads a bounded representative set of exact file paths for one published generation.</summary>
+    public static string ReadGenerationFilesSql(
+        ISqlGenerationHelper sql,
+        string controlKey,
+        string generationId,
+        int limit,
+        string? table = null)
+        => $"SELECT file_path FROM {sql.DelimitIdentifier(GenerationFileTable)} "
+           + $"WHERE control_key = {Literal(controlKey)} AND generation_id = {Literal(generationId)} "
+           + (table is null ? string.Empty : $"AND table_name = {Literal(table)} ")
+           + $"ORDER BY table_name, file_path LIMIT {limit.ToString(CultureInfo.InvariantCulture)};";
 
     /// <summary>Builds the scalar <c>SELECT</c> that reads a tiered entity's current watermark (or <c>NULL</c>).</summary>
     public static string ReadWatermarkSql(ISqlGenerationHelper sql, string controlKey)
@@ -191,6 +303,38 @@ public static class DuckDBTierControl
         TierGranularity granularity,
         bool includeCold,
         IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        => ViewSql(
+            sql,
+            viewName,
+            hotTable,
+            hotSchema,
+            columns,
+            keyColumns,
+            timestampColumn,
+            controlKey,
+            archivePath,
+            granularity,
+            includeCold,
+            rootPartitions,
+            null);
+
+    /// <summary>
+    ///     Builds the root union view using an exact provider-catalogued file set when one is available.
+    /// </summary>
+    public static string ViewSql(
+        ISqlGenerationHelper sql,
+        string viewName,
+        string hotTable,
+        string? hotSchema,
+        IReadOnlyList<string> columns,
+        IReadOnlyList<string> keyColumns,
+        string timestampColumn,
+        string controlKey,
+        string archivePath,
+        TierGranularity granularity,
+        bool includeCold,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        IReadOnlyList<string>? archiveFiles)
     {
         const string hotAlias = "h";
         var hotProjection = HotProjection(sql, columns, hotAlias, rootPartitions);
@@ -219,7 +363,7 @@ public static class DuckDBTierControl
         var hotKeyMatch = KeyMatchPredicate(sql, keyColumns, "c", hotAlias);
         var coldSource = new StringBuilder("(SELECT ")
             .Append(coldProjection)
-            .Append(" FROM read_parquet(").Append(Literal(ReadGlob(archivePath)))
+            .Append(" FROM read_parquet(").Append(ParquetFileArgument(archivePath, archiveFiles))
             .Append(", hive_partitioning = true, union_by_name = true))")
             .ToString();
 
@@ -279,6 +423,35 @@ public static class DuckDBTierControl
         DateTime from,
         DateTime cutoff,
         IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        => ArchiveCopySql(
+            sql,
+            hotTable,
+            hotSchema,
+            columns,
+            timestampColumn,
+            archivePath,
+            granularity,
+            from,
+            cutoff,
+            rootPartitions,
+            null);
+
+    /// <summary>
+    ///     Builds the partitioned <c>COPY ... TO</c> with additional aggregate-root partition columns and
+    ///     caller-selected Parquet writer settings.
+    /// </summary>
+    public static string ArchiveCopySql(
+        ISqlGenerationHelper sql,
+        string hotTable,
+        string? hotSchema,
+        IReadOnlyList<string> columns,
+        string timestampColumn,
+        string archivePath,
+        TierGranularity granularity,
+        DateTime from,
+        DateTime cutoff,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        TierParquetWriterOptions? writerOptions)
     {
         var ts = sql.DelimitIdentifier(timestampColumn);
         var columnList = string.Join(", ", columns.Select(sql.DelimitIdentifier));
@@ -293,7 +466,7 @@ public static class DuckDBTierControl
         return $"COPY (SELECT {copyProjection} FROM {Table(sql, hotTable, hotSchema)} "
                + $"WHERE {ts} IS NOT NULL AND {ts} >= {TimestampLiteral(from)} AND {ts} < {TimestampLiteral(cutoff)}) "
                + $"TO {Literal(NormalizePath(archivePath))} "
-               + $"(FORMAT PARQUET, PARTITION_BY ({partitionBy}), OVERWRITE_OR_IGNORE);";
+               + $"({ParquetCopyOptions(partitionBy, writerOptions)});";
     }
 
     /// <summary>
@@ -351,10 +524,57 @@ public static class DuckDBTierControl
     }
 
     /// <summary>
-    ///     One hop of a child→…→root foreign-key chain: the dependent's foreign-key column, the principal
-    ///     table joined to, and the principal's key column.
+    ///     One hop of a child→…→root foreign-key chain: the dependent's ordered foreign-key columns, the
+    ///     principal table joined to, and the principal's ordered key columns.
     /// </summary>
-    public readonly record struct TierJoinHop(string ForeignKeyColumn, string PrincipalTable, string? PrincipalSchema, string PrincipalKeyColumn);
+    public readonly record struct TierJoinHop(
+        string ForeignKeyColumn,
+        string PrincipalTable,
+        string? PrincipalSchema,
+        string PrincipalKeyColumn)
+    {
+        /// <summary>Creates a relationship hop from corresponding ordered dependent and principal columns.</summary>
+        public TierJoinHop(
+            IReadOnlyList<string> foreignKeyColumns,
+            string principalTable,
+            string? principalSchema,
+            IReadOnlyList<string> principalKeyColumns)
+            : this(
+                FirstColumn(foreignKeyColumns, nameof(foreignKeyColumns)),
+                principalTable,
+                principalSchema,
+                FirstColumn(principalKeyColumns, nameof(principalKeyColumns)))
+        {
+            ArgumentNullException.ThrowIfNull(foreignKeyColumns);
+            ArgumentNullException.ThrowIfNull(principalTable);
+            ArgumentNullException.ThrowIfNull(principalKeyColumns);
+            if (foreignKeyColumns.Count == 0 || foreignKeyColumns.Count != principalKeyColumns.Count)
+            {
+                throw new ArgumentException(
+                    "A tiered relationship hop requires equally sized, non-empty foreign-key and principal-key column sets.");
+            }
+
+            ForeignKeyColumns = foreignKeyColumns.ToArray();
+            PrincipalKeyColumns = principalKeyColumns.ToArray();
+        }
+
+        /// <summary>The dependent columns in EF foreign-key order.</summary>
+        public IReadOnlyList<string> ForeignKeyColumns { get; init; } = [ForeignKeyColumn];
+
+        /// <summary>The principal columns corresponding to <see cref="ForeignKeyColumns" />.</summary>
+        public IReadOnlyList<string> PrincipalKeyColumns { get; init; } = [PrincipalKeyColumn];
+
+        private static string FirstColumn(IReadOnlyList<string> columns, string parameterName)
+        {
+            ArgumentNullException.ThrowIfNull(columns, parameterName);
+            if (columns.Count == 0)
+            {
+                throw new ArgumentException("A tiered relationship hop requires at least one column.", parameterName);
+            }
+
+            return columns[0];
+        }
+    }
 
     /// <summary>
     ///     Builds the partitioned <c>COPY ... TO</c> for an aggregate <em>child</em>: its rows are joined up the
@@ -399,6 +619,37 @@ public static class DuckDBTierControl
         DateTime from,
         DateTime cutoff,
         IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        => ArchiveChildCopySql(
+            sql,
+            childTable,
+            childSchema,
+            childColumns,
+            chain,
+            rootTimestampColumn,
+            archivePath,
+            granularity,
+            from,
+            cutoff,
+            rootPartitions,
+            null);
+
+    /// <summary>
+    ///     Builds the partitioned <c>COPY ... TO</c> for an aggregate child using additional root partitions
+    ///     and caller-selected Parquet writer settings.
+    /// </summary>
+    public static string ArchiveChildCopySql(
+        ISqlGenerationHelper sql,
+        string childTable,
+        string? childSchema,
+        IReadOnlyList<string> childColumns,
+        IReadOnlyList<TierJoinHop> chain,
+        string rootTimestampColumn,
+        string archivePath,
+        TierGranularity granularity,
+        DateTime from,
+        DateTime cutoff,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        TierParquetWriterOptions? writerOptions)
     {
         var columnList = string.Join(", ", childColumns.Select(c => "t0." + sql.DelimitIdentifier(c)));
         var (joins, rootAlias) = ChildRootJoins(sql, childTable, childSchema, chain);
@@ -416,7 +667,7 @@ public static class DuckDBTierControl
         return $"COPY (SELECT {columnList}, {string.Join(", ", partitionSelect)} {joins} "
                + $"WHERE {rootTs} IS NOT NULL AND {rootTs} >= {TimestampLiteral(from)} AND {rootTs} < {TimestampLiteral(cutoff)}) "
                + $"TO {Literal(NormalizePath(archivePath))} "
-               + $"(FORMAT PARQUET, PARTITION_BY ({partitionBy}), OVERWRITE_OR_IGNORE);";
+               + $"({ParquetCopyOptions(partitionBy, writerOptions)});";
     }
 
     /// <summary>Builds the complete replacement source for a published cold root generation.</summary>
@@ -431,13 +682,18 @@ public static class DuckDBTierControl
         TierGranularity granularity,
         DateTime watermark,
         bool includeCold,
-        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        string? hotScopePredicate = null,
+        string? hotExclusionPredicate = null,
+        string? coldExclusionPredicate = null)
     {
         const string hotAlias = "h";
         const string coldAlias = "c";
         var timestamp = sql.DelimitIdentifier(timestampColumn);
         var hot = $"SELECT {ColumnList(sql, columns, hotAlias)} FROM {Table(sql, hotTable, hotSchema)} AS {hotAlias} "
-                  + $"WHERE {hotAlias}.{timestamp} IS NOT NULL AND {hotAlias}.{timestamp} < {TimestampLiteral(watermark)}";
+                  + $"WHERE {hotAlias}.{timestamp} IS NOT NULL AND {hotAlias}.{timestamp} < {TimestampLiteral(watermark)}"
+                  + OptionalAnd(hotScopePredicate)
+                  + OptionalAnd(hotExclusionPredicate is null ? null : $"NOT ({hotExclusionPredicate})");
         if (!includeCold)
         {
             return hot;
@@ -452,11 +708,15 @@ public static class DuckDBTierControl
             rootPartitions);
         var coldRead = $"(SELECT {coldProjection} FROM read_parquet({Literal(ReadGlob(activeArchivePath))}, "
                        + "hive_partitioning = true, union_by_name = true))";
+        var hotReplacementSource = hotScopePredicate is null && hotExclusionPredicate is null
+            ? Table(sql, hotTable, hotSchema)
+            : $"({hot})";
         return hot
                + "\nUNION ALL BY NAME\n"
                + $"SELECT * FROM {coldRead} AS {coldAlias} "
                + $"WHERE {coldAlias}.{timestamp} IS NOT NULL AND {coldAlias}.{timestamp} < {TimestampLiteral(watermark)} "
-               + $"AND NOT EXISTS (SELECT 1 FROM {Table(sql, hotTable, hotSchema)} AS {hotAlias} "
+               + OptionalAnd(coldExclusionPredicate is null ? null : $"NOT ({coldExclusionPredicate})")
+               + $" AND NOT EXISTS (SELECT 1 FROM {hotReplacementSource} AS {hotAlias} "
                + $"WHERE {KeyMatchPredicate(sql, keyColumns, coldAlias, hotAlias)})";
     }
 
@@ -473,7 +733,13 @@ public static class DuckDBTierControl
         TierGranularity granularity,
         DateTime watermark,
         bool includeCold,
-        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        string? hotRootScopePredicate = null,
+        string? hotNodeExclusionPredicate = null,
+        string? hotRootExclusionPredicate = null,
+        string? coldNodeExclusionPredicate = null,
+        string? coldRootExclusionPredicate = null,
+        string? activeArchiveBasePath = null)
     {
         const string hotAlias = "h";
         const string coldAlias = "c";
@@ -490,7 +756,10 @@ public static class DuckDBTierControl
             string.Join(", ", childColumns.Select(column => $"t0.{sql.DelimitIdentifier(column)}")),
             partitionSelect);
         var hot = $"SELECT {hotProjection} {joins} WHERE {rootTimestamp} IS NOT NULL "
-                  + $"AND {rootTimestamp} < {TimestampLiteral(watermark)}";
+                  + $"AND {rootTimestamp} < {TimestampLiteral(watermark)}"
+                  + OptionalAnd(hotRootScopePredicate)
+                  + OptionalAnd(hotNodeExclusionPredicate is null ? null : $"NOT ({hotNodeExclusionPredicate})")
+                  + OptionalAnd(hotRootExclusionPredicate is null ? null : $"NOT ({hotRootExclusionPredicate})");
         if (!includeCold)
         {
             return hot;
@@ -502,11 +771,29 @@ public static class DuckDBTierControl
             : "*";
         var publication = ArchivePartitionRangePredicate(
             sql, rootTimestampColumn, granularity, DateTime.MinValue, watermark, rootPartitions, coldAlias);
+        var hotReplacementSource = hotRootScopePredicate is null
+                                   && hotNodeExclusionPredicate is null
+                                   && hotRootExclusionPredicate is null
+            ? Table(sql, childTable, childSchema)
+            : $"({hot})";
         return hot
                + "\nUNION ALL BY NAME\n"
                + $"SELECT {coldProjection} FROM read_parquet({Literal(ReadGlob(activeArchivePath))}, "
                + $"hive_partitioning = true, union_by_name = true) AS {coldAlias} "
-               + $"WHERE {publication} AND NOT EXISTS (SELECT 1 FROM {Table(sql, childTable, childSchema)} AS {hotAlias} "
+               + $"WHERE {publication}"
+               + OptionalAnd(coldNodeExclusionPredicate is null ? null : $"NOT ({coldNodeExclusionPredicate})")
+               + OptionalAnd(coldRootExclusionPredicate is null
+                   ? null
+                   : $"NOT ({ColdRootExistsPredicate(
+                       sql,
+                       chain,
+                       activeArchiveBasePath
+                       ?? throw new ArgumentException(
+                           "The active archive base path is required for root tombstone propagation.",
+                           nameof(activeArchiveBasePath)),
+                       coldAlias,
+                       coldRootExclusionPredicate)})")
+               + $" AND NOT EXISTS (SELECT 1 FROM {hotReplacementSource} AS {hotAlias} "
                + $"WHERE {KeyMatchPredicate(sql, keyColumns, coldAlias, hotAlias)})";
     }
 
@@ -518,7 +805,8 @@ public static class DuckDBTierControl
         string timestampColumn,
         string archivePath,
         TierGranularity granularity,
-        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        TierParquetWriterOptions? writerOptions = null)
     {
         const string alias = "s";
         var columnList = string.Join(", ", columns.Select(column => $"{alias}.{sql.DelimitIdentifier(column)}"));
@@ -535,7 +823,7 @@ public static class DuckDBTierControl
         var partitionBy = string.Join(", ", PartitionColumns(granularity, rootPartitions).Select(sql.DelimitIdentifier));
         return $"COPY (WITH source AS ({sourceSql}) SELECT {copyProjection} FROM source AS {alias}) "
                + $"TO {Literal(NormalizePath(archivePath))} "
-               + $"(FORMAT PARQUET, PARTITION_BY ({partitionBy}), OVERWRITE_OR_IGNORE);";
+               + $"({ParquetCopyOptions(partitionBy, writerOptions)});";
     }
 
     /// <summary>Builds a partitioned <c>COPY</c> from a complete reconciled child source.</summary>
@@ -544,12 +832,93 @@ public static class DuckDBTierControl
         string sourceSql,
         string archivePath,
         TierGranularity granularity,
-        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        TierParquetWriterOptions? writerOptions = null)
     {
         var partitionBy = string.Join(", ", PartitionColumns(granularity, rootPartitions).Select(sql.DelimitIdentifier));
         return $"COPY (WITH source AS ({sourceSql}) SELECT * FROM source) "
                + $"TO {Literal(NormalizePath(archivePath))} "
-               + $"(FORMAT PARQUET, PARTITION_BY ({partitionBy}), OVERWRITE_OR_IGNORE);";
+               + $"({ParquetCopyOptions(partitionBy, writerOptions)});";
+    }
+
+    /// <summary>Builds the selected cold-root source used by an explicit restore workflow.</summary>
+    public static string RestoreRootSourceSql(
+        ISqlGenerationHelper sql,
+        IReadOnlyList<string> columns,
+        string archivePath,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        string rootScopePredicate)
+        => $"SELECT {ColumnList(sql, columns, "c")} "
+           + $"FROM {TypedParquetRead(sql, archivePath, rootPartitions)} AS c "
+           + $"WHERE {rootScopePredicate}";
+
+    /// <summary>Builds selected cold child rows by joining their archived relationship chain to scoped roots.</summary>
+    public static string RestoreChildSourceSql(
+        ISqlGenerationHelper sql,
+        IReadOnlyList<string> childColumns,
+        IReadOnlyList<TierJoinHop> chain,
+        string childArchivePath,
+        string activeArchiveBasePath,
+        string rootScopePredicate)
+    {
+        if (chain.Count == 0)
+        {
+            throw new ArgumentException("A child restore source requires a relationship chain.", nameof(chain));
+        }
+
+        var builder = new StringBuilder("SELECT ")
+            .Append(ColumnList(sql, childColumns, "c"))
+            .Append(" FROM read_parquet(")
+            .Append(Literal(ReadGlob(childArchivePath)))
+            .Append(", hive_partitioning = true, union_by_name = true) AS c");
+        for (var i = 0; i < chain.Count; i++)
+        {
+            var path = DuckDBTierArchiveManifest.NodeArchivePath(
+                activeArchiveBasePath,
+                chain[i].PrincipalTable);
+            builder.Append(" JOIN read_parquet(")
+                .Append(Literal(ReadGlob(path)))
+                .Append(", hive_partitioning = true, union_by_name = true) AS r")
+                .Append(i)
+                .Append(" ON ")
+                .Append(JoinPredicate(
+                    sql,
+                    chain[i].ForeignKeyColumns,
+                    i == 0 ? "c" : "r" + (i - 1).ToString(CultureInfo.InvariantCulture),
+                    chain[i].PrincipalKeyColumns,
+                    "r" + i.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        return builder.Append(" WHERE ").Append(rootScopePredicate).ToString();
+    }
+
+    /// <summary>Counts selected cold rows that conflict with an existing hot representation.</summary>
+    public static string RestoreConflictCountSql(
+        ISqlGenerationHelper sql,
+        string table,
+        string? schema,
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<string> comparisonColumns,
+        string sourceSql)
+        => $"SELECT count(*) FROM ({sourceSql}) AS c "
+           + $"JOIN {Table(sql, table, schema)} AS h "
+           + $"ON {KeyMatchPredicate(sql, keyColumns, "c", "h")} "
+           + $"WHERE NOT ({RowMatchPredicate(sql, comparisonColumns, "c", "h")});";
+
+    /// <summary>Inserts selected cold rows that do not already have the same configured hot match key.</summary>
+    public static string RestoreInsertSql(
+        ISqlGenerationHelper sql,
+        string table,
+        string? schema,
+        IReadOnlyList<string> columns,
+        IReadOnlyList<string> keyColumns,
+        string sourceSql)
+    {
+        var columnList = string.Join(", ", columns.Select(sql.DelimitIdentifier));
+        return $"INSERT INTO {Table(sql, table, schema)} ({columnList}) "
+               + $"SELECT {ColumnList(sql, columns, "c")} FROM ({sourceSql}) AS c "
+               + $"WHERE NOT EXISTS (SELECT 1 FROM {Table(sql, table, schema)} AS h "
+               + $"WHERE {KeyMatchPredicate(sql, keyColumns, "c", "h")});";
     }
 
     /// <summary>
@@ -605,6 +974,40 @@ public static class DuckDBTierControl
         bool includeCold,
         bool includeHotChildFilter,
         IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        => ChildViewSql(
+            sql,
+            viewName,
+            childTable,
+            childSchema,
+            childColumns,
+            childKeyColumns,
+            chain,
+            rootTimestampColumn,
+            controlKey,
+            archivePath,
+            granularity,
+            includeCold,
+            includeHotChildFilter,
+            rootPartitions,
+            null);
+
+    /// <summary>Builds a child union view using an exact provider-catalogued file set when available.</summary>
+    public static string ChildViewSql(
+        ISqlGenerationHelper sql,
+        string viewName,
+        string childTable,
+        string? childSchema,
+        IReadOnlyList<string> childColumns,
+        IReadOnlyList<string> childKeyColumns,
+        IReadOnlyList<TierJoinHop> chain,
+        string rootTimestampColumn,
+        string controlKey,
+        string archivePath,
+        TierGranularity granularity,
+        bool includeCold,
+        bool includeHotChildFilter,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        IReadOnlyList<string>? archiveFiles)
     {
         const string hotAlias = "h";
         var columnList = ColumnList(sql, childColumns, hotAlias);
@@ -630,8 +1033,23 @@ public static class DuckDBTierControl
             var watermark = $">= (SELECT watermark FROM {sql.DelimitIdentifier(ControlTable)} WHERE name = {Literal(controlKey)})";
             hotPredicate.Insert(
                 0,
-                hotAlias + "." + sql.DelimitIdentifier(chain[0].ForeignKeyColumn)
-                + " IN (" + RootSemijoin(sql, chain, rootTimestampColumn, 0, watermark, includeNullRoot: true) + ") OR ");
+                (IsSingleColumnChain(chain)
+                    ? hotAlias + "." + sql.DelimitIdentifier(chain[0].ForeignKeyColumn)
+                      + " IN (" + RootSemijoin(
+                          sql,
+                          chain,
+                          rootTimestampColumn,
+                          0,
+                          watermark,
+                          includeNullRoot: true) + ")"
+                    : RootExistsPredicate(
+                        sql,
+                        chain,
+                        rootTimestampColumn,
+                        hotAlias,
+                        watermark,
+                        includeNullRoot: true))
+                + " OR ");
         }
 
         var coldPublicationPredicate = ChildColdPublicationPredicate(
@@ -640,7 +1058,7 @@ public static class DuckDBTierControl
         return viewHeader
             .Append("WITH cold AS (\n")
             .Append("SELECT * EXCLUDE (").Append(excludeList).Append(')')
-            .Append("\n  FROM read_parquet(").Append(Literal(ReadGlob(archivePath)))
+            .Append("\n  FROM read_parquet(").Append(ParquetFileArgument(archivePath, archiveFiles))
             .Append(", hive_partitioning = true, union_by_name = true)")
             .Append(" AS p\n  WHERE ").Append(coldPublicationPredicate)
             .Append("\n)\n")
@@ -683,14 +1101,78 @@ public static class DuckDBTierControl
     {
         const string childAlias = "h";
         EnsureKeyColumns(childKeyColumns, childTable);
-        return $"DELETE FROM {Table(sql, childTable, childSchema)} AS {childAlias} WHERE {childAlias}.{sql.DelimitIdentifier(chain[0].ForeignKeyColumn)} "
-               + $"IN ({RootSemijoin(sql, chain, rootTimestampColumn, 0, "< " + TimestampLiteral(cutoff))}) "
+        var rootSelection = IsSingleColumnChain(chain)
+            ? $"{childAlias}.{sql.DelimitIdentifier(chain[0].ForeignKeyColumn)} IN ("
+              + RootSemijoin(
+                  sql,
+                  chain,
+                  rootTimestampColumn,
+                  0,
+                  "< " + TimestampLiteral(cutoff))
+              + ")"
+            : RootExistsPredicate(
+                sql,
+                chain,
+                rootTimestampColumn,
+                childAlias,
+                "< " + TimestampLiteral(cutoff),
+                includeNullRoot: false);
+        return $"DELETE FROM {Table(sql, childTable, childSchema)} AS {childAlias} WHERE "
+               + rootSelection
+               + " "
                + $"AND EXISTS (SELECT 1 FROM read_parquet({Literal(ReadGlob(archivePath))}, hive_partitioning = true, union_by_name = true) AS c "
                + $"WHERE {KeyMatchPredicate(sql, childKeyColumns, "c", childAlias)} "
                + $"AND {RowMatchPredicate(sql, comparisonColumns, "c", childAlias, archiveColumns)});";
     }
 
-    // Nested semijoin from the child's foreign key up the chain to the root, ending in "<rootTs> <rootCondition>".
+    private static string RootExistsPredicate(
+        ISqlGenerationHelper sql,
+        IReadOnlyList<TierJoinHop> chain,
+        string rootTimestampColumn,
+        string childAlias,
+        string rootCondition,
+        bool includeNullRoot = false)
+    {
+        if (chain.Count == 0)
+        {
+            throw new ArgumentException("A child-to-root relationship chain cannot be empty.", nameof(chain));
+        }
+
+        var builder = new StringBuilder("EXISTS (SELECT 1 FROM ")
+            .Append(Table(sql, chain[0].PrincipalTable, chain[0].PrincipalSchema))
+            .Append(" AS r0");
+        for (var i = 1; i < chain.Count; i++)
+        {
+            builder.Append(" JOIN ")
+                .Append(Table(sql, chain[i].PrincipalTable, chain[i].PrincipalSchema))
+                .Append(" AS r").Append(i)
+                .Append(" ON ")
+                .Append(JoinPredicate(
+                    sql,
+                    chain[i].ForeignKeyColumns,
+                    "r" + (i - 1).ToString(CultureInfo.InvariantCulture),
+                    chain[i].PrincipalKeyColumns,
+                    "r" + i.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        var rootAlias = "r" + (chain.Count - 1).ToString(CultureInfo.InvariantCulture);
+        var rootTimestamp = $"{rootAlias}.{sql.DelimitIdentifier(rootTimestampColumn)}";
+        return builder
+            .Append(" WHERE ")
+            .Append(JoinPredicate(
+                sql,
+                chain[0].ForeignKeyColumns,
+                childAlias,
+                chain[0].PrincipalKeyColumns,
+                "r0"))
+            .Append(" AND ")
+            .Append(includeNullRoot
+                ? $"({rootTimestamp} IS NULL OR {rootTimestamp} {rootCondition})"
+                : $"{rootTimestamp} {rootCondition}")
+            .Append(')')
+            .ToString();
+    }
+
     private static string RootSemijoin(
         ISqlGenerationHelper sql,
         IReadOnlyList<TierJoinHop> chain,
@@ -701,7 +1183,8 @@ public static class DuckDBTierControl
     {
         var hop = chain[level];
         var alias = "r" + level.ToString(CultureInfo.InvariantCulture);
-        var select = $"SELECT {alias}.{sql.DelimitIdentifier(hop.PrincipalKeyColumn)} FROM {Table(sql, hop.PrincipalTable, hop.PrincipalSchema)} AS {alias} WHERE ";
+        var select = $"SELECT {alias}.{sql.DelimitIdentifier(hop.PrincipalKeyColumn)} "
+                     + $"FROM {Table(sql, hop.PrincipalTable, hop.PrincipalSchema)} AS {alias} WHERE ";
         if (level == chain.Count - 1)
         {
             var rootTimestamp = $"{alias}.{sql.DelimitIdentifier(rootTimestampColumn)}";
@@ -711,7 +1194,60 @@ public static class DuckDBTierControl
         }
 
         return select + $"{alias}.{sql.DelimitIdentifier(chain[level + 1].ForeignKeyColumn)} IN "
-            + $"({RootSemijoin(sql, chain, rootTimestampColumn, level + 1, rootCondition, includeNullRoot)})";
+               + $"({RootSemijoin(sql, chain, rootTimestampColumn, level + 1, rootCondition, includeNullRoot)})";
+    }
+
+    private static bool IsSingleColumnChain(IReadOnlyList<TierJoinHop> chain)
+        => chain.All(hop => hop.ForeignKeyColumns.Count == 1 && hop.PrincipalKeyColumns.Count == 1);
+
+    private static string ColdRootExistsPredicate(
+        ISqlGenerationHelper sql,
+        IReadOnlyList<TierJoinHop> chain,
+        string activeArchiveBasePath,
+        string childAlias,
+        string rootPredicate)
+    {
+        if (chain.Count == 0)
+        {
+            throw new ArgumentException("A child-to-root relationship chain cannot be empty.", nameof(chain));
+        }
+
+        var firstPath = DuckDBTierArchiveManifest.NodeArchivePath(
+            activeArchiveBasePath,
+            chain[0].PrincipalTable);
+        var builder = new StringBuilder("EXISTS (SELECT 1 FROM read_parquet(")
+            .Append(Literal(ReadGlob(firstPath)))
+            .Append(", hive_partitioning = true, union_by_name = true) AS r0");
+        for (var i = 1; i < chain.Count; i++)
+        {
+            var path = DuckDBTierArchiveManifest.NodeArchivePath(
+                activeArchiveBasePath,
+                chain[i].PrincipalTable);
+            builder.Append(" JOIN read_parquet(")
+                .Append(Literal(ReadGlob(path)))
+                .Append(", hive_partitioning = true, union_by_name = true) AS r")
+                .Append(i)
+                .Append(" ON ")
+                .Append(JoinPredicate(
+                    sql,
+                    chain[i].ForeignKeyColumns,
+                    "r" + (i - 1).ToString(CultureInfo.InvariantCulture),
+                    chain[i].PrincipalKeyColumns,
+                    "r" + i.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        return builder
+            .Append(" WHERE ")
+            .Append(JoinPredicate(
+                sql,
+                chain[0].ForeignKeyColumns,
+                childAlias,
+                chain[0].PrincipalKeyColumns,
+                "r0"))
+            .Append(" AND (")
+            .Append(rootPredicate)
+            .Append("))")
+            .ToString();
     }
 
     /// <summary>Counts selected archive rows that contain a null configured match-key component.</summary>
@@ -819,7 +1355,8 @@ public static class DuckDBTierControl
         string timestampColumn,
         string archivePath,
         DateTime watermark,
-        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        string? hotFilterPredicate = null)
     {
         const string hotAlias = "h";
         const string coldAlias = "c";
@@ -828,7 +1365,8 @@ public static class DuckDBTierControl
                + $"JOIN {TypedParquetRead(sql, archivePath, rootPartitions)} AS {coldAlias} "
                + $"ON {KeyMatchPredicate(sql, keyColumns, coldAlias, hotAlias)} "
                + $"WHERE {coldAlias}.{timestamp} IS NOT NULL AND {coldAlias}.{timestamp} < {TimestampLiteral(watermark)} "
-               + $"AND {hotAlias}.{timestamp} IS DISTINCT FROM {coldAlias}.{timestamp};";
+               + OptionalAnd(hotFilterPredicate)
+               + $" AND {hotAlias}.{timestamp} IS DISTINCT FROM {coldAlias}.{timestamp};";
     }
 
     /// <summary>Counts differing hot root representations whose configured match key already exists in cold data.</summary>
@@ -852,6 +1390,34 @@ public static class DuckDBTierControl
                + $"ON {KeyMatchPredicate(sql, keyColumns, coldAlias, hotAlias)} "
                + $"WHERE {timestamp} IS NOT NULL AND {timestamp} < {TimestampLiteral(watermark)} "
                + $"AND NOT ({RowMatchPredicate(sql, comparisonColumns, coldAlias, hotAlias, archiveColumns)});";
+    }
+
+    /// <summary>Reads a bounded deterministic page of differing hot root match keys.</summary>
+    public static string RootConflictKeysSql(
+        ISqlGenerationHelper sql,
+        string table,
+        string? schema,
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<string> comparisonColumns,
+        string timestampColumn,
+        string archivePath,
+        DateTime watermark,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        int offset,
+        int limit,
+        IReadOnlyList<string>? archiveColumns = null)
+    {
+        const string hotAlias = "h";
+        const string coldAlias = "c";
+        var timestamp = $"{coldAlias}.{sql.DelimitIdentifier(timestampColumn)}";
+        var keys = ColumnList(sql, keyColumns, hotAlias);
+        return $"SELECT {keys} FROM {Table(sql, table, schema)} AS {hotAlias} "
+               + $"JOIN {TypedParquetRead(sql, archivePath, rootPartitions)} AS {coldAlias} "
+               + $"ON {KeyMatchPredicate(sql, keyColumns, coldAlias, hotAlias)} "
+               + $"WHERE {timestamp} IS NOT NULL AND {timestamp} < {TimestampLiteral(watermark)} "
+               + $"AND NOT ({RowMatchPredicate(sql, comparisonColumns, coldAlias, hotAlias, archiveColumns)}) "
+               + $"ORDER BY {keys} OFFSET {offset.ToString(CultureInfo.InvariantCulture)} "
+               + $"LIMIT {limit.ToString(CultureInfo.InvariantCulture)};";
     }
 
     /// <summary>Counts differing hot child representations whose configured match key already exists in published cold data.</summary>
@@ -880,6 +1446,39 @@ public static class DuckDBTierControl
                + $"SELECT count(*) FROM {Table(sql, table, schema)} AS {hotAlias} JOIN cold AS {coldAlias} "
                + $"ON {KeyMatchPredicate(sql, keyColumns, coldAlias, hotAlias)} "
                + $"WHERE NOT ({RowMatchPredicate(sql, comparisonColumns, coldAlias, hotAlias, archiveColumns)});";
+    }
+
+    /// <summary>Reads a bounded deterministic page of differing hot child match keys.</summary>
+    public static string ChildConflictKeysSql(
+        ISqlGenerationHelper sql,
+        string table,
+        string? schema,
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<string> comparisonColumns,
+        string rootTimestampColumn,
+        string controlKey,
+        string archivePath,
+        TierGranularity granularity,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        int offset,
+        int limit,
+        IReadOnlyList<string>? archiveColumns = null)
+    {
+        const string hotAlias = "h";
+        const string coldAlias = "c";
+        var excludeList = string.Join(", ",
+            PartitionColumns(granularity, rootPartitions).Select(sql.DelimitIdentifier));
+        var published = ChildColdPublicationPredicate(
+            sql, rootTimestampColumn, controlKey, granularity, rootPartitions);
+        var keys = ColumnList(sql, keyColumns, hotAlias);
+        return $"WITH cold AS (SELECT * EXCLUDE ({excludeList}) "
+               + $"FROM read_parquet({Literal(ReadGlob(archivePath))}, hive_partitioning = true, union_by_name = true) AS p "
+               + $"WHERE {published}) "
+               + $"SELECT {keys} FROM {Table(sql, table, schema)} AS {hotAlias} JOIN cold AS {coldAlias} "
+               + $"ON {KeyMatchPredicate(sql, keyColumns, coldAlias, hotAlias)} "
+               + $"WHERE NOT ({RowMatchPredicate(sql, comparisonColumns, coldAlias, hotAlias, archiveColumns)}) "
+               + $"ORDER BY {keys} OFFSET {offset.ToString(CultureInfo.InvariantCulture)} "
+               + $"LIMIT {limit.ToString(CultureInfo.InvariantCulture)};";
     }
 
     /// <summary>The recursive Parquet glob that matches every archived partition file under the archive root.</summary>
@@ -985,12 +1584,30 @@ public static class DuckDBTierControl
         for (var i = 0; i < chain.Count; i++)
         {
             joins.Append(" JOIN ").Append(Table(sql, chain[i].PrincipalTable, chain[i].PrincipalSchema)).Append(" AS t").Append(i + 1)
-                .Append(" ON t").Append(i).Append('.').Append(sql.DelimitIdentifier(chain[i].ForeignKeyColumn))
-                .Append(" = t").Append(i + 1).Append('.').Append(sql.DelimitIdentifier(chain[i].PrincipalKeyColumn));
+                .Append(" ON ")
+                .Append(JoinPredicate(
+                    sql,
+                    chain[i].ForeignKeyColumns,
+                    "t" + i.ToString(CultureInfo.InvariantCulture),
+                    chain[i].PrincipalKeyColumns,
+                    "t" + (i + 1).ToString(CultureInfo.InvariantCulture)));
         }
 
         return (joins.ToString(), "t" + chain.Count.ToString(CultureInfo.InvariantCulture));
     }
+
+    private static string JoinPredicate(
+        ISqlGenerationHelper sql,
+        IReadOnlyList<string> leftColumns,
+        string leftAlias,
+        IReadOnlyList<string> rightColumns,
+        string rightAlias)
+        => string.Join(
+            " AND ",
+            leftColumns.Select(
+                (column, index) =>
+                    $"{leftAlias}.{sql.DelimitIdentifier(column)} = "
+                    + $"{rightAlias}.{sql.DelimitIdentifier(rightColumns[index])}"));
 
     private static string ColumnList(ISqlGenerationHelper sql, IReadOnlyList<string> columns, string alias)
         => string.Join(", ", columns.Select(column => $"{alias}.{sql.DelimitIdentifier(column)}"));
@@ -1084,7 +1701,53 @@ public static class DuckDBTierControl
         return appended.Length == 0 ? columns : columns + ", " + string.Join(", ", appended);
     }
 
+    private static string OptionalAnd(string? predicate)
+        => string.IsNullOrWhiteSpace(predicate) ? string.Empty : $" AND ({predicate})";
+
+    private static string ParquetCopyOptions(
+        string partitionBy,
+        TierParquetWriterOptions? options)
+    {
+        options ??= TierParquetWriterOptions.Default;
+        options.Validate();
+
+        var clauses = new List<string>
+        {
+            "FORMAT PARQUET",
+            $"PARTITION_BY ({partitionBy})",
+            "OVERWRITE_OR_IGNORE",
+        };
+        if (options.Compression is not null)
+        {
+            clauses.Add($"COMPRESSION {Literal(options.Compression)}");
+        }
+
+        if (options.CompressionLevel is { } compressionLevel)
+        {
+            clauses.Add($"COMPRESSION_LEVEL {compressionLevel.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (options.RowGroupSize is { } rowGroupSize)
+        {
+            clauses.Add($"ROW_GROUP_SIZE {rowGroupSize.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (options.FilenamePattern is not null)
+        {
+            clauses.Add($"FILENAME_PATTERN {Literal(options.FilenamePattern)}");
+        }
+
+        return string.Join(", ", clauses);
+    }
+
     private static string NormalizePath(string path) => path.TrimEnd('/', '\\');
+
+    private static string ParquetFileArgument(
+        string archivePath,
+        IReadOnlyList<string>? archiveFiles)
+        => archiveFiles is { Count: > 0 }
+            ? "[" + string.Join(", ", archiveFiles.Select(Literal)) + "]"
+            : Literal(ReadGlob(archivePath));
 
     private static string TimestampLiteral(DateTime value)
         => $"TIMESTAMP {Literal(value.ToString(TimestampLiteralFormat, CultureInfo.InvariantCulture))}";

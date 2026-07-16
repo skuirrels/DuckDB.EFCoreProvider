@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 
@@ -276,6 +277,280 @@ public sealed class TieredStorageSafetyTests : IDisposable
     }
 
     [Fact]
+    public async Task Scoped_reconciliation_changes_only_the_selected_root_key()
+    {
+        var archivePath = Path.Combine(_root, "scoped-reconcile-archive");
+        using var context = new StableOrderContext(Path.Combine(_root, "scoped-reconcile.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.AddRange(
+            Order("order-1", new DateTime(2024, 1, 15)),
+            Order("order-2", new DateTime(2024, 1, 16)));
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<StableOrder>(new DateTime(2024, 2, 1));
+        context.Database.ExecuteSqlRaw(
+            "INSERT INTO stable_orders (\"Id\", \"CompletedDate\", \"ExternalId\", \"Status\") VALUES "
+            + "(101, TIMESTAMP '2024-01-15', 'order-1', 'corrected-1'), "
+            + "(102, TIMESTAMP '2024-01-16', 'order-2', 'corrected-2');");
+
+        var result = await context.Database.ReconcileArchiveTierAsync<StableOrder>(
+            new TierReconciliationOptions
+            {
+                Scope = TierMaintenanceScope.ForRootMatchKeys(
+                    TierRowIdentity.For<StableOrder>(
+                        new Dictionary<string, object?> { ["ExternalId"] = "order-1" })),
+            });
+
+        Assert.False(result.NoOp);
+        Assert.Equal("corrected-1", context.OrderHistory.Single(order => order.ExternalId == "order-1").Status);
+        Assert.Equal("complete", context.OrderHistory.Single(order => order.ExternalId == "order-2").Status);
+        var conflicts = await context.Database.GetArchiveConflictsAsync<StableOrder>();
+        var conflict = Assert.Single(conflicts.Keys);
+        Assert.Equal("order-2", conflict.Values["ExternalId"]);
+    }
+
+    [Fact]
+    public async Task Root_tombstone_cascades_through_the_declared_cold_aggregate()
+    {
+        var archivePath = Path.Combine(_root, "tombstone-archive");
+        using var context = new StableOrderContext(Path.Combine(_root, "tombstone.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.Add(Order(
+            "order-1",
+            new DateTime(2024, 1, 15),
+            new StableOrderItem { ExternalOrderId = "order-1", LineCode = "A", Amount = 12m }));
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<StableOrder>(new DateTime(2024, 2, 1));
+
+        await context.Database.ReconcileArchiveTierAsync<StableOrder>(
+            new TierReconciliationOptions
+            {
+                Tombstones =
+                [
+                    TierRowIdentity.For<StableOrder>(
+                        new Dictionary<string, object?> { ["ExternalId"] = "order-1" }),
+                ],
+            });
+
+        Assert.Empty(context.OrderHistory);
+        Assert.Empty(context.ItemHistory);
+    }
+
+    [Fact]
+    public async Task Restore_moves_an_exact_cold_graph_back_to_hot_and_removes_it_from_cold()
+    {
+        var archivePath = Path.Combine(_root, "restore-archive");
+        using var context = new StableOrderContext(Path.Combine(_root, "restore.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.Add(Order(
+            "order-1",
+            new DateTime(2024, 1, 15),
+            new StableOrderItem { ExternalOrderId = "order-1", LineCode = "A", Amount = 12m }));
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<StableOrder>(new DateTime(2024, 2, 1));
+
+        var result = await context.Database.RestoreArchiveTierAsync<StableOrder>(
+            new TierRestoreOptions
+            {
+                Scope = TierMaintenanceScope.ForRootMatchKeys(
+                    TierRowIdentity.For<StableOrder>(
+                        new Dictionary<string, object?> { ["ExternalId"] = "order-1" })),
+            });
+
+        Assert.Equal(1, result.RootsSelected);
+        Assert.Equal(1, result.RootsInserted);
+        Assert.Equal(2, result.RowsInserted);
+        Assert.Equal(TierArchiveOperation.Restore, result.Publication.Operation);
+        Assert.Single(context.Orders);
+        Assert.Single(context.Items);
+        Assert.Single(context.OrderHistory);
+        Assert.Single(context.ItemHistory);
+    }
+
+    [Fact]
+    public async Task Bounded_manifest_inventory_compaction_and_local_preflight_are_generic()
+    {
+        var archivePath = Path.Combine(_root, "maintenance-archive");
+        using var context = new StableOrderContext(Path.Combine(_root, "maintenance.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.Add(Order("order-1", new DateTime(2024, 1, 15)));
+        context.SaveChanges();
+
+        var archived = await context.Database.ArchiveTierAsync<StableOrder>(
+            new DateTime(2024, 2, 1),
+            new TierArchiveOptions
+            {
+                Manifest = new TierManifestOptions { Detail = TierManifestDetail.Summary },
+                Writer = new TierParquetWriterOptions
+                {
+                    Compression = "zstd",
+                    CompressionLevel = 3,
+                    RowGroupSize = 2048,
+                },
+            });
+        var node = Assert.Single(archived.Nodes, evidence => evidence.Table == "stable_orders");
+        Assert.Empty(node.Files);
+        Assert.True(node.FileCount > 0);
+        Assert.True(node.FilesTruncated);
+
+        var inventory = await context.Database.GetArchiveGenerationInventoryAsync<StableOrder>();
+        var active = Assert.Single(inventory.Generations, generation =>
+            generation.State == TierArchiveGenerationState.Active);
+        Assert.Equal(inventory.ActiveGenerationId, active.GenerationId);
+        Assert.True(active.FileCount > 0);
+
+        var compacted = await context.Database.CompactArchiveTierAsync<StableOrder>(
+            new TierCompactionOptions
+            {
+                Writer = new TierParquetWriterOptions { Compression = "zstd", CompressionLevel = 5 },
+            });
+        Assert.Equal(TierArchiveOperation.Compact, compacted.Operation);
+        Assert.NotNull(compacted.Revision);
+
+        var preflight = await context.Database.PreflightTieredStorageAsync<StableOrder>(
+            new TierStoragePreflightOptions { ProbeWriteAndDelete = true });
+        Assert.True(preflight.Succeeded);
+        Assert.Contains(preflight.Capabilities, capability =>
+            capability.Capability == TierStorageCapability.Write && capability.Supported);
+        Assert.Contains(preflight.Capabilities, capability =>
+            capability.Capability == TierStorageCapability.Delete && capability.Supported);
+    }
+
+    [Fact]
+    public async Task Empty_archive_reports_read_as_untested_without_failing_preflight()
+    {
+        var archivePath = Path.Combine(_root, "empty-preflight-archive");
+        Directory.CreateDirectory(archivePath);
+        using var context = new StableOrderContext(Path.Combine(_root, "empty-preflight.duckdb"), archivePath);
+
+        var preflight = await context.Database.PreflightTieredStorageAsync<StableOrder>();
+
+        Assert.True(preflight.Succeeded);
+        var read = Assert.Single(
+            preflight.Capabilities,
+            capability => capability.Capability == TierStorageCapability.Read);
+        Assert.False(read.Supported);
+        Assert.False(read.WasTested);
+    }
+
+    [Fact]
+    public void Diagnostic_redaction_removes_uri_credentials_query_and_fragment()
+    {
+        var message = DuckDBArchiveExtensions.RedactDiagnosticMessage(
+            new InvalidOperationException(
+                "Failed to read https://alice:password@example.test/archive?sig=TOPSECRET#fragment"));
+
+        Assert.DoesNotContain("alice", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("password", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("TOPSECRET", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("fragment", message, StringComparison.Ordinal);
+        Assert.Contains("https://example.test/archive", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Writer_filename_pattern_cannot_escape_the_provider_archive_path()
+    {
+        using var context = new StableOrderContext(
+            Path.Combine(_root, "writer-validation.duckdb"),
+            Path.Combine(_root, "writer-validation-archive"));
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => context.Database.ArchiveTierAsync<StableOrder>(
+                new DateTime(2024, 2, 1),
+                new TierArchiveOptions
+                {
+                    Writer = new TierParquetWriterOptions
+                    {
+                        FilenamePattern = "../outside-{i}.parquet",
+                    },
+                }));
+
+        Assert.Equal("FilenamePattern", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task Read_only_diagnostics_do_not_create_provider_tables()
+    {
+        using var context = new StableOrderContext(
+            Path.Combine(_root, "diagnostics.duckdb"),
+            Path.Combine(_root, "diagnostics-archive"));
+
+        var contract = await context.Database.InspectArchiveContractAsync<StableOrder>();
+        var conflicts = await context.Database.GetArchiveConflictsAsync<StableOrder>();
+        var inventory = await context.Database.GetArchiveGenerationInventoryAsync<StableOrder>();
+
+        Assert.Null(contract.PersistedContractJson);
+        Assert.Empty(conflicts.Keys);
+        Assert.Empty(inventory.Generations);
+        await context.Database.OpenConnectionAsync();
+        await using var command = context.Database.GetDbConnection().CreateCommand();
+        command.CommandText =
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name IN "
+            + $"('{DuckDBTierControl.ControlTable}', '{DuckDBTierControl.GenerationTable}', "
+            + $"'{DuckDBTierControl.GenerationNodeTable}', '{DuckDBTierControl.GenerationFileTable}');";
+        Assert.Equal(0L, Convert.ToInt64(await command.ExecuteScalarAsync()));
+    }
+
+    [Fact]
+    public async Task Composite_child_foreign_key_archives_deletes_and_reads_as_one_aggregate()
+    {
+        var archivePath = Path.Combine(_root, "composite-fk-archive");
+        using var context = new CompositeForeignKeyContext(
+            Path.Combine(_root, "composite-fk.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Roots.Add(new CompositeRoot
+        {
+            TenantId = 7,
+            Id = 11,
+            ExternalId = "root-1",
+            CompletedAt = new DateTime(2024, 1, 15),
+            Children =
+            [
+                new CompositeChild
+                {
+                    Id = 21,
+                    TenantId = 7,
+                    RootId = 11,
+                    ExternalId = "child-1",
+                },
+            ],
+        });
+        context.SaveChanges();
+
+        var result = await context.Database.ArchiveTierAsync<CompositeRoot>(new DateTime(2024, 2, 1));
+
+        Assert.Equal(1, result.RowsArchived);
+        Assert.Empty(context.Roots);
+        Assert.Empty(context.Children);
+        Assert.Single(context.RootHistory);
+        Assert.Single(context.ChildHistory);
+    }
+
+    [Fact]
+    public async Task DateOnly_lifecycle_selector_archives_normally()
+    {
+        using (var dateOnly = new DateOnlyLifecycleContext(
+                   Path.Combine(_root, "date-only.duckdb"),
+                   Path.Combine(_root, "date-only-archive")))
+        {
+            dateOnly.Database.EnsureCreated();
+            dateOnly.Rows.Add(new DateOnlyLifecycle
+            {
+                Id = 1,
+                ArchivedOn = new DateOnly(2024, 1, 15),
+            });
+            dateOnly.SaveChanges();
+
+            var result = await dateOnly.Database.ArchiveTierAsync<DateOnlyLifecycle>(
+                new DateTime(2024, 2, 1));
+
+            Assert.Equal(1, result.RowsArchived);
+            Assert.Empty(dateOnly.Rows);
+            Assert.Single(dateOnly.History);
+        }
+    }
+
+    [Fact]
     public async Task Reconciliation_rejects_a_reopened_or_moved_lifecycle()
     {
         var archivePath = Path.Combine(_root, "reconcile-reopened-archive");
@@ -467,6 +742,52 @@ public sealed class TieredStorageSafetyTests : IDisposable
         public decimal Amount { get; set; }
     }
 
+    private sealed class CompositeRoot
+    {
+        public int TenantId { get; set; }
+        public int Id { get; set; }
+        public string ExternalId { get; set; } = null!;
+        public DateTime CompletedAt { get; set; }
+        public List<CompositeChild> Children { get; set; } = [];
+    }
+
+    private sealed class CompositeChild
+    {
+        public int Id { get; set; }
+        public int TenantId { get; set; }
+        public int RootId { get; set; }
+        public string ExternalId { get; set; } = null!;
+        public CompositeRoot? Root { get; set; }
+    }
+
+    private sealed class CompositeRootHistory
+    {
+        public int TenantId { get; set; }
+        public int Id { get; set; }
+        public string ExternalId { get; set; } = null!;
+        public DateTime CompletedAt { get; set; }
+    }
+
+    private sealed class CompositeChildHistory
+    {
+        public int Id { get; set; }
+        public int TenantId { get; set; }
+        public int RootId { get; set; }
+        public string ExternalId { get; set; } = null!;
+    }
+
+    private sealed class DateOnlyLifecycle
+    {
+        public int Id { get; set; }
+        public DateOnly ArchivedOn { get; set; }
+    }
+
+    private sealed class DateOnlyLifecycleHistory
+    {
+        public int Id { get; set; }
+        public DateOnly ArchivedOn { get; set; }
+    }
+
     private sealed class StableOrderHistory
     {
         public int Id { get; set; }
@@ -508,6 +829,61 @@ public sealed class TieredStorageSafetyTests : IDisposable
                         item => new { item.ExternalOrderId, item.LineCode },
                         TierMatchKeyUniqueness.ExternallyEnforced)
                     .WithReadModel<StableOrderItemHistory>());
+        }
+    }
+
+    private sealed class CompositeForeignKeyContext(string dbPath, string archivePath) : DbContext, IArchiveContext
+    {
+        public DbSet<CompositeRoot> Roots => Set<CompositeRoot>();
+        public DbSet<CompositeChild> Children => Set<CompositeChild>();
+        public DbSet<CompositeRootHistory> RootHistory => Set<CompositeRootHistory>();
+        public DbSet<CompositeChildHistory> ChildHistory => Set<CompositeChildHistory>();
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}")
+                .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<CompositeRoot>(builder =>
+            {
+                builder.ToTable("composite_roots");
+                builder.HasKey(root => new { root.TenantId, root.Id });
+                builder.HasMany(root => root.Children)
+                    .WithOne(child => child.Root)
+                    .HasForeignKey(child => new { child.TenantId, child.RootId })
+                    .HasPrincipalKey(root => new { root.TenantId, root.Id });
+            });
+            modelBuilder.Entity<CompositeChild>(builder =>
+            {
+                builder.ToTable("composite_children");
+                builder.HasKey(child => child.Id);
+            });
+            modelBuilder.ToTieredStore<CompositeRoot>(root => root.CompletedAt, archivePath)
+                .MatchBy(root => root.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
+                .WithReadModel<CompositeRootHistory>()
+                .Including<CompositeChild>(root => root.Children, child => child
+                    .MatchBy(item => item.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
+                    .WithReadModel<CompositeChildHistory>());
+        }
+    }
+
+    private sealed class DateOnlyLifecycleContext(string dbPath, string archivePath) : DbContext, IArchiveContext
+    {
+        public DbSet<DateOnlyLifecycle> Rows => Set<DateOnlyLifecycle>();
+        public DbSet<DateOnlyLifecycleHistory> History => Set<DateOnlyLifecycleHistory>();
+        public string ArchivePath => archivePath;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB($"Data Source={dbPath}")
+                .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DateOnlyLifecycle>().ToTable("date_only_rows");
+            modelBuilder.ToTieredStore<DateOnlyLifecycle>(row => row.ArchivedOn, archivePath)
+                .WithReadModel<DateOnlyLifecycleHistory>();
         }
     }
 

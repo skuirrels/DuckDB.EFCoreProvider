@@ -8,6 +8,15 @@ public enum TierArchiveOperation
 
     /// <summary>Rebuilds and publishes a complete cold generation, with approved hot representations winning.</summary>
     Reconcile,
+
+    /// <summary>Moves an explicitly selected cold aggregate set back into mapped hot tables.</summary>
+    Restore,
+
+    /// <summary>Rewrites the complete active cold range into a verified immutable replacement generation.</summary>
+    Compact,
+
+    /// <summary>Rewrites archived files to the currently configured archive contract.</summary>
+    RewriteContract,
 }
 
 /// <summary>The last archive stage reached by a successful or failed tiered-storage operation.</summary>
@@ -50,7 +59,17 @@ public readonly record struct TierArchiveNodeResult(
     long CopiedRows,
     long DeletedRows,
     string ArchivePath,
-    IReadOnlyList<string> Files);
+    IReadOnlyList<string> Files)
+{
+    /// <summary>The complete number of Parquet files represented by this result.</summary>
+    public long FileCount { get; init; } = Files.Count;
+
+    /// <summary>The combined size in bytes of the represented Parquet files when available.</summary>
+    public long TotalBytes { get; init; }
+
+    /// <summary><see langword="true" /> when <see cref="Files" /> is a bounded representative subset.</summary>
+    public bool FilesTruncated { get; init; }
+}
 
 /// <summary>
 ///     The outcome and operational evidence of a tiered-storage archive or reconciliation call.
