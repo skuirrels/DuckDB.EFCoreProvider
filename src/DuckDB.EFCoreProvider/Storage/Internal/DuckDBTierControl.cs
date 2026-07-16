@@ -474,7 +474,7 @@ public static class DuckDBTierControl
         var ts = sql.DelimitIdentifier(timestampColumn);
         var columnList = string.Join(", ", columns.Select(sql.DelimitIdentifier));
         var partitionSelect = rootPartitions is { Count: > 0 }
-            ? rootPartitions.Where(partition => partition.Transform != TierPartitionTransform.Value)
+            ? rootPartitions.Where(partition => partition.Transform != TierPartitionTransform.Value || partition.IsAliased)
                 .Select(partition => PartitionSelect(sql, partition, sql.DelimitIdentifier(partition.SourceColumn)))
             : TemporalPartitionColumns(granularity)
                 .Select(partition => $"{partition.Function}({ts}) AS {sql.DelimitIdentifier(partition.Name)}");
@@ -829,7 +829,7 @@ public static class DuckDBTierControl
         const string alias = "s";
         var columnList = string.Join(", ", columns.Select(column => $"{alias}.{sql.DelimitIdentifier(column)}"));
         var partitionSelect = rootPartitions is { Count: > 0 }
-            ? rootPartitions.Where(partition => partition.Transform != TierPartitionTransform.Value)
+            ? rootPartitions.Where(partition => partition.Transform != TierPartitionTransform.Value || partition.IsAliased)
                 .Select(partition => PartitionSelect(
                     sql,
                     partition,
@@ -1834,7 +1834,7 @@ public static class DuckDBTierControl
         IReadOnlyList<DuckDBTierPartitionColumn>? partitions)
         => AppendColumns(
             ColumnList(sql, columns, alias),
-            (partitions ?? []).Where(partition => partition.Transform != TierPartitionTransform.Value)
+            (partitions ?? []).Where(partition => partition.Transform != TierPartitionTransform.Value || partition.IsAliased)
                 .Select(partition => PartitionSelect(
                     sql,
                     partition,

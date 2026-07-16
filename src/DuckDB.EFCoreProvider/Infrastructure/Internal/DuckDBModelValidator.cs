@@ -254,6 +254,13 @@ public class DuckDBModelValidator : RelationalModelValidator
         var columns = new List<string>(definitions.Count);
         foreach (var definition in definitions)
         {
+            if (definition.PartitionName is not null && string.IsNullOrWhiteSpace(definition.PartitionName))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered-storage partition '{root.DisplayName()}.{definition.PropertyName}' has an empty Hive "
+                    + "partition name.");
+            }
+
             var property = root.FindProperty(definition.PropertyName)
                 ?? throw new InvalidOperationException(
                     $"Tiered-storage partition property '{root.DisplayName()}.{definition.PropertyName}' is not a mapped scalar "
@@ -270,15 +277,15 @@ public class DuckDBModelValidator : RelationalModelValidator
                     + "DateTime or DateOnly.");
             }
 
-            var column = definition.Transform == TierPartitionTransform.Value
-                ? sourceColumn
-                : sourceColumn + "_" + definition.Transform.ToString().ToLowerInvariant();
+            var column = definition.ResolveName(sourceColumn);
 
-            if (definition.Transform != TierPartitionTransform.Value && mappedColumns.Contains(column))
+            if ((definition.Transform != TierPartitionTransform.Value
+                    || !string.Equals(column, sourceColumn, StringComparison.OrdinalIgnoreCase))
+                && mappedColumns.Contains(column))
             {
                 throw new InvalidOperationException(
-                    $"Tiered-storage derived partition '{root.DisplayName()}.{definition.PropertyName}' maps to Hive "
-                    + $"column '{column}', which collides with a mapped root column. Rename the mapped column.");
+                    $"Tiered-storage partition '{root.DisplayName()}.{definition.PropertyName}' uses Hive name "
+                    + $"'{column}', which collides with a mapped root column. Choose a distinct partition name.");
             }
 
             if (columns.Contains(column, StringComparer.OrdinalIgnoreCase))
@@ -350,8 +357,9 @@ public class DuckDBModelValidator : RelationalModelValidator
         {
             throw new InvalidOperationException(
                 $"Tiered-storage child '{child.DisplayName()}' maps column '{collision}', which collides with an "
-                + "additional partition inherited from its aggregate root. Rename the child column so the root-owned "
-                + "Hive partition key can be propagated without replacing child data.");
+                + "additional partition inherited from its aggregate root. Give the root partition a distinct Hive "
+                + "name (for example, By(root => root.OwnerId, \"root_owner_id\")) or rename the child column so the "
+                + "partition key can be propagated without replacing child data.");
         }
     }
 

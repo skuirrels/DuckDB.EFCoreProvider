@@ -6,7 +6,15 @@ namespace DuckDB.EFCoreProvider.Metadata.Internal;
 internal sealed record DuckDBTierPartitionDefinition(
     string PropertyName,
     TierPartitionTransform Transform,
-    bool IsImplicit = false);
+    bool IsImplicit = false,
+    string? PartitionName = null)
+{
+    public string ResolveName(string sourceColumn)
+        => PartitionName
+           ?? (Transform == TierPartitionTransform.Value
+               ? sourceColumn
+               : sourceColumn + "_" + Transform.ToString().ToLowerInvariant());
+}
 
 internal static class DuckDBTierPartitionDefinitionSerializer
 {

@@ -2,6 +2,13 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.9.0
+
+- Add explicit Hive partition names to tiered-storage partition declarations. Exact-value shorthand supports
+  `.PartitionBy(root => root.OwnerId, "root_owner_id")`, while the ordered builder accepts a name on `By`,
+  `ByYear`, `ByMonth`, and `ByDay`. Aliases flow through archive/reconciliation SQL, inherited child layouts,
+  persisted contracts, model collision validation, typed views, and metadata-driven query pruning.
+
 ## 1.8.0
 
 - Support one physical child entity/table beneath multiple independently archived roots through deterministic

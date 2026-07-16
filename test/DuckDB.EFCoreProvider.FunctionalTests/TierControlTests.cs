@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.EFCoreProvider.Metadata.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -124,6 +125,40 @@ public sealed class TierControlTests
 
         Assert.Contains("CAST(date_trunc('month', \"Ts\") AS DATE) AS \"Ts_month\"", sql);
         Assert.Contains("PARTITION_BY (\"CustomerId\", \"Ts_month\")", sql);
+    }
+
+    [Fact]
+    public void ArchiveCopySql_projects_an_exact_partition_alias()
+    {
+        var sql = DuckDBTierControl.ArchiveCopySql(
+            Sql, "events", null, [.. Columns, "CustomerId"], "Ts", "archive/events", TierGranularity.Month,
+            new DateTime(2024, 1, 1), new DateTime(2024, 6, 1),
+            [
+                new DuckDBTierPartitionColumn(
+                    "CustomerId", "CustomerId", "root_owner_id", "INTEGER", TierPartitionTransform.Value),
+                new DuckDBTierPartitionColumn(
+                    "Ts", "Ts", "completed_month", "DATE", TierPartitionTransform.Month),
+            ]);
+
+        Assert.Contains("\"CustomerId\" AS root_owner_id", sql);
+        Assert.Contains("CAST(date_trunc('month', \"Ts\") AS DATE) AS completed_month", sql);
+        Assert.Contains("PARTITION_BY (root_owner_id, completed_month)", sql);
+    }
+
+    [Fact]
+    public void Partition_definition_metadata_remains_backward_compatible_and_round_trips_aliases()
+    {
+        var legacy = Assert.Single(DuckDBTierPartitionDefinitionSerializer.Deserialize(
+            """[{"PropertyName":"CustomerId","Transform":"Value","IsImplicit":false}]"""));
+
+        Assert.Null(legacy.PartitionName);
+        Assert.Equal("customer_id", legacy.ResolveName("customer_id"));
+
+        var json = DuckDBTierPartitionDefinitionSerializer.Serialize(
+            [legacy with { PartitionName = "customer_key" }]);
+        var aliased = Assert.Single(DuckDBTierPartitionDefinitionSerializer.Deserialize(json));
+        Assert.Equal("customer_key", aliased.PartitionName);
+        Assert.Equal("customer_key", aliased.ResolveName("customer_id"));
     }
 
     [Fact]

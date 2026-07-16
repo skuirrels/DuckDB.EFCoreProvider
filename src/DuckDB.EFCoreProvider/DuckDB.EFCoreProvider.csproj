@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.8.0</PackageVersion>
-    <FileVersion>1.8.0</FileVersion>
-    <Version>1.8.0</Version>
+    <PackageVersion>1.9.0</PackageVersion>
+    <FileVersion>1.9.0</FileVersion>
+    <Version>1.9.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,11 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.7.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.8.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.9.0
+- Add explicit physical Hive partition names to tiered-storage exact/year/month/day declarations, including inherited child layouts, typed hot/cold views, persisted layout checks, archive maintenance, and metadata-driven query pruning.
+
 1.8.0
 - Support deterministic root-scoped bindings and combined hot+cold views when one child table participates in multiple independent tiered roots; reject ambiguous row ownership before external writes or hot deletion.
 

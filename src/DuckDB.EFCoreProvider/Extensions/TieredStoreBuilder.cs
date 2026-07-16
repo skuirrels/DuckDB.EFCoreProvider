@@ -77,10 +77,39 @@ public sealed class TieredStoreBuilder<TRoot>
                 DuckDBTieredStoreExtensions.GetPropertyName(property),
                 TierPartitionTransform.Value);
         }).ToArray();
+        return AddExactPartitions(additions, nameof(properties));
+    }
+
+    /// <summary>
+    ///     Adds a mapped root property as an exact-value Hive partition key with an explicit physical name.
+    ///     The configured lifecycle date bucket remains the final safety partition.
+    /// </summary>
+    /// <param name="property">A direct scalar property access on the aggregate root.</param>
+    /// <param name="name">The physical Hive directory and virtual-column name.</param>
+    public TieredStoreBuilder<TRoot> PartitionBy(
+        Expression<Func<TRoot, object?>> property,
+        string name)
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        ValidatePartitionName(name);
+        return AddExactPartitions(
+            [
+                new DuckDBTierPartitionDefinition(
+                    DuckDBTieredStoreExtensions.GetPropertyName(property),
+                    TierPartitionTransform.Value,
+                    PartitionName: name),
+            ],
+            nameof(property));
+    }
+
+    private TieredStoreBuilder<TRoot> AddExactPartitions(
+        IReadOnlyList<DuckDBTierPartitionDefinition> additions,
+        string parameterName)
+    {
         if (additions.Select(definition => definition.PropertyName).Distinct(StringComparer.Ordinal).Count()
-            != additions.Length)
+            != additions.Count)
         {
-            throw new ArgumentException("A tiered-store partition property can only be declared once.", nameof(properties));
+            throw new ArgumentException("A tiered-store partition property can only be declared once.", parameterName);
         }
 
         var definitions = _root.GetTieredStorePartitionDefinitions().ToList();
@@ -102,7 +131,7 @@ public sealed class TieredStoreBuilder<TRoot>
             {
                 throw new ArgumentException(
                     "A tiered-store partition property can only be declared once.",
-                    nameof(properties));
+                    parameterName);
             }
         }
 
@@ -129,12 +158,18 @@ public sealed class TieredStoreBuilder<TRoot>
         return this;
     }
 
+    private static void ValidatePartitionName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("A Hive partition name cannot be empty or whitespace.", nameof(name));
+        }
+    }
+
     /// <summary>
     ///     Replaces the physical Hive layout with an application-defined ordered partition plan. Use
-    ///     <see cref="TieredPartitionBuilder{TRoot}.By{TProperty}" /> for exact values and
-    ///     <see cref="TieredPartitionBuilder{TRoot}.ByMonth{TProperty}" />,
-    ///     <see cref="TieredPartitionBuilder{TRoot}.ByDay{TProperty}" />, or
-    ///     <see cref="TieredPartitionBuilder{TRoot}.ByYear{TProperty}" /> for date buckets.
+    ///     <c>By(...)</c> for exact values and <c>ByMonth(...)</c>, <c>ByDay(...)</c>, or
+    ///     <c>ByYear(...)</c> for date buckets.
     /// </summary>
     public TieredStoreBuilder<TRoot> PartitionBy(Action<TieredPartitionBuilder<TRoot>> configure)
     {
@@ -207,22 +242,52 @@ public sealed class TieredPartitionBuilder<TRoot>
     public TieredPartitionBuilder<TRoot> By<TProperty>(Expression<Func<TRoot, TProperty>> property)
         => Add(property, TierPartitionTransform.Value);
 
+    /// <summary>Adds an exact mapped property value with an explicit Hive partition name.</summary>
+    public TieredPartitionBuilder<TRoot> By<TProperty>(
+        Expression<Func<TRoot, TProperty>> property,
+        string name)
+        => Add(property, TierPartitionTransform.Value, name);
+
     /// <summary>Adds a calendar-year bucket for a mapped date/time property at this position.</summary>
     public TieredPartitionBuilder<TRoot> ByYear<TProperty>(Expression<Func<TRoot, TProperty>> property)
         => Add(property, TierPartitionTransform.Year);
+
+    /// <summary>Adds a calendar-year bucket with an explicit Hive partition name.</summary>
+    public TieredPartitionBuilder<TRoot> ByYear<TProperty>(
+        Expression<Func<TRoot, TProperty>> property,
+        string name)
+        => Add(property, TierPartitionTransform.Year, name);
 
     /// <summary>Adds a calendar-month bucket for a mapped date/time property at this position.</summary>
     public TieredPartitionBuilder<TRoot> ByMonth<TProperty>(Expression<Func<TRoot, TProperty>> property)
         => Add(property, TierPartitionTransform.Month);
 
+    /// <summary>Adds a calendar-month bucket with an explicit Hive partition name.</summary>
+    public TieredPartitionBuilder<TRoot> ByMonth<TProperty>(
+        Expression<Func<TRoot, TProperty>> property,
+        string name)
+        => Add(property, TierPartitionTransform.Month, name);
+
     /// <summary>Adds a calendar-day bucket for a mapped date/time property at this position.</summary>
     public TieredPartitionBuilder<TRoot> ByDay<TProperty>(Expression<Func<TRoot, TProperty>> property)
         => Add(property, TierPartitionTransform.Day);
 
+    /// <summary>Adds a calendar-day bucket with an explicit Hive partition name.</summary>
+    public TieredPartitionBuilder<TRoot> ByDay<TProperty>(
+        Expression<Func<TRoot, TProperty>> property,
+        string name)
+        => Add(property, TierPartitionTransform.Day, name);
+
     private TieredPartitionBuilder<TRoot> Add<TProperty>(
         Expression<Func<TRoot, TProperty>> property,
-        TierPartitionTransform transform)
+        TierPartitionTransform transform,
+        string? name = null)
     {
+        if (name is not null && string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("A Hive partition name cannot be empty or whitespace.", nameof(name));
+        }
+
         var propertyName = DuckDBTieredStoreExtensions.GetPropertyName(property);
         if (_definitions.Any(definition => definition.PropertyName == propertyName))
         {
@@ -231,7 +296,7 @@ public sealed class TieredPartitionBuilder<TRoot>
                 nameof(property));
         }
 
-        _definitions.Add(new DuckDBTierPartitionDefinition(propertyName, transform));
+        _definitions.Add(new DuckDBTierPartitionDefinition(propertyName, transform, PartitionName: name));
         return this;
     }
 }

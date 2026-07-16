@@ -57,9 +57,15 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
             foreach (var comparison in ConjunctiveComparisons(predicate))
             {
                 foreach (var partition in aggregate.RootPartitions.Where(
-                             candidate => candidate.Transform != Metadata.TierPartitionTransform.Value))
+                             candidate => candidate.Transform != Metadata.TierPartitionTransform.Value || candidate.IsAliased))
                 {
-                    if (!TryMatchSourceComparison(comparison, table.Alias, partition.SourceColumn, out var operation, out var value)
+                    if (!TryMatchSourceComparison(
+                            comparison,
+                            table.Alias,
+                            partition.SourceColumn,
+                            out var sourceColumn,
+                            out var operation,
+                            out var value)
                         || ContainsColumn(value))
                     {
                         continue;
@@ -68,8 +74,12 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
                     var partitionColumn = new ColumnExpression(
                         partition.Name,
                         table.Alias,
-                        typeof(DateOnly),
-                        _dateMapping,
+                        partition.Transform == Metadata.TierPartitionTransform.Value
+                            ? sourceColumn.Type
+                            : typeof(DateOnly),
+                        partition.Transform == Metadata.TierPartitionTransform.Value
+                            ? sourceColumn.TypeMapping
+                            : _dateMapping,
                         nullable: true);
                     var bucket = BucketValue(value, partition.Transform);
                     var partitionPredicate = operation switch
@@ -93,6 +103,11 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
 
     private SqlExpression BucketValue(SqlExpression value, Metadata.TierPartitionTransform transform)
     {
+        if (transform == Metadata.TierPartitionTransform.Value)
+        {
+            return value;
+        }
+
         if (transform == Metadata.TierPartitionTransform.Day)
         {
             return _sql.Convert(value, typeof(DateOnly), _dateMapping);
@@ -132,6 +147,7 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
         SqlBinaryExpression comparison,
         string tableAlias,
         string sourceColumn,
+        out ColumnExpression matchedColumn,
         out ExpressionType operation,
         out SqlExpression value)
     {
@@ -139,6 +155,7 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
             && left.TableAlias == tableAlias
             && left.Name == sourceColumn)
         {
+            matchedColumn = left;
             operation = comparison.OperatorType;
             value = comparison.Right;
             return true;
@@ -148,11 +165,13 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
             && right.TableAlias == tableAlias
             && right.Name == sourceColumn)
         {
+            matchedColumn = right;
             operation = Reverse(comparison.OperatorType);
             value = comparison.Left;
             return true;
         }
 
+        matchedColumn = null!;
         operation = default;
         value = null!;
         return false;
