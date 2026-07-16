@@ -334,28 +334,28 @@ For example, a nullable completion date stays hot while it is `NULL`, the Kafka 
 generated EF key, and the child uses its own composite stable identity:
 
 ```csharp
-modelBuilder.Entity<Order>()
-    .HasIndex(order => order.EdcId)
+modelBuilder.Entity<Invoice>()
+    .HasIndex(invoice => invoice.EdcId)
     .IsUnique();
-modelBuilder.Entity<OrderItem>()
-    .HasIndex(item => new { item.OrderEdcId, item.LineNumber })
+modelBuilder.Entity<InvoiceLine>()
+    .HasIndex(line => new { line.InvoiceEdcId, line.LineNumber })
     .IsUnique();
 
 modelBuilder
-    .ToTieredStore<Order>(
-        order => order.CompletedDate, // DateTime?: NULL remains hot
-        "s3://insights-archive/orders",
+    .ToTieredStore<Invoice>(
+        invoice => invoice.CompletedDate, // DateTime?: NULL remains hot
+        "s3://invoice-archive/invoices",
         TierGranularity.Month)
-    .MatchBy(order => order.EdcId)
+    .MatchBy(invoice => invoice.EdcId)
     .PartitionBy(partitions => partitions
-        .By(order => order.OwnerId)
-        .ByMonth(order => order.CompletedDate))
-    .WithReadModel<OrderHistory>()
-    .Including<OrderItem>(
-        order => order.Items,
-        items => items
-            .MatchBy(item => new { item.OrderEdcId, item.LineNumber })
-            .WithReadModel<OrderItemHistory>());
+        .By(invoice => invoice.OwnerId)
+        .ByMonth(invoice => invoice.CompletedDate))
+    .WithReadModel<InvoiceHistory>()
+    .Including<InvoiceLine>(
+        invoice => invoice.Lines,
+        lines => lines
+            .MatchBy(line => new { line.InvoiceEdcId, line.LineNumber })
+            .WithReadModel<InvoiceLineHistory>());
 ```
 
 ```csharp

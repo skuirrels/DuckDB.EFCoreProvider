@@ -94,13 +94,13 @@ source system has a stable identity, configure `MatchBy` independently on the ro
 needs it:
 
 ```csharp
-modelBuilder.ToTieredStore<Order>(order => order.CompletedDate, archivePath)
-    .MatchBy(order => order.EdcId)
-    .PartitionBy(partitions => partitions.ByMonth(order => order.CompletedDate))
-    .WithReadModel<OrderHistory>()
-    .Including<OrderItem>(order => order.Items, items => items
-        .MatchBy(item => new { item.OrderEdcId, item.LineNumber })
-        .WithReadModel<OrderItemHistory>());
+modelBuilder.ToTieredStore<Invoice>(invoice => invoice.CompletedDate, archivePath)
+    .MatchBy(invoice => invoice.EdcId)
+    .PartitionBy(partitions => partitions.ByMonth(invoice => invoice.CompletedDate))
+    .WithReadModel<InvoiceHistory>()
+    .Including<InvoiceLine>(invoice => invoice.Lines, lines => lines
+        .MatchBy(line => new { line.InvoiceEdcId, line.LineNumber })
+        .WithReadModel<InvoiceLineHistory>());
 ```
 
 Single and composite selectors must contain direct mapped scalar properties. By default the selected layout
