@@ -44,6 +44,16 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         Assert.Equal(new DateTime(2024, 2, 1), first.Watermark);
         Assert.Equal(1, first.RowsArchived);
+        Assert.Equal(TierArchiveOperation.Archive, first.Operation);
+        Assert.Null(first.PreviousWatermark);
+        Assert.Equal(DateTime.MinValue, first.WindowStart);
+        Assert.Equal(new DateTime(2024, 2, 1), first.WindowEnd);
+        Assert.Equal(TierArchiveStage.Completed, first.Stage);
+        var rootEvidence = Assert.Single(first.Nodes, node => node.Table == "stable_orders");
+        Assert.Equal(1, rootEvidence.SelectedRows);
+        Assert.Equal(1, rootEvidence.CopiedRows);
+        Assert.Equal(1, rootEvidence.DeletedRows);
+        Assert.NotEmpty(rootEvidence.Files);
         context.ChangeTracker.Clear();
         Assert.Equal(2, context.Orders.Count());
         Assert.Single(context.Orders.Where(order => order.CompletedDate == null));
@@ -202,6 +212,107 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         Assert.Equal(typeof(StableOrderItem), exception.EntityType);
         Assert.Equal(99m, context.Items.Single().Amount);
+    }
+
+    [Fact]
+    public async Task Approved_correction_and_late_unseen_row_publish_a_new_cold_generation()
+    {
+        var archivePath = Path.Combine(_root, "reconcile-archive");
+        using var context = new StableOrderContext(Path.Combine(_root, "reconcile.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.Add(Order("order-1", new DateTime(2024, 1, 15)));
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<StableOrder>(new DateTime(2024, 2, 1));
+        context.Database.ExecuteSqlRaw(
+            "INSERT INTO stable_orders (\"Id\", \"CompletedDate\", \"ExternalId\", \"Status\") VALUES "
+            + "(101, TIMESTAMP '2024-01-15', 'order-1', 'corrected'), "
+            + "(102, TIMESTAMP '2024-01-20', 'late-unseen', 'complete');");
+
+        var result = await context.Database.ReconcileArchiveTierAsync<StableOrder>();
+
+        Assert.Equal(TierArchiveOperation.Reconcile, result.Operation);
+        Assert.False(result.NoOp);
+        Assert.Equal(2, result.RowsArchived);
+        Assert.NotNull(result.Revision);
+        Assert.Contains("/_revisions/", result.ArchivePath.Replace('\\', '/'));
+        var rootEvidence = Assert.Single(result.Nodes, node => node.Table == "stable_orders");
+        Assert.Equal(2, rootEvidence.SelectedRows);
+        Assert.Equal(2, rootEvidence.CopiedRows);
+        Assert.Equal(2, rootEvidence.DeletedRows);
+        Assert.Empty(context.Orders);
+        Assert.Equal(2, context.OrderHistory.Count());
+        Assert.Equal("corrected", context.OrderHistory.Single(order => order.ExternalId == "order-1").Status);
+        Assert.Equal("complete", context.OrderHistory.Single(order => order.ExternalId == "late-unseen").Status);
+        Assert.True(Directory.Exists(Path.Combine(archivePath, "stable_orders")));
+    }
+
+    [Fact]
+    public async Task Approved_composite_child_correction_is_reconciled_with_its_root_replay()
+    {
+        var archivePath = Path.Combine(_root, "reconcile-child-archive");
+        using var context = new StableOrderContext(Path.Combine(_root, "reconcile-child.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.Add(Order(
+            "order-1",
+            new DateTime(2024, 1, 15),
+            new StableOrderItem { ExternalOrderId = "order-1", LineCode = "A", Amount = 12m }));
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<StableOrder>(new DateTime(2024, 2, 1));
+        context.Database.ExecuteSqlRaw(
+            "INSERT INTO stable_orders (\"Id\", \"CompletedDate\", \"ExternalId\", \"Status\") "
+            + "VALUES (101, TIMESTAMP '2024-01-15', 'order-1', 'complete');");
+        context.Database.ExecuteSqlRaw(
+            "INSERT INTO stable_order_items (\"Id\", \"Amount\", \"ExternalOrderId\", \"LineCode\", \"OrderId\") "
+            + "VALUES (201, 99, 'order-1', 'A', 101);");
+
+        var result = await context.Database.ReconcileArchiveTierAsync<StableOrder>();
+
+        Assert.Equal(1, result.RowsArchived);
+        Assert.Empty(context.Orders);
+        Assert.Empty(context.Items);
+        Assert.Single(context.OrderHistory);
+        Assert.Equal(99m, context.ItemHistory.Single().Amount);
+        Assert.All(result.Nodes, node => Assert.Equal(node.SelectedRows, node.CopiedRows));
+    }
+
+    [Fact]
+    public async Task Reconciliation_rejects_a_reopened_or_moved_lifecycle()
+    {
+        var archivePath = Path.Combine(_root, "reconcile-reopened-archive");
+        using var context = new StableOrderContext(Path.Combine(_root, "reconcile-reopened.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.Add(Order("order-1", new DateTime(2024, 1, 15)));
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<StableOrder>(new DateTime(2024, 2, 1));
+        context.Database.ExecuteSqlRaw(
+            "INSERT INTO stable_orders (\"Id\", \"CompletedDate\", \"ExternalId\", \"Status\") "
+            + "VALUES (101, NULL, 'order-1', 'reopened');");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.ReconcileArchiveTierAsync<StableOrder>());
+
+        Assert.Contains("separate restore workflow", exception.Message);
+        Assert.Single(context.Orders);
+        Assert.Equal(2, context.OrderHistory.Count());
+    }
+
+    [Fact]
+    public async Task Late_unseen_row_remains_hot_on_an_ordinary_no_op_archive()
+    {
+        var archivePath = Path.Combine(_root, "late-hot-archive");
+        using var context = new StableOrderContext(Path.Combine(_root, "late-hot.duckdb"), archivePath);
+        context.Database.EnsureCreated();
+        context.Orders.Add(Order("order-1", new DateTime(2024, 1, 15)));
+        context.SaveChanges();
+        await context.Database.ArchiveTierAsync<StableOrder>(new DateTime(2024, 2, 1));
+        context.Orders.Add(Order("late-unseen", new DateTime(2024, 1, 20)));
+        context.SaveChanges();
+
+        var result = await context.Database.ArchiveTierAsync<StableOrder>(new DateTime(2024, 2, 1));
+
+        Assert.True(result.NoOp);
+        Assert.Single(context.Orders);
+        Assert.Equal(2, context.OrderHistory.Count());
     }
 
     [Fact]

@@ -254,17 +254,45 @@ foreign keys immediately and rejects deleting descendants and then their princip
 Do not wrap `ArchiveTierAsync` for a multi-table aggregate in an application transaction; the provider rejects
 that combination before copying. A crash between delete statements remains safe and a rerun removes leftovers.
 
+`TierArchiveResult` contains the published watermark transition and table-level evidence: selected, verified-copy,
+and deleted row counts; the archive window; active generation/revision; archive paths and visible Parquet files;
+no-op state; and the final workflow stage. A failure after preflight throws `TierArchiveOperationException`, whose
+`Stage` and `PartialResult` show how far the operation reached without including object-store credentials.
+
 ### Late rows, corrections, and reopened aggregates
 
 Ordinary archive runs only advance the watermark. A previously unseen row whose lifecycle value arrives behind
-that watermark stays visible and hot; this release does not sweep it into an already-published partition.
+that watermark stays visible and hot. A practical first defence is to delay the cutoff by one complete period.
+For daily archives, running after midnight with yesterday's midnight as the cutoff archives through the day before
+yesterday, leaving a full extra day for delayed ingestion. For monthly archives, running on the second day of the
+month with the first day as the cutoff gives the completed month an extra day. This grace period reduces late rows;
+it does not catch a row that arrives after the watermark has already advanced.
 
 Before an archive or no-op retry changes data, the provider compares hot rows whose stable key already exists in
-published Parquet. An identical replay is safe and is removed by retry cleanup. A differing representation—such
-as a correction or a cleared/moved lifecycle value on a reopened aggregate—throws
-`TierArchivedKeyConflictException` and remains hot for the application to quarantine or investigate. The
-provider does not overwrite or hide-and-delete that change. Replacing cold data requires an explicit recoverable
-partition migration/publication workflow and is not implemented by `ArchiveTierAsync`.
+published Parquet. In simple terms:
+
+- Same key and same data means a harmless retry duplicate; cleanup can remove the hot copy.
+- Same key and different data means a correction; normal archiving stops and leaves the hot copy untouched.
+- A previously unseen key below the watermark is late data; normal archiving leaves it hot.
+- Clearing or moving the lifecycle date of an archived root means reopening it; reconciliation rejects that
+  because the whole aggregate must first be restored to the hot model.
+
+After the application has approved the hot corrections and late rows, run the explicit reconciliation operation:
+
+```csharp
+TierArchiveResult reconciliation =
+    await db.Database.ReconcileArchiveTierAsync<Invoice>(); // + sync ReconcileArchiveTier
+```
+
+Reconciliation reads the complete active cold range, lets hot rows win by the configured stable match key, writes
+a **new immutable Parquet generation**, verifies every node's row count, and atomically switches the control row and
+generated views to that generation. Only then does it delete hot rows whose complete representation matches the
+published generation. It never overwrites the currently active generation in place, so a failure before publication
+leaves readers on the old generation and a failure after publication is safe to retry. The previous generation is
+retained under the archive prefix for recovery. Cleanup must consult `active_archive_path` in
+`__duckdb_tier_control`, retain the active generation plus the required rollback/audit set, and delete or tag only
+generations proven obsolete. Do not apply blind age expiry to the entire `_revisions/` prefix: the active generation
+also lives there after reconciliation and could otherwise be deleted.
 
 ## 5. Retention
 
@@ -387,6 +415,20 @@ TIER_GCS_BUCKET="my-archive-bucket" \
 dotnet run --project samples/TieredStorage -- gcs
 ```
 
+**Failure/retry acceptance matrix.** Run the provider's dedicated MinIO lane with:
+
+```bash
+scripts/test-tiered-storage-s3.sh
+```
+
+It covers first archive, no-op rerun, restart/read, failure after copy, failure after control/view publication,
+partial child deletion, reconciliation publication failure, and nullable-column schema evolution. The same test
+class runs against a unique disposable real-AWS prefix when `DUCKDB_AWS_S3_TEST_BUCKET` is set. Optional variables
+are `DUCKDB_AWS_S3_TEST_PREFIX`, `DUCKDB_AWS_S3_TEST_REGION`, and the paired
+`DUCKDB_AWS_S3_TEST_KEY`/`DUCKDB_AWS_S3_TEST_SECRET` plus `DUCKDB_AWS_S3_TEST_SESSION_TOKEN`; when explicit keys
+are omitted, DuckDB's AWS credential chain is used. Configure lifecycle expiry on the test prefix because the
+provider intentionally does not delete remote objects.
+
 **How remote reads stay cheap.** A scoped cold query prunes to the partitions it needs and range-reads only the
 Parquet byte ranges within them — it never downloads whole files. `EXPLAIN ANALYZE` shows the pruning, e.g.
 `Scanning Files: 1/60` for a single-month query. To measure this on your own S3 / Azure endpoints (cold vs warm
@@ -395,7 +437,8 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
 
 ## Production notes
 
-- **Single writer.** DuckDB allows one writer. Run `ArchiveTierAsync` / `PurgeArchiveOlderThan` from the
+- **Single writer.** DuckDB allows one writer. Run `ArchiveTierAsync`, `ReconcileArchiveTierAsync`, and
+  `PurgeArchiveOlderThan` from the
   writing process with no other writer active (a maintenance window or the app's own scheduler).
 - **Absolute archive paths.** DuckDB resolves a relative archive path against the process working directory;
   prefer an absolute path in production. Each table archives under

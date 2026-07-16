@@ -1,0 +1,31 @@
+name: duckdb-efcore-tiered-storage-s3
+
+services:
+  minio:
+    image: ${TIERED_S3_MINIO_IMAGE:-minio/minio:RELEASE.2025-07-23T15-54-02Z}
+    command: server /data
+    ports:
+      - "${DUCKDB_S3_TEST_PORT:-19010}:9000"
+    environment:
+      MINIO_ROOT_USER: ${DUCKDB_S3_TEST_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${DUCKDB_S3_TEST_SECRET:-minioadmin}
+    volumes:
+      - minio-data:/data
+
+  createbucket:
+    image: ${TIERED_S3_MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-07-16T15-35-03Z}
+    depends_on:
+      - minio
+    environment:
+      S3_KEY_ID: ${DUCKDB_S3_TEST_KEY:-minioadmin}
+      S3_SECRET: ${DUCKDB_S3_TEST_SECRET:-minioadmin}
+      BUCKET_NAME: ${DUCKDB_S3_TEST_BUCKET:-tiered-storage-integration}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - >-
+        mc alias set integration http://minio:9000 "$${S3_KEY_ID}" "$${S3_SECRET}" &&
+        mc mb --ignore-existing "integration/$${BUCKET_NAME}"
+
+volumes:
+  minio-data:

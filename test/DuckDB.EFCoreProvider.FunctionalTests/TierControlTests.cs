@@ -134,6 +134,25 @@ public sealed class TierControlTests
     }
 
     [Fact]
+    public void Archive_file_probe_lists_manifest_files_in_stable_order()
+        => Assert.Equal(
+            "SELECT file FROM glob('s3://bucket/archive/events/**/*.parquet') ORDER BY file;",
+            DuckDBArchiveFileProbe.ArchiveFileListSql("s3://bucket/archive/events/"));
+
+    [Fact]
+    public void Archive_file_probe_describes_the_union_schema()
+        => Assert.Equal(
+            "DESCRIBE SELECT * FROM read_parquet('s3://bucket/archive/events/**/*.parquet', "
+            + "hive_partitioning = true, union_by_name = true);",
+            DuckDBArchiveFileProbe.ArchiveColumnListSql("s3://bucket/archive/events/"));
+
+    [Theory]
+    [InlineData("s3://bucket/archive/events", "s3://bucket/archive/events")]
+    [InlineData("https://user:secret@example.test/archive?signature=secret", "https://example.test/archive")]
+    public void Archive_manifest_paths_do_not_expose_url_credentials(string path, string expected)
+        => Assert.Equal(expected, DuckDBTierArchiveManifest.RedactCredentials(path));
+
+    [Fact]
     public void ArchiveChildCopySql_joins_to_the_root_for_the_boundary_and_partitions()
     {
         var chain = new[] { new DuckDBTierControl.TierJoinHop("InvoiceId", "invoices", null, "Id") };
@@ -260,6 +279,26 @@ public sealed class TierControlTests
     }
 
     [Fact]
+    public void Full_row_comparison_treats_a_missing_nullable_cold_column_as_null()
+    {
+        var sql = DuckDBTierControl.RootConflictCountSql(
+            Sql,
+            "events",
+            null,
+            ["ExternalId"],
+            ["ExternalId", "Ts", "Note"],
+            "Ts",
+            "archive/events",
+            new DateTime(2024, 6, 1),
+            rootPartitions: null,
+            archiveColumns: ["ExternalId", "Ts"]);
+
+        Assert.Contains("c.\"Ts\" IS NOT DISTINCT FROM h.\"Ts\"", sql);
+        Assert.Contains("h.\"Note\" IS NULL", sql);
+        Assert.DoesNotContain("c.\"Note\"", sql);
+    }
+
+    [Fact]
     public void Control_table_ddl_upgrades_legacy_tables_with_a_partition_spec()
     {
         var sql = DuckDBTierControl.ControlTableDdl(Sql);
@@ -268,6 +307,54 @@ public sealed class TierControlTests
         Assert.Contains("ADD COLUMN IF NOT EXISTS partition_spec TEXT", sql);
         Assert.Contains("archive_spec TEXT", sql);
         Assert.Contains("ADD COLUMN IF NOT EXISTS archive_spec TEXT", sql);
+        Assert.Contains("active_archive_path TEXT", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS active_archive_path TEXT", sql);
+        Assert.Contains("archive_revision TEXT", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS archive_revision TEXT", sql);
+    }
+
+    [Fact]
+    public void Archive_publication_persists_the_active_immutable_generation()
+    {
+        var sql = DuckDBTierControl.PublishArchiveSql(
+            Sql,
+            "events",
+            new DateTime(2024, 6, 1),
+            "archive/events",
+            "archive/_revisions/rev-1",
+            "rev-1",
+            TierGranularity.Month,
+            "{\"Version\":1}");
+
+        Assert.Contains("active_archive_path", sql);
+        Assert.Contains("archive_revision", sql);
+        Assert.Contains("'archive/_revisions/rev-1'", sql);
+        Assert.Contains("'rev-1'", sql);
+        Assert.Contains("active_archive_path = excluded.active_archive_path", sql);
+    }
+
+    [Fact]
+    public void Reconcile_root_source_lets_hot_rows_win_by_stable_key()
+    {
+        var sql = DuckDBTierControl.ReconcileRootSourceSql(
+            Sql,
+            "events",
+            null,
+            Columns,
+            ["ExternalId"],
+            "Ts",
+            "archive/events",
+            TierGranularity.Month,
+            new DateTime(2024, 6, 1),
+            includeCold: true,
+            rootPartitions: null);
+
+        Assert.Contains("FROM events AS h", sql);
+        Assert.Contains("UNION ALL BY NAME", sql);
+        Assert.Contains("read_parquet('archive/events/**/*.parquet'", sql);
+        Assert.Contains(
+            "AND NOT EXISTS (SELECT 1 FROM events AS h WHERE c.\"ExternalId\" = h.\"ExternalId\")",
+            sql);
     }
 
     [Fact]

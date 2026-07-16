@@ -19,6 +19,7 @@ public sealed class DuckDBTierAggregate
 {
     private DuckDBTierAggregate(
         IReadOnlyList<DuckDBTierNode> nodes,
+        string archiveBasePath,
         string controlKey,
         TierGranularity granularity,
         string rootTimestampColumn,
@@ -26,6 +27,7 @@ public sealed class DuckDBTierAggregate
         bool includeHotChildFilter)
     {
         Nodes = nodes;
+        ArchiveBasePath = archiveBasePath.TrimEnd('/', '\\');
         ControlKey = controlKey;
         Granularity = granularity;
         RootTimestampColumn = rootTimestampColumn;
@@ -53,6 +55,9 @@ public sealed class DuckDBTierAggregate
 
     /// <summary>The tier control-table key (shared by the whole aggregate).</summary>
     public string ControlKey { get; }
+
+    /// <summary>The configured aggregate archive base beneath which table directories are stored.</summary>
+    public string ArchiveBasePath { get; }
 
     /// <summary>The archive partition granularity.</summary>
     public TierGranularity Granularity { get; }
@@ -131,7 +136,7 @@ public sealed class DuckDBTierAggregate
         }
 
         return new DuckDBTierAggregate(
-            nodes, root.GetTieredStoreControlKey()!, root.GetTieredStoreGranularity(), rootTimestampColumn,
+            nodes, archivePath, root.GetTieredStoreControlKey()!, root.GetTieredStoreGranularity(), rootTimestampColumn,
             rootPartitions, root.GetTieredStoreHotChildFilter());
     }
 

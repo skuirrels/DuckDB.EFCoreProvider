@@ -135,6 +135,7 @@ public static class DuckDBServiceCollectionExtensions
                 .TryAddSingleton<IDuckDBSingletonOptions, DuckDBSingletonOptions>()
                 .TryAddSingleton<IDuckLakeSingletonOptions, DuckLakeSingletonOptions>()
                 .TryAddScoped<IDuckDBArchiveFileProbe, DuckDBArchiveFileProbe>()
+                .TryAddScoped<IDuckDBTierFailureInjector, DuckDBTierFailureInjector>()
                 .TryAddScoped<IDuckDBRelationalConnection, DuckDBRelationalConnection>());
 
         builder.TryAddCoreServices();
