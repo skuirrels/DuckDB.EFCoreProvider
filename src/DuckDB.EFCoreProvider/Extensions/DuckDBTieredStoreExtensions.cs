@@ -2,6 +2,7 @@ using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text.Json;
@@ -18,12 +19,12 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///         The <em>hot</em> side is your ordinary EF Core model — regular entities with normal keys,
 ///         relationships, <c>SaveChanges</c>, and <c>Include</c>. <c>ToTieredStore</c> only
 ///         annotates an existing entity as a tiered aggregate root and (via <see cref="TieredStoreBuilder{TRoot}" />)
-///         declares its aggregate children and the read-model types used to query hot+cold together.
+///         declares its aggregate children and optional physical hot+cold views.
 ///     </para>
 ///     <para>
-///         The <em>cold/reporting</em> side uses a separate keyless read-model type per table, mapped to a
-///         union view. You query it as an ordinary keyless <see cref="DbSet{TEntity}" /> and join read-models
-///         with LINQ; the view transparently spans the hot table and the Parquet archive.
+///         A generated union view may be exposed through a separate keyless read-model in the same EF model, or it
+///         may be created without another CLR type so a separate read-only context can map the application's
+///         existing entity type to it. Either form transparently spans the hot table and the Parquet archive.
 ///     </para>
 /// </remarks>
 public static class DuckDBTieredStoreExtensions
@@ -49,6 +50,50 @@ public static class DuckDBTieredStoreExtensions
         string? controlKey = null)
         where TRoot : class
         => ConfigureTieredStore(modelBuilder, timestamp, archivePath, granularity, controlKey);
+
+    /// <summary>
+    ///     Maps an existing application entity as a keyless reader of a provider-managed tiered view and records
+    ///     the physical partition plan used to derive Parquet-pruning predicates in this EF model.
+    /// </summary>
+    /// <remarks>
+    ///     Use this in a separate read-only context. The partition declaration must match the tier-owning
+    ///     context's ordered <c>PartitionBy(...)</c> declaration. Applications can share one configuration delegate
+    ///     between both contexts to keep the declarations identical. When the provider derives a pruning predicate,
+    ///     it also references a physical contract marker generated from the resolved plan. A stale or mismatched
+    ///     reader therefore fails rather than silently filtering valid rows.
+    /// </remarks>
+    /// <typeparam name="TEntity">The existing application entity type mapped by the read-only context.</typeparam>
+    /// <param name="entity">The entity-type builder.</param>
+    /// <param name="viewName">The unqualified provider-managed tiered-view name.</param>
+    /// <param name="partitions">The complete ordered physical partition plan configured by the tier owner.</param>
+    public static EntityTypeBuilder<TEntity> ToTieredView<TEntity>(
+        this EntityTypeBuilder<TEntity> entity,
+        string viewName,
+        Action<TieredPartitionBuilder<TEntity>> partitions)
+        where TEntity : class
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        ArgumentException.ThrowIfNullOrWhiteSpace(viewName);
+        ArgumentNullException.ThrowIfNull(partitions);
+        if (viewName.Contains('.'))
+        {
+            throw new ArgumentException(
+                "A tiered view name must be an unqualified DuckDB identifier; schema-qualified names are not supported.",
+                nameof(viewName));
+        }
+
+        var partitionBuilder = new TieredPartitionBuilder<TEntity>();
+        partitions(partitionBuilder);
+        if (partitionBuilder.Definitions.Count == 0)
+        {
+            throw new ArgumentException("At least one partition must be declared.", nameof(partitions));
+        }
+
+        entity.HasNoKey();
+        entity.ToView(viewName);
+        entity.Metadata.SetTieredViewPartitionDefinitions(partitionBuilder.Definitions);
+        return entity;
+    }
 
     /// <summary>
     ///     Marks an existing entity as a tiered-storage aggregate root using a nullable lifecycle property.
@@ -118,10 +163,41 @@ public static class DuckDBTieredStoreExtensions
 
     internal static void MapReadModel(ModelBuilder modelBuilder, IMutableEntityType hot, Type readModel)
     {
-        var table = hot.GetTableName() ?? hot.ClrType.Name;
-        var view = table + "_tiered";
-        hot.SetAnnotation(DuckDBAnnotationNames.TieredStoreView, view);
+        var view = ConfigureTieredView(hot);
         modelBuilder.Entity(readModel).HasNoKey().ToView(view);
+    }
+
+    internal static string ConfigureTieredView(IMutableEntityType hot, string? viewName = null)
+    {
+        ArgumentNullException.ThrowIfNull(hot);
+        if (viewName is not null && string.IsNullOrWhiteSpace(viewName))
+        {
+            throw new ArgumentException("A tiered view name cannot be empty or whitespace.", nameof(viewName));
+        }
+
+        if (viewName?.Contains('.') == true)
+        {
+            throw new ArgumentException(
+                "A tiered view name must be an unqualified DuckDB identifier; schema-qualified names are not supported.",
+                nameof(viewName));
+        }
+
+        var existing = hot.GetTieredStoreView();
+        if (existing is not null)
+        {
+            if (viewName is not null && !string.Equals(existing, viewName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered entity '{hot.DisplayName()}' already uses view '{existing}' and cannot also use "
+                    + $"'{viewName}'. Shared descendants have one entity-wide view across every root binding.");
+            }
+
+            return existing;
+        }
+
+        var resolved = viewName ?? (hot.GetTableName() ?? hot.ClrType.Name) + "_tiered";
+        hot.SetAnnotation(DuckDBAnnotationNames.TieredStoreView, resolved);
+        return resolved;
     }
 
     internal static (IMutableEntityType Entity, TieredStoreBinding Binding) AddChild(
@@ -206,7 +282,19 @@ public static class DuckDBTieredStoreExtensions
             DuckDBAnnotationNames.TieredStorePartitionProperties,
             DuckDBTierPartitionDefinitionSerializer.Serialize(definitions));
 
-    /// <summary>Gets the union view name for a tiered entity, or <see langword="null" /> if it has no read model.</summary>
+    internal static IReadOnlyList<DuckDBTierPartitionDefinition> GetTieredViewPartitionDefinitions(
+        this IReadOnlyEntityType entityType)
+        => DuckDBTierPartitionDefinitionSerializer.Deserialize(
+            entityType.FindAnnotation(DuckDBAnnotationNames.TieredViewPartitionProperties)?.Value as string);
+
+    internal static void SetTieredViewPartitionDefinitions(
+        this IMutableEntityType entityType,
+        IReadOnlyList<DuckDBTierPartitionDefinition> definitions)
+        => entityType.SetAnnotation(
+            DuckDBAnnotationNames.TieredViewPartitionProperties,
+            DuckDBTierPartitionDefinitionSerializer.Serialize(definitions));
+
+    /// <summary>Gets the union view name for a tiered entity, or <see langword="null" /> if no view was requested.</summary>
     public static string? GetTieredStoreView(this IReadOnlyEntityType entityType)
         => entityType.FindAnnotation(DuckDBAnnotationNames.TieredStoreView)?.Value as string;
 

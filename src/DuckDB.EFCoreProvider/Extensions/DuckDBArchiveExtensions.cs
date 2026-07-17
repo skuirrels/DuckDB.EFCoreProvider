@@ -104,8 +104,8 @@ public static partial class DuckDBArchiveExtensions
     };
 
     /// <summary>
-    ///     Creates the tier control table and the union view for every configured tiered table (roots and
-    ///     children) that has a read model, if they do not already exist. Called automatically by
+    ///     Creates the tier control table and the requested union view for every configured tiered table (roots and
+    ///     children), whether the view has an EF read model or was registered directly. Called automatically by
     ///     <c>EnsureCreated()</c>; call it yourself after <c>Migrate()</c>. Safe to call repeatedly.
     /// </summary>
     public static void EnsureTieredStoresCreated(this DatabaseFacade database)

@@ -43,8 +43,14 @@ public static class DuckDBAnnotationNames
     public const string TieredStorePartitionProperties = Prefix + "TieredStore:PartitionProperties";
 
     /// <summary>
+    ///     The serialized ordered partition descriptors used to derive pruning predicates for a keyless entity
+    ///     mapped to a provider-managed tiered view. Internal API.
+    /// </summary>
+    public const string TieredViewPartitionProperties = Prefix + "TieredView:PartitionProperties";
+
+    /// <summary>
     ///     The name of the DuckDB view that unions the hot table and the cold archive for a tiered-storage
-    ///     entity. This is also the shared-type entity name of the tiered read model. Internal API.
+    ///     entity. A keyless read model may optionally map to this physical view. Internal API.
     /// </summary>
     public const string TieredStoreView = Prefix + "TieredStore:View";
 

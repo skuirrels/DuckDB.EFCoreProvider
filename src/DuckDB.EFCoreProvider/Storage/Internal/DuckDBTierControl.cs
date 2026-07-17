@@ -355,7 +355,15 @@ public static class DuckDBTierControl
         IReadOnlyList<string>? archiveFiles)
     {
         const string hotAlias = "h";
-        var hotProjection = HotProjection(sql, columns, hotAlias, rootPartitions);
+        var contractProjection = rootPartitions is { Count: > 0 }
+            ? new[]
+            {
+                $"TRUE AS {sql.DelimitIdentifier(DuckDBTierPartitionContract.GetValidationColumn(rootPartitions))}",
+            }
+            : [];
+        var hotProjection = AppendColumns(
+            HotProjection(sql, columns, hotAlias, rootPartitions),
+            contractProjection);
         var builder = new StringBuilder()
             .Append("CREATE OR REPLACE VIEW ").Append(sql.DelimitIdentifier(viewName)).Append(" AS\n");
 
@@ -372,12 +380,14 @@ public static class DuckDBTierControl
         // The cold branch selects every archived column except the hive partition columns and lets
         // UNION ALL BY NAME reconcile the two sides. A column added to the entity after old partitions were
         // written is therefore filled with NULL for those rows instead of raising a binder error.
-        var coldProjection = StarProjection(
-            sql,
-            rootPartitions is { Count: > 0 }
-                ? []
-                : TemporalPartitionColumns(granularity).Select(partition => partition.Name),
-            rootPartitions);
+        var coldProjection = AppendColumns(
+            StarProjection(
+                sql,
+                rootPartitions is { Count: > 0 }
+                    ? []
+                    : TemporalPartitionColumns(granularity).Select(partition => partition.Name),
+                rootPartitions),
+            contractProjection);
         var hotKeyMatch = KeyMatchPredicate(sql, keyColumns, "c", hotAlias);
         var coldSource = new StringBuilder("(SELECT ")
             .Append(coldProjection)

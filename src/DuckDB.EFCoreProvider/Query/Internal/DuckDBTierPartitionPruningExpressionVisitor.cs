@@ -9,8 +9,9 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 
 internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVisitor
 {
-    private readonly IReadOnlyDictionary<string, DuckDBTierAggregate> _aggregatesByView;
+    private readonly IReadOnlyDictionary<string, DuckDBTierPartitionPruningPlan> _plansByView;
     private readonly ISqlExpressionFactory _sql;
+    private readonly RelationalTypeMapping _boolMapping;
     private readonly RelationalTypeMapping _dateMapping;
     private readonly RelationalTypeMapping _timestampMapping;
 
@@ -19,10 +20,10 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
         ISqlExpressionFactory sql,
         IRelationalTypeMappingSource typeMappingSource)
     {
-        _aggregatesByView = DuckDBTierAggregate.ResolveAll(model)
-            .Where(aggregate => aggregate.Root.ViewName is not null && aggregate.RootPartitions.Count > 0)
-            .ToDictionary(aggregate => aggregate.Root.ViewName!, StringComparer.Ordinal);
+        _plansByView = DuckDBTierPartitionPruningMetadata.ResolveAll(model);
         _sql = sql;
+        _boolMapping = typeMappingSource.FindMapping(typeof(bool), model)
+            ?? throw new InvalidOperationException("DuckDB BOOLEAN mapping is required for tier partition validation.");
         _dateMapping = typeMappingSource.FindMapping(typeof(DateOnly), model)
             ?? throw new InvalidOperationException("DuckDB DATE mapping is required for tier partition pruning.");
         _timestampMapping = typeMappingSource.FindMapping(typeof(DateTime), model)
@@ -49,14 +50,15 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
     {
         foreach (var table in selectExpression.Tables.OfType<TableExpression>())
         {
-            if (!_aggregatesByView.TryGetValue(table.Name, out var aggregate))
+            if (!_plansByView.TryGetValue(table.Name, out var plan))
             {
                 continue;
             }
 
+            var contractValidated = false;
             foreach (var comparison in ConjunctiveComparisons(predicate))
             {
-                foreach (var partition in aggregate.RootPartitions.Where(
+                foreach (var partition in plan.Partitions.Where(
                              candidate => candidate.Transform != Metadata.TierPartitionTransform.Value || candidate.IsAliased))
                 {
                     if (!TryMatchSourceComparison(
@@ -94,6 +96,19 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
 
                     if (partitionPredicate is not null)
                     {
+                        if (!contractValidated && plan.ValidationColumn is { } validationColumn)
+                        {
+                            var contractColumn = new ColumnExpression(
+                                validationColumn,
+                                table.Alias,
+                                typeof(bool),
+                                _boolMapping,
+                                nullable: false);
+                            selectExpression.ApplyPredicate(
+                                _sql.Equal(contractColumn, _sql.Constant(true, _boolMapping)));
+                            contractValidated = true;
+                        }
+
                         selectExpression.ApplyPredicate(partitionPredicate);
                     }
                 }

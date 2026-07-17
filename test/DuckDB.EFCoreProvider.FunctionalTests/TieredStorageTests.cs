@@ -1,9 +1,8 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using System.Data;
-using System.Text;
 using Xunit;
+using static Microsoft.EntityFrameworkCore.TieredStorageTestHelpers;
 
 namespace Microsoft.EntityFrameworkCore;
 
@@ -1055,45 +1054,6 @@ public sealed class TieredStorageTests : IDisposable
         }
 
         context.SaveChanges();
-    }
-
-    private static string Explain<T>(DbContext context, IQueryable<T> query)
-    {
-        using var command = query.CreateDbCommand();
-        command.CommandText = "EXPLAIN ANALYZE " + command.CommandText;
-        var openedHere = command.Connection!.State != ConnectionState.Open;
-        if (openedHere)
-        {
-            context.Database.OpenConnection();
-        }
-
-        try
-        {
-            using var reader = command.ExecuteReader();
-            var plan = new StringBuilder();
-            while (reader.Read())
-            {
-                for (var ordinal = 0; ordinal < reader.FieldCount; ordinal++)
-                {
-                    plan.AppendLine(reader.GetValue(ordinal)?.ToString());
-                }
-            }
-
-            return plan.ToString();
-        }
-        finally
-        {
-            if (openedHere)
-            {
-                context.Database.CloseConnection();
-            }
-        }
-    }
-
-    private static void AssertFilesPruned(string plan, string expectedFraction)
-    {
-        Assert.Contains("Scanning Files:", plan);
-        Assert.Contains(expectedFraction, plan);
     }
 
     private InvoiceContext CreateContext()

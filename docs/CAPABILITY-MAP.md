@@ -35,7 +35,7 @@ This document is the published capability matrix for the provider. It serves two
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | File sources | `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (and fluent `FromParquet`/`FromCsv`/`FromJsonFile`) → `read_parquet`/`read_csv`/`read_json` |
-| Tiered storage (hot + cold) | `ToTieredStore(...)` + root-only ordered `.PartitionBy(p => p.By(..., "alias").ByMonth(..., "alias"))` + `ArchiveTierAsync(...)`: application-defined Hive names/order/transforms, inherited child layout, metadata-driven query pruning, and root-scoped bindings when one child table participates in multiple independent archives. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) |
+| Tiered storage (hot + cold) | `ToTieredStore(...)` + root-only ordered `.PartitionBy(p => p.By(..., "alias").ByMonth(..., "alias"))` + `.WithTieredView()` or `.WithReadModel<T>()` + `ArchiveTierAsync(...)`: provider-managed union views with optional EF projection types, `ToTieredView(...)` mapping with equivalent read-only-context pruning, application-defined Hive names/order/transforms, inherited child layout, and root-scoped bindings when one child table participates in multiple independent archives. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) |
 | Bulk insert | `DbContext.BulkInsert(...)` / `BulkInsertAsync(...)` via the DuckDB `Appender` (raw fast path — see §4) |
 | Spatial (NetTopologySuite) | `UseNetTopologySuite()`; native DuckDB `GEOMETRY` columns (WKT is only the driver wire format) |
 | Raw SQL | EF Core relational raw-SQL APIs |
