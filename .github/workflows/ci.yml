@@ -46,6 +46,28 @@ jobs:
     - name: Run DuckLake external integration suite
       run: scripts/test-ducklake-external.sh --verbosity normal
 
+  tiered-storage-local:
+    name: Tiered storage query and lifecycle matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: "1"
+      TERM: xterm
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Run local tiered-storage acceptance suite
+      run: >
+        dotnet test test/DuckDB.EFCoreProvider.FunctionalTests/DuckDB.EFCoreProvider.FunctionalTests.csproj
+        --filter FullyQualifiedName~Tiered --verbosity normal
+
   tiered-storage-s3:
     name: Tiered storage MinIO failure matrix
     runs-on: ubuntu-latest

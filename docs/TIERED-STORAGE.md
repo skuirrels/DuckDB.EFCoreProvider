@@ -6,6 +6,8 @@ report across the whole history with ordinary LINQ. Tiering works over a **relat
 time-series / financial data with a small working set but long, read-only retention.
 
 > **Runnable example:** [`samples/TieredStorage`](../samples/TieredStorage) — `dotnet run --project samples/TieredStorage`.
+> See the [tiered-storage compatibility and release-acceptance matrix](TIERED-STORAGE-COMPATIBILITY.md) for supported
+> registration, partition, query, lifecycle, and storage-backend combinations.
 
 ## The model: two sides
 
@@ -657,6 +659,13 @@ are `DUCKDB_AWS_S3_TEST_PREFIX`, `DUCKDB_AWS_S3_TEST_REGION`, and the paired
 `DUCKDB_AWS_S3_TEST_KEY`/`DUCKDB_AWS_S3_TEST_SECRET` plus `DUCKDB_AWS_S3_TEST_SESSION_TOKEN`; when explicit keys
 are omitted, DuckDB's AWS credential chain is used. Configure lifecycle expiry on the test prefix because the
 provider intentionally does not delete remote objects.
+
+The same failure/retry/schema-evolution matrix is credential-gated for real GCS with
+`DUCKDB_GCS_TEST_BUCKET`, `DUCKDB_GCS_TEST_KEY`, `DUCKDB_GCS_TEST_SECRET`, and optional
+`DUCKDB_GCS_TEST_PREFIX`, and for real Azure Blob with `DUCKDB_AZURE_TEST_CONNECTION_STRING`,
+`DUCKDB_AZURE_TEST_CONTAINER`, and optional `DUCKDB_AZURE_TEST_PREFIX`. The caller must supply an existing
+disposable bucket/container and arrange cleanup; no credentials or permanent cloud resource names are stored in the
+tests. A skipped real-cloud lane is reported as unverified, not as passing evidence.
 
 **How remote reads stay cheap.** A scoped cold query prunes to the partitions it needs and range-reads only the
 Parquet byte ranges within them — it never downloads whole files. `EXPLAIN ANALYZE` shows the pruning, e.g.

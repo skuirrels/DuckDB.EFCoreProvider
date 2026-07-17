@@ -15,6 +15,10 @@ public abstract class QueryExpressionInterceptionDuckDBTestBase(
         protected override ITestStoreFactory TestStoreFactory
             => DuckDBTestStoreFactory.Instance;
 
+        public override DbContextOptionsBuilder AddOptions(DbContextOptionsBuilder builder)
+            => base.AddOptions(builder).ConfigureWarnings(
+                warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
+
         protected override IServiceCollection InjectInterceptors(
             IServiceCollection serviceCollection,
             IEnumerable<IInterceptor> injectedInterceptors)

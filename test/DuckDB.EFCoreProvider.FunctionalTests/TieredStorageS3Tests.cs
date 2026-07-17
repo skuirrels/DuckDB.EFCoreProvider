@@ -168,7 +168,15 @@ public sealed class TieredStorageS3Tests : IDisposable
     public Task Real_aws_archive_failure_retry_and_schema_evolution_matrix()
         => RunFailureMatrix<RealAwsMatrixMarker>(ObjectStoreOptions.FromAwsEnvironment()!, "s3");
 
-    private async Task ArchiveRoundTrip<TMarker>(ObjectStoreOptions objectStore, string scheme)
+    [RealGcsFact]
+    public Task Real_gcs_archive_failure_retry_and_schema_evolution_matrix()
+        => RunFailureMatrix<RealGcsMatrixMarker>(ObjectStoreOptions.FromGcsEnvironment()!, "gcs");
+
+    [RealAzureFact]
+    public Task Real_azure_archive_failure_retry_and_schema_evolution_matrix()
+        => RunFailureMatrix<RealAzureMatrixMarker>(AzureStoreOptions.FromEnvironment()!, "azure");
+
+    private async Task ArchiveRoundTrip<TMarker>(IObjectStoreOptions objectStore, string scheme)
     {
         var dbPath = Path.Combine(_root, $"{scheme}-{typeof(TMarker).Name}.duckdb");
         var archivePath = objectStore.CreateArchivePath(scheme);
@@ -200,7 +208,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         Assert.Equal(expected, History(restarted));
     }
 
-    private async Task RunFailureMatrix<TMarker>(ObjectStoreOptions objectStore, string scheme)
+    private async Task RunFailureMatrix<TMarker>(IObjectStoreOptions objectStore, string scheme)
     {
         foreach (var scenario in new[]
                  {
@@ -242,7 +250,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         await VerifyRemoteSchemaEvolution<TMarker>(objectStore, scheme);
     }
 
-    private async Task VerifyRemoteReconciliation<TMarker>(ObjectStoreOptions objectStore, string scheme)
+    private async Task VerifyRemoteReconciliation<TMarker>(IObjectStoreOptions objectStore, string scheme)
     {
         var archivePath = objectStore.CreateArchivePath(scheme);
         var dbPath = Path.Combine(_root, $"{typeof(TMarker).Name}-reconcile.duckdb");
@@ -290,7 +298,7 @@ public sealed class TieredStorageS3Tests : IDisposable
             restarted.InvoiceHistory.Single(invoice => invoice.ExternalId == "invoice-1").Status);
     }
 
-    private async Task VerifyRemoteSchemaEvolution<TMarker>(ObjectStoreOptions objectStore, string scheme)
+    private async Task VerifyRemoteSchemaEvolution<TMarker>(IObjectStoreOptions objectStore, string scheme)
     {
         var archivePath = objectStore.CreateArchivePath(scheme);
         var dbPath = Path.Combine(_root, $"{typeof(TMarker).Name}-schema.duckdb");
@@ -403,6 +411,8 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed class GcsMarker;
     private sealed class MinIoMatrixMarker;
     private sealed class RealAwsMatrixMarker;
+    private sealed class RealGcsMatrixMarker;
+    private sealed class RealAzureMatrixMarker;
     private sealed class SharedBindingMarker;
     private sealed class SchemaV1;
     private sealed class SchemaV2;
@@ -461,14 +471,14 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed class ObjectStoreContext<TMarker, TSchema>(
         string dbPath,
         string archivePath,
-        ObjectStoreOptions objectStore) : DbContextWithHistory
+        IObjectStoreOptions objectStore) : DbContextWithHistory
     {
         public string ModelKey => archivePath + "|" + typeof(TMarker).Name + "|" + typeof(TSchema).Name;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
         {
             options.UseDuckDB($"Data Source={dbPath}");
-            options.AddInterceptors(new HttpfsSetupInterceptor(objectStore));
+            options.AddInterceptors(new ObjectStoreSetupInterceptor(objectStore));
             options.ReplaceService<IDuckDBTierFailureInjector, ObjectStoreFailureInjector>();
             options.ReplaceService<IModelCacheKeyFactory, ObjectStoreModelCacheKeyFactory>();
         }
@@ -514,7 +524,7 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed class ObjectStoreSharedContext<TMarker>(
         string dbPath,
         string archivePath,
-        ObjectStoreOptions objectStore) : DbContext
+        IObjectStoreOptions objectStore) : DbContext
     {
         public DbSet<SharedRootA> RootAs => Set<SharedRootA>();
         public DbSet<SharedRootB> RootBs => Set<SharedRootB>();
@@ -525,7 +535,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         protected override void OnConfiguring(DbContextOptionsBuilder options)
         {
             options.UseDuckDB($"Data Source={dbPath}");
-            options.AddInterceptors(new HttpfsSetupInterceptor(objectStore));
+            options.AddInterceptors(new ObjectStoreSetupInterceptor(objectStore));
             options.ReplaceService<IModelCacheKeyFactory, ObjectStoreModelCacheKeyFactory>();
         }
 
@@ -574,7 +584,7 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed class ObjectStoreViewOnlyContext<TMarker>(
         string dbPath,
         string archivePath,
-        ObjectStoreOptions objectStore) : DbContext
+        IObjectStoreOptions objectStore) : DbContext
     {
         public DbSet<Invoice> Invoices => Set<Invoice>();
         public string ModelKey => archivePath + "|" + typeof(TMarker).Name;
@@ -582,7 +592,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         protected override void OnConfiguring(DbContextOptionsBuilder options)
         {
             options.UseDuckDB($"Data Source={dbPath}");
-            options.AddInterceptors(new HttpfsSetupInterceptor(objectStore));
+            options.AddInterceptors(new ObjectStoreSetupInterceptor(objectStore));
             options.ReplaceService<IModelCacheKeyFactory, ObjectStoreModelCacheKeyFactory>();
         }
 
@@ -603,7 +613,7 @@ public sealed class TieredStorageS3Tests : IDisposable
 
     private sealed class ObjectStoreHistoryContext<TMarker>(
         string dbPath,
-        ObjectStoreOptions objectStore) : DbContext
+        IObjectStoreOptions objectStore) : DbContext
     {
         public DbSet<Invoice> Invoices => Set<Invoice>();
         public string ModelKey => typeof(TMarker).Name;
@@ -611,7 +621,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         protected override void OnConfiguring(DbContextOptionsBuilder options)
         {
             options.UseDuckDB($"Data Source={dbPath}");
-            options.AddInterceptors(new HttpfsSetupInterceptor(objectStore));
+            options.AddInterceptors(new ObjectStoreSetupInterceptor(objectStore));
             options.ReplaceService<IModelCacheKeyFactory, ObjectStoreModelCacheKeyFactory>();
         }
 
@@ -645,9 +655,9 @@ public sealed class TieredStorageS3Tests : IDisposable
 
     private sealed class ViewOnlyMarker;
 
-    private sealed class HttpfsSetupInterceptor(ObjectStoreOptions options) : DbConnectionInterceptor
+    private sealed class ObjectStoreSetupInterceptor(IObjectStoreOptions options) : DbConnectionInterceptor
     {
-        private string Sql => "INSTALL httpfs; LOAD httpfs; " + options.SecretSql();
+        private string Sql => options.SetupSql();
 
         public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
         {
@@ -667,6 +677,12 @@ public sealed class TieredStorageS3Tests : IDisposable
         }
     }
 
+    private interface IObjectStoreOptions
+    {
+        string CreateArchivePath(string scheme);
+        string SetupSql();
+    }
+
     private sealed record ObjectStoreOptions(
         string SecretType,
         string Bucket,
@@ -677,10 +693,12 @@ public sealed class TieredStorageS3Tests : IDisposable
         string? Secret,
         string? SessionToken,
         bool UseSsl,
-        bool UseCredentialChain)
+        bool UseCredentialChain) : IObjectStoreOptions
     {
         public string CreateArchivePath(string scheme)
             => $"{scheme}://{Bucket}/{Prefix.Trim('/')}/tier-int-{Guid.NewGuid():N}";
+
+        public string SetupSql() => "INSTALL httpfs; LOAD httpfs; " + SecretSql();
 
         public string SecretSql()
         {
@@ -700,7 +718,11 @@ public sealed class TieredStorageS3Tests : IDisposable
                 }
             }
 
-            builder.Append(", REGION ").Append(SqlLiteral(Region));
+            if (!string.IsNullOrEmpty(Region))
+            {
+                builder.Append(", REGION ").Append(SqlLiteral(Region));
+            }
+
             if (!string.IsNullOrEmpty(Endpoint))
             {
                 builder.Append(", ENDPOINT ").Append(SqlLiteral(Endpoint))
@@ -763,6 +785,56 @@ public sealed class TieredStorageS3Tests : IDisposable
                 Environment.GetEnvironmentVariable("DUCKDB_AWS_S3_TEST_SESSION_TOKEN"),
                 UseSsl: true,
                 UseCredentialChain: string.IsNullOrEmpty(keyId));
+        }
+
+        public static ObjectStoreOptions? FromGcsEnvironment()
+        {
+            var bucket = Environment.GetEnvironmentVariable("DUCKDB_GCS_TEST_BUCKET");
+            var keyId = Environment.GetEnvironmentVariable("DUCKDB_GCS_TEST_KEY");
+            var secret = Environment.GetEnvironmentVariable("DUCKDB_GCS_TEST_SECRET");
+            if (string.IsNullOrEmpty(bucket) || string.IsNullOrEmpty(keyId) || string.IsNullOrEmpty(secret))
+            {
+                return null;
+            }
+
+            return new ObjectStoreOptions(
+                "gcs",
+                bucket,
+                Environment.GetEnvironmentVariable("DUCKDB_GCS_TEST_PREFIX")
+                ?? "duckdb-efcore-provider-disposable",
+                Region: "",
+                Endpoint: null,
+                keyId,
+                secret,
+                SessionToken: null,
+                UseSsl: true,
+                UseCredentialChain: false);
+        }
+
+        private static string SqlLiteral(string value) => $"'{value.Replace("'", "''")}'";
+    }
+
+    private sealed record AzureStoreOptions(string ConnectionString, string Container, string Prefix)
+        : IObjectStoreOptions
+    {
+        public string CreateArchivePath(string scheme)
+            => $"{scheme}://{Container}/{Prefix.Trim('/')}/tier-int-{Guid.NewGuid():N}";
+
+        public string SetupSql()
+            => "INSTALL azure; LOAD azure; CREATE OR REPLACE SECRET objectstoretest "
+               + $"(TYPE azure, CONNECTION_STRING {SqlLiteral(ConnectionString)});";
+
+        public static AzureStoreOptions? FromEnvironment()
+        {
+            var connectionString = Environment.GetEnvironmentVariable("DUCKDB_AZURE_TEST_CONNECTION_STRING");
+            var container = Environment.GetEnvironmentVariable("DUCKDB_AZURE_TEST_CONTAINER");
+            return string.IsNullOrEmpty(connectionString) || string.IsNullOrEmpty(container)
+                ? null
+                : new AzureStoreOptions(
+                    connectionString,
+                    container,
+                    Environment.GetEnvironmentVariable("DUCKDB_AZURE_TEST_PREFIX")
+                    ?? "duckdb-efcore-provider-disposable");
         }
 
         private static string SqlLiteral(string value) => $"'{value.Replace("'", "''")}'";
@@ -836,6 +908,35 @@ public sealed class RealAwsFactAttribute : FactAttribute
         {
             Skip = "Set DUCKDB_AWS_S3_TEST_BUCKET and optionally _PREFIX/_REGION/_KEY/_SECRET/_SESSION_TOKEN "
                    + "to run the disposable real-AWS S3 failure matrix.";
+        }
+    }
+}
+
+/// <summary>A <see cref="FactAttribute" /> that skips unless a disposable real-GCS bucket is configured.</summary>
+public sealed class RealGcsFactAttribute : FactAttribute
+{
+    public RealGcsFactAttribute()
+    {
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DUCKDB_GCS_TEST_BUCKET"))
+            || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DUCKDB_GCS_TEST_KEY"))
+            || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DUCKDB_GCS_TEST_SECRET")))
+        {
+            Skip = "Set DUCKDB_GCS_TEST_BUCKET, DUCKDB_GCS_TEST_KEY, and DUCKDB_GCS_TEST_SECRET "
+                   + "(plus optional _PREFIX) to run the disposable real-GCS failure matrix.";
+        }
+    }
+}
+
+/// <summary>A <see cref="FactAttribute" /> that skips unless a disposable Azure Blob container is configured.</summary>
+public sealed class RealAzureFactAttribute : FactAttribute
+{
+    public RealAzureFactAttribute()
+    {
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DUCKDB_AZURE_TEST_CONNECTION_STRING"))
+            || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DUCKDB_AZURE_TEST_CONTAINER")))
+        {
+            Skip = "Set DUCKDB_AZURE_TEST_CONNECTION_STRING and DUCKDB_AZURE_TEST_CONTAINER "
+                   + "(plus optional _PREFIX) to run the disposable real-Azure Blob failure matrix.";
         }
     }
 }

@@ -1,4 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -14,6 +15,7 @@ public class SeedingDuckDBTest : SeedingTestBase
     protected class SeedingDuckDBContext(string testId) : SeedingContext(testId)
     {
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-            => optionsBuilder.UseDuckDB(($"Data Source = Seeds{TestId}.db"));
+            => optionsBuilder.UseDuckDB(($"Data Source = Seeds{TestId}.db"))
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
     }
 }

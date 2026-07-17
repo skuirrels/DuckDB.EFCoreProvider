@@ -2,6 +2,28 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.10.1
+
+- Fix tiered partition pruning for ordered and limited queries. The pruning visitor now collects provider-derived
+  predicates while traversing a stable select shape and applies them once through an immutable select update, so
+  `ApplyPredicate(...)` can no longer mutate the table collection being enumerated. Owner/lifecycle pruning,
+  `OrderBy`/`ThenBy`, `Skip`/`Take`, keyset continuation, parameterisation, and root/descendant binding resolution
+  remain server-side and compose without duplicate predicates.
+- Add `TieredViewQueryCompositionTests`, a generic data-driven conformance suite shared by separate-context
+  `ToTieredView(...)` and backward-compatible `WithReadModel<TReadModel>()` readers. It covers ordered paging,
+  equal-timestamp keysets, projections, terminal operators, grouping, subqueries, explicit scalar joins, root and
+  nested/shared descendants, month/day and nullable `DateOnly` partitions, hot/cold/no-match ranges, cancellation,
+  multiple contexts/model-cache keys, lifecycle transitions, generated SQL, and DuckDB `EXPLAIN` file counts.
+- Add an always-on local tiered query/lifecycle CI gate and opt-in disposable-prefix failure/retry/schema-evolution
+  matrices for real GCS and Azure Blob alongside real AWS. MinIO continues to exercise S3 and GCS-scheme
+  interoperability without credentials. Add a concise
+  [tiered-storage compatibility and release-acceptance report](docs/TIERED-STORAGE-COMPATIBILITY.md).
+- Prevent the raw full-project test run from failing nondeterministically after more than twenty internal EF service
+  providers by ignoring that infrastructure warning only in focused test contexts which deliberately build many
+  provider/model variants. Production warning behaviour and shared externally supplied test providers are unchanged.
+- The `1.10.1-rc.1` package passed the consuming application's complete tiered-storage conformance suite with no
+  additional Provider defects. This stable release contains the accepted Provider changes.
+
 ## 1.10.0
 
 - Add `.WithTieredView()` to tiered roots and descendants. It requests the same provider-managed hot/Parquet union
