@@ -2,8 +2,8 @@
 
 Keep recent data hot in the writable DuckDB file and roll older data out to hive-partitioned Parquet, then
 report across the whole history with ordinary LINQ. Tiering works over a **relational aggregate** — an
-`Invoice` and its `InvoiceLine` (and deeper) children move together — governed by the root's date. Ideal for
-time-series / financial data with a small working set but long, read-only retention.
+`Record` and its `RecordPart` (and deeper) children move together — governed by the root's date. Ideal for
+time-series or append-only data with a small working set but long, read-only retention.
 
 > **Runnable example:** [`samples/TieredStorage`](../samples/TieredStorage) — `dotnet run --project samples/TieredStorage`.
 > See the [tiered-storage compatibility and release-acceptance matrix](TIERED-STORAGE-COMPATIBILITY.md) for supported
@@ -35,45 +35,45 @@ using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
 
 // Hot entities — just normal EF Core:
-public class Invoice
+public class Record
 {
     public int Id { get; set; }
-    public int CustomerId { get; set; }
-    public DateTime InvoiceDate { get; set; }
-    public List<InvoiceLine> Lines { get; set; } = [];
+    public int GroupId { get; set; }
+    public DateTime EffectiveAt { get; set; }
+    public List<RecordPart> Parts { get; set; } = [];
 }
-public class InvoiceLine
+public class RecordPart
 {
     public int Id { get; set; }
-    public int InvoiceId { get; set; }
-    public Invoice? Invoice { get; set; }
-    public decimal Amount { get; set; }
+    public int RecordId { get; set; }
+    public Record? Record { get; set; }
+    public decimal Value { get; set; }
 }
 
 // Cold read-models — keyless projections for reporting (columns mirror the hot entity):
-public class InvoiceReport { public int Id { get; set; } public int CustomerId { get; set; } public DateTime InvoiceDate { get; set; } }
-public class InvoiceLineReport { public int Id { get; set; } public int InvoiceId { get; set; } public decimal Amount { get; set; } }
+public class RecordReport { public int Id { get; set; } public int GroupId { get; set; } public DateTime EffectiveAt { get; set; } }
+public class RecordPartReport { public int Id { get; set; } public int RecordId { get; set; } public decimal Value { get; set; } }
 
-public class BillingContext : DbContext
+public class ArchiveContext : DbContext
 {
-    public DbSet<Invoice> Invoices => Set<Invoice>();               // hot: writes + hot-only reads
-    public DbSet<InvoiceReport> InvoiceHistory => Set<InvoiceReport>();     // hot + cold
-    public DbSet<InvoiceLineReport> LineHistory => Set<InvoiceLineReport>(); // hot + cold
+    public DbSet<Record> Records => Set<Record>();               // hot: writes + hot-only reads
+    public DbSet<RecordReport> RecordHistory => Set<RecordReport>();     // hot + cold
+    public DbSet<RecordPartReport> PartHistory => Set<RecordPartReport>(); // hot + cold
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
-        => options.UseDuckDB("Data Source=billing.duckdb");
+        => options.UseDuckDB("Data Source=records.duckdb");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // InvoiceDate defines this aggregate's hot/cold boundary. The application separately declares
+        // EffectiveAt defines this aggregate's hot/cold boundary. The application separately declares
         // the physical Hive hierarchy, in exact outer-to-inner directory order.
-        modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
+        modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "/var/data/archive/records", TierGranularity.Month)
             .PartitionBy(partitions => partitions
-                .By(i => i.CustomerId)
-                .ByMonth(i => i.InvoiceDate))
-            .WithReadModel<InvoiceReport>()
-            .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
-        // Deeper aggregates: nest another .Including(...) inside the line builder.
+                .By(i => i.GroupId)
+                .ByMonth(i => i.EffectiveAt))
+            .WithReadModel<RecordReport>()
+            .Including<RecordPart>(i => i.Parts, part => part.WithReadModel<RecordPartReport>());
+        // Deeper aggregates: nest another .Including(...) inside the part builder.
     }
 }
 ```
@@ -84,14 +84,14 @@ public class BillingContext : DbContext
 application already has a separate historical-query context, request only the physical union views instead:
 
 ```csharp
-static void ConfigureInvoicePartitions(TieredPartitionBuilder<Invoice> partitions)
-    => partitions.ByMonth(invoice => invoice.InvoiceDate);
+static void ConfigureRecordPartitions(TieredPartitionBuilder<Record> partitions)
+    => partitions.ByMonth(record => record.EffectiveAt);
 
 // Writable context: keyed tables, relationships, and provider-owned archive maintenance.
-modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-    .PartitionBy(ConfigureInvoicePartitions)
-    .WithTieredView() // inferred as invoices_tiered
-    .Including<InvoiceLine>(invoice => invoice.Lines, line => line.WithTieredView());
+modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+    .PartitionBy(ConfigureRecordPartitions)
+    .WithTieredView() // inferred as records_tiered
+    .Including<RecordPart>(record => record.Parts, part => part.WithTieredView());
 ```
 
 `WithTieredView()` sets the same physical view metadata used by `WithReadModel<T>()`, but it does not register a
@@ -100,26 +100,26 @@ before the first archive and replaces it with the normal hot/Parquet union whene
 reconciliation, restoration, compaction, contract rewrite, purge, or startup repair changes the active cold
 representation.
 
-The consuming application can map its existing entities in another context because EF models are context-specific:
+The host application can map its existing entities in another context because EF models are context-specific:
 
 ```csharp
-public sealed class BillingHistoryContext : DbContext
+public sealed class ArchiveHistoryContext : DbContext
 {
-    public DbSet<Invoice> Invoices => Set<Invoice>();
-    public DbSet<InvoiceLine> Lines => Set<InvoiceLine>();
+    public DbSet<Record> Records => Set<Record>();
+    public DbSet<RecordPart> Parts => Set<RecordPart>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Invoice>(invoice =>
+        modelBuilder.Entity<Record>(record =>
         {
-            invoice.ToTieredView("invoices_tiered", ConfigureInvoicePartitions);
-            invoice.Ignore(row => row.Lines);
+            record.ToTieredView("records_tiered", ConfigureRecordPartitions);
+            record.Ignore(row => row.Parts);
         });
-        modelBuilder.Entity<InvoiceLine>(line =>
+        modelBuilder.Entity<RecordPart>(part =>
         {
-            line.HasNoKey();
-            line.ToView("invoice_lines_tiered");
-            line.Ignore(row => row.Invoice);
+            part.HasNoKey();
+            part.ToView("record_lines_tiered");
+            part.Ignore(row => row.Record);
         });
     }
 }
@@ -136,7 +136,7 @@ types. The read-only query path references that marker whenever it adds a prunin
 reader therefore fails explicitly instead of applying a potentially incorrect filter. A plain `ToView(...)` mapping
 still relies only on DuckDB's native pushdown and does not satisfy this pruning requirement.
 
-An explicit unqualified name may be supplied, for example `.WithTieredView("invoice_history")`. Names cannot collide
+An explicit unqualified name may be supplied, for example `.WithTieredView("record_history")`. Names cannot collide
 with mapped tables, provider tier metadata tables, or another tiered entity's physical view. One descendant shared
 by several archive roots has one entity-wide combined view, so repeated explicit registrations must agree. Calling
 `WithTieredView(customName)` before `WithReadModel<T>()` maps the optional read model to that same custom view;
@@ -144,8 +144,8 @@ attempting to change an already registered name fails. A later deployment may cr
 provider does not drop the previous physical view because consumers may still depend on it.
 
 **Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (here,
-`i => i.InvoiceDate`). It governs that aggregate's entire hot/cold boundary and is chosen **per aggregate**, so
-`Invoice` can tier on `InvoiceDate` and `AuditEvent` on `OccurredOn` — each independent, each
+`i => i.EffectiveAt`). It governs that aggregate's entire hot/cold boundary and is chosen **per aggregate**, so
+`Record` can tier on `EffectiveAt` and `AuditEvent` on `OccurredOn` — each independent, each
 with its own archive path.
 
 The lifecycle property may be `DateTime`, `DateOnly`, or a nullable form. A `NULL` value is never selected by `ArchiveTierAsync`, remains on
@@ -161,13 +161,13 @@ source system has a stable identity, configure `MatchBy` independently on the ro
 needs it:
 
 ```csharp
-modelBuilder.ToTieredStore<Invoice>(invoice => invoice.CompletedDate, archivePath)
-    .MatchBy(invoice => invoice.EdcId)
-    .PartitionBy(partitions => partitions.ByMonth(invoice => invoice.CompletedDate))
-    .WithReadModel<InvoiceHistory>()
-    .Including<InvoiceLine>(invoice => invoice.Lines, lines => lines
-        .MatchBy(line => new { line.InvoiceEdcId, line.LineNumber })
-        .WithReadModel<InvoiceLineHistory>());
+modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+    .MatchBy(record => record.ExternalKey)
+    .PartitionBy(partitions => partitions.ByMonth(record => record.EffectiveAt))
+    .WithReadModel<RecordHistory>()
+    .Including<RecordPart>(record => record.Parts, parts => parts
+        .MatchBy(part => new { part.RecordExternalKey, part.PartNumber })
+        .WithReadModel<RecordPartHistory>());
 ```
 
 Single and composite selectors must contain direct mapped scalar properties. By default the selected layout
@@ -177,23 +177,23 @@ an archive run. The configured key is used consistently by hot/cold view suppres
 detection, and aggregate children; omitting `MatchBy` preserves primary-key behavior.
 
 The ordered `PartitionBy` builder is the application's physical layout declaration. The example produces
-`CustomerId=42/InvoiceDate_month=2025-06-01/`; reversing the two calls reverses the directory hierarchy. Nothing in
-the provider is tied to customer or invoice terminology: each application chooses its own mapped root properties,
+`GroupId=42/EffectiveAt_month=2025-06-01/`; reversing the two calls reverses the directory hierarchy. Nothing in
+the provider is tied to group or record terminology: each application chooses its own mapped root properties,
 their transformations, and their order:
 
 ```csharp
 .PartitionBy(partitions => partitions
-    .By(order => order.TenantId, "tenant_key")              // exact value
-    .ByYear(order => order.CreatedAt, "created_year")        // calendar-year DATE bucket
-    .ByMonth(order => order.ReviewedAt, "reviewed_month")    // calendar-month DATE bucket
-    .ByDay(order => order.CompletedAt, "completed_day"))     // calendar-day DATE bucket
+    .By(record => record.GroupId, "group_key")                 // exact value
+    .ByYear(record => record.CreatedAt, "created_year")        // calendar-year DATE bucket
+    .ByMonth(record => record.ReviewedAt, "reviewed_month")    // calendar-month DATE bucket
+    .ByDay(record => record.EffectiveAt, "effective_day"))     // calendar-day DATE bucket
 ```
 
 The second argument is optional. When omitted, exact partitions use the mapped column name and date buckets use
 `{column}_{transform}`. When supplied, it becomes the physical Hive directory and virtual-column name while the
 EF property remains the source for archive values, maintenance scopes, and LINQ query pruning. Aliases are
 especially useful when a descendant maps the same column name as a root partition: for example,
-`.By(order => order.OwnerId, "root_owner_id")` lets a child retain its own `OwnerId` column. Names must be
+`.By(record => record.GroupId, "root_group_id")` lets a child retain its own `GroupId` column. Names must be
 non-empty and unique within the plan (case-insensitively). A name that differs from its source must also be distinct
 from mapped root columns and inherited child columns; an exact-value key may retain its own source-column name.
 
@@ -202,10 +202,10 @@ as the archive window (`ByMonth` or `ByDay` for monthly archives; `ByDay` for da
 `OVERWRITE_OR_IGNORE` windows disjoint and crash-safe. `ByYear` is useful for another application date, but is not
 precise enough by itself to protect monthly or daily lifecycle windows.
 
-For the common exact-key-first layout, `.PartitionBy(i => i.CustomerId)` remains shorthand for an exact
-`CustomerId` key followed by an implicit bucket for the configured lifecycle property. The named form
-`.PartitionBy(i => i.CustomerId, "customer_key")` produces
-`customer_key=42/InvoiceDate_month=2025-06-01/`. Use the builder when the position, transformation, or lifecycle
+For the common exact-key-first layout, `.PartitionBy(i => i.GroupId)` remains shorthand for an exact
+`GroupId` key followed by an implicit bucket for the configured lifecycle property. The named form
+`.PartitionBy(i => i.GroupId, "group_key")` produces
+`group_key=42/EffectiveAt_month=2025-06-01/`. Use the builder when the position, transformation, or lifecycle
 partition name must be explicit.
 
 Partition selectors must be direct mapped scalar properties on the aggregate root. Date transforms require
@@ -216,25 +216,25 @@ their mapped DuckDB store type; derived date buckets are stored as `DATE`.
 
 ### Query pruning follows the declared metadata
 
-Predicates stay application-shaped: query `CustomerId` and `InvoiceDate`, not the hidden Hive bucket column. For
+Predicates stay application-shaped: query `GroupId` and `EffectiveAt`, not the hidden Hive bucket column. For
 conjunctive equality/range predicates, the provider derives the corresponding bucket predicate from the model:
 
 ```csharp
-var february = db.InvoiceHistory.Where(i =>
-    i.CustomerId == customerId
-    && i.InvoiceDate >= new DateTime(2025, 2, 1)
-    && i.InvoiceDate < new DateTime(2025, 3, 1));
+var february = db.RecordHistory.Where(i =>
+    i.GroupId == groupId
+    && i.EffectiveAt >= new DateTime(2025, 2, 1)
+    && i.EffectiveAt < new DateTime(2025, 3, 1));
 ```
 
-With `CustomerId` then `InvoiceDate` month configured, DuckDB can prune to that customer's February directory.
+With `GroupId` then `EffectiveAt` month configured, DuckDB can prune to that group's February directory.
 This works unchanged for `WithReadModel<T>()` in the tier-owning context and equivalently for an existing entity
 mapped by `ToTieredView(...)` in a separate read-only context. The same applies when those Hive keys are aliased;
 the provider adds predicates for the configured physical names. Before applying those read-only predicates, it also
 references the owner-generated partition-contract marker. If the owner and reader resolve different physical plans,
 or the owner view has not yet been refreshed after upgrading to a contract-aware provider version, DuckDB reports the
 missing provider marker instead of returning an incomplete result.
-If the date predicate is omitted, it scans that customer's completed-date partitions; if the customer predicate is
-omitted, it scans the matching month across customers. Predicates beneath `OR` are deliberately not inferred,
+If the date predicate is omitted, it scans that group's lifecycle-date partitions; if the group predicate is
+omitted, it scans the matching month across groups. Predicates beneath `OR` are deliberately not inferred,
 because adding a bucket filter there could change query semantics.
 
 `EXPLAIN ANALYZE` reports the result-bearing Parquet pruning as `Scanning Files: X/Y`. The crash/late-row guard may
@@ -242,7 +242,7 @@ also show a separate key/timestamp probe over the cold files; that probe preserv
 does not materialize the report's full projected columns.
 
 `.Including(...)` declares which navigations are **aggregate children** (archived with the root). Anything not
-included — e.g. an `InvoiceLine → Product` reference — stays hot.
+included — e.g. a `RecordPart → ReferenceEntry` reference — stays hot.
 
 ### Sharing one child entity across independent roots
 
@@ -254,27 +254,27 @@ Every configured root must use a unique `controlKey`, because the provider persi
 generation, and archive contract under that key.
 
 ```csharp
-modelBuilder.ToTieredStore<ImportJob>(
-        job => job.CompletedAt,
-        "s3://archive/imports",
-        controlKey: "imports")
-    .WithReadModel<ImportJobHistory>()
-    .Including<JobEvent>(job => job.Events, events => events.WithReadModel<JobEventHistory>());
+modelBuilder.ToTieredStore<PrimaryRecord>(
+        record => record.EffectiveAt,
+        "s3://archive/primary",
+        controlKey: "primary")
+    .WithReadModel<PrimaryRecordHistory>()
+    .Including<SharedEntry>(record => record.Entries, entries => entries.WithReadModel<SharedEntryHistory>());
 
-modelBuilder.ToTieredStore<ExportJob>(
-        job => job.CompletedAt,
-        "s3://archive/exports",
-        controlKey: "exports")
-    .WithReadModel<ExportJobHistory>()
-    .Including<JobEvent>(job => job.Events, events => events.WithReadModel<JobEventHistory>());
+modelBuilder.ToTieredStore<SecondaryRecord>(
+        record => record.EffectiveAt,
+        "s3://archive/secondary",
+        controlKey: "secondary")
+    .WithReadModel<SecondaryRecordHistory>()
+    .Including<SharedEntry>(record => record.Entries, entries => entries.WithReadModel<SharedEntryHistory>());
 ```
 
 The provider creates one stable child view containing the hot table once plus every published root-specific
 Parquet branch. Configuration order and archive order do not change that view. `MatchBy(...)` belongs to the
 shared entity, so its key must be globally stable across all of those branches.
 
-Each physical child row must belong to **at most one** configured root binding. If, for example, one `JobEvent`
-has both an import-job FK and an export-job FK that resolve to existing roots, storage preflight reports
+Each physical child row must belong to **at most one** configured root binding. If, for example, one `SharedEntry`
+has foreign keys to both configured roots and both resolve to existing rows, storage preflight reports
 `TierStorageCapability.BindingOwnership` as unsupported and mutating tier operations throw
 `TierAmbiguousBindingException` before writing Parquet or deleting hot rows.
 
@@ -303,59 +303,59 @@ db.Database.EnsureTieredStoresCreated();
 Writes are ordinary EF Core — child graphs, `SaveChanges`, `Include` over hot data:
 
 ```csharp
-db.Invoices.Add(new Invoice { InvoiceDate = DateTime.UtcNow, Lines = { new() { Amount = 100 } } });
+db.Records.Add(new Record { EffectiveAt = DateTime.UtcNow, Parts = { new() { Value = 100 } } });
 db.SaveChanges();
-var recent = db.Invoices.Include(i => i.Lines).Where(i => i.InvoiceDate >= DateTime.UtcNow.AddDays(-30)).ToList();
+var recent = db.Records.Include(i => i.Parts).Where(i => i.EffectiveAt >= DateTime.UtcNow.AddDays(-30)).ToList();
 ```
 
 Cold reporting queries the read-models, which span hot + cold. Most reports are single-read-model aggregates
 that need no join:
 
 ```csharp
-var invoicesByYear = db.InvoiceHistory
-    .GroupBy(i => i.InvoiceDate.Year)
+var recordsByYear = db.RecordHistory
+    .GroupBy(i => i.EffectiveAt.Year)
     .Select(g => new { Year = g.Key, Count = g.Count() });
 ```
 
 The read-models are **keyless** (mapped to views), so they carry no navigation properties. A report that spans
-two tables therefore joins on the foreign-key column — there is no `invoice.Lines` to navigate on the cold side:
+two tables therefore joins on the foreign-key column — there is no `record.Parts` to navigate on the cold side:
 
 ```csharp
-var revenueByYear = db.LineHistory
-    .Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
+var totalValueByYear = db.PartHistory
+    .Join(db.RecordHistory, l => l.RecordId, i => i.Id, (l, i) => new { i.EffectiveAt.Year, l.Value })
     .GroupBy(x => x.Year)
-    .Select(g => new { Year = g.Key, Revenue = g.Sum(x => x.Amount) });
+    .Select(g => new { Year = g.Key, TotalValue = g.Sum(x => x.Value) });
 ```
 
 ### Avoiding the join: denormalize the report columns
 
 If a cross-table join is on a hot reporting path and you'd rather not pay it, **denormalize** the parent column
 onto the child. A read-model can only project columns that exist on its source table, so the copy has to live on
-the **hot child entity** — carry the parent's date on the line and populate it when you write:
+the **hot child entity** — carry the parent's date on the part and populate it when you write:
 
 ```csharp
-public class InvoiceLine
+public class RecordPart
 {
     public int Id { get; set; }
-    public int InvoiceId { get; set; }
-    public decimal Amount { get; set; }
-    public DateTime InvoiceDate { get; set; } // denormalized from the invoice at write time
+    public int RecordId { get; set; }
+    public decimal Value { get; set; }
+    public DateTime EffectiveAt { get; set; } // denormalized from the record at write time
 }
-public class InvoiceLineReport
+public class RecordPartReport
 {
-    public decimal Amount { get; set; }
-    public DateTime InvoiceDate { get; set; } // now available on the line read-model
+    public decimal Value { get; set; }
+    public DateTime EffectiveAt { get; set; } // now available on the part read-model
 }
 
-// Revenue by year is now a single-read-model aggregate — no join:
-var revenueByYear = db.LineHistory
-    .GroupBy(l => l.InvoiceDate.Year)
-    .Select(g => new { Year = g.Key, Revenue = g.Sum(l => l.Amount) });
+// Total value by year is now a single-read-model aggregate — no join:
+var totalValueByYear = db.PartHistory
+    .GroupBy(l => l.EffectiveAt.Year)
+    .Select(g => new { Year = g.Key, TotalValue = g.Sum(l => l.Value) });
 ```
 
 The trade-off is storage and consistency: the duplicated column lives in the hot table **and** every archived
 Parquet file, and you are responsible for keeping it in sync on write (it's a snapshot — safe for immutable
-history like invoices, riskier for values that change after the fact). Denormalize the few columns your hot
+history like records, riskier for values that change after the fact). Denormalize the few columns your hot
 reports need; join for the rest.
 
 ## 4. Offload old aggregates
@@ -363,7 +363,7 @@ reports need; join for the rest.
 Run on a schedule (hosted service / cron) with a rolling cutoff. Root and children archive together:
 
 ```csharp
-var result = await db.Database.ArchiveTierAsync<Invoice>(DateTime.UtcNow.AddYears(-1)); // + sync ArchiveTier
+var result = await db.Database.ArchiveTierAsync<Record>(DateTime.UtcNow.AddYears(-1)); // + sync ArchiveTier
 ```
 
 It is **idempotent and crash-safe**: the cutoff snaps down to the granularity so each period moves whole; each
@@ -408,7 +408,7 @@ After the application has approved the hot corrections and late rows, run the ex
 
 ```csharp
 TierArchiveResult reconciliation =
-    await db.Database.ReconcileArchiveTierAsync<Invoice>(); // + sync ReconcileArchiveTier
+    await db.Database.ReconcileArchiveTierAsync<Record>(); // + sync ReconcileArchiveTier
 ```
 
 Reconciliation reads the complete active cold range, lets hot rows win by the configured stable match key, writes
@@ -426,19 +426,19 @@ same configured match key, and a new hot child is added, but the absence of a ho
 representation. When the application has authorised an actual deletion, supply exact configured match keys:
 
 ```csharp
-await db.Database.ReconcileArchiveTierAsync<Invoice>(
+await db.Database.ReconcileArchiveTierAsync<Record>(
     new TierReconciliationOptions
     {
         Scope = TierMaintenanceScope.ForRootMatchKeys(
-            TierRowIdentity.For<Invoice>(
-                new Dictionary<string, object?> { ["InvoiceNumber"] = "INV-1001" })),
+            TierRowIdentity.For<Record>(
+                new Dictionary<string, object?> { ["ExternalKey"] = "record-1001" })),
         Tombstones =
         [
-            TierRowIdentity.For<InvoiceLine>(
+            TierRowIdentity.For<RecordPart>(
                 new Dictionary<string, object?>
                 {
-                    ["InvoiceNumber"] = "INV-1001",
-                    ["LineNumber"] = 2,
+                    ["RecordExternalKey"] = "record-1001",
+                    ["PartNumber"] = 2,
                 }),
         ],
     });
@@ -455,12 +455,12 @@ Restore an exact root-key or declared-partition scope to the mapped hot tables b
 transition:
 
 ```csharp
-TierRestoreResult restore = await db.Database.RestoreArchiveTierAsync<Invoice>(
+TierRestoreResult restore = await db.Database.RestoreArchiveTierAsync<Record>(
     new TierRestoreOptions
     {
         Scope = TierMaintenanceScope.ForRootMatchKeys(
-            TierRowIdentity.For<Invoice>(
-                new Dictionary<string, object?> { ["InvoiceNumber"] = "INV-1001" })),
+            TierRowIdentity.For<Record>(
+                new Dictionary<string, object?> { ["ExternalKey"] = "record-1001" })),
     });
 ```
 
@@ -475,16 +475,16 @@ Operational reads are bounded:
 
 ```csharp
 TierConflictPage conflicts =
-    await db.Database.GetArchiveConflictsAsync<Invoice>(offset: 0, limit: 100);
+    await db.Database.GetArchiveConflictsAsync<Record>(offset: 0, limit: 100);
 
 TierArchiveGenerationInventory inventory =
-    await db.Database.GetArchiveGenerationInventoryAsync<Invoice>();
+    await db.Database.GetArchiveGenerationInventoryAsync<Record>();
 
 TierArchiveCleanupPlan cleanup =
-    await db.Database.PlanArchiveGenerationCleanupAsync<Invoice>(selectedGenerationIds);
+    await db.Database.PlanArchiveGenerationCleanupAsync<Record>(selectedGenerationIds);
 
 TierStoragePreflightResult preflight =
-    await db.Database.PreflightTieredStorageAsync<Invoice>();
+    await db.Database.PreflightTieredStorageAsync<Record>();
 ```
 
 Inventory classifies the active generation, prior provider-published generations, and locally discoverable
@@ -500,25 +500,25 @@ writer controls. Archive schema changes use a separate reviewable flow:
 
 ```csharp
 TierArchiveContractInspection inspection =
-    await db.Database.InspectArchiveContractAsync<Invoice>();
+    await db.Database.InspectArchiveContractAsync<Record>();
 
 TierArchiveRewritePlan plan =
-    await db.Database.PlanArchiveContractRewriteAsync<Invoice>(
+    await db.Database.PlanArchiveContractRewriteAsync<Record>(
         new TierArchiveRewriteOptions
         {
             Columns =
             [
                 new TierArchiveColumnRewrite
                 {
-                    EntityType = typeof(Invoice),
-                    TargetProperty = nameof(Invoice.Currency),
-                    ConstantValue = "GBP",
+                    EntityType = typeof(Record),
+                    TargetProperty = nameof(Record.Label),
+                    ConstantValue = "general",
                 },
             ],
         });
 
 TierArchiveResult migration =
-    await db.Database.RewriteArchiveContractAsync<Invoice>(plan);
+    await db.Database.RewriteArchiveContractAsync<Record>(plan);
 ```
 
 Nullable additions need no mapping. Required additions, renamed/retyped columns, and nullability tightening require
@@ -529,7 +529,7 @@ changes are rejected as ambiguous rather than inferred.
 
 ```csharp
 // Delete archived partitions older than 3 years, across every aggregate table.
-int partitionsDeleted = db.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow.AddYears(-3));
+int partitionsDeleted = db.Database.PurgeArchiveOlderThan<Record>(DateTime.UtcNow.AddYears(-3));
 ```
 
 ## 6. Cold storage on S3, Google Cloud Storage, and other object stores
@@ -559,9 +559,9 @@ options.UseDuckDB("Data Source=app.duckdb", duckdb => duckdb
         command.ExecuteNonQuery();
     }));
 
-modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "s3://my-bucket/archive/invoices", TierGranularity.Month)
-    .WithReadModel<InvoiceReport>()
-    .Including<InvoiceLine>(i => i.Lines, l => l.WithReadModel<InvoiceLineReport>());
+modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "s3://my-bucket/archive/records", TierGranularity.Month)
+    .WithReadModel<RecordReport>()
+    .Including<RecordPart>(i => i.Parts, l => l.WithReadModel<RecordPartReport>());
 ```
 
 **Google Cloud Storage.** GCS also uses `httpfs`, but selects DuckDB's `TYPE gcs` secret and `gcs://` or `gs://`
@@ -585,9 +585,9 @@ options.UseDuckDB("Data Source=app.duckdb", duckdb => duckdb
         command.ExecuteNonQuery();
     }));
 
-modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "gcs://my-bucket/archive/invoices", TierGranularity.Month)
-    .WithReadModel<InvoiceReport>()
-    .Including<InvoiceLine>(i => i.Lines, l => l.WithReadModel<InvoiceLineReport>());
+modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "gcs://my-bucket/archive/records", TierGranularity.Month)
+    .WithReadModel<RecordReport>()
+    .Including<RecordPart>(i => i.Parts, l => l.WithReadModel<RecordPartReport>());
 ```
 
 The sample's local GCS mode points this exact `TYPE gcs` + `gcs://` path at MinIO. That proves the DuckDB
@@ -612,17 +612,17 @@ options.UseDuckDB("Data Source=app.duckdb", duckdb => duckdb
         command.ExecuteNonQuery();
     }));
 
-modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "azure://my-container/archive/invoices", TierGranularity.Month)
-    .WithReadModel<InvoiceReport>()
-    .Including<InvoiceLine>(i => i.Lines, l => l.WithReadModel<InvoiceLineReport>());
+modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "azure://my-container/archive/records", TierGranularity.Month)
+    .WithReadModel<RecordReport>()
+    .Including<RecordPart>(i => i.Parts, l => l.WithReadModel<RecordPartReport>());
 ```
 
 **Retention on object storage.** Object stores can't delete files through DuckDB, so
 `PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive. Enforce retention with the store's
 own age-based expiry instead — an **S3 bucket lifecycle rule**, **GCS Object Lifecycle Management**, or an
 **Azure Blob lifecycle-management policy** on the archive prefix (for example, expire objects under
-`archive/invoices/` after 7 years). These policies normally use object creation/upload age. If retention must
-follow the partition's business date, especially for backfilled data, use a prefix-aware external cleanup job.
+`archive/records/` after 7 years). These policies normally use object creation/upload age. If retention must
+follow the partition's logical date, especially for backfilled data, use a prefix-aware external cleanup job.
 
 **Try it.** The sample ships a compose file with MinIO and Azurite. MinIO serves both the local S3 mode and the
 GCS interoperability mode, using separate buckets; Azurite serves Azure:
@@ -683,8 +683,8 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
   `<archivePath>/<table>/<declared-key-1>=…/<declared-key-2>=…/` (or the legacy temporal layout when no
   `PartitionBy` is configured).
 - **Reference vs child.** Only `.Including`ed navigations archive. Archived rows are **snapshots** and may hold
-  foreign keys into still-live tables (an archived line still points at a `Product` that could later be
-  deleted) — correct for financial history, but a semantic to be aware of.
+  foreign keys into still-live tables (an archived part still points at a `ReferenceEntry` that could later be
+  deleted) — correct for immutable snapshot history, but a semantic to be aware of.
 - **Views project the hot columns.** Physical views are generated from every mapped scalar source column whether or
   not an EF read model is registered. A read-model whose column is missing on the source is rejected at
   model validation. Adding a column to the hot entity is safe (cold rows read `NULL` after the view is

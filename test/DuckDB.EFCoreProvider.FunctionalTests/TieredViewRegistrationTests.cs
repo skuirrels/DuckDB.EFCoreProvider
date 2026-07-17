@@ -39,88 +39,88 @@ public sealed class TieredViewRegistrationTests : IDisposable
         {
             owner.Database.EnsureCreated();
 
-            var order = owner.Model.FindEntityType(typeof(TieredOrder))!;
-            var line = owner.Model.FindEntityType(typeof(TieredLine))!;
-            var allocation = owner.Model.FindEntityType(typeof(TieredAllocation))!;
-            Assert.Equal("order_history", order.GetTieredStoreView());
-            Assert.Equal("tiered_lines_tiered", line.GetTieredStoreView());
-            Assert.Equal("allocation_history", allocation.GetTieredStoreView());
+            var root = owner.Model.FindEntityType(typeof(TieredRoot))!;
+            var child = owner.Model.FindEntityType(typeof(TieredChild))!;
+            var leaf = owner.Model.FindEntityType(typeof(TieredLeaf))!;
+            Assert.Equal("root_history", root.GetTieredStoreView());
+            Assert.Equal("tiered_children_tiered", child.GetTieredStoreView());
+            Assert.Equal("leaf_history", leaf.GetTieredStoreView());
             Assert.Equal(3, owner.Model.GetEntityTypes().Count());
             Assert.All(owner.Model.GetEntityTypes(), entity => Assert.NotNull(entity.GetTieredStoreRole()));
 
-            owner.Orders.AddRange(
-                CreateOrder(1, "order-cold", new DateTime(2024, 1, 15), "cold", 11m),
-                CreateOrder(2, "order-hot", new DateTime(2024, 3, 15), "hot", 22m));
+            owner.Roots.AddRange(
+                CreateRoot(1, "root-cold", new DateTime(2024, 1, 15), "cold", 11m),
+                CreateRoot(2, "root-hot", new DateTime(2024, 3, 15), "hot", 22m));
             owner.SaveChanges();
 
             Assert.Equal(
                 2,
-                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM order_history").Single());
+                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM root_history").Single());
             Assert.Equal(
                 2,
-                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM tiered_lines_tiered").Single());
+                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM tiered_children_tiered").Single());
             Assert.Equal(
                 2,
-                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM allocation_history").Single());
+                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM leaf_history").Single());
 
-            await owner.Database.ArchiveTierAsync<TieredOrder>(new DateTime(2024, 2, 1));
+            await owner.Database.ArchiveTierAsync<TieredRoot>(new DateTime(2024, 2, 1));
 
-            Assert.Single(owner.Orders);
-            Assert.Single(owner.Lines);
-            Assert.Single(owner.Allocations);
+            Assert.Single(owner.Roots);
+            Assert.Single(owner.Children);
+            Assert.Single(owner.Leaves);
             Assert.Equal(
                 2,
-                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM order_history").Single());
+                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM root_history").Single());
             Assert.Equal(
                 2,
-                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM tiered_lines_tiered").Single());
+                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM tiered_children_tiered").Single());
             Assert.Equal(
                 2,
-                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM allocation_history").Single());
+                owner.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM leaf_history").Single());
         }
 
         using (var history = new AggregateHistoryContext(dbPath))
         {
-            var coldOrders = history.Orders.Where(order => order.CompletedAt < new DateTime(2024, 2, 1));
+            var coldOrders = history.Roots.Where(root => root.EffectiveAt < new DateTime(2024, 2, 1));
             var pruningSql = coldOrders.ToQueryString();
-            Assert.Contains("CompletedAt_month", pruningSql);
+            Assert.Contains("EffectiveAt_month", pruningSql);
             Assert.Contains("date_trunc('month'", pruningSql);
-            Assert.Equal([1], coldOrders.Select(order => order.Id).ToArray());
+            Assert.Equal([1], coldOrders.Select(root => root.Id).ToArray());
 
-            var orders = history.Orders.OrderBy(order => order.Id).ToArray();
-            Assert.Equal([1, 2], orders.Select(order => order.Id).ToArray());
-            Assert.Equal(["order-cold", "order-hot"], orders.Select(order => order.ExternalId).ToArray());
+            var roots = history.Roots.OrderBy(root => root.Id).ToArray();
+            Assert.Equal([1, 2], roots.Select(root => root.Id).ToArray());
+            Assert.Equal(["root-cold", "root-hot"], roots.Select(root => root.ExternalId).ToArray());
             Assert.Equal(
                 [new DateTime(2024, 1, 15), new DateTime(2024, 3, 15)],
-                orders.Select(order => order.CompletedAt).ToArray());
-            Assert.Equal(["cold", "hot"], orders.Select(order => order.Description).ToArray());
+                roots.Select(root => root.EffectiveAt).ToArray());
+            Assert.Equal(["cold", "hot"], roots.Select(root => root.Description).ToArray());
 
-            var lines = history.Lines.OrderBy(line => line.Id).ToArray();
-            Assert.Equal([10, 20], lines.Select(line => line.Id).ToArray());
-            Assert.Equal([1, 2], lines.Select(line => line.OrderId).ToArray());
-            Assert.Equal(["line-order-cold", "line-order-hot"], lines.Select(line => line.ExternalId).ToArray());
-            Assert.Equal([11m, 22m], lines.Select(line => line.Amount).ToArray());
+            var children = history.Children.OrderBy(child => child.Id).ToArray();
+            Assert.Equal([10, 20], children.Select(child => child.Id).ToArray());
+            Assert.Equal([1, 2], children.Select(child => child.RootId).ToArray());
+            Assert.Equal(["child-root-cold", "child-root-hot"], children.Select(child => child.ExternalId).ToArray());
+            Assert.Equal([11m, 22m], children.Select(child => child.Value).ToArray());
 
-            var allocations = history.Allocations.OrderBy(allocation => allocation.Id).ToArray();
-            Assert.Equal([100, 200], allocations.Select(allocation => allocation.Id).ToArray());
-            Assert.Equal([10, 20], allocations.Select(allocation => allocation.LineId).ToArray());
+            var leaves = history.Leaves.OrderBy(leaf => leaf.Id).ToArray();
+            Assert.Equal([100, 200], leaves.Select(leaf => leaf.Id).ToArray());
+            Assert.Equal([10, 20], leaves.Select(leaf => leaf.ChildId).ToArray());
             Assert.Equal(
-                ["allocation-order-cold", "allocation-order-hot"],
-                allocations.Select(allocation => allocation.Code).ToArray());
+                ["leaf-root-cold", "leaf-root-hot"],
+                leaves.Select(leaf => leaf.Code).ToArray());
         }
 
         using var maintenance = new AggregateOwnerContext(dbPath, archivePath);
         maintenance.Database.EnsureTieredStoresCreated();
-        Assert.True(maintenance.Database.PurgeArchiveOlderThan<TieredOrder>(new DateTime(2024, 2, 1)) > 0);
+        Assert.True(maintenance.Database.PurgeArchiveOlderThan<TieredRoot>(new DateTime(2024, 2, 1)) > 0);
         Assert.Equal(
             1,
-            maintenance.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM order_history").Single());
+            maintenance.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM root_history").Single());
         Assert.Equal(
             1,
-            maintenance.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM tiered_lines_tiered").Single());
+            maintenance.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM tiered_children_tiered").Single());
         Assert.Equal(
             1,
-            maintenance.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM allocation_history").Single());
+            maintenance.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM leaf_history").Single());
     }
 
     [Fact]
@@ -135,25 +135,25 @@ public sealed class TieredViewRegistrationTests : IDisposable
         {
             owner.Database.EnsureCreated();
             owner.Records.AddRange(
-                new PruningRecord { Id = 1, CustomerId = 10, CompletedAt = new DateTime(2024, 1, 10) },
-                new PruningRecord { Id = 2, CustomerId = 10, CompletedAt = new DateTime(2024, 2, 10) },
-                new PruningRecord { Id = 3, CustomerId = 20, CompletedAt = new DateTime(2024, 1, 10) },
-                new PruningRecord { Id = 4, CustomerId = 20, CompletedAt = new DateTime(2024, 2, 10) });
+                new PruningRecord { Id = 1, GroupId = 10, EffectiveAt = new DateTime(2024, 1, 10) },
+                new PruningRecord { Id = 2, GroupId = 10, EffectiveAt = new DateTime(2024, 2, 10) },
+                new PruningRecord { Id = 3, GroupId = 20, EffectiveAt = new DateTime(2024, 1, 10) },
+                new PruningRecord { Id = 4, GroupId = 20, EffectiveAt = new DateTime(2024, 2, 10) });
             owner.SaveChanges();
             await owner.Database.ArchiveTierAsync<PruningRecord>(to);
 
             var ownerQuery = owner.History.Where(record =>
-                record.CustomerId == 10 && record.CompletedAt >= from && record.CompletedAt < to);
+                record.GroupId == 10 && record.EffectiveAt >= from && record.EffectiveAt < to);
             AssertFilesPruned(Explain(owner, ownerQuery), "1/4");
             Assert.Equal([2], ownerQuery.Select(record => record.Id).ToArray());
         }
 
         using var history = new PruningHistoryContext(dbPath);
         var historyQuery = history.Records.Where(record =>
-            record.CustomerId == 10 && record.CompletedAt >= from && record.CompletedAt < to);
+            record.GroupId == 10 && record.EffectiveAt >= from && record.EffectiveAt < to);
         var historySql = historyQuery.ToQueryString();
         Assert.Contains(DuckDBTierPartitionContract.ColumnPrefix, historySql);
-        Assert.Contains("CompletedAt_month", historySql);
+        Assert.Contains("EffectiveAt_month", historySql);
         AssertFilesPruned(Explain(history, historyQuery), "1/4");
         Assert.Equal([2], historyQuery.Select(record => record.Id).ToArray());
     }
@@ -169,15 +169,15 @@ public sealed class TieredViewRegistrationTests : IDisposable
             owner.Records.Add(new PruningRecord
             {
                 Id = 1,
-                CustomerId = 10,
-                CompletedAt = new DateTime(2024, 1, 20),
+                GroupId = 10,
+                EffectiveAt = new DateTime(2024, 1, 20),
             });
             owner.SaveChanges();
             await owner.Database.ArchiveTierAsync<PruningRecord>(new DateTime(2024, 2, 1));
         }
 
         using var history = new DriftedPruningHistoryContext(dbPath);
-        var query = history.Records.Where(record => record.CompletedAt >= new DateTime(2024, 1, 15));
+        var query = history.Records.Where(record => record.EffectiveAt >= new DateTime(2024, 1, 15));
         var sql = query.ToQueryString();
         Assert.Contains(DuckDBTierPartitionContract.ColumnPrefix, sql);
 
@@ -196,7 +196,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
         {
             Id = 1,
             ExternalId = "record-1",
-            CompletedAt = new DateTime(2024, 1, 15),
+            EffectiveAt = new DateTime(2024, 1, 15),
             Payload = "original",
         });
         context.SaveChanges();
@@ -206,7 +206,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
         {
             Id = 2,
             ExternalId = "record-1",
-            CompletedAt = new DateTime(2024, 1, 15),
+            EffectiveAt = new DateTime(2024, 1, 15),
             Payload = "corrected",
         });
         context.SaveChanges();
@@ -246,7 +246,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
             original.Records.Add(new ContractRecordV1
             {
                 Id = 1,
-                CompletedAt = new DateTime(2024, 1, 15),
+                EffectiveAt = new DateTime(2024, 1, 15),
             });
             original.SaveChanges();
             await original.Database.ArchiveTierAsync<ContractRecordV1>(new DateTime(2024, 2, 1));
@@ -362,26 +362,26 @@ public sealed class TieredViewRegistrationTests : IDisposable
         Assert.Contains("is not DateTime or DateOnly", invalidPruningException.Message);
     }
 
-    private static TieredOrder CreateOrder(int id, string externalId, DateTime completedAt, string description, decimal amount)
+    private static TieredRoot CreateRoot(int id, string externalId, DateTime effectiveAt, string description, decimal value)
         => new()
         {
             Id = id,
             ExternalId = externalId,
-            CompletedAt = completedAt,
+            EffectiveAt = effectiveAt,
             Description = description,
-            Lines =
+            Children =
             [
-                new TieredLine
+                new TieredChild
                 {
                     Id = id * 10,
-                    ExternalId = "line-" + externalId,
-                    Amount = amount,
-                    Allocations =
+                    ExternalId = "child-" + externalId,
+                    Value = value,
+                    Leaves =
                     [
-                        new TieredAllocation
+                        new TieredLeaf
                         {
                             Id = id * 100,
-                            Code = "allocation-" + externalId,
+                            Code = "leaf-" + externalId,
                         },
                     ],
                 },
@@ -403,71 +403,71 @@ public sealed class TieredViewRegistrationTests : IDisposable
 
     private sealed class AggregateOwnerContext(string dbPath, string archivePath) : FileContext(dbPath)
     {
-        public DbSet<TieredOrder> Orders => Set<TieredOrder>();
-        public DbSet<TieredLine> Lines => Set<TieredLine>();
-        public DbSet<TieredAllocation> Allocations => Set<TieredAllocation>();
+        public DbSet<TieredRoot> Roots => Set<TieredRoot>();
+        public DbSet<TieredChild> Children => Set<TieredChild>();
+        public DbSet<TieredLeaf> Leaves => Set<TieredLeaf>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<TieredOrder>(builder =>
+            modelBuilder.Entity<TieredRoot>(builder =>
             {
-                builder.ToTable("tiered_orders");
-                builder.HasKey(order => order.Id);
-                builder.HasMany(order => order.Lines).WithOne(line => line.Order).HasForeignKey(line => line.OrderId);
+                builder.ToTable("tiered_roots");
+                builder.HasKey(root => root.Id);
+                builder.HasMany(root => root.Children).WithOne(child => child.Root).HasForeignKey(child => child.RootId);
             });
-            modelBuilder.Entity<TieredLine>(builder =>
+            modelBuilder.Entity<TieredChild>(builder =>
             {
-                builder.ToTable("tiered_lines");
-                builder.HasKey(line => line.Id);
-                builder.HasMany(line => line.Allocations).WithOne(allocation => allocation.Line)
-                    .HasForeignKey(allocation => allocation.LineId);
+                builder.ToTable("tiered_children");
+                builder.HasKey(child => child.Id);
+                builder.HasMany(child => child.Leaves).WithOne(leaf => leaf.Child)
+                    .HasForeignKey(leaf => leaf.ChildId);
             });
-            modelBuilder.Entity<TieredAllocation>(builder =>
+            modelBuilder.Entity<TieredLeaf>(builder =>
             {
-                builder.ToTable("tiered_allocations");
-                builder.HasKey(allocation => allocation.Id);
+                builder.ToTable("tiered_leaves");
+                builder.HasKey(leaf => leaf.Id);
             });
-            modelBuilder.ToTieredStore<TieredOrder>(order => order.CompletedAt, archivePath)
-                .PartitionBy(ConfigureOrderPartitions)
-                .WithTieredView("order_history")
-                .Including<TieredLine>(order => order.Lines, line => line
+            modelBuilder.ToTieredStore<TieredRoot>(root => root.EffectiveAt, archivePath)
+                .PartitionBy(ConfigureRootPartitions)
+                .WithTieredView("root_history")
+                .Including<TieredChild>(root => root.Children, child => child
                     .WithTieredView()
-                    .Including<TieredAllocation>(item => item.Allocations, allocation => allocation
-                        .WithTieredView("allocation_history")));
+                    .Including<TieredLeaf>(item => item.Leaves, leaf => leaf
+                        .WithTieredView("leaf_history")));
         }
     }
 
     private sealed class AggregateHistoryContext(string dbPath) : FileContext(dbPath)
     {
-        public DbSet<TieredOrder> Orders => Set<TieredOrder>();
-        public DbSet<TieredLine> Lines => Set<TieredLine>();
-        public DbSet<TieredAllocation> Allocations => Set<TieredAllocation>();
+        public DbSet<TieredRoot> Roots => Set<TieredRoot>();
+        public DbSet<TieredChild> Children => Set<TieredChild>();
+        public DbSet<TieredLeaf> Leaves => Set<TieredLeaf>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<TieredOrder>(builder =>
+            modelBuilder.Entity<TieredRoot>(builder =>
             {
-                builder.ToTieredView("order_history", ConfigureOrderPartitions);
-                builder.Ignore(order => order.Lines);
+                builder.ToTieredView("root_history", ConfigureRootPartitions);
+                builder.Ignore(root => root.Children);
             });
-            modelBuilder.Entity<TieredLine>(builder =>
+            modelBuilder.Entity<TieredChild>(builder =>
             {
                 builder.HasNoKey();
-                builder.ToView("tiered_lines_tiered");
-                builder.Ignore(line => line.Order);
-                builder.Ignore(line => line.Allocations);
+                builder.ToView("tiered_children_tiered");
+                builder.Ignore(child => child.Root);
+                builder.Ignore(child => child.Leaves);
             });
-            modelBuilder.Entity<TieredAllocation>(builder =>
+            modelBuilder.Entity<TieredLeaf>(builder =>
             {
                 builder.HasNoKey();
-                builder.ToView("allocation_history");
-                builder.Ignore(allocation => allocation.Line);
+                builder.ToView("leaf_history");
+                builder.Ignore(leaf => leaf.Child);
             });
         }
     }
 
-    private static void ConfigureOrderPartitions(TieredPartitionBuilder<TieredOrder> partitions)
-        => partitions.ByMonth(order => order.CompletedAt);
+    private static void ConfigureRootPartitions(TieredPartitionBuilder<TieredRoot> partitions)
+        => partitions.ByMonth(root => root.EffectiveAt);
 
     private sealed class PruningOwnerContext<TMarker>(string dbPath, string archivePath) : FileContext(dbPath)
     {
@@ -481,7 +481,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
                 builder.ToTable("pruning_records");
                 builder.HasKey(record => record.Id);
             });
-            modelBuilder.ToTieredStore<PruningRecord>(record => record.CompletedAt, archivePath)
+            modelBuilder.ToTieredStore<PruningRecord>(record => record.EffectiveAt, archivePath)
                 .PartitionBy(ConfigurePruningPartitions)
                 .WithReadModel<PruningRecordReadModel>();
         }
@@ -505,14 +505,14 @@ public sealed class TieredViewRegistrationTests : IDisposable
             => modelBuilder.Entity<PruningRecord>(builder => builder.ToTieredView(
                 "pruning_records_tiered",
                 partitions => partitions
-                    .By(record => record.CustomerId)
-                    .ByDay(record => record.CompletedAt)));
+                    .By(record => record.GroupId)
+                    .ByDay(record => record.EffectiveAt)));
     }
 
     private static void ConfigurePruningPartitions(TieredPartitionBuilder<PruningRecord> partitions)
         => partitions
-            .By(record => record.CustomerId)
-            .ByMonth(record => record.CompletedAt);
+            .By(record => record.GroupId)
+            .ByMonth(record => record.EffectiveAt);
 
     private sealed class MaintenanceContext(string dbPath, string archivePath) : FileContext(dbPath)
     {
@@ -525,7 +525,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
                 builder.ToTable("maintenance_records");
                 builder.HasKey(record => record.Id);
             });
-            modelBuilder.ToTieredStore<MaintenanceRecord>(record => record.CompletedAt, archivePath)
+            modelBuilder.ToTieredStore<MaintenanceRecord>(record => record.EffectiveAt, archivePath)
                 .MatchBy(record => record.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
                 .WithTieredView("maintenance_history");
         }
@@ -542,7 +542,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
                 builder.ToTable("contract_records");
                 builder.HasKey(record => record.Id);
             });
-            modelBuilder.ToTieredStore<ContractRecordV1>(record => record.CompletedAt, archivePath)
+            modelBuilder.ToTieredStore<ContractRecordV1>(record => record.EffectiveAt, archivePath)
                 .WithTieredView("contract_history");
         }
     }
@@ -556,7 +556,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
                 builder.ToTable("contract_records");
                 builder.HasKey(record => record.Id);
             });
-            modelBuilder.ToTieredStore<ContractRecordV2>(record => record.CompletedAt, archivePath)
+            modelBuilder.ToTieredStore<ContractRecordV2>(record => record.EffectiveAt, archivePath)
                 .WithTieredView("contract_history");
         }
     }
@@ -598,7 +598,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
                 builder.ToTable("compatibility_records");
                 builder.HasKey(record => record.Id);
             });
-            var tiered = modelBuilder.ToTieredStore<CompatibilityRecord>(record => record.CompletedAt, archivePath);
+            var tiered = modelBuilder.ToTieredStore<CompatibilityRecord>(record => record.EffectiveAt, archivePath);
             if (customView is not null)
             {
                 tiered.WithTieredView(customView);
@@ -641,12 +641,12 @@ public sealed class TieredViewRegistrationTests : IDisposable
             modelBuilder.Entity<DuplicateRootA>().ToTable("duplicate_root_a").HasKey(root => root.Id);
             modelBuilder.Entity<DuplicateRootB>().ToTable("duplicate_root_b").HasKey(root => root.Id);
             modelBuilder.ToTieredStore<DuplicateRootA>(
-                    root => root.CompletedAt,
+                    root => root.EffectiveAt,
                     Path.Combine(archivePath, "a"),
                     controlKey: "duplicate-a")
                 .WithTieredView("duplicate_history");
             modelBuilder.ToTieredStore<DuplicateRootB>(
-                    root => root.CompletedAt,
+                    root => root.EffectiveAt,
                     Path.Combine(archivePath, "b"),
                     controlKey: "duplicate-b")
                 .WithTieredView("duplicate_history");
@@ -658,7 +658,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<DuplicateRootA>().ToTable("collision").HasKey(root => root.Id);
-            modelBuilder.ToTieredStore<DuplicateRootA>(root => root.CompletedAt, archivePath)
+            modelBuilder.ToTieredStore<DuplicateRootA>(root => root.EffectiveAt, archivePath)
                 .WithTieredView("collision");
         }
     }
@@ -668,7 +668,7 @@ public sealed class TieredViewRegistrationTests : IDisposable
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<DuplicateRootA>().ToTable("qualified").HasKey(root => root.Id);
-            modelBuilder.ToTieredStore<DuplicateRootA>(root => root.CompletedAt, archivePath)
+            modelBuilder.ToTieredStore<DuplicateRootA>(root => root.EffectiveAt, archivePath)
                 .WithTieredView("analytics.qualified_history");
         }
     }
@@ -702,30 +702,30 @@ public sealed class TieredViewRegistrationTests : IDisposable
         });
     }
 
-    private sealed class TieredOrder
+    private sealed class TieredRoot
     {
         public int Id { get; set; }
         public string ExternalId { get; set; } = null!;
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string Description { get; set; } = null!;
-        public List<TieredLine> Lines { get; set; } = [];
+        public List<TieredChild> Children { get; set; } = [];
     }
 
-    private sealed class TieredLine
+    private sealed class TieredChild
     {
         public int Id { get; set; }
-        public int OrderId { get; set; }
-        public TieredOrder? Order { get; set; }
+        public int RootId { get; set; }
+        public TieredRoot? Root { get; set; }
         public string ExternalId { get; set; } = null!;
-        public decimal Amount { get; set; }
-        public List<TieredAllocation> Allocations { get; set; } = [];
+        public decimal Value { get; set; }
+        public List<TieredLeaf> Leaves { get; set; } = [];
     }
 
-    private sealed class TieredAllocation
+    private sealed class TieredLeaf
     {
         public int Id { get; set; }
-        public int LineId { get; set; }
-        public TieredLine? Line { get; set; }
+        public int ChildId { get; set; }
+        public TieredChild? Child { get; set; }
         public string Code { get; set; } = null!;
     }
 
@@ -733,22 +733,22 @@ public sealed class TieredViewRegistrationTests : IDisposable
     {
         public int Id { get; set; }
         public string ExternalId { get; set; } = null!;
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string Payload { get; set; } = null!;
     }
 
     private sealed class PruningRecord
     {
         public int Id { get; set; }
-        public int CustomerId { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public int GroupId { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class PruningRecordReadModel
     {
         public int Id { get; set; }
-        public int CustomerId { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public int GroupId { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class PruningEvidenceMarker;
@@ -758,13 +758,13 @@ public sealed class TieredViewRegistrationTests : IDisposable
     private sealed class ContractRecordV1
     {
         public int Id { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class ContractRecordV2
     {
         public int Id { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string? Note { get; set; }
     }
 
@@ -795,24 +795,24 @@ public sealed class TieredViewRegistrationTests : IDisposable
     private sealed class CompatibilityRecord
     {
         public int Id { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class CompatibilityRecordReadModel
     {
         public int Id { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class DuplicateRootA
     {
         public int Id { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class DuplicateRootB
     {
         public int Id { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 }

@@ -37,7 +37,7 @@ public sealed class TieredStorageFailureTests : IDisposable
     [Theory]
     [InlineData((int)DuckDBTierFailurePoint.AfterCopy, (int)TierArchiveStage.Copy, null)]
     [InlineData((int)DuckDBTierFailurePoint.AfterPublication, (int)TierArchiveStage.Publish, null)]
-    [InlineData((int)DuckDBTierFailurePoint.AfterNodeDelete, (int)TierArchiveStage.DeleteHot, "failure_order_items")]
+    [InlineData((int)DuckDBTierFailurePoint.AfterNodeDelete, (int)TierArchiveStage.DeleteHot, "failure_record_parts")]
     public async Task Forward_archive_recovers_from_each_injected_failure(
         int failurePointValue,
         int expectedStageValue,
@@ -48,18 +48,18 @@ public sealed class TieredStorageFailureTests : IDisposable
         var archivePath = Path.Combine(_root, failurePoint.ToString());
         using var context = new FailureContext(Path.Combine(_root, failurePoint + ".duckdb"), archivePath);
         context.Database.EnsureCreated();
-        context.Orders.Add(new FailureOrder
+        context.Records.Add(new FailureRecord
         {
-            ExternalId = "order-1",
-            CompletedDate = new DateTime(2024, 1, 15),
+            ExternalId = "record-1",
+            EffectiveAt = new DateTime(2024, 1, 15),
             Status = "complete",
-            Items =
+            Parts =
             [
-                new FailureOrderItem
+                new FailureRecordPart
                 {
-                    ExternalOrderId = "order-1",
-                    LineCode = "A",
-                    Amount = 12m,
+                    RecordExternalKey = "record-1",
+                    PartCode = "A",
+                    Value = 12m,
                 },
             ],
         });
@@ -67,33 +67,33 @@ public sealed class TieredStorageFailureTests : IDisposable
         TestTierFailureInjector.FailOnce(failurePoint, table);
 
         var exception = await Assert.ThrowsAsync<TierArchiveOperationException>(
-            () => context.Database.ArchiveTierAsync<FailureOrder>(new DateTime(2024, 2, 1)));
+            () => context.Database.ArchiveTierAsync<FailureRecord>(new DateTime(2024, 2, 1)));
 
         Assert.Equal(expectedStage, exception.Stage);
         Assert.Equal(expectedStage, exception.PartialResult.Stage);
-        Assert.Equal(1, exception.PartialResult.Nodes.Single(node => node.Table == "failure_orders").SelectedRows);
-        Assert.Single(context.OrderHistory);
-        Assert.Single(context.ItemHistory);
+        Assert.Equal(1, exception.PartialResult.Nodes.Single(node => node.Table == "failure_records").SelectedRows);
+        Assert.Single(context.RecordHistory);
+        Assert.Single(context.PartHistory);
         if (failurePoint == DuckDBTierFailurePoint.AfterCopy)
         {
             Assert.Equal(
                 1,
-                exception.PartialResult.Nodes.Single(node => node.Table == "failure_orders").CopiedRows);
+                exception.PartialResult.Nodes.Single(node => node.Table == "failure_records").CopiedRows);
         }
 
         if (failurePoint == DuckDBTierFailurePoint.AfterNodeDelete)
         {
             Assert.Equal(
                 1,
-                exception.PartialResult.Nodes.Single(node => node.Table == "failure_order_items").DeletedRows);
+                exception.PartialResult.Nodes.Single(node => node.Table == "failure_record_parts").DeletedRows);
         }
 
-        var retry = await context.Database.ArchiveTierAsync<FailureOrder>(new DateTime(2024, 2, 1));
+        var retry = await context.Database.ArchiveTierAsync<FailureRecord>(new DateTime(2024, 2, 1));
 
-        Assert.Single(context.OrderHistory);
-        Assert.Single(context.ItemHistory);
-        Assert.Empty(context.Orders);
-        Assert.Empty(context.Items);
+        Assert.Single(context.RecordHistory);
+        Assert.Single(context.PartHistory);
+        Assert.Empty(context.Records);
+        Assert.Empty(context.Parts);
         Assert.Equal(TierArchiveStage.Completed, retry.Stage);
     }
 
@@ -103,30 +103,30 @@ public sealed class TieredStorageFailureTests : IDisposable
         var archivePath = Path.Combine(_root, "reconcile");
         using var context = new FailureContext(Path.Combine(_root, "reconcile.duckdb"), archivePath);
         context.Database.EnsureCreated();
-        context.Orders.Add(new FailureOrder
+        context.Records.Add(new FailureRecord
         {
-            ExternalId = "order-1",
-            CompletedDate = new DateTime(2024, 1, 15),
+            ExternalId = "record-1",
+            EffectiveAt = new DateTime(2024, 1, 15),
             Status = "complete",
         });
         context.SaveChanges();
-        await context.Database.ArchiveTierAsync<FailureOrder>(new DateTime(2024, 2, 1));
+        await context.Database.ArchiveTierAsync<FailureRecord>(new DateTime(2024, 2, 1));
         context.Database.ExecuteSqlRaw(
-            "INSERT INTO failure_orders (\"Id\", \"CompletedDate\", \"ExternalId\", \"Status\") "
-            + "VALUES (101, TIMESTAMP '2024-01-15', 'order-1', 'corrected');");
+            "INSERT INTO failure_records (\"Id\", \"EffectiveAt\", \"ExternalId\", \"Status\") "
+            + "VALUES (101, TIMESTAMP '2024-01-15', 'record-1', 'corrected');");
         TestTierFailureInjector.FailOnce(DuckDBTierFailurePoint.AfterPublication);
 
         var exception = await Assert.ThrowsAsync<TierArchiveOperationException>(
-            () => context.Database.ReconcileArchiveTierAsync<FailureOrder>());
+            () => context.Database.ReconcileArchiveTierAsync<FailureRecord>());
 
         Assert.Equal(TierArchiveStage.Publish, exception.Stage);
         Assert.NotNull(exception.PartialResult.Revision);
-        Assert.Equal("corrected", context.OrderHistory.Single().Status);
+        Assert.Equal("corrected", context.RecordHistory.Single().Status);
 
-        var retry = await context.Database.ReconcileArchiveTierAsync<FailureOrder>();
+        var retry = await context.Database.ReconcileArchiveTierAsync<FailureRecord>();
 
-        Assert.Equal("corrected", context.OrderHistory.Single().Status);
-        Assert.Empty(context.Orders);
+        Assert.Equal("corrected", context.RecordHistory.Single().Status);
+        Assert.Empty(context.Records);
         Assert.Equal(TierArchiveStage.Completed, retry.Stage);
     }
 
@@ -136,92 +136,92 @@ public sealed class TieredStorageFailureTests : IDisposable
         var archivePath = Path.Combine(_root, "restore");
         using var context = new FailureContext(Path.Combine(_root, "restore.duckdb"), archivePath);
         context.Database.EnsureCreated();
-        context.Orders.Add(new FailureOrder
+        context.Records.Add(new FailureRecord
         {
-            ExternalId = "order-1",
-            CompletedDate = new DateTime(2024, 1, 15),
+            ExternalId = "record-1",
+            EffectiveAt = new DateTime(2024, 1, 15),
             Status = "complete",
-            Items =
+            Parts =
             [
-                new FailureOrderItem
+                new FailureRecordPart
                 {
-                    ExternalOrderId = "order-1",
-                    LineCode = "A",
-                    Amount = 12m,
+                    RecordExternalKey = "record-1",
+                    PartCode = "A",
+                    Value = 12m,
                 },
             ],
         });
         context.SaveChanges();
-        await context.Database.ArchiveTierAsync<FailureOrder>(new DateTime(2024, 2, 1));
+        await context.Database.ArchiveTierAsync<FailureRecord>(new DateTime(2024, 2, 1));
         TestTierFailureInjector.FailOnce(DuckDBTierFailurePoint.AfterPublication);
         var options = new TierRestoreOptions
         {
             Scope = TierMaintenanceScope.ForRootMatchKeys(
-                TierRowIdentity.For<FailureOrder>(
-                    new Dictionary<string, object?> { ["ExternalId"] = "order-1" })),
+                TierRowIdentity.For<FailureRecord>(
+                    new Dictionary<string, object?> { ["ExternalId"] = "record-1" })),
         };
 
         var exception = await Assert.ThrowsAsync<TierArchiveOperationException>(
-            () => context.Database.RestoreArchiveTierAsync<FailureOrder>(options));
+            () => context.Database.RestoreArchiveTierAsync<FailureRecord>(options));
 
         Assert.Equal(TierArchiveStage.Publish, exception.Stage);
         context.ChangeTracker.Clear();
-        Assert.Empty(context.Orders);
-        Assert.Empty(context.Items);
-        Assert.Single(context.OrderHistory);
-        Assert.Single(context.ItemHistory);
+        Assert.Empty(context.Records);
+        Assert.Empty(context.Parts);
+        Assert.Single(context.RecordHistory);
+        Assert.Single(context.PartHistory);
 
-        var retry = await context.Database.RestoreArchiveTierAsync<FailureOrder>(options);
+        var retry = await context.Database.RestoreArchiveTierAsync<FailureRecord>(options);
 
         Assert.Equal(1, retry.RootsInserted);
-        Assert.Single(context.Orders);
-        Assert.Single(context.Items);
-        Assert.Single(context.OrderHistory);
-        Assert.Single(context.ItemHistory);
+        Assert.Single(context.Records);
+        Assert.Single(context.Parts);
+        Assert.Single(context.RecordHistory);
+        Assert.Single(context.PartHistory);
     }
 
-    private sealed class FailureOrder
+    private sealed class FailureRecord
     {
         public int Id { get; set; }
         public string ExternalId { get; set; } = null!;
-        public DateTime CompletedDate { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string Status { get; set; } = null!;
-        public List<FailureOrderItem> Items { get; set; } = [];
+        public List<FailureRecordPart> Parts { get; set; } = [];
     }
 
-    private sealed class FailureOrderItem
+    private sealed class FailureRecordPart
     {
         public int Id { get; set; }
-        public int OrderId { get; set; }
-        public FailureOrder? Order { get; set; }
-        public string ExternalOrderId { get; set; } = null!;
-        public string LineCode { get; set; } = null!;
-        public decimal Amount { get; set; }
+        public int RecordId { get; set; }
+        public FailureRecord? Record { get; set; }
+        public string RecordExternalKey { get; set; } = null!;
+        public string PartCode { get; set; } = null!;
+        public decimal Value { get; set; }
     }
 
-    private sealed class FailureOrderHistory
+    private sealed class FailureRecordHistory
     {
         public int Id { get; set; }
         public string ExternalId { get; set; } = null!;
-        public DateTime CompletedDate { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string Status { get; set; } = null!;
     }
 
-    private sealed class FailureOrderItemHistory
+    private sealed class FailureRecordPartHistory
     {
         public int Id { get; set; }
-        public int OrderId { get; set; }
-        public string ExternalOrderId { get; set; } = null!;
-        public string LineCode { get; set; } = null!;
-        public decimal Amount { get; set; }
+        public int RecordId { get; set; }
+        public string RecordExternalKey { get; set; } = null!;
+        public string PartCode { get; set; } = null!;
+        public decimal Value { get; set; }
     }
 
     private sealed class FailureContext(string dbPath, string archivePath) : DbContext
     {
-        public DbSet<FailureOrder> Orders => Set<FailureOrder>();
-        public DbSet<FailureOrderItem> Items => Set<FailureOrderItem>();
-        public DbSet<FailureOrderHistory> OrderHistory => Set<FailureOrderHistory>();
-        public DbSet<FailureOrderItemHistory> ItemHistory => Set<FailureOrderItemHistory>();
+        public DbSet<FailureRecord> Records => Set<FailureRecord>();
+        public DbSet<FailureRecordPart> Parts => Set<FailureRecordPart>();
+        public DbSet<FailureRecordHistory> RecordHistory => Set<FailureRecordHistory>();
+        public DbSet<FailureRecordPartHistory> PartHistory => Set<FailureRecordPartHistory>();
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -231,30 +231,30 @@ public sealed class TieredStorageFailureTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<FailureOrder>(builder =>
+            modelBuilder.Entity<FailureRecord>(builder =>
             {
-                builder.ToTable("failure_orders");
-                builder.HasKey(order => order.Id);
-                builder.HasMany(order => order.Items)
-                    .WithOne(item => item.Order)
-                    .HasForeignKey(item => item.OrderId);
+                builder.ToTable("failure_records");
+                builder.HasKey(record => record.Id);
+                builder.HasMany(record => record.Parts)
+                    .WithOne(part => part.Record)
+                    .HasForeignKey(part => part.RecordId);
             });
-            modelBuilder.Entity<FailureOrderItem>(builder =>
+            modelBuilder.Entity<FailureRecordPart>(builder =>
             {
-                builder.ToTable("failure_order_items");
-                builder.HasKey(item => item.Id);
+                builder.ToTable("failure_record_parts");
+                builder.HasKey(part => part.Id);
             });
-            modelBuilder.ToTieredStore<FailureOrder>(
-                    order => order.CompletedDate,
+            modelBuilder.ToTieredStore<FailureRecord>(
+                    record => record.EffectiveAt,
                     archivePath,
                     TierGranularity.Month)
-                .MatchBy(order => order.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
-                .WithReadModel<FailureOrderHistory>()
-                .Including<FailureOrderItem>(order => order.Items, items => items
+                .MatchBy(record => record.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
+                .WithReadModel<FailureRecordHistory>()
+                .Including<FailureRecordPart>(record => record.Parts, parts => parts
                     .MatchBy(
-                        item => new { item.ExternalOrderId, item.LineCode },
+                        part => new { part.RecordExternalKey, part.PartCode },
                         TierMatchKeyUniqueness.ExternallyEnforced)
-                    .WithReadModel<FailureOrderItemHistory>());
+                    .WithReadModel<FailureRecordPartHistory>());
         }
     }
 

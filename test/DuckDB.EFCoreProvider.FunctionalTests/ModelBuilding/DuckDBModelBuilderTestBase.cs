@@ -176,13 +176,13 @@ public class DuckDBModelBuilderTestBase : RelationalModelBuilderTest
             modelBuilder.Entity<Order>(b =>
             {
                 b.HasKey(e => e.Id);
-                b.Property(e => e.CustomerId);
+                b.Property(e => e.GroupId);
                 b.HasOne<Customer>()
                     .WithMany()
-                    .HasForeignKey(e => e.CustomerId);
+                    .HasForeignKey(e => e.GroupId);
             });
 
-            var property = modelBuilder.Entity<Order>().Property(e => e.CustomerId).Metadata;
+            var property = modelBuilder.Entity<Order>().Property(e => e.GroupId).Metadata;
 
             var model = modelBuilder.FinalizeModel();
 
@@ -212,7 +212,7 @@ public class DuckDBModelBuilderTestBase : RelationalModelBuilderTest
         private class Order
         {
             public int Id { get; set; }
-            public int CustomerId { get; set; }
+            public int GroupId { get; set; }
         }
     }
 

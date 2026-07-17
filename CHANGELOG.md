@@ -2,6 +2,12 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.10.2
+
+- Replace application-specific tiered-storage entities, identifiers, lifecycle fields, release evidence, and the
+  partition diagram with provider-neutral record examples across the README, guide, sample, validation text, and
+  tests. No public API changes.
+
 ## 1.10.1
 
 - Fix tiered partition pruning for ordered and limited queries. The pruning visitor now collects provider-derived
@@ -21,8 +27,8 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 - Prevent the raw full-project test run from failing nondeterministically after more than twenty internal EF service
   providers by ignoring that infrastructure warning only in focused test contexts which deliberately build many
   provider/model variants. Production warning behaviour and shared externally supplied test providers are unchanged.
-- The `1.10.1-rc.1` package passed the consuming application's complete tiered-storage conformance suite with no
-  additional Provider defects. This stable release contains the accepted Provider changes.
+- The `1.10.1-rc.1` package passed the complete tiered-storage compatibility matrix with no additional provider
+  defects. This stable release contains the accepted provider changes.
 
 ## 1.10.0
 
@@ -43,7 +49,7 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 ## 1.9.0
 
 - Add explicit Hive partition names to tiered-storage partition declarations. Exact-value shorthand supports
-  `.PartitionBy(root => root.OwnerId, "root_owner_id")`, while the ordered builder accepts a name on `By`,
+  `.PartitionBy(root => root.GroupId, "root_group_id")`, while the ordered builder accepts a name on `By`,
   `ByYear`, `ByMonth`, and `ByDay`. Aliases flow through archive/reconciliation SQL, inherited child layouts,
   persisted contracts, model collision validation, typed views, and metadata-driven query pruning.
 
@@ -108,7 +114,7 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 
 - Add application-defined, root-owned partition plans to tiered Parquet archives. The ordered builder supports
   exact values plus year/month/day date transforms, for example
-  `.PartitionBy(p => p.By(root => root.CustomerId).ByMonth(root => root.CompletedDate))`; every aggregate child
+  `.PartitionBy(p => p.By(root => root.GroupId).ByMonth(root => root.EffectiveAt))`; every aggregate child
   inherits the root values and exact directory order. The exact-value shorthand remains available and appends an
   implicit lifecycle bucket for safe incremental writes. Query translation derives hidden bucket predicates from
   model metadata so normal property filters drive Hive pruning. Model validation enforces root ownership, mapped

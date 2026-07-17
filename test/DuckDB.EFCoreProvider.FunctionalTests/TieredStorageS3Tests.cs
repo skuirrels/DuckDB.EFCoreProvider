@@ -41,10 +41,10 @@ public sealed class TieredStorageS3Tests : IDisposable
     {
         using var context = new RemotePurgeContext(
             Path.Combine(_root, "purge.duckdb"),
-            "gcs://example-bucket/invoices");
+            "gcs://example-bucket/records");
 
         var exception = Assert.Throws<NotSupportedException>(
-            () => context.Database.PurgeArchiveOlderThan<Invoice>(DateTime.UtcNow));
+            () => context.Database.PurgeArchiveOlderThan<Record>(DateTime.UtcNow));
 
         Assert.Contains("lifecycle rule", exception.Message);
     }
@@ -66,18 +66,18 @@ public sealed class TieredStorageS3Tests : IDisposable
         using (var context = new ObjectStoreViewOnlyContext<ViewOnlyMarker>(dbPath, archivePath, objectStore))
         {
             context.Database.EnsureCreated();
-            context.Invoices.Add(new Invoice
+            context.Records.Add(new Record
             {
                 Id = 1,
                 ExternalId = "view-only-1",
-                InvoiceDate = new DateTime(2024, 1, 15),
+                EffectiveAt = new DateTime(2024, 1, 15),
                 Status = "complete",
             });
-            context.Invoices.Add(new Invoice
+            context.Records.Add(new Record
             {
                 Id = 2,
                 ExternalId = "view-only-2",
-                InvoiceDate = new DateTime(2024, 2, 15),
+                EffectiveAt = new DateTime(2024, 2, 15),
                 Status = "complete",
             });
             context.SaveChanges();
@@ -86,9 +86,9 @@ public sealed class TieredStorageS3Tests : IDisposable
                 context.Database.SqlQueryRaw<long>(
                     "SELECT count(*) AS \"Value\" FROM object_view_only_history").Single());
 
-            await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 3, 1));
+            await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 3, 1));
 
-            Assert.Empty(context.Invoices);
+            Assert.Empty(context.Records);
             Assert.Equal(
                 2,
                 context.Database.SqlQueryRaw<long>(
@@ -108,11 +108,11 @@ public sealed class TieredStorageS3Tests : IDisposable
         using var history = new ObjectStoreHistoryContext<ViewOnlyMarker>(dbPath, objectStore);
         var from = new DateTime(2024, 1, 1);
         var to = new DateTime(2024, 2, 1);
-        var january = history.Invoices.Where(invoice => invoice.InvoiceDate >= from && invoice.InvoiceDate < to);
+        var january = history.Records.Where(record => record.EffectiveAt >= from && record.EffectiveAt < to);
         var sql = january.ToQueryString();
         Assert.Contains(DuckDBTierPartitionContract.ColumnPrefix, sql);
-        Assert.Contains("InvoiceDate_month", sql);
-        Assert.Equal(["view-only-1"], january.Select(invoice => invoice.ExternalId).ToArray());
+        Assert.Contains("EffectiveAt_month", sql);
+        Assert.Equal(["view-only-1"], january.Select(record => record.ExternalId).ToArray());
     }
 
     [MinIoFact]
@@ -185,19 +185,19 @@ public sealed class TieredStorageS3Tests : IDisposable
         using (var context = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore))
         {
             context.Database.EnsureCreated();
-            SeedInvoices(context);
+            SeedRecords(context);
             expected = (
-                context.InvoiceHistory.Count(),
-                context.LineHistory.Count(),
-                context.LineHistory.Sum(line => line.Amount));
+                context.RecordHistory.Count(),
+                context.PartHistory.Count(),
+                context.PartHistory.Sum(part => part.Value));
 
-            var result = await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 8, 1));
+            var result = await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
 
             Assert.Equal(7, result.RowsArchived);
             Assert.All(result.Nodes, node => Assert.Equal(node.SelectedRows, node.CopiedRows));
             Assert.Equal(expected, History(context));
 
-            var rerun = await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 8, 1));
+            var rerun = await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
 
             Assert.True(rerun.NoOp);
             Assert.Equal(expected, History(context));
@@ -216,7 +216,7 @@ public sealed class TieredStorageS3Tests : IDisposable
                      new FailureScenario(DuckDBTierFailurePoint.AfterPublication, Table: null, TierArchiveStage.Publish),
                      new FailureScenario(
                          DuckDBTierFailurePoint.AfterNodeDelete,
-                         "invoice_lines",
+                         "record_lines",
                          TierArchiveStage.DeleteHot),
                  })
         {
@@ -226,12 +226,12 @@ public sealed class TieredStorageS3Tests : IDisposable
             using (var context = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore))
             {
                 context.Database.EnsureCreated();
-                SeedInvoices(context);
+                SeedRecords(context);
                 expected = History(context);
                 ObjectStoreFailureInjector.FailOnce(scenario.Point, scenario.Table);
 
                 var failure = await Assert.ThrowsAsync<TierArchiveOperationException>(
-                    () => context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 8, 1)));
+                    () => context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1)));
 
                 Assert.Equal(scenario.Stage, failure.Stage);
                 Assert.Equal(expected, History(context));
@@ -241,7 +241,7 @@ public sealed class TieredStorageS3Tests : IDisposable
             restarted.Database.EnsureTieredStoresCreated();
             Assert.Equal(expected, History(restarted));
 
-            var retry = await restarted.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 8, 1));
+            var retry = await restarted.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
             Assert.Equal(TierArchiveStage.Completed, retry.Stage);
             Assert.Equal(expected, History(restarted));
         }
@@ -257,45 +257,45 @@ public sealed class TieredStorageS3Tests : IDisposable
         using (var context = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore))
         {
             context.Database.EnsureCreated();
-            context.Invoices.Add(new Invoice
+            context.Records.Add(new Record
             {
                 Id = 1,
-                ExternalId = "invoice-1",
-                InvoiceDate = new DateTime(2024, 1, 15),
+                ExternalId = "record-1",
+                EffectiveAt = new DateTime(2024, 1, 15),
                 Status = "complete",
             });
             context.SaveChanges();
-            await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+            await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
             context.Database.ExecuteSqlRaw(
-                "INSERT INTO invoices (\"Id\", \"ExternalId\", \"InvoiceDate\", \"Status\") VALUES "
-                + "(101, 'invoice-1', TIMESTAMP '2024-01-15', 'corrected'), "
+                "INSERT INTO records (\"Id\", \"ExternalId\", \"EffectiveAt\", \"Status\") VALUES "
+                + "(101, 'record-1', TIMESTAMP '2024-01-15', 'corrected'), "
                 + "(102, 'late-unseen', TIMESTAMP '2024-01-20', 'complete');");
             ObjectStoreFailureInjector.FailOnce(DuckDBTierFailurePoint.AfterPublication);
 
             var failure = await Assert.ThrowsAsync<TierArchiveOperationException>(
-                () => context.Database.ReconcileArchiveTierAsync<Invoice>());
+                () => context.Database.ReconcileArchiveTierAsync<Record>());
 
             Assert.Equal(TierArchiveStage.Publish, failure.Stage);
-            Assert.Equal(2, context.InvoiceHistory.Count());
+            Assert.Equal(2, context.RecordHistory.Count());
             Assert.Equal(
                 "corrected",
-                context.InvoiceHistory.Single(invoice => invoice.ExternalId == "invoice-1").Status);
+                context.RecordHistory.Single(record => record.ExternalId == "record-1").Status);
         }
 
         using var restarted = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore);
         restarted.Database.EnsureTieredStoresCreated();
-        Assert.Equal(2, restarted.InvoiceHistory.Count());
+        Assert.Equal(2, restarted.RecordHistory.Count());
         Assert.Equal(
             "corrected",
-            restarted.InvoiceHistory.Single(invoice => invoice.ExternalId == "invoice-1").Status);
+            restarted.RecordHistory.Single(record => record.ExternalId == "record-1").Status);
 
-        var result = await restarted.Database.ReconcileArchiveTierAsync<Invoice>();
+        var result = await restarted.Database.ReconcileArchiveTierAsync<Record>();
         Assert.NotNull(result.Revision);
         Assert.Contains("/_revisions/", result.ArchivePath);
-        Assert.Equal(2, restarted.InvoiceHistory.Count());
+        Assert.Equal(2, restarted.RecordHistory.Count());
         Assert.Equal(
             "corrected",
-            restarted.InvoiceHistory.Single(invoice => invoice.ExternalId == "invoice-1").Status);
+            restarted.RecordHistory.Single(record => record.ExternalId == "record-1").Status);
     }
 
     private async Task VerifyRemoteSchemaEvolution<TMarker>(IObjectStoreOptions objectStore, string scheme)
@@ -305,59 +305,59 @@ public sealed class TieredStorageS3Tests : IDisposable
         using (var original = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore))
         {
             original.Database.EnsureCreated();
-            original.Invoices.Add(new Invoice
+            original.Records.Add(new Record
             {
                 Id = 1,
-                ExternalId = "invoice-1",
-                InvoiceDate = new DateTime(2024, 1, 15),
+                ExternalId = "record-1",
+                EffectiveAt = new DateTime(2024, 1, 15),
                 Status = "complete",
             });
             original.SaveChanges();
-            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
-            original.Database.ExecuteSqlRaw("ALTER TABLE invoices ADD COLUMN \"Note\" TEXT;");
+            await original.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+            original.Database.ExecuteSqlRaw("ALTER TABLE records ADD COLUMN \"Note\" TEXT;");
         }
 
         using var evolved = new ObjectStoreContext<TMarker, SchemaV2>(dbPath, archivePath, objectStore);
         evolved.Database.EnsureTieredStoresCreated();
-        evolved.Invoices.Add(new Invoice
+        evolved.Records.Add(new Record
         {
             Id = 2,
-            ExternalId = "invoice-2",
-            InvoiceDate = new DateTime(2024, 2, 15),
+            ExternalId = "record-2",
+            EffectiveAt = new DateTime(2024, 2, 15),
             Status = "complete",
             Note = "new column",
         });
         evolved.SaveChanges();
-        await evolved.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 3, 1));
+        await evolved.Database.ArchiveTierAsync<Record>(new DateTime(2024, 3, 1));
 
-        Assert.Null(evolved.InvoiceHistory.Single(invoice => invoice.ExternalId == "invoice-1").Note);
+        Assert.Null(evolved.RecordHistory.Single(record => record.ExternalId == "record-1").Note);
         Assert.Equal(
             "new column",
-            evolved.InvoiceHistory.Single(invoice => invoice.ExternalId == "invoice-2").Note);
+            evolved.RecordHistory.Single(record => record.ExternalId == "record-2").Note);
     }
 
-    private static void SeedInvoices(DbContextWithHistory context)
+    private static void SeedRecords(DbContextWithHistory context)
     {
         var baseDate = new DateTime(2025, 2, 1);
         var lineId = 1;
         for (var month = 13; month >= 0; month--)
         {
             var id = 14 - month;
-            var invoice = new Invoice
+            var record = new Record
             {
                 Id = id,
-                ExternalId = "invoice-" + id,
-                InvoiceDate = baseDate.AddMonths(-month),
+                ExternalId = "record-" + id,
+                EffectiveAt = baseDate.AddMonths(-month),
                 Status = "complete",
             };
-            invoice.Lines.Add(new InvoiceLine
+            record.Parts.Add(new RecordPart
             {
                 Id = lineId++,
-                ExternalInvoiceId = invoice.ExternalId,
-                LineCode = "A",
-                Amount = (month + 1) * 10,
+                RecordExternalKey = record.ExternalId,
+                PartCode = "A",
+                Value = (month + 1) * 10,
             });
-            context.Invoices.Add(invoice);
+            context.Records.Add(record);
         }
 
         context.SaveChanges();
@@ -365,46 +365,46 @@ public sealed class TieredStorageS3Tests : IDisposable
 
     private static (int Roots, int Children, decimal Total) History(DbContextWithHistory context)
         => (
-            context.InvoiceHistory.Count(),
-            context.LineHistory.Count(),
-            context.LineHistory.Sum(line => line.Amount));
+            context.RecordHistory.Count(),
+            context.PartHistory.Count(),
+            context.PartHistory.Sum(part => part.Value));
 
-    private sealed class Invoice
+    private sealed class Record
     {
         public int Id { get; set; }
         public string ExternalId { get; set; } = null!;
-        public DateTime InvoiceDate { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string Status { get; set; } = null!;
         public string? Note { get; set; }
-        public List<InvoiceLine> Lines { get; set; } = [];
+        public List<RecordPart> Parts { get; set; } = [];
     }
 
-    private sealed class InvoiceLine
+    private sealed class RecordPart
     {
         public int Id { get; set; }
-        public int InvoiceId { get; set; }
-        public Invoice? Invoice { get; set; }
-        public string ExternalInvoiceId { get; set; } = null!;
-        public string LineCode { get; set; } = null!;
-        public decimal Amount { get; set; }
+        public int RecordId { get; set; }
+        public Record? Record { get; set; }
+        public string RecordExternalKey { get; set; } = null!;
+        public string PartCode { get; set; } = null!;
+        public decimal Value { get; set; }
     }
 
-    private sealed class InvoiceRm
+    private sealed class RecordRm
     {
         public int Id { get; set; }
         public string ExternalId { get; set; } = null!;
-        public DateTime InvoiceDate { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string Status { get; set; } = null!;
         public string? Note { get; set; }
     }
 
-    private sealed class InvoiceLineRm
+    private sealed class RecordPartRm
     {
         public int Id { get; set; }
-        public int InvoiceId { get; set; }
-        public string ExternalInvoiceId { get; set; } = null!;
-        public string LineCode { get; set; } = null!;
-        public decimal Amount { get; set; }
+        public int RecordId { get; set; }
+        public string RecordExternalKey { get; set; } = null!;
+        public string PartCode { get; set; } = null!;
+        public decimal Value { get; set; }
     }
 
     private sealed class S3Marker;
@@ -463,9 +463,9 @@ public sealed class TieredStorageS3Tests : IDisposable
 
     private abstract class DbContextWithHistory : DbContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
-        public DbSet<InvoiceRm> InvoiceHistory => Set<InvoiceRm>();
-        public DbSet<InvoiceLineRm> LineHistory => Set<InvoiceLineRm>();
+        public DbSet<Record> Records => Set<Record>();
+        public DbSet<RecordRm> RecordHistory => Set<RecordRm>();
+        public DbSet<RecordPartRm> PartHistory => Set<RecordPartRm>();
     }
 
     private sealed class ObjectStoreContext<TMarker, TSchema>(
@@ -485,39 +485,39 @@ public sealed class TieredStorageS3Tests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.HasMany(invoice => invoice.Lines)
-                    .WithOne(line => line.Invoice)
-                    .HasForeignKey(line => line.InvoiceId);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.HasMany(record => record.Parts)
+                    .WithOne(part => part.Record)
+                    .HasForeignKey(part => part.RecordId);
                 if (typeof(TSchema) == typeof(SchemaV1))
                 {
-                    builder.Ignore(invoice => invoice.Note);
+                    builder.Ignore(record => record.Note);
                 }
             });
-            modelBuilder.Entity<InvoiceLine>(builder =>
+            modelBuilder.Entity<RecordPart>(builder =>
             {
-                builder.ToTable("invoice_lines");
-                builder.HasKey(line => line.Id);
+                builder.ToTable("record_lines");
+                builder.HasKey(part => part.Id);
             });
             if (typeof(TSchema) == typeof(SchemaV1))
             {
-                modelBuilder.Entity<InvoiceRm>().Ignore(invoice => invoice.Note);
+                modelBuilder.Entity<RecordRm>().Ignore(record => record.Note);
             }
 
-            modelBuilder.ToTieredStore<Invoice>(
-                    invoice => invoice.InvoiceDate,
+            modelBuilder.ToTieredStore<Record>(
+                    record => record.EffectiveAt,
                     archivePath,
                     TierGranularity.Month)
-                .MatchBy(invoice => invoice.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
-                .WithReadModel<InvoiceRm>()
-                .Including<InvoiceLine>(invoice => invoice.Lines, line => line
+                .MatchBy(record => record.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
+                .WithReadModel<RecordRm>()
+                .Including<RecordPart>(record => record.Parts, part => part
                     .MatchBy(
-                        item => new { item.ExternalInvoiceId, item.LineCode },
+                        item => new { item.RecordExternalKey, item.PartCode },
                         TierMatchKeyUniqueness.ExternallyEnforced)
-                    .WithReadModel<InvoiceLineRm>());
+                    .WithReadModel<RecordPartRm>());
         }
     }
 
@@ -586,7 +586,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         string archivePath,
         IObjectStoreOptions objectStore) : DbContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public DbSet<Record> Records => Set<Record>();
         public string ModelKey => archivePath + "|" + typeof(TMarker).Name;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -598,15 +598,15 @@ public sealed class TieredStorageS3Tests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("object_view_only_invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
-                builder.Ignore(invoice => invoice.Note);
+                builder.ToTable("object_view_only_records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
+                builder.Ignore(record => record.Note);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-                .PartitionBy(partitions => partitions.ByMonth(invoice => invoice.InvoiceDate))
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+                .PartitionBy(partitions => partitions.ByMonth(record => record.EffectiveAt))
                 .WithTieredView("object_view_only_history");
         }
     }
@@ -615,7 +615,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         string dbPath,
         IObjectStoreOptions objectStore) : DbContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public DbSet<Record> Records => Set<Record>();
         public string ModelKey => typeof(TMarker).Name;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -626,13 +626,13 @@ public sealed class TieredStorageS3Tests : IDisposable
         }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => modelBuilder.Entity<Invoice>(builder =>
+            => modelBuilder.Entity<Record>(builder =>
             {
                 builder.ToTieredView(
                     "object_view_only_history",
-                    partitions => partitions.ByMonth(invoice => invoice.InvoiceDate));
-                builder.Ignore(invoice => invoice.Lines);
-                builder.Ignore(invoice => invoice.Note);
+                    partitions => partitions.ByMonth(record => record.EffectiveAt));
+                builder.Ignore(record => record.Parts);
+                builder.Ignore(record => record.Note);
             });
     }
 
@@ -650,7 +650,7 @@ public sealed class TieredStorageS3Tests : IDisposable
             => options.UseDuckDB($"Data Source={dbPath}");
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath, TierGranularity.Month);
+            => modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath, TierGranularity.Month);
     }
 
     private sealed class ViewOnlyMarker;

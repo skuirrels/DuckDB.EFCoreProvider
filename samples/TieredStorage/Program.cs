@@ -1,4 +1,4 @@
-// Tiered storage over two independent root aggregates: Invoice (tiered on InvoiceDate) and AuditEvent
+// Tiered storage over two independent root aggregates: Record (tiered on EffectiveAt) and AuditEvent
 // (tiered on OccurredOn). Each root names its own timestamp property and archives on its own cutoff, so their
 // hot/cold boundaries move independently. Reporting spans hot + cold through keyless read-models.
 //
@@ -39,7 +39,7 @@ var archiveRoot =
     httpfs is not null ? $"{httpfs.Scheme}://{httpfs.Bucket}/tiered_sample" :
     useAzure ? $"azure://{azure!.Container}/tiered_sample" :
     localArchiveRoot;
-var invoiceArchive = $"{archiveRoot}/invoices";   // each root aggregate gets its own, non-overlapping path
+var recordArchive = $"{archiveRoot}/records";   // each root aggregate gets its own, non-overlapping path
 var auditArchive = $"{archiveRoot}/audit";
 
 // One connection interceptor prepares DuckDB for the chosen object store; local mode needs none.
@@ -64,19 +64,19 @@ var coldArchiveDescription =
             : $"Cold archive: ./{localArchiveRoot}  (local filesystem)\n";
 Console.WriteLine(coldArchiveDescription);
 
-using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, cloudSetup))
+using (var db = new SampleContext(dbPath, recordArchive, auditArchive, cloudSetup))
 {
     db.Database.EnsureCreated(); // also creates the control table + union views for both aggregates
 
     var thisMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
 
-    // Two years of invoices, two lines each — ordinary EF writes with a child graph.
+    // Two years of records, two parts each — ordinary EF writes with a child graph.
     for (var m = 24; m >= 0; m--)
     {
-        var invoice = new Invoice { CustomerId = 100 + m % 3, InvoiceDate = thisMonth.AddMonths(-m) };
-        invoice.Lines.Add(new InvoiceLine { Description = "Services", Amount = 100 + m });
-        invoice.Lines.Add(new InvoiceLine { Description = "Expenses", Amount = 25 });
-        db.Invoices.Add(invoice);
+        var record = new Record { GroupId = 100 + m % 3, EffectiveAt = thisMonth.AddMonths(-m) };
+        record.Parts.Add(new RecordPart { Description = "Primary", Value = 100 + m });
+        record.Parts.Add(new RecordPart { Description = "Secondary", Value = 25 });
+        db.Records.Add(record);
     }
 
     // Three years of audit events — a different root, keyed on a different date.
@@ -88,44 +88,44 @@ using (var db = new SampleContext(dbPath, invoiceArchive, auditArchive, cloudSet
     db.SaveChanges();
 
     // Each aggregate archives on its OWN cutoff, against its OWN timestamp property — independent boundaries.
-    var invoiceCutoff = thisMonth.AddYears(-1);
+    var recordCutoff = thisMonth.AddYears(-1);
     var auditCutoff = thisMonth.AddMonths(-6);
-    await db.Database.ArchiveTierAsync<Invoice>(invoiceCutoff);
+    await db.Database.ArchiveTierAsync<Record>(recordCutoff);
     await db.Database.ArchiveTierAsync<AuditEvent>(auditCutoff);
 
-    Console.WriteLine($"Invoices   hot {db.Invoices.Count(),3}  |  hot+cold {db.InvoiceHistory.Count(),3}   (InvoiceDate, cutoff {invoiceCutoff:yyyy-MM})");
+    Console.WriteLine($"Records   hot {db.Records.Count(),3}  |  hot+cold {db.RecordHistory.Count(),3}   (EffectiveAt, cutoff {recordCutoff:yyyy-MM})");
     Console.WriteLine($"Audit      hot {db.AuditEvents.Count(),3}  |  hot+cold {db.AuditHistory.Count(),3}   (OccurredOn, cutoff {auditCutoff:yyyy-MM})");
 
     // Most cold reports are single read-model aggregates — no join needed:
-    var invoicesByYear = db.InvoiceHistory
-        .GroupBy(i => i.InvoiceDate.Year)
+    var recordsByYear = db.RecordHistory
+        .GroupBy(i => i.EffectiveAt.Year)
         .Select(g => new { Year = g.Key, Count = g.Count() })
         .OrderBy(r => r.Year);
 
-    Console.WriteLine("\nInvoices by year (hot + cold):");
-    foreach (var row in invoicesByYear)
+    Console.WriteLine("\nRecords by year (hot + cold):");
+    foreach (var row in recordsByYear)
     {
         Console.WriteLine($"  {row.Year}: {row.Count,3}");
     }
 
     // A cross-table report joins on the FK column — read-models are keyless, so there are no navigations:
-    var revenueByYear = db.LineHistory
-        .Join(db.InvoiceHistory, l => l.InvoiceId, i => i.Id, (l, i) => new { i.InvoiceDate.Year, l.Amount })
+    var totalValueByYear = db.PartHistory
+        .Join(db.RecordHistory, l => l.RecordId, i => i.Id, (l, i) => new { i.EffectiveAt.Year, l.Value })
         .GroupBy(x => x.Year)
-        .Select(g => new { Year = g.Key, Revenue = g.Sum(x => x.Amount) })
+        .Select(g => new { Year = g.Key, TotalValue = g.Sum(x => x.Value) })
         .OrderBy(r => r.Year);
 
-    Console.WriteLine("\nRevenue by year (hot + cold):");
-    foreach (var row in revenueByYear)
+    Console.WriteLine("\nTotal value by year (hot + cold):");
+    foreach (var row in totalValueByYear)
     {
-        Console.WriteLine($"  {row.Year}: {row.Revenue:C}");
+        Console.WriteLine($"  {row.Year}: {row.TotalValue:N2}");
     }
 
     // Retention: on local disk we purge partitions directly; on an object store, PurgeArchiveOlderThan is not
     // supported (DuckDB can't delete objects) — use the cloud store's lifecycle-management policy.
     if (!useRemote)
     {
-        db.Database.PurgeArchiveOlderThan<Invoice>(thisMonth.AddMonths(-18));
+        db.Database.PurgeArchiveOlderThan<Record>(thisMonth.AddMonths(-18));
         db.Database.PurgeArchiveOlderThan<AuditEvent>(thisMonth.AddMonths(-18));
         Console.WriteLine("\nPurged archive partitions older than 18 months.");
     }
@@ -141,21 +141,21 @@ Console.WriteLine(useRemote
     : "\nDone. Delete 'tiered_sample.duckdb' and 'tiered_sample_archive/' to reset.");
 
 // --- Hot model: ordinary EF Core entities. ---
-internal sealed class Invoice
+internal sealed class Record
 {
     public int Id { get; set; }
-    public int CustomerId { get; set; }
-    public DateTime InvoiceDate { get; set; }
-    public List<InvoiceLine> Lines { get; set; } = [];
+    public int GroupId { get; set; }
+    public DateTime EffectiveAt { get; set; }
+    public List<RecordPart> Parts { get; set; } = [];
 }
 
-internal sealed class InvoiceLine
+internal sealed class RecordPart
 {
     public int Id { get; set; }
-    public int InvoiceId { get; set; }
-    public Invoice? Invoice { get; set; }
+    public int RecordId { get; set; }
+    public Record? Record { get; set; }
     public required string Description { get; set; }
-    public decimal Amount { get; set; }
+    public decimal Value { get; set; }
 }
 
 internal sealed class AuditEvent
@@ -166,18 +166,18 @@ internal sealed class AuditEvent
 }
 
 // --- Cold read-models: keyless projections used for hot+cold reporting. ---
-internal sealed class InvoiceReport
+internal sealed class RecordReport
 {
     public int Id { get; set; }
-    public int CustomerId { get; set; }
-    public DateTime InvoiceDate { get; set; }
+    public int GroupId { get; set; }
+    public DateTime EffectiveAt { get; set; }
 }
 
-internal sealed class InvoiceLineReport
+internal sealed class RecordPartReport
 {
     public int Id { get; set; }
-    public int InvoiceId { get; set; }
-    public decimal Amount { get; set; }
+    public int RecordId { get; set; }
+    public decimal Value { get; set; }
 }
 
 internal sealed class AuditEventReport
@@ -186,12 +186,12 @@ internal sealed class AuditEventReport
     public DateTime OccurredOn { get; set; }
 }
 
-internal sealed class SampleContext(string dbPath, string invoiceArchive, string auditArchive, DbConnectionInterceptor? cloudSetup) : DbContext
+internal sealed class SampleContext(string dbPath, string recordArchive, string auditArchive, DbConnectionInterceptor? cloudSetup) : DbContext
 {
-    public DbSet<Invoice> Invoices => Set<Invoice>();
+    public DbSet<Record> Records => Set<Record>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
-    public DbSet<InvoiceReport> InvoiceHistory => Set<InvoiceReport>();
-    public DbSet<InvoiceLineReport> LineHistory => Set<InvoiceLineReport>();
+    public DbSet<RecordReport> RecordHistory => Set<RecordReport>();
+    public DbSet<RecordPartReport> PartHistory => Set<RecordPartReport>();
     public DbSet<AuditEventReport> AuditHistory => Set<AuditEventReport>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -208,12 +208,12 @@ internal sealed class SampleContext(string dbPath, string invoiceArchive, string
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // Two independent roots, each tiering on its own timestamp property — the date that defines its hot/cold boundary.
-        modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, invoiceArchive, TierGranularity.Month)
+        modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, recordArchive, TierGranularity.Month)
             .PartitionBy(partitions => partitions
-                .By(i => i.CustomerId)
-                .ByMonth(i => i.InvoiceDate)) // exact application order; InvoiceLine inherits both root values
-            .WithReadModel<InvoiceReport>()
-            .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
+                .By(i => i.GroupId)
+                .ByMonth(i => i.EffectiveAt)) // exact application order; RecordPart inherits both root values
+            .WithReadModel<RecordReport>()
+            .Including<RecordPart>(i => i.Parts, part => part.WithReadModel<RecordPartReport>());
 
         modelBuilder.ToTieredStore<AuditEvent>(e => e.OccurredOn, auditArchive, TierGranularity.Month)
             .WithReadModel<AuditEventReport>();

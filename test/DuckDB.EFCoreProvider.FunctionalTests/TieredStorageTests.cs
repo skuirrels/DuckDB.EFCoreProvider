@@ -33,231 +33,231 @@ public sealed class TieredStorageTests : IDisposable
     {
         using var context = CreateContext();
         Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
-        var (invoices, lines, allocations, allocSum) = TieredTotals(context);
+        var (records, parts, details, detailSum) = TieredTotals(context);
 
-        var result = await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2025, 7, 1).AddMonths(-12));
+        var result = await context.Database.ArchiveTierAsync<Record>(new DateTime(2025, 7, 1).AddMonths(-12));
 
         Assert.False(result.NoOp);
         Assert.Equal(5, result.RowsArchived);
         // Hot tables shrank; each aggregate table has its own Parquet subdirectory.
-        Assert.True(context.Invoices.Count() < invoices);
-        Assert.True(Directory.Exists(Path.Combine(_root, "archive", "invoices", "year=2024")));
-        Assert.True(Directory.Exists(Path.Combine(_root, "archive", "invoice_lines", "year=2024")));
-        Assert.True(Directory.Exists(Path.Combine(_root, "archive", "line_allocations", "year=2024")));
+        Assert.True(context.Records.Count() < records);
+        Assert.True(Directory.Exists(Path.Combine(_root, "archive", "records", "year=2024")));
+        Assert.True(Directory.Exists(Path.Combine(_root, "archive", "record_lines", "year=2024")));
+        Assert.True(Directory.Exists(Path.Combine(_root, "archive", "line_details", "year=2024")));
         // Tiered read-models reproduce the full history exactly — no duplicates, no gaps, at every level.
-        var (tInvoices, tLines, tAllocations, tAllocSum) = TieredTotals(context);
-        Assert.Equal((invoices, lines, allocations, allocSum), (tInvoices, tLines, tAllocations, tAllocSum));
+        var (tRecords, tParts, tDetails, tDetailSum) = TieredTotals(context);
+        Assert.Equal((records, parts, details, detailSum), (tRecords, tParts, tDetails, tDetailSum));
     }
 
     [Fact]
     public async Task Additional_partition_is_declared_on_the_root_and_inherited_by_child_archives()
     {
-        var dbPath = Path.Combine(_root, "customer.duckdb");
-        var archivePath = Path.Combine(_root, "customer-archive");
-        using var context = new CustomerPartitionContext(dbPath, archivePath);
+        var dbPath = Path.Combine(_root, "group.duckdb");
+        var archivePath = Path.Combine(_root, "group-archive");
+        using var context = new GroupPartitionContext(dbPath, archivePath);
         context.Database.EnsureCreated();
-        context.Invoices.AddRange(
-            new Invoice
+        context.Records.AddRange(
+            new Record
             {
-                CustomerId = 10,
-                InvoiceDate = new DateTime(2024, 1, 10),
-                Lines = { new InvoiceLine { Amount = 10 } },
+                GroupId = 10,
+                EffectiveAt = new DateTime(2024, 1, 10),
+                Parts = { new RecordPart { Value = 10 } },
             },
-            new Invoice
+            new Record
             {
-                CustomerId = 20,
-                InvoiceDate = new DateTime(2024, 1, 20),
-                Lines = { new InvoiceLine { Amount = 20 } },
+                GroupId = 20,
+                EffectiveAt = new DateTime(2024, 1, 20),
+                Parts = { new RecordPart { Value = 20 } },
             },
-            new Invoice
+            new Record
             {
-                CustomerId = 30,
-                InvoiceDate = new DateTime(2024, 2, 10),
-                Lines = { new InvoiceLine { Amount = 30 } },
+                GroupId = 30,
+                EffectiveAt = new DateTime(2024, 2, 10),
+                Parts = { new RecordPart { Value = 30 } },
             });
         context.SaveChanges();
 
-        var result = await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        var result = await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
 
         Assert.Equal(2, result.RowsArchived);
-        foreach (var customerId in new[] { 10, 20 })
+        foreach (var groupId in new[] { 10, 20 })
         {
             Assert.True(Directory.Exists(Path.Combine(
-                archivePath, "invoices", $"CustomerId={customerId}", "InvoiceDate_month=2024-01-01")));
+                archivePath, "records", $"GroupId={groupId}", "EffectiveAt_month=2024-01-01")));
             Assert.True(Directory.Exists(Path.Combine(
-                archivePath, "invoice_lines", $"CustomerId={customerId}", "InvoiceDate_month=2024-01-01")));
+                archivePath, "record_lines", $"GroupId={groupId}", "EffectiveAt_month=2024-01-01")));
         }
 
-        Assert.Equal([10, 20, 30], context.InvoiceHistory.OrderBy(invoice => invoice.CustomerId).Select(invoice => invoice.CustomerId).ToList());
-        Assert.Equal(3, context.LineHistory.Count());
-        Assert.Equal(["CustomerId", "InvoiceDate"], context.Model.FindEntityType(typeof(Invoice))!.GetTieredStorePartitionProperties());
-        Assert.Empty(context.Model.FindEntityType(typeof(InvoiceLine))!.GetTieredStorePartitionProperties());
+        Assert.Equal([10, 20, 30], context.RecordHistory.OrderBy(record => record.GroupId).Select(record => record.GroupId).ToList());
+        Assert.Equal(3, context.PartHistory.Count());
+        Assert.Equal(["GroupId", "EffectiveAt"], context.Model.FindEntityType(typeof(Record))!.GetTieredStorePartitionProperties());
+        Assert.Empty(context.Model.FindEntityType(typeof(RecordPart))!.GetTieredStorePartitionProperties());
     }
 
     [Fact]
     public async Task Aliased_partitions_archive_and_preserve_hot_cold_reads_with_pruning()
     {
-        var archivePath = Path.Combine(_root, "owner-alias-archive");
-        using var context = new OwnerAliasPartitionContext(
-            Path.Combine(_root, "owner-alias.duckdb"),
+        var archivePath = Path.Combine(_root, "group-alias-archive");
+        using var context = new AliasedPartitionContext(
+            Path.Combine(_root, "group-alias.duckdb"),
             archivePath);
         context.Database.EnsureCreated();
-        context.Orders.AddRange(
-            new OwnerOrder
+        context.PartitionedRecords.AddRange(
+            new PartitionedRecord
             {
-                OwnerId = 10,
-                CompletedAt = new DateTime(2024, 1, 10),
-                Items = { new OwnerOrderItem { OwnerId = 101 } },
+                GroupId = 10,
+                EffectiveAt = new DateTime(2024, 1, 10),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 101 } },
             },
-            new OwnerOrder
+            new PartitionedRecord
             {
-                OwnerId = 10,
-                CompletedAt = new DateTime(2024, 2, 10),
-                Items = { new OwnerOrderItem { OwnerId = 102 } },
+                GroupId = 10,
+                EffectiveAt = new DateTime(2024, 2, 10),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 102 } },
             },
-            new OwnerOrder
+            new PartitionedRecord
             {
-                OwnerId = 20,
-                CompletedAt = new DateTime(2024, 1, 10),
-                Items = { new OwnerOrderItem { OwnerId = 201 } },
+                GroupId = 20,
+                EffectiveAt = new DateTime(2024, 1, 10),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 201 } },
             },
-            new OwnerOrder
+            new PartitionedRecord
             {
-                OwnerId = 20,
-                CompletedAt = new DateTime(2024, 2, 10),
-                Items = { new OwnerOrderItem { OwnerId = 202 } },
+                GroupId = 20,
+                EffectiveAt = new DateTime(2024, 2, 10),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 202 } },
             },
-            new OwnerOrder
+            new PartitionedRecord
             {
-                OwnerId = 30,
-                CompletedAt = new DateTime(2024, 3, 10),
-                Items = { new OwnerOrderItem { OwnerId = 301 } },
+                GroupId = 30,
+                EffectiveAt = new DateTime(2024, 3, 10),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 301 } },
             });
         context.SaveChanges();
 
-        var result = await context.Database.ArchiveTierAsync<OwnerOrder>(new DateTime(2024, 3, 1));
+        var result = await context.Database.ArchiveTierAsync<PartitionedRecord>(new DateTime(2024, 3, 1));
 
         Assert.Equal(4, result.RowsArchived);
         Assert.True(Directory.Exists(Path.Combine(
-            archivePath, "owner_orders", "root_owner_id=10", "completed_month=2024-01-01")));
+            archivePath, "partitioned_records", "root_group_id=10", "effective_month=2024-01-01")));
         Assert.True(Directory.Exists(Path.Combine(
-            archivePath, "owner_order_items", "root_owner_id=10", "completed_month=2024-01-01")));
-        Assert.Equal(30, Assert.Single(context.Orders).OwnerId);
-        Assert.Equal(301, Assert.Single(context.Items).OwnerId);
-        Assert.Equal([10, 10, 20, 20, 30], context.OrderHistory.OrderBy(order => order.Id).Select(order => order.OwnerId).ToList());
-        Assert.Equal([101, 102, 201, 202, 301], context.ItemHistory.OrderBy(item => item.Id).Select(item => item.OwnerId).ToList());
+            archivePath, "partitioned_record_parts", "root_group_id=10", "effective_month=2024-01-01")));
+        Assert.Equal(30, Assert.Single(context.PartitionedRecords).GroupId);
+        Assert.Equal(301, Assert.Single(context.PartitionedParts).GroupId);
+        Assert.Equal([10, 10, 20, 20, 30], context.PartitionedRecordHistory.OrderBy(root => root.Id).Select(root => root.GroupId).ToList());
+        Assert.Equal([101, 102, 201, 202, 301], context.PartitionedPartHistory.OrderBy(item => item.Id).Select(item => item.GroupId).ToList());
 
         var from = new DateTime(2024, 2, 1);
         var to = new DateTime(2024, 3, 1);
-        var query = context.OrderHistory.Where(
-            order => order.OwnerId == 10 && order.CompletedAt >= from && order.CompletedAt < to);
+        var query = context.PartitionedRecordHistory.Where(
+            root => root.GroupId == 10 && root.EffectiveAt >= from && root.EffectiveAt < to);
         var sql = query.ToQueryString();
-        Assert.Contains("root_owner_id", sql);
-        Assert.Contains("completed_month", sql);
+        Assert.Contains("root_group_id", sql);
+        Assert.Contains("effective_month", sql);
         AssertFilesPruned(Explain(context, query), "1/4");
         Assert.Single(query);
 
         var partitionSpec = context.Database.SqlQueryRaw<string>(
-            "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'owner_orders'").Single();
-        Assert.Contains("\"Name\":\"root_owner_id\"", partitionSpec);
-        Assert.Contains("\"Name\":\"completed_month\"", partitionSpec);
+            "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'partitioned_records'").Single();
+        Assert.Contains("\"Name\":\"root_group_id\"", partitionSpec);
+        Assert.Contains("\"Name\":\"effective_month\"", partitionSpec);
     }
 
     [Fact]
     public async Task Restoration_by_an_aliased_partition_moves_the_exact_graph_back_to_hot()
     {
-        var archivePath = Path.Combine(_root, "owner-alias-restore-archive");
-        using var context = new OwnerAliasPartitionContext(
-            Path.Combine(_root, "owner-alias-restore.duckdb"),
+        var archivePath = Path.Combine(_root, "group-alias-restore-archive");
+        using var context = new AliasedPartitionContext(
+            Path.Combine(_root, "group-alias-restore.duckdb"),
             archivePath);
         context.Database.EnsureCreated();
-        context.Orders.AddRange(
-            new OwnerOrder
+        context.PartitionedRecords.AddRange(
+            new PartitionedRecord
             {
-                OwnerId = 10,
-                CompletedAt = new DateTime(2024, 1, 10),
-                Items = { new OwnerOrderItem { OwnerId = 101 } },
+                GroupId = 10,
+                EffectiveAt = new DateTime(2024, 1, 10),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 101 } },
             },
-            new OwnerOrder
+            new PartitionedRecord
             {
-                OwnerId = 20,
-                CompletedAt = new DateTime(2024, 1, 20),
-                Items = { new OwnerOrderItem { OwnerId = 201 } },
+                GroupId = 20,
+                EffectiveAt = new DateTime(2024, 1, 20),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 201 } },
             });
         context.SaveChanges();
-        await context.Database.ArchiveTierAsync<OwnerOrder>(new DateTime(2024, 2, 1));
+        await context.Database.ArchiveTierAsync<PartitionedRecord>(new DateTime(2024, 2, 1));
 
-        var result = await context.Database.RestoreArchiveTierAsync<OwnerOrder>(
+        var result = await context.Database.RestoreArchiveTierAsync<PartitionedRecord>(
             new TierRestoreOptions
             {
                 Scope = TierMaintenanceScope.ForPartitionValues(
-                    new Dictionary<string, object?> { ["OwnerId"] = 10 }),
+                    new Dictionary<string, object?> { ["GroupId"] = 10 }),
             });
 
         Assert.Equal(TierArchiveOperation.Restore, result.Publication.Operation);
         Assert.Equal(1, result.RootsSelected);
         Assert.Equal(1, result.RootsInserted);
         Assert.Equal(2, result.RowsInserted);
-        Assert.Equal(10, Assert.Single(context.Orders).OwnerId);
-        Assert.Equal(101, Assert.Single(context.Items).OwnerId);
-        Assert.Equal([10, 20], context.OrderHistory.OrderBy(order => order.OwnerId).Select(order => order.OwnerId).ToList());
-        Assert.Equal([101, 201], context.ItemHistory.OrderBy(item => item.OwnerId).Select(item => item.OwnerId).ToList());
+        Assert.Equal(10, Assert.Single(context.PartitionedRecords).GroupId);
+        Assert.Equal(101, Assert.Single(context.PartitionedParts).GroupId);
+        Assert.Equal([10, 20], context.PartitionedRecordHistory.OrderBy(root => root.GroupId).Select(root => root.GroupId).ToList());
+        Assert.Equal([101, 201], context.PartitionedPartHistory.OrderBy(item => item.GroupId).Select(item => item.GroupId).ToList());
         Assert.True(Directory.Exists(Path.Combine(
-            result.Publication.ArchivePath, "root_owner_id=20", "completed_month=2024-01-01")));
+            result.Publication.ArchivePath, "root_group_id=20", "effective_month=2024-01-01")));
         Assert.False(Directory.Exists(Path.Combine(
-            result.Publication.ArchivePath, "root_owner_id=10", "completed_month=2024-01-01")));
-        var child = Assert.Single(result.Publication.Nodes, node => node.Table == "owner_order_items");
+            result.Publication.ArchivePath, "root_group_id=10", "effective_month=2024-01-01")));
+        var child = Assert.Single(result.Publication.Nodes, node => node.Table == "partitioned_record_parts");
         Assert.True(Directory.Exists(Path.Combine(
-            child.ArchivePath, "root_owner_id=20", "completed_month=2024-01-01")));
+            child.ArchivePath, "root_group_id=20", "effective_month=2024-01-01")));
     }
 
     [Fact]
     public async Task Reconciliation_repartitions_corrected_rows_using_aliased_partition_names()
     {
-        var archivePath = Path.Combine(_root, "owner-alias-reconcile-archive");
-        using var context = new OwnerAliasPartitionContext(
-            Path.Combine(_root, "owner-alias-reconcile.duckdb"),
+        var archivePath = Path.Combine(_root, "group-alias-reconcile-archive");
+        using var context = new AliasedPartitionContext(
+            Path.Combine(_root, "group-alias-reconcile.duckdb"),
             archivePath);
         context.Database.EnsureCreated();
-        var order = new OwnerOrder
+        var root = new PartitionedRecord
         {
-            OwnerId = 10,
-            CompletedAt = new DateTime(2024, 1, 10),
-            Items = { new OwnerOrderItem { OwnerId = 101 } },
+            GroupId = 10,
+            EffectiveAt = new DateTime(2024, 1, 10),
+            PartitionedParts = { new PartitionedRecordPart { GroupId = 101 } },
         };
-        context.Orders.Add(order);
+        context.PartitionedRecords.Add(root);
         context.SaveChanges();
-        var orderId = order.Id;
-        var itemId = order.Items[0].Id;
-        await context.Database.ArchiveTierAsync<OwnerOrder>(new DateTime(2024, 2, 1));
+        var orderId = root.Id;
+        var itemId = root.PartitionedParts[0].Id;
+        await context.Database.ArchiveTierAsync<PartitionedRecord>(new DateTime(2024, 2, 1));
         context.ChangeTracker.Clear();
         context.Database.ExecuteSqlInterpolated(
             $"""
-             INSERT INTO owner_orders ("Id", "CompletedAt", "OwnerId")
+             INSERT INTO partitioned_records ("Id", "EffectiveAt", "GroupId")
              VALUES ({orderId}, {new DateTime(2024, 1, 10)}, {20});
              """);
         context.Database.ExecuteSqlInterpolated(
             $"""
-             INSERT INTO owner_order_items ("Id", "OwnerId", "OwnerOrderId")
+             INSERT INTO partitioned_record_parts ("Id", "GroupId", "PartitionedRecordId")
              VALUES ({itemId}, {999}, {orderId});
              """);
 
-        var result = await context.Database.ReconcileArchiveTierAsync<OwnerOrder>();
+        var result = await context.Database.ReconcileArchiveTierAsync<PartitionedRecord>();
 
         Assert.Equal(TierArchiveOperation.Reconcile, result.Operation);
         Assert.False(result.NoOp);
         Assert.Equal(1, result.RowsArchived);
-        Assert.Empty(context.Orders);
-        Assert.Empty(context.Items);
-        Assert.Equal(20, context.OrderHistory.Single().OwnerId);
-        Assert.Equal(999, context.ItemHistory.Single().OwnerId);
+        Assert.Empty(context.PartitionedRecords);
+        Assert.Empty(context.PartitionedParts);
+        Assert.Equal(20, context.PartitionedRecordHistory.Single().GroupId);
+        Assert.Equal(999, context.PartitionedPartHistory.Single().GroupId);
         Assert.True(Directory.Exists(Path.Combine(
-            result.ArchivePath, "root_owner_id=20", "completed_month=2024-01-01")));
+            result.ArchivePath, "root_group_id=20", "effective_month=2024-01-01")));
         Assert.False(Directory.Exists(Path.Combine(
-            result.ArchivePath, "root_owner_id=10", "completed_month=2024-01-01")));
-        var child = Assert.Single(result.Nodes, node => node.Table == "owner_order_items");
+            result.ArchivePath, "root_group_id=10", "effective_month=2024-01-01")));
+        var child = Assert.Single(result.Nodes, node => node.Table == "partitioned_record_parts");
         Assert.True(Directory.Exists(Path.Combine(
-            child.ArchivePath, "root_owner_id=20", "completed_month=2024-01-01")));
+            child.ArchivePath, "root_group_id=20", "effective_month=2024-01-01")));
     }
 
     [Fact]
@@ -268,13 +268,13 @@ public sealed class TieredStorageTests : IDisposable
             Path.Combine(_root, "shorthand-alias.duckdb"),
             archivePath);
         context.Database.EnsureCreated();
-        context.Invoices.Add(new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 10) });
+        context.Records.Add(new Record { GroupId = 10, EffectiveAt = new DateTime(2024, 1, 10) });
         context.SaveChanges();
 
-        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
 
         Assert.True(Directory.Exists(Path.Combine(
-            archivePath, "invoices", "customer_key=10", "InvoiceDate_month=2024-01-01")));
+            archivePath, "records", "group_key=10", "EffectiveAt_month=2024-01-01")));
     }
 
     [Fact]
@@ -283,13 +283,13 @@ public sealed class TieredStorageTests : IDisposable
         var archivePath = Path.Combine(_root, "month-first-archive");
         using var context = new MonthFirstPartitionContext(Path.Combine(_root, "month-first.duckdb"), archivePath);
         context.Database.EnsureCreated();
-        context.Invoices.Add(new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 10) });
+        context.Records.Add(new Record { GroupId = 10, EffectiveAt = new DateTime(2024, 1, 10) });
         context.SaveChanges();
 
-        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
 
         Assert.True(Directory.Exists(Path.Combine(
-            archivePath, "invoices", "InvoiceDate_month=2024-01-01", "CustomerId=10")));
+            archivePath, "records", "EffectiveAt_month=2024-01-01", "GroupId=10")));
     }
 
     [Fact]
@@ -300,10 +300,10 @@ public sealed class TieredStorageTests : IDisposable
         context.Database.EnsureCreated();
         context.Records.Add(new DateBucketRecord
         {
-            CustomerId = 10,
+            GroupId = 10,
             CreatedAt = new DateTime(2023, 12, 20),
             ReviewedAt = new DateTime(2024, 1, 5),
-            CompletedAt = new DateTime(2024, 1, 10, 15, 30, 0),
+            EffectiveAt = new DateTime(2024, 1, 10, 15, 30, 0),
         });
         context.SaveChanges();
 
@@ -312,40 +312,40 @@ public sealed class TieredStorageTests : IDisposable
         Assert.True(Directory.Exists(Path.Combine(
             archivePath,
             "date_bucket_records",
-            "CustomerId=10",
+            "GroupId=10",
             "CreatedAt_year=2023-01-01",
             "ReviewedAt_month=2024-01-01",
-            "CompletedAt_day=2024-01-10")));
+            "EffectiveAt_day=2024-01-10")));
     }
 
     [Fact]
-    public async Task Customer_and_completed_month_predicates_prune_the_corresponding_parquet_partitions()
+    public async Task Group_and_effective_month_predicates_prune_the_corresponding_parquet_partitions()
     {
         var archivePath = Path.Combine(_root, "pruning-archive");
-        using var context = new CustomerPartitionContext(Path.Combine(_root, "pruning.duckdb"), archivePath);
+        using var context = new GroupPartitionContext(Path.Combine(_root, "pruning.duckdb"), archivePath);
         context.Database.EnsureCreated();
-        context.Invoices.AddRange(
-            new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 10), Lines = { new InvoiceLine { Amount = 10 } } },
-            new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 2, 10), Lines = { new InvoiceLine { Amount = 10 } } },
-            new Invoice { CustomerId = 20, InvoiceDate = new DateTime(2024, 1, 10), Lines = { new InvoiceLine { Amount = 20 } } },
-            new Invoice { CustomerId = 20, InvoiceDate = new DateTime(2024, 2, 10), Lines = { new InvoiceLine { Amount = 20 } } });
+        context.Records.AddRange(
+            new Record { GroupId = 10, EffectiveAt = new DateTime(2024, 1, 10), Parts = { new RecordPart { Value = 10 } } },
+            new Record { GroupId = 10, EffectiveAt = new DateTime(2024, 2, 10), Parts = { new RecordPart { Value = 10 } } },
+            new Record { GroupId = 20, EffectiveAt = new DateTime(2024, 1, 10), Parts = { new RecordPart { Value = 20 } } },
+            new Record { GroupId = 20, EffectiveAt = new DateTime(2024, 2, 10), Parts = { new RecordPart { Value = 20 } } });
         context.SaveChanges();
-        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 3, 1));
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 3, 1));
 
         var from = new DateTime(2024, 2, 1);
         var to = new DateTime(2024, 2, 29);
-        var customerAndMonth = context.InvoiceHistory.Where(
-            invoice => invoice.CustomerId == 10 && invoice.InvoiceDate >= from && invoice.InvoiceDate < to);
-        var customerOnly = context.InvoiceHistory.Where(invoice => invoice.CustomerId == 10);
-        var monthOnly = context.InvoiceHistory.Where(invoice => invoice.InvoiceDate >= from && invoice.InvoiceDate < to);
+        var groupAndMonth = context.RecordHistory.Where(
+            record => record.GroupId == 10 && record.EffectiveAt >= from && record.EffectiveAt < to);
+        var groupOnly = context.RecordHistory.Where(record => record.GroupId == 10);
+        var monthOnly = context.RecordHistory.Where(record => record.EffectiveAt >= from && record.EffectiveAt < to);
 
-        var sql = customerAndMonth.ToQueryString();
-        Assert.Contains("InvoiceDate_month", sql);
+        var sql = groupAndMonth.ToQueryString();
+        Assert.Contains("EffectiveAt_month", sql);
         Assert.Contains("date_trunc('month'", sql);
-        AssertFilesPruned(Explain(context, customerAndMonth), "1/4");
-        AssertFilesPruned(Explain(context, customerOnly), "2/4");
+        AssertFilesPruned(Explain(context, groupAndMonth), "1/4");
+        AssertFilesPruned(Explain(context, groupOnly), "2/4");
         AssertFilesPruned(Explain(context, monthOnly), "2/4");
-        Assert.Equal([2], customerAndMonth.Select(invoice => invoice.Id).ToList());
+        Assert.Equal([2], groupAndMonth.Select(record => record.Id).ToList());
     }
 
     [Fact]
@@ -364,10 +364,10 @@ public sealed class TieredStorageTests : IDisposable
             new TypedPartitionRoot
             {
                 ArchivedAt = new DateTime(2024, 1, 10),
-                CustomerId = 10,
+                GroupId = 10,
                 Region = "EU/West",
                 IsPriority = true,
-                AmountBand = 12.34m,
+                ValueBand = 12.34m,
                 SnapshotAt = new DateTime(2024, 1, 10, 12, 34, 56),
                 EffectiveDate = new DateOnly(2024, 1, 10),
                 TenantId = coldTenant,
@@ -375,10 +375,10 @@ public sealed class TieredStorageTests : IDisposable
             new TypedPartitionRoot
             {
                 ArchivedAt = new DateTime(2024, 2, 10),
-                CustomerId = 20,
+                GroupId = 20,
                 Region = "US",
                 IsPriority = false,
-                AmountBand = 56.78m,
+                ValueBand = 56.78m,
                 SnapshotAt = new DateTime(2024, 2, 10, 8, 0, 0),
                 EffectiveDate = new DateOnly(2024, 2, 10),
                 TenantId = hotTenant,
@@ -387,33 +387,33 @@ public sealed class TieredStorageTests : IDisposable
 
         await context.Database.ArchiveTierAsync<TypedPartitionRoot>(new DateTime(2024, 2, 1));
 
-        Assert.Equal(69.12m, context.History.Sum(row => row.AmountBand));
+        Assert.Equal(69.12m, context.History.Sum(row => row.ValueBand));
         Assert.Single(context.History.Where(row => row.IsPriority));
         Assert.Single(context.History.Where(row => row.SnapshotAt < new DateTime(2024, 2, 1)));
         Assert.Single(context.History.Where(row => row.EffectiveDate < new DateOnly(2024, 2, 1)));
         Assert.Single(context.History.Where(row => row.TenantId == coldTenant));
-        Assert.Equal(["EU/West", "US"], context.History.OrderBy(row => row.CustomerId).Select(row => row.Region).ToList());
+        Assert.Equal(["EU/West", "US"], context.History.OrderBy(row => row.GroupId).Select(row => row.Region).ToList());
 
         var coldFile = Assert.Single(Directory.GetFiles(archivePath, "*.parquet", SearchOption.AllDirectories));
-        Assert.Contains(Path.Combine("customer_id=10", "region_code=EU%2FWest"), coldFile);
+        Assert.Contains(Path.Combine("group_id=10", "region_code=EU%2FWest"), coldFile);
         Assert.Contains("ArchivedAt_month=2024-01-01", coldFile);
         Assert.Equal(
-            ["CustomerId", "Region", "IsPriority", "AmountBand", "SnapshotAt", "EffectiveDate", "TenantId"],
+            ["GroupId", "Region", "IsPriority", "ValueBand", "SnapshotAt", "EffectiveDate", "TenantId"],
             context.Model.FindEntityType(typeof(TypedPartitionRoot))!.GetTieredStorePartitionProperties());
 
         var partitionSpec = context.Database.SqlQueryRaw<string>(
             "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'typed_roots'").Single();
         Assert.Contains("\"Version\":2", partitionSpec);
         Assert.Contains("\"Granularity\":0", partitionSpec);
-        Assert.Contains("\"Name\":\"AmountBand\",\"StoreType\":\"DECIMAL(10,2)\"", partitionSpec);
+        Assert.Contains("\"Name\":\"ValueBand\",\"StoreType\":\"DECIMAL(10,2)\"", partitionSpec);
         Assert.Contains("\"Name\":\"EffectiveDate\",\"StoreType\":\"DATE\"", partitionSpec);
     }
 
     [Fact]
     public void Child_builder_does_not_expose_partition_configuration()
         => Assert.DoesNotContain(
-            typeof(TieredChildBuilder<InvoiceLine>).GetMethods(),
-            method => method.Name == nameof(TieredStoreBuilder<Invoice>.PartitionBy));
+            typeof(TieredChildBuilder<RecordPart>).GetMethods(),
+            method => method.Name == nameof(TieredStoreBuilder<Record>.PartitionBy));
 
     [Fact]
     public void Repeated_partition_calls_reject_duplicate_properties()
@@ -435,11 +435,11 @@ public sealed class TieredStorageTests : IDisposable
             Path.Combine(_root, "repeated-exact-lifecycle-archive"));
 
         Assert.Equal(
-            ["InvoiceDate"],
-            context.Model.FindEntityType(typeof(Invoice))!.GetTieredStorePartitionProperties());
+            ["EffectiveAt"],
+            context.Model.FindEntityType(typeof(Record))!.GetTieredStorePartitionProperties());
         Assert.Equal(
-            ["CustomerId", "InvoiceDate"],
-            repeated.Model.FindEntityType(typeof(Invoice))!.GetTieredStorePartitionProperties());
+            ["GroupId", "EffectiveAt"],
+            repeated.Model.FindEntityType(typeof(Record))!.GetTieredStorePartitionProperties());
     }
 
     [Fact]
@@ -520,8 +520,8 @@ public sealed class TieredStorageTests : IDisposable
         var before = TieredTotals(context);
         var cutoff = new DateTime(2025, 7, 1).AddMonths(-12);
 
-        var first = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
-        var second = await context.Database.ArchiveTierAsync<Invoice>(cutoff.AddMonths(-1));
+        var first = await context.Database.ArchiveTierAsync<Record>(cutoff);
+        var second = await context.Database.ArchiveTierAsync<Record>(cutoff.AddMonths(-1));
 
         Assert.True(second.NoOp);
         Assert.Equal(first.Watermark, second.WindowStart);
@@ -538,10 +538,10 @@ public sealed class TieredStorageTests : IDisposable
         await using var transaction = await context.Database.BeginTransactionAsync();
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            context.Database.ArchiveTierAsync<Invoice>(new DateTime(2025, 7, 1)));
+            context.Database.ArchiveTierAsync<Record>(new DateTime(2025, 7, 1)));
 
         Assert.Contains("outside the caller transaction", exception.Message);
-        Assert.False(Directory.Exists(Path.Combine(_root, "archive", "invoices")));
+        Assert.False(Directory.Exists(Path.Combine(_root, "archive", "records")));
     }
 
     [Fact]
@@ -552,15 +552,15 @@ public sealed class TieredStorageTests : IDisposable
             Path.Combine(_root, "single-transaction.duckdb"),
             archivePath);
         context.Database.EnsureCreated();
-        context.Invoices.Add(new Invoice { CustomerId = 10, InvoiceDate = new DateTime(2024, 1, 15) });
+        context.Records.Add(new Record { GroupId = 10, EffectiveAt = new DateTime(2024, 1, 15) });
         context.SaveChanges();
         await using var transaction = await context.Database.BeginTransactionAsync();
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1)));
+            context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1)));
 
         Assert.Contains("cannot be rolled back", exception.Message);
-        Assert.False(Directory.Exists(Path.Combine(archivePath, "invoices")));
+        Assert.False(Directory.Exists(Path.Combine(archivePath, "records")));
     }
 
     [Fact]
@@ -568,18 +568,18 @@ public sealed class TieredStorageTests : IDisposable
     {
         using var context = CreateContext();
         Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
-        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2025, 7, 1).AddMonths(-12));
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2025, 7, 1).AddMonths(-12));
 
-        var revenueByYear =
-            (from l in context.LineHistory
-             join i in context.InvoiceHistory on l.InvoiceId equals i.Id
-             group l.Amount by i.InvoiceDate.Year into g
-             select new { Year = g.Key, Revenue = g.Sum() }).ToList();
+        var totalValueByYear =
+            (from l in context.PartHistory
+             join i in context.RecordHistory on l.RecordId equals i.Id
+             group l.Value by i.EffectiveAt.Year into g
+             select new { Year = g.Key, TotalValue = g.Sum() }).ToList();
 
         // Both the cold (2024) and hot (2025) years must appear in one query.
-        Assert.Contains(revenueByYear, r => r.Year == 2024);
-        Assert.Contains(revenueByYear, r => r.Year == 2025);
-        Assert.Equal(context.LineHistory.Sum(l => l.Amount), revenueByYear.Sum(r => r.Revenue));
+        Assert.Contains(totalValueByYear, r => r.Year == 2024);
+        Assert.Contains(totalValueByYear, r => r.Year == 2025);
+        Assert.Equal(context.PartHistory.Sum(l => l.Value), totalValueByYear.Sum(r => r.TotalValue));
     }
 
     [Fact]
@@ -588,39 +588,39 @@ public sealed class TieredStorageTests : IDisposable
         using var context = CreateContext();
 
         // Normal EF: write a root with a child graph, then Include across the aggregate.
-        var invoice = new Invoice { InvoiceDate = new DateTime(2025, 6, 1) };
-        var line = new InvoiceLine { Amount = 42 };
-        line.Allocations.Add(new LineAllocation { Amount = 42 });
-        invoice.Lines.Add(line);
-        context.Invoices.Add(invoice);
+        var record = new Record { EffectiveAt = new DateTime(2025, 6, 1) };
+        var part = new RecordPart { Value = 42 };
+        part.Details.Add(new RecordPartDetail { Value = 42 });
+        record.Parts.Add(part);
+        context.Records.Add(record);
         context.SaveChanges();
 
         using var reader = CreateContext();
-        var loaded = reader.Invoices.Include(i => i.Lines).ThenInclude(l => l.Allocations).Single();
-        Assert.Single(loaded.Lines);
-        Assert.Single(loaded.Lines[0].Allocations);
-        Assert.Equal(42, loaded.Lines[0].Allocations[0].Amount);
+        var loaded = reader.Records.Include(i => i.Parts).ThenInclude(l => l.Details).Single();
+        Assert.Single(loaded.Parts);
+        Assert.Single(loaded.Parts[0].Details);
+        Assert.Equal(42, loaded.Parts[0].Details[0].Value);
     }
 
     [Fact]
     public void Ensure_created_alone_creates_all_aggregate_views()
     {
         using var context = CreateContext(); // EnsureCreated only; no explicit EnsureTieredStoresCreated
-        context.Invoices.Add(new Invoice { InvoiceDate = new DateTime(2025, 6, 1), Lines = { new InvoiceLine { Amount = 1 } } });
+        context.Records.Add(new Record { EffectiveAt = new DateTime(2025, 6, 1), Parts = { new RecordPart { Value = 1 } } });
         context.SaveChanges();
 
         // Querying every tiered view must not raise a "view does not exist" error.
-        Assert.Equal(1, context.InvoiceHistory.Count());
-        Assert.Equal(1, context.LineHistory.Count());
+        Assert.Equal(1, context.RecordHistory.Count());
+        Assert.Equal(1, context.PartHistory.Count());
     }
 
     [Fact]
     public void Existing_control_table_is_upgraded_with_partition_metadata()
     {
         using var context = CreateContext();
-        context.Database.ExecuteSqlRaw("DROP VIEW line_allocations_tiered;");
-        context.Database.ExecuteSqlRaw("DROP VIEW invoice_lines_tiered;");
-        context.Database.ExecuteSqlRaw("DROP VIEW invoices_tiered;");
+        context.Database.ExecuteSqlRaw("DROP VIEW line_details_tiered;");
+        context.Database.ExecuteSqlRaw("DROP VIEW record_lines_tiered;");
+        context.Database.ExecuteSqlRaw("DROP VIEW records_tiered;");
         context.Database.ExecuteSqlRaw("DROP TABLE __duckdb_tier_control;");
         context.Database.ExecuteSqlRaw(
             "CREATE TABLE __duckdb_tier_control (name TEXT PRIMARY KEY, watermark TIMESTAMP, archive_path TEXT, granularity TEXT);");
@@ -644,13 +644,13 @@ public sealed class TieredStorageTests : IDisposable
     {
         using var context = CreateContext();
         Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
-        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2025, 7, 1).AddMonths(-12));
-        var beforeInvoices = context.InvoiceHistory.Count();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2025, 7, 1).AddMonths(-12));
+        var beforeRecords = context.RecordHistory.Count();
 
-        var purged = context.Database.PurgeArchiveOlderThan<Invoice>(new DateTime(2024, 4, 1));
+        var purged = context.Database.PurgeArchiveOlderThan<Record>(new DateTime(2024, 4, 1));
 
         Assert.Equal(6, purged); // 2 months × 3 tables
-        Assert.Equal(beforeInvoices - 2, context.InvoiceHistory.Count());
+        Assert.Equal(beforeRecords - 2, context.RecordHistory.Count());
     }
 
     [Fact]
@@ -658,15 +658,15 @@ public sealed class TieredStorageTests : IDisposable
     {
         using var context = CreateContext();
         Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
-        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2025, 7, 1).AddMonths(-12));
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2025, 7, 1).AddMonths(-12));
 
         // Purge past all cold data: every archived partition is removed for every aggregate table.
-        var purged = context.Database.PurgeArchiveOlderThan<Invoice>(new DateTime(2025, 7, 1));
+        var purged = context.Database.PurgeArchiveOlderThan<Record>(new DateTime(2025, 7, 1));
 
         Assert.True(purged > 0);
         // The views must fall back to hot-only rather than error on an empty read_parquet glob.
-        Assert.Equal(context.Invoices.Count(), context.InvoiceHistory.Count());
-        Assert.Equal(context.Set<InvoiceLine>().Count(), context.LineHistory.Count());
+        Assert.Equal(context.Records.Count(), context.RecordHistory.Count());
+        Assert.Equal(context.Set<RecordPart>().Count(), context.PartHistory.Count());
     }
 
     [Fact]
@@ -706,14 +706,14 @@ public sealed class TieredStorageTests : IDisposable
     {
         var dbPath = Path.Combine(_root, "layout.duckdb");
         var archivePath = Path.Combine(_root, "layout-archive");
-        using (var original = new InvoiceContext(dbPath, archivePath))
+        using (var original = new RecordContext(dbPath, archivePath))
         {
             original.Database.EnsureCreated();
             Seed(original, months: 2, baseDate: new DateTime(2024, 2, 1));
-            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+            await original.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
         }
 
-        using var changed = new CustomerPartitionContext(dbPath, archivePath);
+        using var changed = new GroupPartitionContext(dbPath, archivePath);
         var exception = Assert.Throws<InvalidOperationException>(() => changed.Database.EnsureTieredStoresCreated());
 
         Assert.Contains("different partition layout", exception.Message);
@@ -725,27 +725,27 @@ public sealed class TieredStorageTests : IDisposable
     {
         var dbPath = Path.Combine(_root, "alias-layout.duckdb");
         var archivePath = Path.Combine(_root, "alias-layout-archive");
-        using (var original = new OwnerAliasPartitionContext(dbPath, archivePath))
+        using (var original = new AliasedPartitionContext(dbPath, archivePath))
         {
             original.Database.EnsureCreated();
-            original.Orders.Add(new OwnerOrder
+            original.PartitionedRecords.Add(new PartitionedRecord
             {
-                OwnerId = 10,
-                CompletedAt = new DateTime(2024, 1, 10),
-                Items = { new OwnerOrderItem { OwnerId = 101 } },
+                GroupId = 10,
+                EffectiveAt = new DateTime(2024, 1, 10),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 101 } },
             });
             original.SaveChanges();
-            await original.Database.ArchiveTierAsync<OwnerOrder>(new DateTime(2024, 2, 1));
+            await original.Database.ArchiveTierAsync<PartitionedRecord>(new DateTime(2024, 2, 1));
             var partitionSpec = original.Database.SqlQueryRaw<string>(
-                "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'owner_orders'").Single();
-            Assert.Contains("\"Name\":\"root_owner_id\"", partitionSpec);
+                "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'partitioned_records'").Single();
+            Assert.Contains("\"Name\":\"root_group_id\"", partitionSpec);
         }
 
-        using var changed = new ChangedOwnerAliasPartitionContext(dbPath, archivePath);
+        using var changed = new ChangedAliasedPartitionContext(dbPath, archivePath);
         var exception = Assert.Throws<InvalidOperationException>(
             () => changed.Database.EnsureTieredStoresCreated());
 
-        Assert.Contains("root_owner_key", exception.Message);
+        Assert.Contains("root_group_key", exception.Message);
         Assert.Contains("different partition layout", exception.Message);
         Assert.Contains("Rewrite or clear", exception.Message);
     }
@@ -755,15 +755,15 @@ public sealed class TieredStorageTests : IDisposable
     {
         var dbPath = Path.Combine(_root, "orphan.duckdb");
         var archivePath = Path.Combine(_root, "orphan-archive");
-        using (var original = new InvoiceContext(dbPath, archivePath))
+        using (var original = new RecordContext(dbPath, archivePath))
         {
             original.Database.EnsureCreated();
             Seed(original, months: 2, baseDate: new DateTime(2024, 2, 1));
-            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
-            original.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control WHERE name = 'invoices';");
+            await original.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+            original.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control WHERE name = 'records';");
         }
 
-        using var changed = new CustomerPartitionContext(dbPath, archivePath);
+        using var changed = new GroupPartitionContext(dbPath, archivePath);
         var exception = Assert.Throws<InvalidOperationException>(() => changed.Database.EnsureTieredStoresCreated());
 
         Assert.Contains("unrecorded partition layout", exception.Message);
@@ -775,11 +775,11 @@ public sealed class TieredStorageTests : IDisposable
     {
         var dbPath = Path.Combine(_root, "granularity.duckdb");
         var archivePath = Path.Combine(_root, "granularity-archive");
-        using (var original = new InvoiceContext(dbPath, archivePath))
+        using (var original = new RecordContext(dbPath, archivePath))
         {
             original.Database.EnsureCreated();
             Seed(original, months: 2, baseDate: new DateTime(2024, 2, 1));
-            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+            await original.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
         }
 
         using var changed = new DayGranularityContext(dbPath, archivePath);
@@ -794,14 +794,14 @@ public sealed class TieredStorageTests : IDisposable
     {
         using var context = CreateContext();
         Seed(context, months: 2, baseDate: new DateTime(2024, 2, 1));
-        await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
         context.Database.ExecuteSqlRaw(
-            "UPDATE __duckdb_tier_control SET partition_spec = NULL WHERE name = 'invoices';");
+            "UPDATE __duckdb_tier_control SET partition_spec = NULL WHERE name = 'records';");
 
         context.Database.EnsureTieredStoresCreated();
 
         var partitionSpec = context.Database.SqlQueryRaw<string>(
-            "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'invoices'").Single();
+            "SELECT partition_spec AS \"Value\" FROM __duckdb_tier_control WHERE name = 'records'").Single();
         Assert.Contains("\"Version\":2", partitionSpec);
         Assert.Contains("\"Columns\":[]", partitionSpec);
     }
@@ -814,13 +814,13 @@ public sealed class TieredStorageTests : IDisposable
         var expected = TieredTotals(context);
         var cutoff = new DateTime(2025, 7, 1).AddMonths(-12);
 
-        var result = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var result = await context.Database.ArchiveTierAsync<Record>(cutoff);
 
         // Simulate a crash after COPY but before DELETE: the archived rows are back in the hot tables.
         ReinsertArchivedIntoHot(context);
         Assert.Equal(expected, TieredTotals(context)); // views still exact — no double counting
 
-        var heal = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var heal = await context.Database.ArchiveTierAsync<Record>(cutoff);
         Assert.True(heal.NoOp);
         Assert.Equal(expected, TieredTotals(context));
         Assert.Equal(result.Watermark, heal.Watermark);
@@ -833,18 +833,18 @@ public sealed class TieredStorageTests : IDisposable
         Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
         var cutoff = new DateTime(2025, 7, 1).AddMonths(-12);
 
-        await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        await context.Database.ArchiveTierAsync<Record>(cutoff);
         var before = TieredTotals(context);
 
-        context.Invoices.Add(new Invoice { InvoiceDate = cutoff.AddMonths(-1) });
+        context.Records.Add(new Record { EffectiveAt = cutoff.AddMonths(-1) });
         context.SaveChanges();
 
-        Assert.Equal(before.Invoices + 1, context.InvoiceHistory.Count());
+        Assert.Equal(before.Records + 1, context.RecordHistory.Count());
 
-        var rerun = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var rerun = await context.Database.ArchiveTierAsync<Record>(cutoff);
 
         Assert.True(rerun.NoOp);
-        Assert.Equal(before.Invoices + 1, context.InvoiceHistory.Count());
+        Assert.Equal(before.Records + 1, context.RecordHistory.Count());
     }
 
     [Fact]
@@ -854,18 +854,18 @@ public sealed class TieredStorageTests : IDisposable
         Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
         var cutoff = new DateTime(2025, 7, 1).AddMonths(-12);
 
-        await context.Database.ArchiveTierAsync<Invoice>(cutoff);
-        var hotRowsAfterArchive = context.Invoices.Count();
+        await context.Database.ArchiveTierAsync<Record>(cutoff);
+        var hotRowsAfterArchive = context.Records.Count();
 
-        context.Invoices.Add(new Invoice { InvoiceDate = cutoff.AddMonths(-1) });
+        context.Records.Add(new Record { EffectiveAt = cutoff.AddMonths(-1) });
         context.SaveChanges();
 
-        Assert.Equal(hotRowsAfterArchive + 1, context.Invoices.Count());
+        Assert.Equal(hotRowsAfterArchive + 1, context.Records.Count());
 
-        var rerun = await context.Database.ArchiveTierAsync<Invoice>(cutoff);
+        var rerun = await context.Database.ArchiveTierAsync<Record>(cutoff);
 
         Assert.True(rerun.NoOp);
-        Assert.Equal(hotRowsAfterArchive + 1, context.Invoices.Count());
+        Assert.Equal(hotRowsAfterArchive + 1, context.Records.Count());
     }
 
     [Fact]
@@ -873,15 +873,15 @@ public sealed class TieredStorageTests : IDisposable
     {
         using var context = CreateContext();
         Seed(context, months: 3, baseDate: new DateTime(2025, 7, 1));
-        var archive = Path.Combine(_root, "archive", "invoices");
+        var archive = Path.Combine(_root, "archive", "records");
         Directory.CreateDirectory(archive);
 
 #pragma warning disable EF1002, EF1003 // archive is a test-owned temp path, not user input
         context.Database.ExecuteSqlRaw(
             $"""
              COPY (
-                 SELECT "Id", "InvoiceDate", year("InvoiceDate") AS "year", month("InvoiceDate") AS "month"
-                   FROM invoices
+                 SELECT "Id", "EffectiveAt", year("EffectiveAt") AS "year", month("EffectiveAt") AS "month"
+                   FROM records
              )
              TO '{archive.Replace("'", "''")}'
              (FORMAT PARQUET, PARTITION_BY ("year", "month"), OVERWRITE_OR_IGNORE);
@@ -890,7 +890,7 @@ public sealed class TieredStorageTests : IDisposable
 
         context.Database.EnsureTieredStoresCreated();
 
-        Assert.Equal(context.Invoices.Count(), context.InvoiceHistory.Count());
+        Assert.Equal(context.Records.Count(), context.RecordHistory.Count());
     }
 
     [Fact]
@@ -899,19 +899,19 @@ public sealed class TieredStorageTests : IDisposable
         using var context = new SchemaContext(Path.Combine(_root, "schema.duckdb"), Path.Combine(_root, "schema-archive"));
 
         context.Database.EnsureCreated();
-        context.Invoices.Add(new Invoice { InvoiceDate = new DateTime(2025, 6, 1) });
+        context.Records.Add(new Record { EffectiveAt = new DateTime(2025, 6, 1) });
         context.SaveChanges();
 
-        Assert.Equal(1, context.InvoiceHistory.Count());
+        Assert.Equal(1, context.RecordHistory.Count());
     }
 
     [Fact]
     public void Purge_skips_malformed_partition_directories()
     {
         using var context = CreateContext();
-        Directory.CreateDirectory(Path.Combine(_root, "archive", "invoices", "year=2024", "month=99"));
+        Directory.CreateDirectory(Path.Combine(_root, "archive", "records", "year=2024", "month=99"));
 
-        var purged = context.Database.PurgeArchiveOlderThan<Invoice>(new DateTime(2025, 1, 1));
+        var purged = context.Database.PurgeArchiveOlderThan<Record>(new DateTime(2025, 1, 1));
 
         Assert.Equal(0, purged);
     }
@@ -925,17 +925,17 @@ public sealed class TieredStorageTests : IDisposable
         using (var context = CreateContext())
         {
             Seed(context, months: 18, baseDate: new DateTime(2025, 7, 1));
-            await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2025, 7, 1).AddMonths(-12));
+            await context.Database.ArchiveTierAsync<Record>(new DateTime(2025, 7, 1).AddMonths(-12));
         }
 
         using (var evolved = new EvolvedContext(dbPath, archivePath))
         {
-            evolved.Database.ExecuteSqlRaw("ALTER TABLE invoices ADD COLUMN \"Note\" TEXT;");
+            evolved.Database.ExecuteSqlRaw("ALTER TABLE records ADD COLUMN \"Note\" TEXT;");
             evolved.Database.EnsureTieredStoresCreated(); // regenerate the view over the new schema
 
-            var all = evolved.InvoiceHistory.OrderBy(i => i.Id).ToList();
+            var all = evolved.RecordHistory.OrderBy(i => i.Id).ToList();
             Assert.Equal(18, all.Count);
-            Assert.All(all.Where(i => i.Id <= 5), i => Assert.Null(i.Note)); // the 5 archived (cold) invoices
+            Assert.All(all.Where(i => i.Id <= 5), i => Assert.Null(i.Note)); // the 5 archived (cold) records
         }
     }
 
@@ -944,38 +944,38 @@ public sealed class TieredStorageTests : IDisposable
     {
         var dbPath = Path.Combine(_root, "contract-rewrite.duckdb");
         var archivePath = Path.Combine(_root, "contract-rewrite-archive");
-        using (var original = new InvoiceContext(dbPath, archivePath))
+        using (var original = new RecordContext(dbPath, archivePath))
         {
             original.Database.EnsureCreated();
-            original.Invoices.Add(new Invoice
+            original.Records.Add(new Record
             {
-                CustomerId = 7,
-                InvoiceDate = new DateTime(2024, 1, 15),
+                GroupId = 7,
+                EffectiveAt = new DateTime(2024, 1, 15),
             });
             original.SaveChanges();
-            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+            await original.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
         }
 
         using var evolved = new EvolvedContext(dbPath, archivePath);
-        evolved.Database.ExecuteSqlRaw("ALTER TABLE invoices ADD COLUMN \"Note\" TEXT;");
-        var inspection = await evolved.Database.InspectArchiveContractAsync<InvoiceV2>();
+        evolved.Database.ExecuteSqlRaw("ALTER TABLE records ADD COLUMN \"Note\" TEXT;");
+        var inspection = await evolved.Database.InspectArchiveContractAsync<RecordV2>();
 
         var difference = Assert.Single(inspection.Differences, item =>
             item.Kind == TierArchiveContractDifferenceKind.ColumnAdded);
         Assert.Equal("Note", difference.Column);
         Assert.True(inspection.IsCompatible);
 
-        var plan = await evolved.Database.PlanArchiveContractRewriteAsync<InvoiceV2>(
+        var plan = await evolved.Database.PlanArchiveContractRewriteAsync<RecordV2>(
             new TierArchiveRewriteOptions());
-        var result = await evolved.Database.RewriteArchiveContractAsync<InvoiceV2>(plan);
+        var result = await evolved.Database.RewriteArchiveContractAsync<RecordV2>(plan);
 
         Assert.Equal(TierArchiveOperation.RewriteContract, result.Operation);
         Assert.NotNull(result.Revision);
-        Assert.Null(evolved.InvoiceHistory.Single().Note);
-        var afterRewrite = await evolved.Database.InspectArchiveContractAsync<InvoiceV2>();
+        Assert.Null(evolved.RecordHistory.Single().Note);
+        var afterRewrite = await evolved.Database.InspectArchiveContractAsync<RecordV2>();
         Assert.True(afterRewrite.IsCompatible);
         Assert.Empty(afterRewrite.Differences);
-        var laterMaintenance = await evolved.Database.CompactArchiveTierAsync<InvoiceV2>();
+        var laterMaintenance = await evolved.Database.CompactArchiveTierAsync<RecordV2>();
         Assert.Equal(TierArchiveOperation.Compact, laterMaintenance.Operation);
     }
 
@@ -987,38 +987,38 @@ public sealed class TieredStorageTests : IDisposable
         using (var original = new AliasedContractContext(dbPath, archivePath))
         {
             original.Database.EnsureCreated();
-            original.Invoices.Add(new Invoice
+            original.Records.Add(new Record
             {
-                CustomerId = 7,
-                InvoiceDate = new DateTime(2024, 1, 15),
+                GroupId = 7,
+                EffectiveAt = new DateTime(2024, 1, 15),
             });
             original.SaveChanges();
-            await original.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 2, 1));
+            await original.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
         }
 
         using var evolved = new AliasedContractEvolvedContext(dbPath, archivePath);
-        evolved.Database.ExecuteSqlRaw("ALTER TABLE invoices ADD COLUMN \"Note\" TEXT;");
-        var inspection = await evolved.Database.InspectArchiveContractAsync<InvoiceV2>();
+        evolved.Database.ExecuteSqlRaw("ALTER TABLE records ADD COLUMN \"Note\" TEXT;");
+        var inspection = await evolved.Database.InspectArchiveContractAsync<RecordV2>();
 
         var difference = Assert.Single(inspection.Differences, item =>
             item.Kind == TierArchiveContractDifferenceKind.ColumnAdded);
         Assert.Equal("Note", difference.Column);
         Assert.True(inspection.IsCompatible);
 
-        var plan = await evolved.Database.PlanArchiveContractRewriteAsync<InvoiceV2>(
+        var plan = await evolved.Database.PlanArchiveContractRewriteAsync<RecordV2>(
             new TierArchiveRewriteOptions());
-        var result = await evolved.Database.RewriteArchiveContractAsync<InvoiceV2>(plan);
+        var result = await evolved.Database.RewriteArchiveContractAsync<RecordV2>(plan);
 
         Assert.Equal(TierArchiveOperation.RewriteContract, result.Operation);
         Assert.True(Directory.Exists(Path.Combine(
-            result.ArchivePath, "customer_key=7", "invoice_month=2024-01-01")));
-        Assert.Null(evolved.InvoiceHistory.Single().Note);
-        var afterRewrite = await evolved.Database.InspectArchiveContractAsync<InvoiceV2>();
+            result.ArchivePath, "group_key=7", "record_month=2024-01-01")));
+        Assert.Null(evolved.RecordHistory.Single().Note);
+        var afterRewrite = await evolved.Database.InspectArchiveContractAsync<RecordV2>();
         Assert.True(afterRewrite.IsCompatible);
         Assert.Empty(afterRewrite.Differences);
     }
 
-    private void ReinsertArchivedIntoHot(InvoiceContext context)
+    private void ReinsertArchivedIntoHot(RecordContext context)
     {
         var archive = Path.Combine(_root, "archive");
 
@@ -1031,125 +1031,125 @@ public sealed class TieredStorageTests : IDisposable
 #pragma warning restore EF1002, EF1003
         }
 
-        // Foreign-key order: parents before children.
-        Copy("invoices", "\"Id\", \"CustomerId\", \"InvoiceDate\"");
-        Copy("invoice_lines", "\"Id\", \"InvoiceId\", \"Amount\"");
-        Copy("line_allocations", "\"Id\", \"InvoiceLineId\", \"Amount\"");
+        // Foreign-key root: parents before children.
+        Copy("records", "\"Id\", \"GroupId\", \"EffectiveAt\"");
+        Copy("record_lines", "\"Id\", \"RecordId\", \"Value\"");
+        Copy("line_details", "\"Id\", \"RecordPartId\", \"Value\"");
     }
 
-    private static (int Invoices, int Lines, int Allocations, decimal AllocSum) TieredTotals(InvoiceContext c)
-        => (c.InvoiceHistory.Count(), c.LineHistory.Count(), c.AllocationHistory.Count(), c.AllocationHistory.Sum(a => a.Amount));
+    private static (int Records, int Parts, int Details, decimal AllocSum) TieredTotals(RecordContext c)
+        => (c.RecordHistory.Count(), c.PartHistory.Count(), c.DetailHistory.Count(), c.DetailHistory.Sum(a => a.Value));
 
-    private static void Seed(InvoiceContext context, int months, DateTime baseDate)
+    private static void Seed(RecordContext context, int months, DateTime baseDate)
     {
         for (var m = months - 1; m >= 0; m--)
         {
-            var invoice = new Invoice { InvoiceDate = baseDate.AddMonths(-m) };
-            for (var line = 0; line < 2; line++)
+            var record = new Record { EffectiveAt = baseDate.AddMonths(-m) };
+            for (var part = 0; part < 2; part++)
             {
-                var amount = (m + 1) * 10 + line;
-                invoice.Lines.Add(new InvoiceLine { Amount = amount, Allocations = { new LineAllocation { Amount = amount } } });
+                var value = (m + 1) * 10 + part;
+                record.Parts.Add(new RecordPart { Value = value, Details = { new RecordPartDetail { Value = value } } });
             }
 
-            context.Invoices.Add(invoice);
+            context.Records.Add(record);
         }
 
         context.SaveChanges();
     }
 
-    private InvoiceContext CreateContext()
+    private RecordContext CreateContext()
     {
-        var context = new InvoiceContext(Path.Combine(_root, "store.duckdb"), Path.Combine(_root, "archive"));
+        var context = new RecordContext(Path.Combine(_root, "store.duckdb"), Path.Combine(_root, "archive"));
         context.Database.EnsureCreated();
         return context;
     }
 
-    private sealed class Invoice
+    private sealed class Record
     {
         public int Id { get; set; }
-        public int CustomerId { get; set; }
-        public DateTime InvoiceDate { get; set; }
-        public List<InvoiceLine> Lines { get; set; } = [];
+        public int GroupId { get; set; }
+        public DateTime EffectiveAt { get; set; }
+        public List<RecordPart> Parts { get; set; } = [];
     }
 
-    private sealed class InvoiceLine
+    private sealed class RecordPart
     {
         public int Id { get; set; }
-        public int InvoiceId { get; set; }
-        public Invoice? Invoice { get; set; }
-        public decimal Amount { get; set; }
-        public List<LineAllocation> Allocations { get; set; } = [];
+        public int RecordId { get; set; }
+        public Record? Record { get; set; }
+        public decimal Value { get; set; }
+        public List<RecordPartDetail> Details { get; set; } = [];
     }
 
-    private sealed class LineAllocation
+    private sealed class RecordPartDetail
     {
         public int Id { get; set; }
-        public int InvoiceLineId { get; set; }
-        public InvoiceLine? InvoiceLine { get; set; }
-        public decimal Amount { get; set; }
+        public int RecordPartId { get; set; }
+        public RecordPart? RecordPart { get; set; }
+        public decimal Value { get; set; }
     }
 
-    private sealed class InvoiceRm { public int Id { get; set; } public DateTime InvoiceDate { get; set; } }
-    private sealed class InvoiceLineRm { public int Id { get; set; } public int InvoiceId { get; set; } public decimal Amount { get; set; } }
-    private sealed class LineAllocationRm { public int Id { get; set; } public int InvoiceLineId { get; set; } public decimal Amount { get; set; } }
-    private sealed class CustomerInvoiceRm { public int Id { get; set; } public int CustomerId { get; set; } public DateTime InvoiceDate { get; set; } }
+    private sealed class RecordRm { public int Id { get; set; } public DateTime EffectiveAt { get; set; } }
+    private sealed class RecordPartRm { public int Id { get; set; } public int RecordId { get; set; } public decimal Value { get; set; } }
+    private sealed class RecordPartDetailRm { public int Id { get; set; } public int RecordPartId { get; set; } public decimal Value { get; set; } }
+    private sealed class GroupRecordRm { public int Id { get; set; } public int GroupId { get; set; } public DateTime EffectiveAt { get; set; } }
 
-    private sealed class OwnerOrder
+    private sealed class PartitionedRecord
     {
         public int Id { get; set; }
-        public int OwnerId { get; set; }
-        public DateTime CompletedAt { get; set; }
-        public List<OwnerOrderItem> Items { get; set; } = [];
+        public int GroupId { get; set; }
+        public DateTime EffectiveAt { get; set; }
+        public List<PartitionedRecordPart> PartitionedParts { get; set; } = [];
     }
 
-    private sealed class OwnerOrderItem
+    private sealed class PartitionedRecordPart
     {
         public int Id { get; set; }
-        public int OwnerOrderId { get; set; }
-        public int OwnerId { get; set; }
-        public OwnerOrder? Order { get; set; }
+        public int PartitionedRecordId { get; set; }
+        public int GroupId { get; set; }
+        public PartitionedRecord? Root { get; set; }
     }
 
-    private sealed class OwnerOrderRm
+    private sealed class PartitionedRecordRm
     {
         public int Id { get; set; }
-        public int OwnerId { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public int GroupId { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
-    private sealed class OwnerOrderItemRm
+    private sealed class PartitionedRecordPartRm
     {
         public int Id { get; set; }
-        public int OwnerOrderId { get; set; }
-        public int OwnerId { get; set; }
+        public int PartitionedRecordId { get; set; }
+        public int GroupId { get; set; }
     }
 
     private sealed class DateBucketRecord
     {
         public int Id { get; set; }
-        public int CustomerId { get; set; }
+        public int GroupId { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime ReviewedAt { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class DateBucketRecordRm
     {
         public int Id { get; set; }
-        public int CustomerId { get; set; }
+        public int GroupId { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime ReviewedAt { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class TypedPartitionRoot
     {
         public int Id { get; set; }
         public DateTime ArchivedAt { get; set; }
-        public int CustomerId { get; set; }
+        public int GroupId { get; set; }
         public string Region { get; set; } = null!;
         public bool IsPriority { get; set; }
-        public decimal AmountBand { get; set; }
+        public decimal ValueBand { get; set; }
         public DateTime SnapshotAt { get; set; }
         public DateOnly EffectiveDate { get; set; }
         public Guid TenantId { get; set; }
@@ -1159,10 +1159,10 @@ public sealed class TieredStorageTests : IDisposable
     {
         public int Id { get; set; }
         public DateTime ArchivedAt { get; set; }
-        public int CustomerId { get; set; }
+        public int GroupId { get; set; }
         public string Region { get; set; } = null!;
         public bool IsPriority { get; set; }
-        public decimal AmountBand { get; set; }
+        public decimal ValueBand { get; set; }
         public DateTime SnapshotAt { get; set; }
         public DateOnly EffectiveDate { get; set; }
         public Guid TenantId { get; set; }
@@ -1178,12 +1178,12 @@ public sealed class TieredStorageTests : IDisposable
             .ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>()
             .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
 
-    private sealed class InvoiceContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    private sealed class RecordContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
-        public DbSet<InvoiceRm> InvoiceHistory => Set<InvoiceRm>();
-        public DbSet<InvoiceLineRm> LineHistory => Set<InvoiceLineRm>();
-        public DbSet<LineAllocationRm> AllocationHistory => Set<LineAllocationRm>();
+        public DbSet<Record> Records => Set<Record>();
+        public DbSet<RecordRm> RecordHistory => Set<RecordRm>();
+        public DbSet<RecordPartRm> PartHistory => Set<RecordPartRm>();
+        public DbSet<RecordPartDetailRm> DetailHistory => Set<RecordPartDetailRm>();
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -1191,33 +1191,33 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(b =>
+            modelBuilder.Entity<Record>(b =>
             {
-                b.ToTable("invoices");
+                b.ToTable("records");
                 b.HasKey(i => i.Id);
-                b.HasMany(i => i.Lines).WithOne(l => l.Invoice).HasForeignKey(l => l.InvoiceId);
+                b.HasMany(i => i.Parts).WithOne(l => l.Record).HasForeignKey(l => l.RecordId);
             });
-            modelBuilder.Entity<InvoiceLine>(b =>
+            modelBuilder.Entity<RecordPart>(b =>
             {
-                b.ToTable("invoice_lines");
+                b.ToTable("record_lines");
                 b.HasKey(l => l.Id);
-                b.HasMany(l => l.Allocations).WithOne(a => a.InvoiceLine).HasForeignKey(a => a.InvoiceLineId);
+                b.HasMany(l => l.Details).WithOne(a => a.RecordPart).HasForeignKey(a => a.RecordPartId);
             });
-            modelBuilder.Entity<LineAllocation>(b => { b.ToTable("line_allocations"); b.HasKey(a => a.Id); });
+            modelBuilder.Entity<RecordPartDetail>(b => { b.ToTable("line_details"); b.HasKey(a => a.Id); });
 
-            modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath, TierGranularity.Month)
-                .WithReadModel<InvoiceRm>()
-                .Including<InvoiceLine>(i => i.Lines, line => line
-                    .WithReadModel<InvoiceLineRm>()
-                    .Including<LineAllocation>(l => l.Allocations, alloc => alloc.WithReadModel<LineAllocationRm>()));
+            modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, archivePath, TierGranularity.Month)
+                .WithReadModel<RecordRm>()
+                .Including<RecordPart>(i => i.Parts, part => part
+                    .WithReadModel<RecordPartRm>()
+                    .Including<RecordPartDetail>(l => l.Details, detail => detail.WithReadModel<RecordPartDetailRm>()));
         }
     }
 
-    private sealed class CustomerPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    private sealed class GroupPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
-        public DbSet<CustomerInvoiceRm> InvoiceHistory => Set<CustomerInvoiceRm>();
-        public DbSet<InvoiceLineRm> LineHistory => Set<InvoiceLineRm>();
+        public DbSet<Record> Records => Set<Record>();
+        public DbSet<GroupRecordRm> RecordHistory => Set<GroupRecordRm>();
+        public DbSet<RecordPartRm> PartHistory => Set<RecordPartRm>();
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -1225,44 +1225,44 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.HasMany(invoice => invoice.Lines).WithOne(line => line.Invoice).HasForeignKey(line => line.InvoiceId);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.HasMany(record => record.Parts).WithOne(part => part.Record).HasForeignKey(part => part.RecordId);
             });
-            modelBuilder.Entity<InvoiceLine>(builder =>
+            modelBuilder.Entity<RecordPart>(builder =>
             {
-                builder.ToTable("invoice_lines");
-                builder.HasKey(line => line.Id);
-                builder.Ignore(line => line.Allocations);
+                builder.ToTable("record_lines");
+                builder.HasKey(part => part.Id);
+                builder.Ignore(part => part.Details);
             });
 
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath, TierGranularity.Month)
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath, TierGranularity.Month)
                 .PartitionBy(partitions => partitions
-                    .By(invoice => invoice.CustomerId)
-                    .ByMonth(invoice => invoice.InvoiceDate))
-                .WithReadModel<CustomerInvoiceRm>()
-                .Including<InvoiceLine>(invoice => invoice.Lines, line => line.WithReadModel<InvoiceLineRm>());
+                    .By(record => record.GroupId)
+                    .ByMonth(record => record.EffectiveAt))
+                .WithReadModel<GroupRecordRm>()
+                .Including<RecordPart>(record => record.Parts, part => part.WithReadModel<RecordPartRm>());
         }
     }
 
-    private sealed class OwnerAliasPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
+    private sealed class AliasedPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<OwnerOrder> Orders => Set<OwnerOrder>();
-        public DbSet<OwnerOrderItem> Items => Set<OwnerOrderItem>();
-        public DbSet<OwnerOrderRm> OrderHistory => Set<OwnerOrderRm>();
-        public DbSet<OwnerOrderItemRm> ItemHistory => Set<OwnerOrderItemRm>();
+        public DbSet<PartitionedRecord> PartitionedRecords => Set<PartitionedRecord>();
+        public DbSet<PartitionedRecordPart> PartitionedParts => Set<PartitionedRecordPart>();
+        public DbSet<PartitionedRecordRm> PartitionedRecordHistory => Set<PartitionedRecordRm>();
+        public DbSet<PartitionedRecordPartRm> PartitionedPartHistory => Set<PartitionedRecordPartRm>();
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => ConfigureOwnerAliasModel(modelBuilder, archivePath, "root_owner_id");
+            => ConfigureAliasedPartitionModel(modelBuilder, archivePath, "root_group_id");
     }
 
-    private sealed class ChangedOwnerAliasPartitionContext(
+    private sealed class ChangedAliasedPartitionContext(
         string dbPath,
         string archivePath) : DbContext, IArchivePathContext
     {
@@ -1272,12 +1272,12 @@ public sealed class TieredStorageTests : IDisposable
             => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => ConfigureOwnerAliasModel(modelBuilder, archivePath, "root_owner_key");
+            => ConfigureAliasedPartitionModel(modelBuilder, archivePath, "root_group_key");
     }
 
     private sealed class ShorthandAliasPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public DbSet<Record> Records => Set<Record>();
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -1285,20 +1285,20 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-                .PartitionBy(invoice => invoice.CustomerId, "customer_key");
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+                .PartitionBy(record => record.GroupId, "group_key");
         }
     }
 
     private sealed class AliasedContractContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public DbSet<Record> Records => Set<Record>();
         public string ArchivePath => archivePath + "|aliased-contract";
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -1306,23 +1306,23 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
                 .PartitionBy(partitions => partitions
-                    .By(invoice => invoice.CustomerId, "customer_key")
-                    .ByMonth(invoice => invoice.InvoiceDate, "invoice_month"))
-                .WithReadModel<InvoiceRm>();
+                    .By(record => record.GroupId, "group_key")
+                    .ByMonth(record => record.EffectiveAt, "record_month"))
+                .WithReadModel<RecordRm>();
         }
     }
 
     private sealed class MonthFirstPartitionContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public DbSet<Record> Records => Set<Record>();
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -1330,16 +1330,16 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
                 .PartitionBy(partitions => partitions
-                    .ByMonth(invoice => invoice.InvoiceDate)
-                    .By(invoice => invoice.CustomerId));
+                    .ByMonth(record => record.EffectiveAt)
+                    .By(record => record.GroupId));
         }
     }
 
@@ -1358,12 +1358,12 @@ public sealed class TieredStorageTests : IDisposable
                 builder.ToTable("date_bucket_records");
                 builder.HasKey(record => record.Id);
             });
-            modelBuilder.ToTieredStore<DateBucketRecord>(record => record.CompletedAt, archivePath, TierGranularity.Day)
+            modelBuilder.ToTieredStore<DateBucketRecord>(record => record.EffectiveAt, archivePath, TierGranularity.Day)
                 .PartitionBy(partitions => partitions
-                    .By(record => record.CustomerId)
+                    .By(record => record.GroupId)
                     .ByYear(record => record.CreatedAt)
                     .ByMonth(record => record.ReviewedAt)
-                    .ByDay(record => record.CompletedAt))
+                    .ByDay(record => record.EffectiveAt))
                 .WithReadModel<DateBucketRecordRm>();
         }
     }
@@ -1383,22 +1383,22 @@ public sealed class TieredStorageTests : IDisposable
             {
                 builder.ToTable("typed_roots");
                 builder.HasKey(root => root.Id);
-                builder.Property(root => root.CustomerId).HasColumnName("customer_id");
+                builder.Property(root => root.GroupId).HasColumnName("group_id");
                 builder.Property(root => root.Region).HasColumnName("region_code");
-                builder.Property(root => root.AmountBand).HasPrecision(10, 2);
+                builder.Property(root => root.ValueBand).HasPrecision(10, 2);
             });
             modelBuilder.Entity<TypedPartitionRm>(builder =>
             {
-                builder.Property(root => root.CustomerId).HasColumnName("customer_id");
+                builder.Property(root => root.GroupId).HasColumnName("group_id");
                 builder.Property(root => root.Region).HasColumnName("region_code");
-                builder.Property(root => root.AmountBand).HasPrecision(10, 2);
+                builder.Property(root => root.ValueBand).HasPrecision(10, 2);
             });
 
             modelBuilder.ToTieredStore<TypedPartitionRoot>(root => root.ArchivedAt, archivePath)
-                .PartitionBy(root => root.CustomerId, root => root.Region)
+                .PartitionBy(root => root.GroupId, root => root.Region)
                 .PartitionBy(
                     root => root.IsPriority,
-                    root => root.AmountBand,
+                    root => root.ValueBand,
                     root => root.SnapshotAt,
                     root => root.EffectiveDate,
                     root => root.TenantId)
@@ -1415,14 +1415,14 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath, TierGranularity.Day)
-                .WithReadModel<InvoiceRm>();
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath, TierGranularity.Day)
+                .WithReadModel<RecordRm>();
         }
     }
 
@@ -1435,15 +1435,15 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-                .PartitionBy(invoice => invoice.CustomerId)
-                .PartitionBy(invoice => invoice.CustomerId);
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+                .PartitionBy(record => record.GroupId)
+                .PartitionBy(record => record.GroupId);
         }
     }
 
@@ -1456,14 +1456,14 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-                .PartitionBy(invoice => invoice.InvoiceDate);
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+                .PartitionBy(record => record.EffectiveAt);
         }
     }
 
@@ -1476,15 +1476,15 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-                .PartitionBy(invoice => invoice.CustomerId)
-                .PartitionBy(invoice => invoice.InvoiceDate);
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+                .PartitionBy(record => record.GroupId)
+                .PartitionBy(record => record.EffectiveAt);
         }
     }
 
@@ -1497,14 +1497,14 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-                .PartitionBy(partitions => partitions.By(invoice => invoice.CustomerId));
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+                .PartitionBy(partitions => partitions.By(record => record.GroupId));
         }
     }
 
@@ -1517,16 +1517,16 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
                 .PartitionBy(partitions => partitions
-                    .ByMonth(invoice => invoice.CustomerId)
-                    .ByMonth(invoice => invoice.InvoiceDate));
+                    .ByMonth(record => record.GroupId)
+                    .ByMonth(record => record.EffectiveAt));
         }
     }
 
@@ -1539,16 +1539,16 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
                 .PartitionBy(partitions => partitions
-                    .By(invoice => invoice.CustomerId, " ")
-                    .ByMonth(invoice => invoice.InvoiceDate));
+                    .By(record => record.GroupId, " ")
+                    .ByMonth(record => record.EffectiveAt));
         }
     }
 
@@ -1561,16 +1561,16 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
                 .PartitionBy(partitions => partitions
-                    .By(invoice => invoice.CustomerId, "Id")
-                    .ByMonth(invoice => invoice.InvoiceDate));
+                    .By(record => record.GroupId, "Id")
+                    .ByMonth(record => record.EffectiveAt));
         }
     }
 
@@ -1583,16 +1583,16 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
                 .PartitionBy(partitions => partitions
-                    .By(invoice => invoice.CustomerId, "bucket")
-                    .ByMonth(invoice => invoice.InvoiceDate, "BUCKET"));
+                    .By(record => record.GroupId, "bucket")
+                    .ByMonth(record => record.EffectiveAt, "BUCKET"));
         }
     }
 
@@ -1605,11 +1605,11 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            // Invoice has no relationship to InvoiceLine, so the .Including navigation has no foreign key.
-            modelBuilder.Entity<Invoice>(b => { b.ToTable("invoices"); b.HasKey(i => i.Id); b.Ignore(i => i.Lines); });
-            modelBuilder.Entity<InvoiceLine>(b => { b.ToTable("invoice_lines"); b.HasKey(l => l.Id); b.Ignore(l => l.Allocations); });
-            modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath)
-                .Including<InvoiceLine>(i => i.Lines);
+            // Record has no relationship to RecordPart, so the .Including navigation has no foreign key.
+            modelBuilder.Entity<Record>(b => { b.ToTable("records"); b.HasKey(i => i.Id); b.Ignore(i => i.Parts); });
+            modelBuilder.Entity<RecordPart>(b => { b.ToTable("record_lines"); b.HasKey(l => l.Id); b.Ignore(l => l.Details); });
+            modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, archivePath)
+                .Including<RecordPart>(i => i.Parts);
         }
     }
 
@@ -1622,23 +1622,23 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.HasMany(invoice => invoice.Lines).WithOne(line => line.Invoice).HasForeignKey(line => line.InvoiceId);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.HasMany(record => record.Parts).WithOne(part => part.Record).HasForeignKey(part => part.RecordId);
             });
-            modelBuilder.Entity<InvoiceLine>(builder =>
+            modelBuilder.Entity<RecordPart>(builder =>
             {
-                builder.ToTable("invoice_lines");
-                builder.HasKey(line => line.Id);
-                builder.Ignore(line => line.Allocations);
+                builder.ToTable("record_lines");
+                builder.HasKey(part => part.Id);
+                builder.Ignore(part => part.Details);
             });
-            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-                .Including<InvoiceLine>(invoice => invoice.Lines);
+            modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+                .Including<RecordPart>(record => record.Parts);
 
             // Simulates malformed metadata from a manually-authored convention or compiled model.
-            modelBuilder.Entity<InvoiceLine>().HasAnnotation("DuckDB:TieredStore:PartitionProperties", "Amount");
+            modelBuilder.Entity<RecordPart>().HasAnnotation("DuckDB:TieredStore:PartitionProperties", "Value");
         }
     }
 
@@ -1651,12 +1651,12 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(b => { b.ToTable("invoices"); b.HasKey(i => i.Id); b.Ignore(i => i.Lines); });
-            // MismatchRm has a column the invoices table does not.
-            modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath).WithReadModel<MismatchRm>();
+            modelBuilder.Entity<Record>(b => { b.ToTable("records"); b.HasKey(i => i.Id); b.Ignore(i => i.Parts); });
+            // MismatchRm has a column the records table does not.
+            modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, archivePath).WithReadModel<MismatchRm>();
         }
 
-        private sealed class MismatchRm { public int Id { get; set; } public DateTime InvoiceDate { get; set; } public string? Nonexistent { get; set; } }
+        private sealed class MismatchRm { public int Id { get; set; } public DateTime EffectiveAt { get; set; } public string? Nonexistent { get; set; } }
     }
 
     private sealed class Ledger { public int Id { get; set; } public DateTime PostedAt { get; set; } }
@@ -1671,14 +1671,14 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(b =>
+            modelBuilder.Entity<Record>(b =>
             {
-                b.ToTable("invoices");
+                b.ToTable("records");
                 b.HasKey(i => i.Id);
-                b.Ignore(i => i.Lines);
+                b.Ignore(i => i.Parts);
                 b.Property(i => i.Id).HasColumnName("year");
             });
-            modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath);
+            modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, archivePath);
         }
     }
 
@@ -1692,45 +1692,45 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(b => { b.ToTable("invoices"); b.HasKey(i => i.Id); b.Ignore(i => i.Lines); });
+            modelBuilder.Entity<Record>(b => { b.ToTable("records"); b.HasKey(i => i.Id); b.Ignore(i => i.Parts); });
             modelBuilder.Entity<Ledger>(b => { b.ToTable("ledger"); b.HasKey(l => l.Id); });
-            modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archiveRoot);
+            modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, archiveRoot);
             modelBuilder.ToTieredStore<Ledger>(l => l.PostedAt, archiveRoot);
         }
     }
 
-    // Second-generation root model over the same "invoices" table/archive, with an added column.
-    private sealed class InvoiceV2
+    // Second-generation root model over the same "records" table/archive, with an added column.
+    private sealed class RecordV2
     {
         public int Id { get; set; }
-        public int CustomerId { get; set; }
-        public DateTime InvoiceDate { get; set; }
+        public int GroupId { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string? Note { get; set; }
-        public List<InvoiceLineV2> Lines { get; set; } = [];
+        public List<RecordPartV2> Parts { get; set; } = [];
     }
 
-    private sealed class InvoiceLineV2
+    private sealed class RecordPartV2
     {
         public int Id { get; set; }
-        public int InvoiceId { get; set; }
-        public InvoiceV2? Invoice { get; set; }
-        public decimal Amount { get; set; }
-        public List<LineAllocationV2> Allocations { get; set; } = [];
+        public int RecordId { get; set; }
+        public RecordV2? Record { get; set; }
+        public decimal Value { get; set; }
+        public List<RecordPartDetailV2> Details { get; set; } = [];
     }
 
-    private sealed class LineAllocationV2
+    private sealed class RecordPartDetailV2
     {
         public int Id { get; set; }
-        public int InvoiceLineId { get; set; }
-        public InvoiceLineV2? InvoiceLine { get; set; }
-        public decimal Amount { get; set; }
+        public int RecordPartId { get; set; }
+        public RecordPartV2? RecordPart { get; set; }
+        public decimal Value { get; set; }
     }
 
-    private sealed class InvoiceV2Rm { public int Id { get; set; } public DateTime InvoiceDate { get; set; } public string? Note { get; set; } }
+    private sealed class RecordV2Rm { public int Id { get; set; } public DateTime EffectiveAt { get; set; } public string? Note { get; set; } }
 
     private sealed class EvolvedContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<InvoiceV2Rm> InvoiceHistory => Set<InvoiceV2Rm>();
+        public DbSet<RecordV2Rm> RecordHistory => Set<RecordV2Rm>();
         public string ArchivePath => archivePath + "|evolved";
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -1738,28 +1738,28 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<InvoiceV2>(builder =>
+            modelBuilder.Entity<RecordV2>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.HasMany(invoice => invoice.Lines).WithOne(line => line.Invoice).HasForeignKey(line => line.InvoiceId);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.HasMany(record => record.Parts).WithOne(part => part.Record).HasForeignKey(part => part.RecordId);
             });
-            modelBuilder.Entity<InvoiceLineV2>(builder =>
+            modelBuilder.Entity<RecordPartV2>(builder =>
             {
-                builder.ToTable("invoice_lines");
-                builder.HasKey(line => line.Id);
-                builder.HasMany(line => line.Allocations).WithOne(allocation => allocation.InvoiceLine)
-                    .HasForeignKey(allocation => allocation.InvoiceLineId);
+                builder.ToTable("record_lines");
+                builder.HasKey(part => part.Id);
+                builder.HasMany(part => part.Details).WithOne(detail => detail.RecordPart)
+                    .HasForeignKey(detail => detail.RecordPartId);
             });
-            modelBuilder.Entity<LineAllocationV2>(builder =>
+            modelBuilder.Entity<RecordPartDetailV2>(builder =>
             {
-                builder.ToTable("line_allocations");
-                builder.HasKey(allocation => allocation.Id);
+                builder.ToTable("line_details");
+                builder.HasKey(detail => detail.Id);
             });
-            modelBuilder.ToTieredStore<InvoiceV2>(i => i.InvoiceDate, archivePath, TierGranularity.Month)
-                .WithReadModel<InvoiceV2Rm>()
-                .Including<InvoiceLineV2>(invoice => invoice.Lines, line => line
-                    .Including<LineAllocationV2>(item => item.Allocations));
+            modelBuilder.ToTieredStore<RecordV2>(i => i.EffectiveAt, archivePath, TierGranularity.Month)
+                .WithReadModel<RecordV2Rm>()
+                .Including<RecordPartV2>(record => record.Parts, part => part
+                    .Including<RecordPartDetailV2>(item => item.Details));
         }
     }
 
@@ -1767,7 +1767,7 @@ public sealed class TieredStorageTests : IDisposable
         string dbPath,
         string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<InvoiceV2Rm> InvoiceHistory => Set<InvoiceV2Rm>();
+        public DbSet<RecordV2Rm> RecordHistory => Set<RecordV2Rm>();
         public string ArchivePath => archivePath + "|aliased-contract-evolved";
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -1775,24 +1775,24 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<InvoiceV2>(builder =>
+            modelBuilder.Entity<RecordV2>(builder =>
             {
-                builder.ToTable("invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTable("records");
+                builder.HasKey(record => record.Id);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.ToTieredStore<InvoiceV2>(invoice => invoice.InvoiceDate, archivePath)
+            modelBuilder.ToTieredStore<RecordV2>(record => record.EffectiveAt, archivePath)
                 .PartitionBy(partitions => partitions
-                    .By(invoice => invoice.CustomerId, "customer_key")
-                    .ByMonth(invoice => invoice.InvoiceDate, "invoice_month"))
-                .WithReadModel<InvoiceV2Rm>();
+                    .By(record => record.GroupId, "group_key")
+                    .ByMonth(record => record.EffectiveAt, "record_month"))
+                .WithReadModel<RecordV2Rm>();
         }
     }
 
     private sealed class SchemaContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
-        public DbSet<InvoiceRm> InvoiceHistory => Set<InvoiceRm>();
+        public DbSet<Record> Records => Set<Record>();
+        public DbSet<RecordRm> RecordHistory => Set<RecordRm>();
         public string ArchivePath => archivePath + "|schema";
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -1800,15 +1800,15 @@ public sealed class TieredStorageTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(b =>
+            modelBuilder.Entity<Record>(b =>
             {
-                b.ToTable("invoices", "accounting");
+                b.ToTable("records", "accounting");
                 b.HasKey(i => i.Id);
-                b.Ignore(i => i.Lines);
+                b.Ignore(i => i.Parts);
             });
 
-            modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, archivePath, TierGranularity.Month)
-                .WithReadModel<InvoiceRm>();
+            modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, archivePath, TierGranularity.Month)
+                .WithReadModel<RecordRm>();
         }
     }
 
@@ -1818,30 +1818,30 @@ public sealed class TieredStorageTests : IDisposable
             => (context.GetType(), (context as IArchivePathContext)?.ArchivePath, designTime);
     }
 
-    private static void ConfigureOwnerAliasModel(
+    private static void ConfigureAliasedPartitionModel(
         ModelBuilder modelBuilder,
         string archivePath,
         string ownerPartitionName)
     {
-        modelBuilder.Entity<OwnerOrder>(builder =>
+        modelBuilder.Entity<PartitionedRecord>(builder =>
         {
-            builder.ToTable("owner_orders");
-            builder.HasKey(order => order.Id);
-            builder.HasMany(order => order.Items).WithOne(item => item.Order).HasForeignKey(item => item.OwnerOrderId);
+            builder.ToTable("partitioned_records");
+            builder.HasKey(root => root.Id);
+            builder.HasMany(root => root.PartitionedParts).WithOne(item => item.Root).HasForeignKey(item => item.PartitionedRecordId);
         });
-        modelBuilder.Entity<OwnerOrderItem>(builder =>
+        modelBuilder.Entity<PartitionedRecordPart>(builder =>
         {
-            builder.ToTable("owner_order_items");
+            builder.ToTable("partitioned_record_parts");
             builder.HasKey(item => item.Id);
         });
 
-        modelBuilder.ToTieredStore<OwnerOrder>(order => order.CompletedAt, archivePath)
+        modelBuilder.ToTieredStore<PartitionedRecord>(root => root.EffectiveAt, archivePath)
             .PartitionBy(partitions => partitions
-                .By(order => order.OwnerId, ownerPartitionName)
-                .ByMonth(order => order.CompletedAt, "completed_month"))
-            .WithReadModel<OwnerOrderRm>()
-            .Including<OwnerOrderItem>(
-                order => order.Items,
-                items => items.WithReadModel<OwnerOrderItemRm>());
+                .By(root => root.GroupId, ownerPartitionName)
+                .ByMonth(root => root.EffectiveAt, "effective_month"))
+            .WithReadModel<PartitionedRecordRm>()
+            .Including<PartitionedRecordPart>(
+                root => root.PartitionedParts,
+                items => items.WithReadModel<PartitionedRecordPartRm>());
     }
 }

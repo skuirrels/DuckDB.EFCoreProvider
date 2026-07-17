@@ -10,7 +10,7 @@ public enum DuckDBExtensionLoadMode
     LoadOnly,
 
     /// <summary>
-    ///     Record the dependency without running extension SQL. The consuming application owns installation
+    ///     Record the dependency without running extension SQL. The host application owns installation
     ///     and loading, normally through a connection initializer or deployment image.
     /// </summary>
     CallerManaged,

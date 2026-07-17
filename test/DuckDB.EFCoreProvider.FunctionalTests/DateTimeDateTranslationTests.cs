@@ -65,7 +65,7 @@ public class DateTimeDateTranslationTests : DuckDBTestBase
         Seed();
         using var context = CreateContext();
 
-        // Mirrors a nullable DateTime? projection (e.g. Shipment.ETD.Value.Date).
+        // Mirrors a nullable DateTime? projection (e.g. Record.OptionalTimestamp.Value.Date).
         var grouped = context.Events
             .Where(e => e.NullableAt != null)
             .GroupBy(e => e.NullableAt!.Value.Date)
