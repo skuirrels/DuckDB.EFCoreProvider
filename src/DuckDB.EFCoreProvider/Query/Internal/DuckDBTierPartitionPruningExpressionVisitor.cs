@@ -40,14 +40,17 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
         var visited = base.VisitExtension(node);
         if (visited is SelectExpression selectExpression && selectExpression.Predicate is { } predicate)
         {
-            ApplyPartitionPredicates(selectExpression, predicate);
+            return ApplyPartitionPredicates(selectExpression, predicate);
         }
 
         return visited;
     }
 
-    private void ApplyPartitionPredicates(SelectExpression selectExpression, SqlExpression predicate)
+    private SelectExpression ApplyPartitionPredicates(SelectExpression selectExpression, SqlExpression predicate)
     {
+        // ApplyPredicate can push a limited select into a subquery and replace Tables. Collect first so the
+        // traversal stays stable, then update once so pruning predicates remain on the limited select.
+        var derivedPredicates = new List<SqlExpression>();
         foreach (var table in selectExpression.Tables.OfType<TableExpression>())
         {
             if (!_plansByView.TryGetValue(table.Name, out var plan))
@@ -104,16 +107,32 @@ internal sealed class DuckDBTierPartitionPruningExpressionVisitor : ExpressionVi
                                 typeof(bool),
                                 _boolMapping,
                                 nullable: false);
-                            selectExpression.ApplyPredicate(
+                            derivedPredicates.Add(
                                 _sql.Equal(contractColumn, _sql.Constant(true, _boolMapping)));
                             contractValidated = true;
                         }
 
-                        selectExpression.ApplyPredicate(partitionPredicate);
+                        derivedPredicates.Add(partitionPredicate);
                     }
                 }
             }
         }
+
+        if (derivedPredicates.Count == 0)
+        {
+            return selectExpression;
+        }
+
+        var combinedPredicate = derivedPredicates.Aggregate(predicate, _sql.AndAlso);
+        return selectExpression.Update(
+            selectExpression.Tables,
+            combinedPredicate,
+            selectExpression.GroupBy,
+            selectExpression.Having,
+            selectExpression.Projection,
+            selectExpression.Orderings,
+            selectExpression.Offset,
+            selectExpression.Limit);
     }
 
     private SqlExpression BucketValue(SqlExpression value, Metadata.TierPartitionTransform transform)

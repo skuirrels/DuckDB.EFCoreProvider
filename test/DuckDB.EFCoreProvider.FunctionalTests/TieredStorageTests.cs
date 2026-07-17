@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 using static Microsoft.EntityFrameworkCore.TieredStorageTestHelpers;
@@ -1172,6 +1173,11 @@ public sealed class TieredStorageTests : IDisposable
         string ArchivePath { get; }
     }
 
+    private static DbContextOptionsBuilder ConfigureTieredContext(DbContextOptionsBuilder options, string dbPath)
+        => options.UseDuckDB($"Data Source={dbPath}")
+            .ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>()
+            .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
+
     private sealed class InvoiceContext(string dbPath, string archivePath) : DbContext, IArchivePathContext
     {
         public DbSet<Invoice> Invoices => Set<Invoice>();
@@ -1181,7 +1187,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1215,7 +1221,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1250,7 +1256,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
             => ConfigureOwnerAliasModel(modelBuilder, archivePath, "root_owner_id");
@@ -1263,7 +1269,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
             => ConfigureOwnerAliasModel(modelBuilder, archivePath, "root_owner_key");
@@ -1275,7 +1281,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1296,7 +1302,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath + "|aliased-contract";
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1320,7 +1326,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1343,7 +1349,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1369,7 +1375,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1405,7 +1411,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1425,7 +1431,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1446,7 +1452,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1466,7 +1472,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1487,7 +1493,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1507,7 +1513,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1529,7 +1535,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1551,7 +1557,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1573,7 +1579,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1595,7 +1601,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1612,7 +1618,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1641,7 +1647,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1661,7 +1667,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1682,7 +1688,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archiveRoot;
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1728,7 +1734,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath + "|evolved";
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1765,7 +1771,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath + "|aliased-contract-evolved";
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1790,7 +1796,7 @@ public sealed class TieredStorageTests : IDisposable
         public string ArchivePath => archivePath + "|schema";
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
-            => options.UseDuckDB($"Data Source={dbPath}").ReplaceService<IModelCacheKeyFactory, ArchivePathModelCacheKeyFactory>();
+            => ConfigureTieredContext(options, dbPath);
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

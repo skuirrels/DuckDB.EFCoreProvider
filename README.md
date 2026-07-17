@@ -277,6 +277,9 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ### Tiered storage (hot tables + cold Parquet)
 
+The [tiered-storage compatibility matrix](docs/TIERED-STORAGE-COMPATIBILITY.md) lists the supported registration,
+partition, query, lifecycle, and object-store combinations and their acceptance requirements.
+
 Keep recent invoices hot in the writable DuckDB file and archive older invoices and their lines to
 hive-partitioned Parquet. The offload is **idempotent and crash-safe**. Full guide:
 [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).

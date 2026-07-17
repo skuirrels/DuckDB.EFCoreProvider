@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace Microsoft.EntityFrameworkCore;
 
@@ -17,6 +18,7 @@ public abstract class DuckDBTestBase : IDisposable
         where TContext : DbContext
         => new DbContextOptionsBuilder<TContext>()
             .UseDuckDB($"DataSource={DbPath}", duckdb => configure?.Invoke(duckdb))
+            .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
             .Options;
 
     public void Dispose()
