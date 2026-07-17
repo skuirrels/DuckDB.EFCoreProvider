@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="550" viewBox="0 0 1680 550" role="img" aria-labelledby="title description">
+  <title id="title">Tiered storage partition layout</title>
+  <desc id="description">Records before the watermark are stored in Parquet directories grouped by GroupId and effective month. Newer records remain in the hot DuckDB file.</desc>
+  <defs>
+    <linearGradient id="cold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7faff"/>
+      <stop offset="1" stop-color="#eef4fb"/>
+    </linearGradient>
+    <linearGradient id="hot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f3fcf7"/>
+      <stop offset="1" stop-color="#eaf8f0"/>
+    </linearGradient>
+    <style>
+      text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #19324d; }
+      .heading { font-size: 28px; font-weight: 600; }
+      .label { font-size: 23px; }
+      .small { font-size: 15px; }
+      .muted { fill: #5a6f88; }
+      .green { fill: #087443; }
+    </style>
+  </defs>
+
+  <rect width="1680" height="550" fill="#ffffff"/>
+  <text x="520" y="48" text-anchor="middle" class="heading">EffectiveAt &lt; watermark</text>
+  <text x="520" y="88" text-anchor="middle" class="label muted">GroupId → EffectiveAt_month</text>
+  <text x="1310" y="70" text-anchor="middle" class="heading green">EffectiveAt ≥ watermark</text>
+
+  <rect x="70" y="110" width="940" height="355" rx="18" fill="url(#cold)" stroke="#8ba7c6" stroke-width="2"/>
+  <text x="540" y="155" text-anchor="middle" class="heading">cold — partitioned Parquet archive</text>
+
+  <rect x="105" y="180" width="865" height="118" rx="14" fill="#ffffff" stroke="#91a9c4" stroke-width="2"/>
+  <text x="135" y="215" class="label">group=alpha</text>
+  <rect x="130" y="230" width="250" height="50" rx="9" fill="#edf3fa" stroke="#8ba7c6"/>
+  <rect x="400" y="230" width="250" height="50" rx="9" fill="#edf3fa" stroke="#8ba7c6"/>
+  <rect x="670" y="230" width="270" height="50" rx="9" fill="#edf3fa" stroke="#8ba7c6"/>
+  <text x="255" y="262" text-anchor="middle" class="small">effective_month=2025-01</text>
+  <text x="525" y="262" text-anchor="middle" class="small">effective_month=2025-02</text>
+  <text x="805" y="262" text-anchor="middle" class="small">effective_month=2025-03</text>
+
+  <rect x="105" y="320" width="690" height="118" rx="14" fill="#ffffff" stroke="#91a9c4" stroke-width="2"/>
+  <text x="135" y="355" class="label">group=beta</text>
+  <rect x="130" y="370" width="250" height="50" rx="9" fill="#edf3fa" stroke="#8ba7c6"/>
+  <rect x="400" y="370" width="250" height="50" rx="9" fill="#edf3fa" stroke="#8ba7c6"/>
+  <text x="255" y="402" text-anchor="middle" class="small">effective_month=2025-01</text>
+  <text x="525" y="402" text-anchor="middle" class="small">effective_month=2025-02</text>
+
+  <line x1="1025" y1="80" x2="1025" y2="485" stroke="#07904f" stroke-width="4" stroke-dasharray="12 10"/>
+  <rect x="1045" y="110" width="565" height="200" rx="18" fill="url(#hot)" stroke="#67ba8b" stroke-width="2"/>
+  <text x="1328" y="220" text-anchor="middle" class="heading green">hot — DuckDB file</text>
+
+  <text x="70" y="515" class="label muted">older records</text>
+  <text x="1025" y="515" text-anchor="middle" class="label green">watermark</text>
+  <text x="1610" y="515" text-anchor="end" class="label muted">current records</text>
+</svg>

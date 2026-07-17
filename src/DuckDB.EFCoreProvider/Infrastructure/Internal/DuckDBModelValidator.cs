@@ -408,7 +408,7 @@ public class DuckDBModelValidator : RelationalModelValidator
             throw new InvalidOperationException(
                 $"Tiered-storage child '{child.DisplayName()}' maps column '{collision}', which collides with an "
                 + "additional partition inherited from its aggregate root. Give the root partition a distinct Hive "
-                + "name (for example, By(root => root.OwnerId, \"root_owner_id\")) or rename the child column so the "
+                + "name (for example, By(root => root.GroupId, \"root_group_id\")) or rename the child column so the "
                 + "partition key can be propagated without replacing child data.");
         }
     }

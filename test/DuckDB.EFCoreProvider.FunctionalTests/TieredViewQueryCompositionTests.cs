@@ -51,25 +51,25 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         TieredRegistration registration)
     {
         using var harness = await CreateHarnessAsync(registration, "pagination");
-        const int ownerId = 10;
+        const int groupId = 10;
         const int pageSize = 2;
 
-        var firstPageQuery = Scoped(harness.Invoices, ownerId, RangeFrom, RangeTo)
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+        var firstPageQuery = Scoped(harness.Records, groupId, RangeFrom, RangeTo)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(pageSize + 1);
         var sql = firstPageQuery.ToQueryString();
 
         AssertPrunedOrderedLimitSql(sql, expectsContract: registration == TieredRegistration.TieredViewAndSeparateContext);
         AssertFilesPruned(Explain(harness.QueryContext, firstPageQuery), "2/6");
         var firstPage = firstPageQuery.ToArray();
-        Assert.Equal([2, 3, 4], firstPage.Select(invoice => invoice.Id).ToArray());
-        Assert.All(firstPage, invoice => Assert.Equal(ownerId, invoice.OwnerId));
-        Assert.All(firstPage, invoice => Assert.InRange(invoice.CompletedAt, RangeFrom, RangeTo.AddTicks(-1)));
-        Assert.DoesNotContain(firstPage, invoice => invoice.Id == 7);
+        Assert.Equal([2, 3, 4], firstPage.Select(record => record.Id).ToArray());
+        Assert.All(firstPage, record => Assert.Equal(groupId, record.GroupId));
+        Assert.All(firstPage, record => Assert.InRange(record.EffectiveAt, RangeFrom, RangeTo.AddTicks(-1)));
+        Assert.DoesNotContain(firstPage, record => record.Id == 7);
         Assert.Equal(
             new[] { 2, 3, 4 },
-            (await firstPageQuery.ToListAsync()).Select(invoice => invoice.Id).ToArray());
+            (await firstPageQuery.ToListAsync()).Select(record => record.Id).ToArray());
 
         using (var cancellation = new CancellationTokenSource())
         {
@@ -79,8 +79,8 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         }
 
         var middlePage = KeysetPage(
-            harness.Invoices,
-            ownerId,
+            harness.Records,
+            groupId,
             RangeFrom,
             RangeTo,
             SharedTimestamp,
@@ -90,21 +90,21 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
             middlePage.ToQueryString(),
             expectsContract: registration == TieredRegistration.TieredViewAndSeparateContext);
         AssertFilesPruned(Explain(harness.QueryContext, middlePage), "2/6");
-        Assert.Equal([4, 5, 6], middlePage.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal([4, 5, 6], middlePage.Select(record => record.Id).ToArray());
 
         var finalPage = KeysetPage(
-            harness.Invoices,
-            ownerId,
+            harness.Records,
+            groupId,
             RangeFrom,
             RangeTo,
             new DateTime(2024, 3, 15),
             cursorId: 5,
             pageSize + 1);
-        Assert.Equal(new[] { 6 }, await finalPage.Select(invoice => invoice.Id).ToArrayAsync());
+        Assert.Equal(new[] { 6 }, await finalPage.Select(record => record.Id).ToArrayAsync());
 
         var emptyPage = KeysetPage(
-            harness.Invoices,
-            ownerId,
+            harness.Records,
+            groupId,
             RangeFrom,
             RangeTo,
             new DateTime(2024, 4, 1),
@@ -112,28 +112,28 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
             pageSize + 1);
         Assert.Empty(await emptyPage.ToArrayAsync());
 
-        var offsetPage = Scoped(harness.Invoices, ownerId, RangeFrom, RangeTo)
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+        var offsetPage = Scoped(harness.Records, groupId, RangeFrom, RangeTo)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Skip(2)
             .Take(2);
         var offsetSql = offsetPage.ToQueryString();
         Assert.Contains("OFFSET", offsetSql);
         Assert.Contains("LIMIT", offsetSql);
-        Assert.Equal([4, 5], offsetPage.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal([4, 5], offsetPage.Select(record => record.Id).ToArray());
 
-        var reversed = Scoped(harness.Invoices, ownerId, RangeFrom, RangeTo)
-            .OrderByDescending(invoice => invoice.CompletedAt)
-            .ThenByDescending(invoice => invoice.Id)
+        var reversed = Scoped(harness.Records, groupId, RangeFrom, RangeTo)
+            .OrderByDescending(record => record.EffectiveAt)
+            .ThenByDescending(record => record.Id)
             .Take(2);
-        Assert.Equal([6, 5], reversed.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal([6, 5], reversed.Select(record => record.Id).ToArray());
 
-        var otherOwner = Scoped(harness.Invoices, 20, RangeFrom, RangeTo)
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+        var otherGroup = Scoped(harness.Records, 20, RangeFrom, RangeTo)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(pageSize + 1);
-        Assert.Equal([21, 22, 23], otherOwner.Select(invoice => invoice.Id).ToArray());
-        Assert.All(otherOwner, invoice => Assert.Equal(20, invoice.OwnerId));
+        Assert.Equal([21, 22, 23], otherGroup.Select(record => record.Id).ToArray());
+        Assert.All(otherGroup, record => Assert.Equal(20, record.GroupId));
     }
 
     [Theory]
@@ -141,59 +141,59 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
     public async Task Projection_and_terminal_operator_matrix_is_consistent(TieredRegistration registration)
     {
         using var harness = await CreateHarnessAsync(registration, "terminals");
-        var scoped = Scoped(harness.Invoices, 10, RangeFrom, RangeTo);
+        var scoped = Scoped(harness.Records, 10, RangeFrom, RangeTo);
 
         Assert.Equal(5, scoped.Count());
         Assert.Equal(5L, scoped.LongCount());
-        Assert.True(scoped.Any(invoice => invoice.Status == "hot"));
-        Assert.Equal(2, scoped.Min(invoice => invoice.Id));
-        Assert.Equal(6, scoped.Max(invoice => invoice.Id));
-        Assert.Equal(200m, scoped.Sum(invoice => invoice.Total));
-        Assert.Equal(40m, scoped.Average(invoice => invoice.Total));
-        Assert.Equal(3, scoped.Select(invoice => invoice.Status).Distinct().Count());
+        Assert.True(scoped.Any(record => record.Status == "hot"));
+        Assert.Equal(2, scoped.Min(record => record.Id));
+        Assert.Equal(6, scoped.Max(record => record.Id));
+        Assert.Equal(200m, scoped.Sum(record => record.Metric));
+        Assert.Equal(40m, scoped.Average(record => record.Metric));
+        Assert.Equal(3, scoped.Select(record => record.Status).Distinct().Count());
 
         Assert.Equal(5, await scoped.CountAsync());
         Assert.Equal(5L, await scoped.LongCountAsync());
-        Assert.True(await scoped.AnyAsync(invoice => invoice.Status == "hot"));
-        Assert.Equal(2, await scoped.MinAsync(invoice => invoice.Id));
-        Assert.Equal(6, await scoped.MaxAsync(invoice => invoice.Id));
-        Assert.Equal(200m, await scoped.SumAsync(invoice => invoice.Total));
-        Assert.Equal(40m, await scoped.AverageAsync(invoice => invoice.Total));
+        Assert.True(await scoped.AnyAsync(record => record.Status == "hot"));
+        Assert.Equal(2, await scoped.MinAsync(record => record.Id));
+        Assert.Equal(6, await scoped.MaxAsync(record => record.Id));
+        Assert.Equal(200m, await scoped.SumAsync(record => record.Metric));
+        Assert.Equal(40m, await scoped.AverageAsync(record => record.Metric));
 
-        Assert.Equal(2, scoped.OrderBy(invoice => invoice.CompletedAt).ThenBy(invoice => invoice.Id).First().Id);
+        Assert.Equal(2, scoped.OrderBy(record => record.EffectiveAt).ThenBy(record => record.Id).First().Id);
         Assert.Equal(
             2,
-            (await scoped.OrderBy(invoice => invoice.CompletedAt).ThenBy(invoice => invoice.Id).FirstAsync()).Id);
-        Assert.Null(scoped.FirstOrDefault(invoice => invoice.Id == 999));
-        Assert.Null(await scoped.FirstOrDefaultAsync(invoice => invoice.Id == 999));
-        Assert.Equal(3, scoped.Single(invoice => invoice.Id == 3).Id);
-        Assert.Equal(3, (await scoped.SingleAsync(invoice => invoice.Id == 3)).Id);
-        Assert.Null(scoped.SingleOrDefault(invoice => invoice.Id == 999));
-        Assert.Null(await scoped.SingleOrDefaultAsync(invoice => invoice.Id == 999));
+            (await scoped.OrderBy(record => record.EffectiveAt).ThenBy(record => record.Id).FirstAsync()).Id);
+        Assert.Null(scoped.FirstOrDefault(record => record.Id == 999));
+        Assert.Null(await scoped.FirstOrDefaultAsync(record => record.Id == 999));
+        Assert.Equal(3, scoped.Single(record => record.Id == 3).Id);
+        Assert.Equal(3, (await scoped.SingleAsync(record => record.Id == 3)).Id);
+        Assert.Null(scoped.SingleOrDefault(record => record.Id == 999));
+        Assert.Null(await scoped.SingleOrDefaultAsync(record => record.Id == 999));
 
         var selectedKeys = new[] { 2, 6, 999 };
         Assert.Equal(
             [2, 6],
-            scoped.Where(invoice => selectedKeys.Contains(invoice.Id))
-                .OrderBy(invoice => invoice.Id)
-                .Select(invoice => invoice.Id)
+            scoped.Where(record => selectedKeys.Contains(record.Id))
+                .OrderBy(record => record.Id)
+                .Select(record => record.Id)
                 .ToArray());
 
         var projectionBeforeOrdering = scoped
-            .Select(invoice => new { invoice.Id, invoice.CompletedAt, invoice.Total })
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+            .Select(record => new { record.Id, record.EffectiveAt, record.Metric })
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(2);
-        Assert.Equal([2, 3], projectionBeforeOrdering.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal([2, 3], projectionBeforeOrdering.Select(record => record.Id).ToArray());
 
         var projectionAfterOrdering = scoped
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
-            .Select(invoice => new InvoiceSummary { Id = invoice.Id, Total = invoice.Total })
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
+            .Select(record => new RecordSummary { Id = record.Id, Metric = record.Metric })
             .Take(2);
         var projected = await projectionAfterOrdering.ToArrayAsync();
-        Assert.Equal([2, 3], projected.Select(invoice => invoice.Id).ToArray());
-        Assert.Equal([20m, 30m], projected.Select(invoice => invoice.Total).ToArray());
+        Assert.Equal([2, 3], projected.Select(record => record.Id).ToArray());
+        Assert.Equal([20m, 30m], projected.Select(record => record.Metric).ToArray());
     }
 
     [Theory]
@@ -202,48 +202,48 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
     {
         using var harness = await CreateHarnessAsync(registration, "composition");
 
-        var ownerGroups = harness.Invoices
-            .Where(invoice => invoice.CompletedAt >= RangeFrom && invoice.CompletedAt < RangeTo)
-            .GroupBy(invoice => invoice.OwnerId)
-            .Select(group => new { OwnerId = group.Key, Count = group.Count(), Total = group.Sum(x => x.Total) })
-            .OrderBy(group => group.OwnerId);
-        var groups = await ownerGroups.ToArrayAsync();
-        Assert.Equal([10, 20], groups.Select(group => group.OwnerId).ToArray());
+        var groupAggregates = harness.Records
+            .Where(record => record.EffectiveAt >= RangeFrom && record.EffectiveAt < RangeTo)
+            .GroupBy(record => record.GroupId)
+            .Select(group => new { GroupId = group.Key, Count = group.Count(), Metric = group.Sum(x => x.Metric) })
+            .OrderBy(group => group.GroupId);
+        var groups = await groupAggregates.ToArrayAsync();
+        Assert.Equal([10, 20], groups.Select(group => group.GroupId).ToArray());
         Assert.Equal([5, 3], groups.Select(group => group.Count).ToArray());
 
-        var lifecycleGroups = Scoped(harness.Invoices, 10, RangeFrom, RangeTo)
-            .GroupBy(invoice => invoice.CompletedAt.Month)
-            .Select(group => new { Month = group.Key, Count = group.Count(), Total = group.Sum(x => x.Total) })
+        var lifecycleGroups = Scoped(harness.Records, 10, RangeFrom, RangeTo)
+            .GroupBy(record => record.EffectiveAt.Month)
+            .Select(group => new { Month = group.Key, Count = group.Count(), Metric = group.Sum(x => x.Metric) })
             .OrderBy(group => group.Month);
         Assert.Equal([2, 3, 4], lifecycleGroups.Select(group => group.Month).ToArray());
         Assert.Equal([3, 1, 1], lifecycleGroups.Select(group => group.Count).ToArray());
 
-        var scopedIds = Scoped(harness.Invoices, 10, RangeFrom, RangeTo).Select(invoice => invoice.Id);
-        var outerTieredQuery = harness.Invoices
-            .Where(invoice => scopedIds.Contains(invoice.Id) && invoice.Total >= 40m)
-            .OrderBy(invoice => invoice.Id);
-        Assert.Equal([4, 5, 6], outerTieredQuery.Select(invoice => invoice.Id).ToArray());
+        var scopedIds = Scoped(harness.Records, 10, RangeFrom, RangeTo).Select(record => record.Id);
+        var outerTieredQuery = harness.Records
+            .Where(record => scopedIds.Contains(record.Id) && record.Metric >= 40m)
+            .OrderBy(record => record.Id);
+        Assert.Equal([4, 5, 6], outerTieredQuery.Select(record => record.Id).ToArray());
 
         var innerTieredQuery =
-            from invoice in Scoped(harness.Invoices, 10, RangeFrom, RangeTo)
-            join candidate in harness.Invoices.Where(invoice => invoice.Status != "ignored")
-                on invoice.Id equals candidate.Id
-            orderby invoice.Id
-            select invoice.Id;
+            from record in Scoped(harness.Records, 10, RangeFrom, RangeTo)
+            join candidate in harness.Records.Where(record => record.Status != "ignored")
+                on record.Id equals candidate.Id
+            orderby record.Id
+            select record.Id;
         Assert.Equal([2, 3, 4, 5, 6], innerTieredQuery.ToArray());
 
-        var afterSelect = Scoped(harness.Invoices, 10, RangeFrom, RangeTo)
-            .Select(invoice => new InvoiceSummary { Id = invoice.Id, Total = invoice.Total })
-            .Where(invoice => invoice.Total >= 40m)
-            .OrderBy(invoice => invoice.Id);
-        Assert.Equal([4, 5, 6], afterSelect.Select(invoice => invoice.Id).ToArray());
+        var afterSelect = Scoped(harness.Records, 10, RangeFrom, RangeTo)
+            .Select(record => new RecordSummary { Id = record.Id, Metric = record.Metric })
+            .Where(record => record.Metric >= 40m)
+            .OrderBy(record => record.Id);
+        Assert.Equal([4, 5, 6], afterSelect.Select(record => record.Id).ToArray());
 
-        var afterTake = Scoped(harness.Invoices, 10, RangeFrom, RangeTo)
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+        var afterTake = Scoped(harness.Records, 10, RangeFrom, RangeTo)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(4)
-            .Where(invoice => invoice.Id > 2);
-        Assert.Equal(new[] { 3, 4, 5 }, await afterTake.Select(invoice => invoice.Id).ToArrayAsync());
+            .Where(record => record.Id > 2);
+        Assert.Equal(new[] { 3, 4, 5 }, await afterTake.Select(record => record.Id).ToArrayAsync());
     }
 
     [Theory]
@@ -252,72 +252,72 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         TieredRegistration registration)
     {
         using var harness = await CreateHarnessAsync(registration, "relationships");
-        var roots = Scoped(harness.Invoices, 10, RangeFrom, RangeTo);
+        var roots = Scoped(harness.Records, 10, RangeFrom, RangeTo);
 
         var rootToLine =
-            from invoice in roots
-            join line in harness.Lines on invoice.Id equals line.InvoiceId
-            orderby invoice.Id, line.LineNumber
-            select new { invoice.Id, line.LineNumber, line.Amount };
+            from record in roots
+            join part in harness.Parts on record.Id equals part.RecordId
+            orderby record.Id, part.PartNumber
+            select new { record.Id, part.PartNumber, part.Value };
         var lineRows = rootToLine.ToArray();
         Assert.Equal(8, lineRows.Length);
         Assert.Equal([2, 2, 3, 3, 4, 4, 5, 5], lineRows.Select(row => row.Id).ToArray());
 
-        var lineToRoot =
-            from line in harness.Lines
-            join invoice in roots on line.InvoiceId equals invoice.Id
-            orderby line.InvoiceId, line.LineNumber
-            select new { line.InvoiceId, invoice.OwnerId, line.Amount };
-        Assert.Equal(lineRows.Length, await lineToRoot.CountAsync());
-        Assert.All(await lineToRoot.ToArrayAsync(), row => Assert.Equal(10, row.OwnerId));
+        var partToRoot =
+            from part in harness.Parts
+            join record in roots on part.RecordId equals record.Id
+            orderby part.RecordId, part.PartNumber
+            select new { part.RecordId, record.GroupId, part.Value };
+        Assert.Equal(lineRows.Length, await partToRoot.CountAsync());
+        Assert.All(await partToRoot.ToArrayAsync(), row => Assert.Equal(10, row.GroupId));
 
         var nested =
-            from invoice in roots
-            join line in harness.Lines on invoice.Id equals line.InvoiceId
-            join adjustment in harness.Adjustments
-                on new { line.InvoiceId, line.LineNumber }
-                equals new { adjustment.InvoiceId, adjustment.LineNumber }
-            orderby invoice.Id
-            select new { invoice.Id, adjustment.Code, adjustment.Amount };
+            from record in roots
+            join part in harness.Parts on record.Id equals part.RecordId
+            join detail in harness.Details
+                on new { part.RecordId, part.PartNumber }
+                equals new { detail.RecordId, detail.PartNumber }
+            orderby record.Id
+            select new { record.Id, detail.Code, detail.Value };
         Assert.Equal([2, 3, 4, 5], nested.Select(row => row.Id).ToArray());
 
         var leftJoin =
-            from invoice in roots
-            join line in harness.Lines on invoice.Id equals line.InvoiceId into lines
-            from line in lines.DefaultIfEmpty()
-            orderby invoice.Id, line.LineNumber
-            select new { invoice.Id, LineNumber = (int?)line.LineNumber };
+            from record in roots
+            join part in harness.Parts on record.Id equals part.RecordId into parts
+            from part in parts.DefaultIfEmpty()
+            orderby record.Id, part.PartNumber
+            select new { record.Id, PartNumber = (int?)part.PartNumber };
         var leftRows = leftJoin.ToArray();
         Assert.Equal(9, leftRows.Length);
-        Assert.Contains(leftRows, row => row.Id == 6 && row.LineNumber == null);
+        Assert.Contains(leftRows, row => row.Id == 6 && row.PartNumber == null);
     }
 
     [Fact]
-    public async Task Owner_and_day_partitioning_prune_across_a_year_boundary()
+    public async Task Group_and_day_partitioning_prune_across_a_year_boundary()
     {
         var dbPath = Path.Combine(_root, "daily.duckdb");
         var archivePath = Path.Combine(_root, "daily archive with spaces");
         using var context = new DailyContext(dbPath, archivePath);
         context.Database.EnsureCreated();
         context.Records.AddRange(
-            new DailyRecord { Id = 1, OwnerId = 10, CompletedOn = new DateTime(2023, 12, 31, 12, 0, 0) },
-            new DailyRecord { Id = 2, OwnerId = 10, CompletedOn = new DateTime(2024, 1, 1) },
-            new DailyRecord { Id = 3, OwnerId = 20, CompletedOn = new DateTime(2023, 12, 31, 12, 0, 0) },
-            new DailyRecord { Id = 4, OwnerId = 20, CompletedOn = new DateTime(2024, 1, 1) });
+            new DailyRecord { Id = 1, GroupId = 10, EffectiveOn = new DateTime(2023, 12, 31, 12, 0, 0) },
+            new DailyRecord { Id = 2, GroupId = 10, EffectiveOn = new DateTime(2024, 1, 1) },
+            new DailyRecord { Id = 3, GroupId = 20, EffectiveOn = new DateTime(2023, 12, 31, 12, 0, 0) },
+            new DailyRecord { Id = 4, GroupId = 20, EffectiveOn = new DateTime(2024, 1, 1) });
         context.SaveChanges();
         await context.Database.ArchiveTierAsync<DailyRecord>(new DateTime(2024, 1, 2));
 
         var from = new DateTime(2023, 12, 31);
         var to = new DateTime(2024, 1, 2);
         var query = context.History
-            .Where(record => record.OwnerId == 10 && record.CompletedOn >= from && record.CompletedOn < to)
-            .OrderBy(record => record.CompletedOn)
+            .Where(record => record.GroupId == 10 && record.EffectiveOn >= from && record.EffectiveOn < to)
+            .OrderBy(record => record.EffectiveOn)
             .ThenBy(record => record.Id)
             .Take(3);
         var sql = query.ToQueryString();
 
-        Assert.Contains("owner_key", sql);
-        Assert.Contains("completed_day", sql);
+        Assert.Contains("group_key", sql);
+        Assert.Contains("effective_day", sql);
         Assert.Contains("ORDER BY", sql);
         Assert.Contains("LIMIT", sql);
         AssertFilesPruned(Explain(context, query), "2/4");
@@ -332,28 +332,28 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         using var context = new NullableDateOnlyContext(dbPath, archivePath);
         context.Database.EnsureCreated();
         context.Records.AddRange(
-            new NullableDateOnlyRecord { Id = 1, OwnerId = null, CompletedOn = new DateOnly(2024, 1, 15) },
-            new NullableDateOnlyRecord { Id = 2, OwnerId = 10, CompletedOn = new DateOnly(2024, 1, 15) },
-            new NullableDateOnlyRecord { Id = 3, OwnerId = null, CompletedOn = null });
+            new NullableDateOnlyRecord { Id = 1, GroupId = null, EffectiveOn = new DateOnly(2024, 1, 15) },
+            new NullableDateOnlyRecord { Id = 2, GroupId = 10, EffectiveOn = new DateOnly(2024, 1, 15) },
+            new NullableDateOnlyRecord { Id = 3, GroupId = null, EffectiveOn = null });
         context.SaveChanges();
 
         await context.Database.ArchiveTierAsync<NullableDateOnlyRecord>(new DateTime(2024, 2, 1));
 
         Assert.Single(context.Records);
-        Assert.Null(context.Records.Single().CompletedOn);
+        Assert.Null(context.Records.Single().EffectiveOn);
         Assert.Equal(3, context.History.Count());
 
         var from = new DateOnly(2024, 1, 1);
         var to = new DateOnly(2024, 2, 1);
         var query = context.History
-            .Where(record => record.OwnerId == null && record.CompletedOn >= from && record.CompletedOn < to)
-            .OrderBy(record => record.CompletedOn)
+            .Where(record => record.GroupId == null && record.EffectiveOn >= from && record.EffectiveOn < to)
+            .OrderBy(record => record.EffectiveOn)
             .ThenBy(record => record.Id)
             .Take(2);
         var sql = query.ToQueryString();
 
-        Assert.Contains("owner_key", sql);
-        Assert.Contains("completed_month", sql);
+        Assert.Contains("group_key", sql);
+        Assert.Contains("effective_month", sql);
         Assert.Contains("ORDER BY", sql);
         Assert.Contains("LIMIT", sql);
         AssertFilesPruned(Explain(context, query), "1/2");
@@ -363,57 +363,57 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
     [Fact]
     public async Task Context_order_model_cache_and_concurrent_readers_do_not_change_results()
     {
-        var dbPath = Path.Combine(_root, "context-order.duckdb");
-        var archivePath = Path.Combine(_root, "context-order-archive");
+        var dbPath = Path.Combine(_root, "context-record.duckdb");
+        var archivePath = Path.Combine(_root, "context-record-archive");
 
-        using var readerCreatedFirst = new EntityHistoryContext<ContextOrderMarker>(dbPath);
+        using var readerCreatedFirst = new EntityHistoryContext<ContextRecordMarker>(dbPath);
         _ = readerCreatedFirst.Model;
 
-        using var owner = new ViewOwnerContext<ContextOrderMarker>(dbPath, archivePath);
+        using var owner = new ViewOwnerContext<ContextRecordMarker>(dbPath, archivePath);
         owner.Database.EnsureCreated();
         Seed(owner);
-        await owner.Database.ArchiveTierAsync<Invoice>(ArchiveCutoff);
+        await owner.Database.ArchiveTierAsync<Record>(ArchiveCutoff);
 
-        Assert.Equal(archivePath, owner.Model.FindEntityType(typeof(Invoice))!.GetTieredStoreArchivePath());
+        Assert.Equal(archivePath, owner.Model.FindEntityType(typeof(Record))!.GetTieredStoreArchivePath());
         Assert.Equal(
             [2, 3, 4, 5, 6],
-            Scoped(Project(readerCreatedFirst.Invoices), 10, RangeFrom, RangeTo)
-                .OrderBy(invoice => invoice.CompletedAt)
-                .ThenBy(invoice => invoice.Id)
-                .Select(invoice => invoice.Id)
+            Scoped(Project(readerCreatedFirst.Records), 10, RangeFrom, RangeTo)
+                .OrderBy(record => record.EffectiveAt)
+                .ThenBy(record => record.Id)
+                .Select(record => record.Id)
                 .ToArray());
 
         var compiledPage = EF.CompileQuery(
-            (EntityHistoryContext<ContextOrderMarker> context, int ownerId, DateTime from, DateTime to) =>
-                context.Invoices.AsNoTracking()
-                    .Where(invoice =>
-                        invoice.OwnerId == ownerId
-                        && invoice.CompletedAt >= from
-                        && invoice.CompletedAt < to)
-                    .OrderBy(invoice => invoice.CompletedAt)
-                    .ThenBy(invoice => invoice.Id)
+            (EntityHistoryContext<ContextRecordMarker> context, int groupId, DateTime from, DateTime to) =>
+                context.Records.AsNoTracking()
+                    .Where(record =>
+                        record.GroupId == groupId
+                        && record.EffectiveAt >= from
+                        && record.EffectiveAt < to)
+                    .OrderBy(record => record.EffectiveAt)
+                    .ThenBy(record => record.Id)
                     .Take(3)
-                    .Select(invoice => invoice.Id));
+                    .Select(record => record.Id));
         Assert.Equal([2, 3, 4], compiledPage(readerCreatedFirst, 10, RangeFrom, RangeTo).ToArray());
         Assert.Equal([21, 22, 23], compiledPage(readerCreatedFirst, 20, RangeFrom, RangeTo).ToArray());
 
-        using var secondReader = new EntityHistoryContext<ContextOrderMarker>(dbPath);
-        var firstTask = Scoped(Project(readerCreatedFirst.Invoices), 10, RangeFrom, RangeTo)
-            .OrderBy(invoice => invoice.Id)
+        using var secondReader = new EntityHistoryContext<ContextRecordMarker>(dbPath);
+        var firstTask = Scoped(Project(readerCreatedFirst.Records), 10, RangeFrom, RangeTo)
+            .OrderBy(record => record.Id)
             .ToArrayAsync();
-        var secondTask = Scoped(Project(secondReader.Invoices), 20, RangeFrom, RangeTo)
-            .OrderBy(invoice => invoice.Id)
+        var secondTask = Scoped(Project(secondReader.Records), 20, RangeFrom, RangeTo)
+            .OrderBy(record => record.Id)
             .ToArrayAsync();
         await Task.WhenAll(firstTask, secondTask);
-        Assert.Equal([2, 3, 4, 5, 6], firstTask.Result.Select(invoice => invoice.Id).ToArray());
-        Assert.Equal([21, 22, 23], secondTask.Result.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal([2, 3, 4, 5, 6], firstTask.Result.Select(record => record.Id).ToArray());
+        Assert.Equal([21, 22, 23], secondTask.Result.Select(record => record.Id).ToArray());
 
-        var secondDbPath = Path.Combine(_root, "context-order-second.duckdb");
-        var secondArchivePath = Path.Combine(_root, "context-order-second-archive");
-        using var secondOwner = new ViewOwnerContext<ContextOrderMarker>(secondDbPath, secondArchivePath);
+        var secondDbPath = Path.Combine(_root, "context-record-second.duckdb");
+        var secondArchivePath = Path.Combine(_root, "context-record-second-archive");
+        using var secondOwner = new ViewOwnerContext<ContextRecordMarker>(secondDbPath, secondArchivePath);
         Assert.Equal(
             secondArchivePath,
-            secondOwner.Model.FindEntityType(typeof(Invoice))!.GetTieredStoreArchivePath());
+            secondOwner.Model.FindEntityType(typeof(Record))!.GetTieredStoreArchivePath());
     }
 
     [Theory]
@@ -423,53 +423,53 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         using var harness = await CreateHarnessAsync(registration, "range-variants");
 
         var coldOnly = Scoped(
-                harness.Invoices,
+                harness.Records,
                 10,
                 new DateTime(2024, 2, 1),
                 new DateTime(2024, 4, 1))
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(10);
         AssertFilesPruned(Explain(harness.QueryContext, coldOnly), "2/6");
-        Assert.Equal([2, 3, 4, 5], coldOnly.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal([2, 3, 4, 5], coldOnly.Select(record => record.Id).ToArray());
 
         var spanning = Scoped(
-                harness.Invoices,
+                harness.Records,
                 10,
                 new DateTime(2024, 3, 1),
                 new DateTime(2024, 5, 1))
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(10);
         AssertFilesPruned(Explain(harness.QueryContext, spanning), "1/6");
-        Assert.Equal([5, 6], spanning.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal([5, 6], spanning.Select(record => record.Id).ToArray());
 
         var hotOnly = Scoped(
-                harness.Invoices,
+                harness.Records,
                 10,
                 new DateTime(2024, 4, 1),
                 new DateTime(2024, 5, 1))
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(10);
-        Assert.Equal(new[] { 6 }, await hotOnly.Select(invoice => invoice.Id).ToArrayAsync());
+        Assert.Equal(new[] { 6 }, await hotOnly.Select(record => record.Id).ToArrayAsync());
         Assert.Contains("LIMIT", hotOnly.ToQueryString());
 
         var noColdPartition = Scoped(
-                harness.Invoices,
+                harness.Records,
                 10,
                 new DateTime(2024, 6, 1),
                 new DateTime(2024, 7, 1))
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(10);
         Assert.Empty(noColdPartition);
 
-        var unlimited = Scoped(harness.Invoices, 10, RangeFrom, RangeTo)
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id);
+        var unlimited = Scoped(harness.Records, 10, RangeFrom, RangeTo)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id);
         Assert.DoesNotContain("LIMIT", unlimited.ToQueryString());
-        Assert.Equal([2, 3, 4, 5, 6], unlimited.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal([2, 3, 4, 5, 6], unlimited.Select(record => record.Id).ToArray());
     }
 
     [Fact]
@@ -484,11 +484,11 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
             Seed(context);
             AssertPrincipalQuery(context, [2, 3, 4, 5, 6], expectedFileFraction: null);
 
-            var firstArchive = await context.Database.ArchiveTierAsync<Invoice>(ArchiveCutoff);
+            var firstArchive = await context.Database.ArchiveTierAsync<Record>(ArchiveCutoff);
             Assert.False(firstArchive.NoOp);
             AssertPrincipalQuery(context, [2, 3, 4, 5, 6], "2/6");
 
-            var noOp = await context.Database.ArchiveTierAsync<Invoice>(ArchiveCutoff);
+            var noOp = await context.Database.ArchiveTierAsync<Record>(ArchiveCutoff);
             Assert.True(noOp.NoOp);
             AssertPrincipalQuery(context, [2, 3, 4, 5, 6], "2/6");
         }
@@ -497,43 +497,43 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         restarted.Database.EnsureTieredStoresCreated();
         AssertPrincipalQuery(restarted, [2, 3, 4, 5, 6], "2/6");
 
-        restarted.Invoices.Add(CreateInvoice(8, 10, new DateTime(2024, 2, 20), "late", 80m));
-        restarted.Invoices.Add(CreateInvoice(9, 10, new DateTime(2024, 4, 15), "hot", 90m, withLines: false));
-        restarted.Invoices.Add(new Invoice
+        restarted.Records.Add(CreateRecord(8, 10, new DateTime(2024, 2, 20), "late", 80m));
+        restarted.Records.Add(CreateRecord(9, 10, new DateTime(2024, 4, 15), "hot", 90m, withParts: false));
+        restarted.Records.Add(new Record
         {
             Id = 30,
-            ExternalId = "invoice-3",
-            OwnerId = 10,
-            CompletedAt = SharedTimestamp,
+            ExternalId = "record-3",
+            GroupId = 10,
+            EffectiveAt = SharedTimestamp,
             Status = "corrected",
-            Total = 300m,
+            Metric = 300m,
         });
         restarted.SaveChanges();
         AssertPrincipalQuery(restarted, [2, 3, 4, 8, 5, 6, 9], "2/6");
 
-        var reconciliation = await restarted.Database.ReconcileArchiveTierAsync<Invoice>();
+        var reconciliation = await restarted.Database.ReconcileArchiveTierAsync<Record>();
         Assert.False(reconciliation.NoOp);
         AssertPrincipalQuery(restarted, [2, 4, 30, 8, 5, 6, 9], "2/6");
 
-        var restoration = await restarted.Database.RestoreArchiveTierAsync<Invoice>(
+        var restoration = await restarted.Database.RestoreArchiveTierAsync<Record>(
             new TierRestoreOptions
             {
                 Scope = TierMaintenanceScope.ForRootMatchKeys(
-                    TierRowIdentity.For<Invoice>(
+                    TierRowIdentity.For<Record>(
                         new Dictionary<string, object?>
                         {
-                            [nameof(Invoice.ExternalId)] = "invoice-2",
+                            [nameof(Record.ExternalId)] = "record-2",
                         })),
             });
         Assert.Equal(TierArchiveOperation.Restore, restoration.Publication.Operation);
         AssertPrincipalQuery(restarted, [2, 4, 30, 8, 5, 6, 9], "2/6");
 
-        var compaction = await restarted.Database.CompactArchiveTierAsync<Invoice>();
+        var compaction = await restarted.Database.CompactArchiveTierAsync<Record>();
         Assert.Equal(TierArchiveOperation.Compact, compaction.Operation);
         AssertPrincipalQuery(restarted, [2, 4, 30, 8, 5, 6, 9], "2/6");
         Assert.Equal(
-            restarted.InvoiceHistory.Count(),
-            restarted.InvoiceHistory.Select(invoice => invoice.ExternalId).Distinct().Count());
+            restarted.RecordHistory.Count(),
+            restarted.RecordHistory.Select(record => record.ExternalId).Distinct().Count());
     }
 
     [Fact]
@@ -547,14 +547,14 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
             owner.RootAs.Add(new SharedRootA
             {
                 Id = 1,
-                CompletedAt = new DateTime(2024, 1, 10),
-                Charges = [new SharedCharge { Id = 101, Value = "a" }],
+                EffectiveAt = new DateTime(2024, 1, 10),
+                Tags = [new SharedTag { Id = 101, Value = "a" }],
             });
             owner.RootBs.Add(new SharedRootB
             {
                 Id = 2,
-                CompletedAt = new DateTime(2024, 1, 11),
-                Charges = [new SharedCharge { Id = 202, Value = "b" }],
+                EffectiveAt = new DateTime(2024, 1, 11),
+                Tags = [new SharedTag { Id = 202, Value = "b" }],
             });
             owner.SaveChanges();
 
@@ -562,15 +562,15 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
             var rootA = await owner.Database.ArchiveTierAsync<SharedRootA>(new DateTime(2024, 2, 1));
             Assert.Equal("composition-shared-b", rootB.Binding?.ControlKey);
             Assert.Equal("composition-shared-a", rootA.Binding?.ControlKey);
-            Assert.Empty(owner.Charges);
+            Assert.Empty(owner.Tags);
         }
 
         using var history = new SharedHistoryContext(dbPath);
-        var query = history.Charges.OrderBy(charge => charge.Id).Take(3);
+        var query = history.Tags.OrderBy(tag => tag.Id).Take(3);
         var sql = query.ToQueryString();
         Assert.Contains("ORDER BY", sql);
         Assert.Contains("LIMIT", sql);
-        Assert.Equal([101, 202], query.Select(charge => charge.Id).ToArray());
+        Assert.Equal([101, 202], query.Select(tag => tag.Id).ToArray());
     }
 
     private async Task<QueryHarness> CreateHarnessAsync(TieredRegistration registration, string suffix)
@@ -583,58 +583,58 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
             var owner = new ViewOwnerContext<ViewOwnerMarker>(dbPath, archivePath);
             owner.Database.EnsureCreated();
             Seed(owner);
-            await owner.Database.ArchiveTierAsync<Invoice>(ArchiveCutoff);
+            await owner.Database.ArchiveTierAsync<Record>(ArchiveCutoff);
             var history = new EntityHistoryContext<ViewOwnerMarker>(dbPath);
             return new QueryHarness(
                 owner,
                 history,
-                Project(history.Invoices),
-                Project(history.Lines),
-                Project(history.Adjustments));
+                Project(history.Records),
+                Project(history.Parts),
+                Project(history.Details));
         }
 
         var readModelOwner = new ReadModelOwnerContext<ReadModelMarker>(dbPath, archivePath);
         readModelOwner.Database.EnsureCreated();
         Seed(readModelOwner);
-        await readModelOwner.Database.ArchiveTierAsync<Invoice>(ArchiveCutoff);
+        await readModelOwner.Database.ArchiveTierAsync<Record>(ArchiveCutoff);
         return new QueryHarness(
             readModelOwner,
             readModelOwner,
-            Project(readModelOwner.InvoiceHistory),
-            Project(readModelOwner.LineHistory),
-            Project(readModelOwner.AdjustmentHistory));
+            Project(readModelOwner.RecordHistory),
+            Project(readModelOwner.PartHistory),
+            Project(readModelOwner.DetailHistory));
     }
 
-    private static IQueryable<InvoiceQueryRow> Scoped(
-        IQueryable<InvoiceQueryRow> source,
-        int ownerId,
+    private static IQueryable<RecordQueryRow> Scoped(
+        IQueryable<RecordQueryRow> source,
+        int groupId,
         DateTime from,
         DateTime to)
-        => source.Where(invoice =>
-            invoice.OwnerId == ownerId
-            && invoice.CompletedAt >= from
-            && invoice.CompletedAt < to);
+        => source.Where(record =>
+            record.GroupId == groupId
+            && record.EffectiveAt >= from
+            && record.EffectiveAt < to);
 
-    private static IQueryable<InvoiceQueryRow> KeysetPage(
-        IQueryable<InvoiceQueryRow> source,
-        int ownerId,
+    private static IQueryable<RecordQueryRow> KeysetPage(
+        IQueryable<RecordQueryRow> source,
+        int groupId,
         DateTime from,
         DateTime to,
-        DateTime cursorCompletedAt,
+        DateTime cursorEffectiveAt,
         int cursorId,
         int take)
-        => Scoped(source, ownerId, from, to)
-            .Where(invoice =>
-                invoice.CompletedAt > cursorCompletedAt
-                || invoice.CompletedAt == cursorCompletedAt && invoice.Id > cursorId)
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+        => Scoped(source, groupId, from, to)
+            .Where(record =>
+                record.EffectiveAt > cursorEffectiveAt
+                || record.EffectiveAt == cursorEffectiveAt && record.Id > cursorId)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(take);
 
     private static void AssertPrunedOrderedLimitSql(string sql, bool expectsContract)
     {
-        var ownerPartitionIndex = sql.LastIndexOf("root_owner_key", StringComparison.Ordinal);
-        var monthPartitionIndex = sql.LastIndexOf("completed_month", StringComparison.Ordinal);
+        var ownerPartitionIndex = sql.LastIndexOf("root_group_key", StringComparison.Ordinal);
+        var monthPartitionIndex = sql.LastIndexOf("effective_month", StringComparison.Ordinal);
         var orderIndex = sql.LastIndexOf("ORDER BY", StringComparison.Ordinal);
         var limitIndex = sql.LastIndexOf("LIMIT", StringComparison.Ordinal);
 
@@ -642,13 +642,13 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         Assert.True(monthPartitionIndex > ownerPartitionIndex, sql);
         Assert.True(orderIndex > monthPartitionIndex, sql);
         Assert.True(limitIndex > orderIndex, sql);
-        Assert.Contains("$ownerId", sql);
+        Assert.Contains("$groupId", sql);
         Assert.Contains("$from", sql);
         Assert.Contains("$to", sql);
-        Assert.Contains("CompletedAt", sql);
+        Assert.Contains("EffectiveAt", sql);
         Assert.Contains("Id", sql);
-        Assert.Equal(1, CountOccurrences(sql, "root_owner_key"));
-        Assert.Equal(2, CountOccurrences(sql, "completed_month"));
+        Assert.Equal(1, CountOccurrences(sql, "root_group_key"));
+        Assert.Equal(2, CountOccurrences(sql, "effective_month"));
         if (expectsContract)
         {
             Assert.Contains(DuckDBTierPartitionContract.ColumnPrefix, sql);
@@ -673,9 +673,9 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         int[] expectedIds,
         string? expectedFileFraction)
     {
-        var query = Scoped(Project(context.InvoiceHistory), 10, RangeFrom, RangeTo)
-            .OrderBy(invoice => invoice.CompletedAt)
-            .ThenBy(invoice => invoice.Id)
+        var query = Scoped(Project(context.RecordHistory), 10, RangeFrom, RangeTo)
+            .OrderBy(record => record.EffectiveAt)
+            .ThenBy(record => record.Id)
             .Take(20);
         Assert.Contains("ORDER BY", query.ToQueryString());
         Assert.Contains("LIMIT", query.ToQueryString());
@@ -684,146 +684,146 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
             AssertFilesPruned(Explain(context, query), expectedFileFraction);
         }
 
-        Assert.Equal(expectedIds, query.Select(invoice => invoice.Id).ToArray());
+        Assert.Equal(expectedIds, query.Select(record => record.Id).ToArray());
     }
 
-    private static IQueryable<InvoiceQueryRow> Project(IQueryable<Invoice> source)
-        => source.AsNoTracking().Select(invoice => new InvoiceQueryRow
+    private static IQueryable<RecordQueryRow> Project(IQueryable<Record> source)
+        => source.AsNoTracking().Select(record => new RecordQueryRow
         {
-            Id = invoice.Id,
-            ExternalId = invoice.ExternalId,
-            OwnerId = invoice.OwnerId,
-            CompletedAt = invoice.CompletedAt,
-            Status = invoice.Status,
-            Total = invoice.Total,
+            Id = record.Id,
+            ExternalId = record.ExternalId,
+            GroupId = record.GroupId,
+            EffectiveAt = record.EffectiveAt,
+            Status = record.Status,
+            Metric = record.Metric,
         });
 
-    private static IQueryable<InvoiceQueryRow> Project(IQueryable<InvoiceHistory> source)
-        => source.AsNoTracking().Select(invoice => new InvoiceQueryRow
+    private static IQueryable<RecordQueryRow> Project(IQueryable<RecordHistory> source)
+        => source.AsNoTracking().Select(record => new RecordQueryRow
         {
-            Id = invoice.Id,
-            ExternalId = invoice.ExternalId,
-            OwnerId = invoice.OwnerId,
-            CompletedAt = invoice.CompletedAt,
-            Status = invoice.Status,
-            Total = invoice.Total,
+            Id = record.Id,
+            ExternalId = record.ExternalId,
+            GroupId = record.GroupId,
+            EffectiveAt = record.EffectiveAt,
+            Status = record.Status,
+            Metric = record.Metric,
         });
 
-    private static IQueryable<LineQueryRow> Project(IQueryable<InvoiceLine> source)
-        => source.AsNoTracking().Select(line => new LineQueryRow
+    private static IQueryable<PartQueryRow> Project(IQueryable<RecordPart> source)
+        => source.AsNoTracking().Select(part => new PartQueryRow
         {
-            InvoiceId = line.InvoiceId,
-            LineNumber = line.LineNumber,
-            OwnerId = line.OwnerId,
-            Description = line.Description,
-            Amount = line.Amount,
+            RecordId = part.RecordId,
+            PartNumber = part.PartNumber,
+            GroupId = part.GroupId,
+            Description = part.Description,
+            Value = part.Value,
         });
 
-    private static IQueryable<LineQueryRow> Project(IQueryable<InvoiceLineHistory> source)
-        => source.AsNoTracking().Select(line => new LineQueryRow
+    private static IQueryable<PartQueryRow> Project(IQueryable<RecordPartHistory> source)
+        => source.AsNoTracking().Select(part => new PartQueryRow
         {
-            InvoiceId = line.InvoiceId,
-            LineNumber = line.LineNumber,
-            OwnerId = line.OwnerId,
-            Description = line.Description,
-            Amount = line.Amount,
+            RecordId = part.RecordId,
+            PartNumber = part.PartNumber,
+            GroupId = part.GroupId,
+            Description = part.Description,
+            Value = part.Value,
         });
 
-    private static IQueryable<AdjustmentQueryRow> Project(IQueryable<InvoiceLineAdjustment> source)
-        => source.AsNoTracking().Select(adjustment => new AdjustmentQueryRow
+    private static IQueryable<DetailQueryRow> Project(IQueryable<RecordPartDetail> source)
+        => source.AsNoTracking().Select(detail => new DetailQueryRow
         {
-            InvoiceId = adjustment.InvoiceId,
-            LineNumber = adjustment.LineNumber,
-            Code = adjustment.Code,
-            Amount = adjustment.Amount,
+            RecordId = detail.RecordId,
+            PartNumber = detail.PartNumber,
+            Code = detail.Code,
+            Value = detail.Value,
         });
 
-    private static IQueryable<AdjustmentQueryRow> Project(IQueryable<InvoiceLineAdjustmentHistory> source)
-        => source.AsNoTracking().Select(adjustment => new AdjustmentQueryRow
+    private static IQueryable<DetailQueryRow> Project(IQueryable<RecordPartDetailHistory> source)
+        => source.AsNoTracking().Select(detail => new DetailQueryRow
         {
-            InvoiceId = adjustment.InvoiceId,
-            LineNumber = adjustment.LineNumber,
-            Code = adjustment.Code,
-            Amount = adjustment.Amount,
+            RecordId = detail.RecordId,
+            PartNumber = detail.PartNumber,
+            Code = detail.Code,
+            Value = detail.Value,
         });
 
     private static void Seed(OwnerContext owner)
     {
-        owner.Invoices.AddRange(
-            CreateInvoice(1, 10, new DateTime(2024, 1, 15), "paid", 10m),
-            CreateInvoice(2, 10, RangeFrom, "paid", 20m),
-            CreateInvoice(3, 10, SharedTimestamp, "paid", 30m),
-            CreateInvoice(4, 10, SharedTimestamp, "adjusted", 40m),
-            CreateInvoice(5, 10, new DateTime(2024, 3, 15), "adjusted", 50m),
-            CreateInvoice(6, 10, ArchiveCutoff, "hot", 60m, withLines: false),
-            CreateInvoice(7, 10, RangeTo, "hot", 70m),
-            CreateInvoice(20, 20, new DateTime(2024, 1, 15), "paid", 200m),
-            CreateInvoice(21, 20, RangeFrom, "paid", 210m),
-            CreateInvoice(22, 20, new DateTime(2024, 3, 15), "adjusted", 220m),
-            CreateInvoice(23, 20, ArchiveCutoff, "hot", 230m));
+        owner.Records.AddRange(
+            CreateRecord(1, 10, new DateTime(2024, 1, 15), "paid", 10m),
+            CreateRecord(2, 10, RangeFrom, "paid", 20m),
+            CreateRecord(3, 10, SharedTimestamp, "paid", 30m),
+            CreateRecord(4, 10, SharedTimestamp, "updated", 40m),
+            CreateRecord(5, 10, new DateTime(2024, 3, 15), "updated", 50m),
+            CreateRecord(6, 10, ArchiveCutoff, "hot", 60m, withParts: false),
+            CreateRecord(7, 10, RangeTo, "hot", 70m),
+            CreateRecord(20, 20, new DateTime(2024, 1, 15), "paid", 200m),
+            CreateRecord(21, 20, RangeFrom, "paid", 210m),
+            CreateRecord(22, 20, new DateTime(2024, 3, 15), "updated", 220m),
+            CreateRecord(23, 20, ArchiveCutoff, "hot", 230m));
         owner.SaveChanges();
     }
 
-    private static Invoice CreateInvoice(
+    private static Record CreateRecord(
         int id,
-        int ownerId,
-        DateTime completedAt,
+        int groupId,
+        DateTime effectiveAt,
         string status,
-        decimal total,
-        bool withLines = true)
+        decimal metric,
+        bool withParts = true)
     {
-        var invoice = new Invoice
+        var record = new Record
         {
             Id = id,
-            ExternalId = $"invoice-{id}",
-            OwnerId = ownerId,
-            CompletedAt = completedAt,
+            ExternalId = $"record-{id}",
+            GroupId = groupId,
+            EffectiveAt = effectiveAt,
             Status = status,
-            Total = total,
+            Metric = metric,
         };
-        if (!withLines)
+        if (!withParts)
         {
-            return invoice;
+            return record;
         }
 
-        invoice.Lines.Add(new InvoiceLine
+        record.Parts.Add(new RecordPart
         {
-            InvoiceId = id,
-            LineNumber = 1,
-            OwnerId = ownerId + 1_000,
+            RecordId = id,
+            PartNumber = 1,
+            GroupId = groupId + 1_000,
             Description = "service",
-            Amount = total,
-            Adjustments =
+            Value = metric,
+            Details =
             [
-                new InvoiceLineAdjustment
+                new RecordPartDetail
                 {
-                    InvoiceId = id,
-                    LineNumber = 1,
+                    RecordId = id,
+                    PartNumber = 1,
                     Code = "tax",
-                    Amount = total / 10m,
+                    Value = metric / 10m,
                 },
             ],
         });
-        invoice.Lines.Add(new InvoiceLine
+        record.Parts.Add(new RecordPart
         {
-            InvoiceId = id,
-            LineNumber = 2,
-            OwnerId = ownerId + 1_000,
+            RecordId = id,
+            PartNumber = 2,
+            GroupId = groupId + 1_000,
             Description = "fee",
-            Amount = 1m,
+            Value = 1m,
         });
-        return invoice;
+        return record;
     }
 
-    private static void ConfigureInvoicePartitions(TieredPartitionBuilder<Invoice> partitions)
+    private static void ConfigureRecordPartitions(TieredPartitionBuilder<Record> partitions)
         => partitions
-            .By(invoice => invoice.OwnerId, "root_owner_key")
-            .ByMonth(invoice => invoice.CompletedAt, "completed_month");
+            .By(record => record.GroupId, "root_group_key")
+            .ByMonth(record => record.EffectiveAt, "effective_month");
 
-    private static void ConfigureHistoryPartitions(TieredPartitionBuilder<InvoiceHistory> partitions)
+    private static void ConfigureHistoryPartitions(TieredPartitionBuilder<RecordHistory> partitions)
         => partitions
-            .By(invoice => invoice.OwnerId, "root_owner_key")
-            .ByMonth(invoice => invoice.CompletedAt, "completed_month");
+            .By(record => record.GroupId, "root_group_key")
+            .ByMonth(record => record.EffectiveAt, "effective_month");
 
     public enum TieredRegistration
     {
@@ -831,37 +831,37 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         ReadModel,
     }
 
-    private sealed class InvoiceSummary
+    private sealed class RecordSummary
     {
         public int Id { get; init; }
-        public decimal Total { get; init; }
+        public decimal Metric { get; init; }
     }
 
-    private sealed class InvoiceQueryRow
+    private sealed class RecordQueryRow
     {
         public int Id { get; init; }
         public string ExternalId { get; init; } = null!;
-        public int OwnerId { get; init; }
-        public DateTime CompletedAt { get; init; }
+        public int GroupId { get; init; }
+        public DateTime EffectiveAt { get; init; }
         public string Status { get; init; } = null!;
-        public decimal Total { get; init; }
+        public decimal Metric { get; init; }
     }
 
-    private sealed class LineQueryRow
+    private sealed class PartQueryRow
     {
-        public int InvoiceId { get; init; }
-        public int LineNumber { get; init; }
-        public int OwnerId { get; init; }
+        public int RecordId { get; init; }
+        public int PartNumber { get; init; }
+        public int GroupId { get; init; }
         public string Description { get; init; } = null!;
-        public decimal Amount { get; init; }
+        public decimal Value { get; init; }
     }
 
-    private sealed class AdjustmentQueryRow
+    private sealed class DetailQueryRow
     {
-        public int InvoiceId { get; init; }
-        public int LineNumber { get; init; }
+        public int RecordId { get; init; }
+        public int PartNumber { get; init; }
         public string Code { get; init; } = null!;
-        public decimal Amount { get; init; }
+        public decimal Value { get; init; }
     }
 
     private sealed class QueryHarness : IDisposable
@@ -871,21 +871,21 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         public QueryHarness(
             OwnerContext owner,
             DbContext queryContext,
-            IQueryable<InvoiceQueryRow> invoices,
-            IQueryable<LineQueryRow> lines,
-            IQueryable<AdjustmentQueryRow> adjustments)
+            IQueryable<RecordQueryRow> records,
+            IQueryable<PartQueryRow> parts,
+            IQueryable<DetailQueryRow> details)
         {
             _owner = owner;
             QueryContext = queryContext;
-            Invoices = invoices;
-            Lines = lines;
-            Adjustments = adjustments;
+            Records = records;
+            Parts = parts;
+            Details = details;
         }
 
         public DbContext QueryContext { get; }
-        public IQueryable<InvoiceQueryRow> Invoices { get; }
-        public IQueryable<LineQueryRow> Lines { get; }
-        public IQueryable<AdjustmentQueryRow> Adjustments { get; }
+        public IQueryable<RecordQueryRow> Records { get; }
+        public IQueryable<PartQueryRow> Parts { get; }
+        public IQueryable<DetailQueryRow> Details { get; }
 
         public void Dispose()
         {
@@ -915,7 +915,7 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
     {
         protected string ArchivePath { get; } = archivePath;
         public string ModelKey => ArchivePath;
-        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public DbSet<Record> Records => Set<Record>();
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
@@ -923,31 +923,31 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTable("composition_invoices");
-                builder.HasKey(invoice => invoice.Id);
-                builder.HasIndex(invoice => invoice.ExternalId).IsUnique();
-                builder.HasMany(invoice => invoice.Lines)
-                    .WithOne(line => line.Invoice)
-                    .HasForeignKey(line => line.InvoiceId);
+                builder.ToTable("composition_records");
+                builder.HasKey(record => record.Id);
+                builder.HasIndex(record => record.ExternalId).IsUnique();
+                builder.HasMany(record => record.Parts)
+                    .WithOne(part => part.Record)
+                    .HasForeignKey(part => part.RecordId);
             });
-            modelBuilder.Entity<InvoiceLine>(builder =>
+            modelBuilder.Entity<RecordPart>(builder =>
             {
-                builder.ToTable("composition_invoice_lines");
-                builder.HasKey(line => new { line.InvoiceId, line.LineNumber });
-                builder.HasMany(line => line.Adjustments)
-                    .WithOne(adjustment => adjustment.Line)
-                    .HasForeignKey(adjustment => new { adjustment.InvoiceId, adjustment.LineNumber });
+                builder.ToTable("composition_record_lines");
+                builder.HasKey(part => new { part.RecordId, part.PartNumber });
+                builder.HasMany(part => part.Details)
+                    .WithOne(detail => detail.Part)
+                    .HasForeignKey(detail => new { detail.RecordId, detail.PartNumber });
             });
-            modelBuilder.Entity<InvoiceLineAdjustment>(builder =>
+            modelBuilder.Entity<RecordPartDetail>(builder =>
             {
-                builder.ToTable("composition_invoice_adjustments");
-                builder.HasKey(adjustment => new
+                builder.ToTable("composition_record_details");
+                builder.HasKey(detail => new
                 {
-                    adjustment.InvoiceId,
-                    adjustment.LineNumber,
-                    adjustment.Code,
+                    detail.RecordId,
+                    detail.PartNumber,
+                    detail.Code,
                 });
             });
             ConfigureTieredStore(modelBuilder);
@@ -960,64 +960,64 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         : OwnerContext(dbPath, archivePath)
     {
         protected override void ConfigureTieredStore(ModelBuilder modelBuilder)
-            => modelBuilder.ToTieredStore<Invoice>(invoice => invoice.CompletedAt, ArchivePath)
-                .MatchBy(invoice => invoice.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
-                .PartitionBy(ConfigureInvoicePartitions)
-                .WithTieredView("composition_invoice_history")
-                .Including<InvoiceLine>(invoice => invoice.Lines, line => line
+            => modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, ArchivePath)
+                .MatchBy(record => record.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
+                .PartitionBy(ConfigureRecordPartitions)
+                .WithTieredView("composition_record_history")
+                .Including<RecordPart>(record => record.Parts, part => part
                     .WithTieredView()
-                    .Including<InvoiceLineAdjustment>(
-                        item => item.Adjustments,
-                        adjustment => adjustment.WithTieredView("composition_adjustment_history")));
+                    .Including<RecordPartDetail>(
+                        item => item.Details,
+                        detail => detail.WithTieredView("composition_detail_history")));
     }
 
     private sealed class ReadModelOwnerContext<TMarker>(string dbPath, string archivePath)
         : OwnerContext(dbPath, archivePath)
     {
-        public DbSet<InvoiceHistory> InvoiceHistory => Set<InvoiceHistory>();
-        public DbSet<InvoiceLineHistory> LineHistory => Set<InvoiceLineHistory>();
-        public DbSet<InvoiceLineAdjustmentHistory> AdjustmentHistory => Set<InvoiceLineAdjustmentHistory>();
+        public DbSet<RecordHistory> RecordHistory => Set<RecordHistory>();
+        public DbSet<RecordPartHistory> PartHistory => Set<RecordPartHistory>();
+        public DbSet<RecordPartDetailHistory> DetailHistory => Set<RecordPartDetailHistory>();
 
         protected override void ConfigureTieredStore(ModelBuilder modelBuilder)
-            => modelBuilder.ToTieredStore<Invoice>(invoice => invoice.CompletedAt, ArchivePath)
-                .MatchBy(invoice => invoice.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
-                .PartitionBy(ConfigureInvoicePartitions)
-                .WithReadModel<InvoiceHistory>()
-                .Including<InvoiceLine>(invoice => invoice.Lines, line => line
-                    .WithReadModel<InvoiceLineHistory>()
-                    .Including<InvoiceLineAdjustment>(
-                        item => item.Adjustments,
-                        adjustment => adjustment.WithReadModel<InvoiceLineAdjustmentHistory>()));
+            => modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, ArchivePath)
+                .MatchBy(record => record.ExternalId, TierMatchKeyUniqueness.ExternallyEnforced)
+                .PartitionBy(ConfigureRecordPartitions)
+                .WithReadModel<RecordHistory>()
+                .Including<RecordPart>(record => record.Parts, part => part
+                    .WithReadModel<RecordPartHistory>()
+                    .Including<RecordPartDetail>(
+                        item => item.Details,
+                        detail => detail.WithReadModel<RecordPartDetailHistory>()));
     }
 
     private sealed class EntityHistoryContext<TMarker>(string dbPath) : DbContext
     {
-        public DbSet<Invoice> Invoices => Set<Invoice>();
-        public DbSet<InvoiceLine> Lines => Set<InvoiceLine>();
-        public DbSet<InvoiceLineAdjustment> Adjustments => Set<InvoiceLineAdjustment>();
+        public DbSet<Record> Records => Set<Record>();
+        public DbSet<RecordPart> Parts => Set<RecordPart>();
+        public DbSet<RecordPartDetail> Details => Set<RecordPartDetail>();
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}");
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Invoice>(builder =>
+            modelBuilder.Entity<Record>(builder =>
             {
-                builder.ToTieredView("composition_invoice_history", ConfigureInvoicePartitions);
-                builder.Ignore(invoice => invoice.Lines);
+                builder.ToTieredView("composition_record_history", ConfigureRecordPartitions);
+                builder.Ignore(record => record.Parts);
             });
-            modelBuilder.Entity<InvoiceLine>(builder =>
+            modelBuilder.Entity<RecordPart>(builder =>
             {
                 builder.HasNoKey();
-                builder.ToView("composition_invoice_lines_tiered");
-                builder.Ignore(line => line.Invoice);
-                builder.Ignore(line => line.Adjustments);
+                builder.ToView("composition_record_lines_tiered");
+                builder.Ignore(part => part.Record);
+                builder.Ignore(part => part.Details);
             });
-            modelBuilder.Entity<InvoiceLineAdjustment>(builder =>
+            modelBuilder.Entity<RecordPartDetail>(builder =>
             {
                 builder.HasNoKey();
-                builder.ToView("composition_adjustment_history");
-                builder.Ignore(adjustment => adjustment.Line);
+                builder.ToView("composition_detail_history");
+                builder.Ignore(detail => detail.Part);
             });
         }
     }
@@ -1040,12 +1040,12 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
                 builder.HasKey(record => record.Id);
             });
             modelBuilder.ToTieredStore<DailyRecord>(
-                    record => record.CompletedOn,
+                    record => record.EffectiveOn,
                     archivePath,
                     TierGranularity.Day)
                 .PartitionBy(partitions => partitions
-                    .By(record => record.OwnerId, "owner_key")
-                    .ByDay(record => record.CompletedOn, "completed_day"))
+                    .By(record => record.GroupId, "group_key")
+                    .ByDay(record => record.EffectiveOn, "effective_day"))
                 .WithReadModel<DailyRecordHistory>();
         }
     }
@@ -1067,10 +1067,10 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
                 builder.ToTable("nullable_date_only_records");
                 builder.HasKey(record => record.Id);
             });
-            modelBuilder.ToTieredStore<NullableDateOnlyRecord>(record => record.CompletedOn, archivePath)
+            modelBuilder.ToTieredStore<NullableDateOnlyRecord>(record => record.EffectiveOn, archivePath)
                 .PartitionBy(partitions => partitions
-                    .By(record => record.OwnerId, "owner_key")
-                    .ByMonth(record => record.CompletedOn, "completed_month"))
+                    .By(record => record.GroupId, "group_key")
+                    .ByMonth(record => record.EffectiveOn, "effective_month"))
                 .WithReadModel<NullableDateOnlyRecordHistory>();
         }
     }
@@ -1081,7 +1081,7 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
         public string ModelKey => archivePath;
         public DbSet<SharedRootA> RootAs => Set<SharedRootA>();
         public DbSet<SharedRootB> RootBs => Set<SharedRootB>();
-        public DbSet<SharedCharge> Charges => Set<SharedCharge>();
+        public DbSet<SharedTag> Tags => Set<SharedTag>();
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
@@ -1093,156 +1093,156 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
             {
                 builder.ToTable("composition_shared_root_a");
                 builder.HasKey(root => root.Id);
-                builder.HasMany(root => root.Charges)
-                    .WithOne(charge => charge.RootA)
-                    .HasForeignKey(charge => charge.RootAId);
+                builder.HasMany(root => root.Tags)
+                    .WithOne(tag => tag.RootA)
+                    .HasForeignKey(tag => tag.RootAId);
             });
             modelBuilder.Entity<SharedRootB>(builder =>
             {
                 builder.ToTable("composition_shared_root_b");
                 builder.HasKey(root => root.Id);
-                builder.HasMany(root => root.Charges)
-                    .WithOne(charge => charge.RootB)
-                    .HasForeignKey(charge => charge.RootBId);
+                builder.HasMany(root => root.Tags)
+                    .WithOne(tag => tag.RootB)
+                    .HasForeignKey(tag => tag.RootBId);
             });
-            modelBuilder.Entity<SharedCharge>(builder =>
+            modelBuilder.Entity<SharedTag>(builder =>
             {
-                builder.ToTable("composition_shared_charges");
-                builder.HasKey(charge => charge.Id);
+                builder.ToTable("composition_shared_tags");
+                builder.HasKey(tag => tag.Id);
             });
             modelBuilder.ToTieredStore<SharedRootB>(
-                    root => root.CompletedAt,
+                    root => root.EffectiveAt,
                     archivePath + "/b",
                     controlKey: "composition-shared-b")
                 .WithTieredView("composition_shared_root_b_history")
-                .Including<SharedCharge>(root => root.Charges, charge => charge.WithTieredView());
+                .Including<SharedTag>(root => root.Tags, tag => tag.WithTieredView());
             modelBuilder.ToTieredStore<SharedRootA>(
-                    root => root.CompletedAt,
+                    root => root.EffectiveAt,
                     archivePath + "/a",
                     controlKey: "composition-shared-a")
                 .WithTieredView("composition_shared_root_a_history")
-                .Including<SharedCharge>(root => root.Charges, charge => charge.WithTieredView());
+                .Including<SharedTag>(root => root.Tags, tag => tag.WithTieredView());
         }
     }
 
     private sealed class SharedHistoryContext(string dbPath) : DbContext
     {
-        public DbSet<SharedCharge> Charges => Set<SharedCharge>();
+        public DbSet<SharedTag> Tags => Set<SharedTag>();
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}");
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => modelBuilder.Entity<SharedCharge>(builder =>
+            => modelBuilder.Entity<SharedTag>(builder =>
             {
                 builder.HasNoKey();
-                builder.ToView("composition_shared_charges_tiered");
-                builder.Ignore(charge => charge.RootA);
-                builder.Ignore(charge => charge.RootB);
+                builder.ToView("composition_shared_tags_tiered");
+                builder.Ignore(tag => tag.RootA);
+                builder.Ignore(tag => tag.RootB);
             });
     }
 
-    private sealed class Invoice
+    private sealed class Record
     {
         public int Id { get; set; }
         public string ExternalId { get; set; } = null!;
-        public int OwnerId { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public int GroupId { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string Status { get; set; } = null!;
-        public decimal Total { get; set; }
-        public List<InvoiceLine> Lines { get; set; } = [];
+        public decimal Metric { get; set; }
+        public List<RecordPart> Parts { get; set; } = [];
     }
 
-    private sealed class InvoiceLine
+    private sealed class RecordPart
     {
-        public int InvoiceId { get; set; }
-        public int LineNumber { get; set; }
-        public int OwnerId { get; set; }
+        public int RecordId { get; set; }
+        public int PartNumber { get; set; }
+        public int GroupId { get; set; }
         public string Description { get; set; } = null!;
-        public decimal Amount { get; set; }
-        public Invoice? Invoice { get; set; }
-        public List<InvoiceLineAdjustment> Adjustments { get; set; } = [];
+        public decimal Value { get; set; }
+        public Record? Record { get; set; }
+        public List<RecordPartDetail> Details { get; set; } = [];
     }
 
-    private sealed class InvoiceLineAdjustment
+    private sealed class RecordPartDetail
     {
-        public int InvoiceId { get; set; }
-        public int LineNumber { get; set; }
+        public int RecordId { get; set; }
+        public int PartNumber { get; set; }
         public string Code { get; set; } = null!;
-        public decimal Amount { get; set; }
-        public InvoiceLine? Line { get; set; }
+        public decimal Value { get; set; }
+        public RecordPart? Part { get; set; }
     }
 
-    private sealed class InvoiceHistory
+    private sealed class RecordHistory
     {
         public int Id { get; set; }
         public string ExternalId { get; set; } = null!;
-        public int OwnerId { get; set; }
-        public DateTime CompletedAt { get; set; }
+        public int GroupId { get; set; }
+        public DateTime EffectiveAt { get; set; }
         public string Status { get; set; } = null!;
-        public decimal Total { get; set; }
+        public decimal Metric { get; set; }
     }
 
-    private sealed class InvoiceLineHistory
+    private sealed class RecordPartHistory
     {
-        public int InvoiceId { get; set; }
-        public int LineNumber { get; set; }
-        public int OwnerId { get; set; }
+        public int RecordId { get; set; }
+        public int PartNumber { get; set; }
+        public int GroupId { get; set; }
         public string Description { get; set; } = null!;
-        public decimal Amount { get; set; }
+        public decimal Value { get; set; }
     }
 
-    private sealed class InvoiceLineAdjustmentHistory
+    private sealed class RecordPartDetailHistory
     {
-        public int InvoiceId { get; set; }
-        public int LineNumber { get; set; }
+        public int RecordId { get; set; }
+        public int PartNumber { get; set; }
         public string Code { get; set; } = null!;
-        public decimal Amount { get; set; }
+        public decimal Value { get; set; }
     }
 
     private sealed class DailyRecord
     {
         public int Id { get; set; }
-        public int OwnerId { get; set; }
-        public DateTime CompletedOn { get; set; }
+        public int GroupId { get; set; }
+        public DateTime EffectiveOn { get; set; }
     }
 
     private sealed class DailyRecordHistory
     {
         public int Id { get; set; }
-        public int OwnerId { get; set; }
-        public DateTime CompletedOn { get; set; }
+        public int GroupId { get; set; }
+        public DateTime EffectiveOn { get; set; }
     }
 
     private sealed class NullableDateOnlyRecord
     {
         public int Id { get; set; }
-        public int? OwnerId { get; set; }
-        public DateOnly? CompletedOn { get; set; }
+        public int? GroupId { get; set; }
+        public DateOnly? EffectiveOn { get; set; }
     }
 
     private sealed class NullableDateOnlyRecordHistory
     {
         public int Id { get; set; }
-        public int? OwnerId { get; set; }
-        public DateOnly? CompletedOn { get; set; }
+        public int? GroupId { get; set; }
+        public DateOnly? EffectiveOn { get; set; }
     }
 
     private sealed class SharedRootA
     {
         public int Id { get; set; }
-        public DateTime CompletedAt { get; set; }
-        public List<SharedCharge> Charges { get; set; } = [];
+        public DateTime EffectiveAt { get; set; }
+        public List<SharedTag> Tags { get; set; } = [];
     }
 
     private sealed class SharedRootB
     {
         public int Id { get; set; }
-        public DateTime CompletedAt { get; set; }
-        public List<SharedCharge> Charges { get; set; } = [];
+        public DateTime EffectiveAt { get; set; }
+        public List<SharedTag> Tags { get; set; } = [];
     }
 
-    private sealed class SharedCharge
+    private sealed class SharedTag
     {
         public int Id { get; set; }
         public int? RootAId { get; set; }
@@ -1254,7 +1254,7 @@ public sealed class TieredViewQueryCompositionTests : IDisposable
 
     private sealed class ViewOwnerMarker;
     private sealed class ReadModelMarker;
-    private sealed class ContextOrderMarker;
+    private sealed class ContextRecordMarker;
     private sealed class LifecycleMarker;
     private sealed class SharedQueryMarker;
 }

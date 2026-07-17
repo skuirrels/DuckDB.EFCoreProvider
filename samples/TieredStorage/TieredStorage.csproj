@@ -7,7 +7,7 @@
 
            dotnet add package DuckDB.EFCoreProvider
 
-         See README.md for the full consuming-app setup. -->
+         See README.md for the full host-application setup. -->
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 

@@ -12,7 +12,7 @@
 
 ## What counts as "public API"
 
-The supported surface is the API a consuming application uses directly:
+The supported surface is the API a host application uses directly:
 
 - the `UseDuckDB(...)` configuration extension methods and their options;
 - public extension methods under `DuckDB.EFCoreProvider.Extensions` (e.g. `UseAutoIncrement()`, `FromParquet`);

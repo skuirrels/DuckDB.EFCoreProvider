@@ -2,8 +2,8 @@
 
 This is the compatibility contract for the provider-managed hot DuckDB/cold Parquet tier. It describes generic
 technical behaviour only. Archive eligibility, retention, authorisation, legal holds, scheduling, distributed writer
-coordination, business deletion/restoration decisions, credentials, and production object-store policy remain the
-consuming application's responsibility.
+coordination, deletion/restoration decisions, credentials, and production object-store policy remain the host
+application's responsibility.
 
 ## Registration modes
 
@@ -108,8 +108,8 @@ retention or delete remote objects.
 
 ## Stable-release gate
 
-For `1.10.1`, the `1.10.1-rc.1` package passed the consuming application's complete tiered conformance suite on
-2026-07-17 with no additional Provider defect, authorising stable publication. Future stable packages follow the
-same gate: first publish a prerelease, run consumer conformance against that exact package, and publish stable only
-after acceptance succeeds. A skipped credential-gated backend is reported as unverified for that release environment;
+For `1.10.1`, the `1.10.1-rc.1` package passed the complete tiered conformance suite on 2026-07-17 with no
+additional provider defect, authorising stable publication. Future stable packages follow the same gate: first
+publish a prerelease, run the compatibility suite against that exact package, and publish stable only after
+acceptance succeeds. A skipped credential-gated backend is reported as unverified for that release environment;
 it is not recorded as passing evidence.

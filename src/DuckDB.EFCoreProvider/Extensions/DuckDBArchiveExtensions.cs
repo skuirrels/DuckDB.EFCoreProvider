@@ -1989,7 +1989,7 @@ public static partial class DuckDBArchiveExtensions
             capabilities.Add(new TierStorageCapabilityResult(
                 TierStorageCapability.Delete,
                 false,
-                "Remote deletion must be validated through the consuming application's object-store control plane."));
+                "Remote deletion must be validated through the host application's object-store control plane."));
             return;
         }
 

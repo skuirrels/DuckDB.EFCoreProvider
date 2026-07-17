@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.10.1</PackageVersion>
+    <PackageVersion>1.10.2</PackageVersion>
     <FileVersion>1.10.1.0</FileVersion>
     <Version>1.10.1</Version>
     <Authors>skuirrels</Authors>
@@ -19,11 +19,14 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.10.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.10.1</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.10.2
+- Replace application-specific tiered-storage entities, identifiers, lifecycle fields, release evidence, and the partition diagram with provider-neutral record examples across the README, guide, sample, validation text, and tests. No public API changes.
+
 1.10.1
 - Fix tiered partition pruning for ordered/limited query shapes: derived owner/lifecycle predicates are now collected against a stable select shape and applied in one immutable update, preserving server-side ORDER BY, OFFSET/LIMIT, keyset predicates, parameterisation, and root/descendant binding resolution.
-- Add a generic tiered-view query-composition and lifecycle matrix for ToTieredView(...) and WithReadModel&lt;TReadModel&gt;(), with SQL and EXPLAIN file-pruning evidence, nullable DateOnly/partition coverage, context/model-cache concurrency checks, real-cloud opt-in failure matrices, and a published compatibility report. The 1.10.1-rc.1 package passed consumer conformance with no additional Provider defects.
+- Add a generic tiered-view query-composition and lifecycle matrix for ToTieredView(...) and WithReadModel&lt;TReadModel&gt;(), with SQL and EXPLAIN file-pruning evidence, nullable DateOnly/partition coverage, context/model-cache concurrency checks, real-cloud opt-in failure matrices, and a published compatibility report. The 1.10.1-rc.1 package passed the complete compatibility matrix with no additional provider defects.
 
 1.10.0
 - Add WithTieredView(...) on roots and descendants so the provider can create and maintain hot/cold union views without registering duplicate CLR read models; add ToTieredView(...) so separate read-only contexts receive equivalent provider-derived partition predicates with a physical contract marker that rejects independently deployed partition-plan drift; support explicit names, shared descendants, every existing archive maintenance path, local file-pruning evidence, and disposable object-storage coverage.

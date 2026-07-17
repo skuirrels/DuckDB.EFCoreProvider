@@ -40,49 +40,49 @@ dotnet run --project samples/Quickstart
 
 For the DuckLake backend profile, run `dotnet run --project samples/DuckLake`.
 
-### Configure an invoice model
+### Configure a record model
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
 
-builder.Services.AddDbContext<BillingContext>(options =>
-    options.UseDuckDB("Data Source=billing.duckdb"));
+builder.Services.AddDbContext<SampleContext>(options =>
+    options.UseDuckDB("Data Source=sample.duckdb"));
 
-public sealed class BillingContext(DbContextOptions<BillingContext> options)
+public sealed class SampleContext(DbContextOptions<SampleContext> options)
     : DbContext(options)
 {
-    public DbSet<Invoice> Invoices => Set<Invoice>();
-    public DbSet<InvoiceLine> InvoiceLines => Set<InvoiceLine>();
+    public DbSet<Record> Records => Set<Record>();
+    public DbSet<RecordPart> RecordParts => Set<RecordPart>();
 }
 
-public sealed class Invoice
+public sealed class Record
 {
     public int Id { get; set; }
-    public required string InvoiceNumber { get; set; }
-    public DateOnly IssuedOn { get; set; }
-    public ICollection<InvoiceLine> InvoiceLines { get; } = [];
+    public required string ExternalKey { get; set; }
+    public DateOnly CreatedOn { get; set; }
+    public ICollection<RecordPart> RecordParts { get; } = [];
 }
 
-public sealed class InvoiceLine
+public sealed class RecordPart
 {
     public int Id { get; set; }
-    public int InvoiceId { get; set; }
+    public int RecordId { get; set; }
     public required string Description { get; set; }
-    public int Quantity { get; set; }
-    public decimal UnitPrice { get; set; }
-    public Invoice Invoice { get; set; } = null!;
+    public int Position { get; set; }
+    public decimal Metric { get; set; }
+    public Record Record { get; set; } = null!;
 }
 ```
 
-EF Core conventions map `Invoice` and `InvoiceLine` as a one-to-many aggregate. Standard LINQ and change tracking apply:
+EF Core conventions map `Record` and `RecordPart` as a one-to-many aggregate. Standard LINQ and change tracking apply:
 
 ```csharp
-var invoice = await db.Invoices
+var record = await db.Records
     .AsNoTracking()
-    .Include(current => current.InvoiceLines)
-    .SingleAsync(current => current.InvoiceNumber == "INV-1001");
+    .Include(current => current.RecordParts)
+    .SingleAsync(current => current.ExternalKey == "record-1001");
 
-var total = invoice.InvoiceLines.Sum(line => line.Quantity * line.UnitPrice);
+var aggregateMetric = record.RecordParts.Sum(part => part.Metric);
 ```
 
 ## DuckLake backend profile
@@ -197,28 +197,28 @@ Use `UseAutoIncrement()` for DuckDB-backed generated integer keys. The provider 
 using DuckDB.EFCoreProvider.Extensions;
 using Microsoft.EntityFrameworkCore;
 
-public class InvoicesContext : DbContext
+public class RecordsContext : DbContext
 {
-    public DbSet<Invoice> Invoices => Set<Invoice>();
+    public DbSet<Record> Records => Set<Record>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
-        => options.UseDuckDB("Data Source=invoices.duckdb");
+        => options.UseDuckDB("Data Source=records.duckdb");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Invoice>(entity =>
+        modelBuilder.Entity<Record>(entity =>
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).UseAutoIncrement();
-            entity.Property(e => e.CustomerReference).IsConcurrencyToken();
+            entity.Property(e => e.ReferenceCode).IsConcurrencyToken();
         });
     }
 }
 
-public class Invoice
+public class Record
 {
     public int Id { get; set; }
-    public required string CustomerReference { get; set; }
+    public required string ReferenceCode { get; set; }
 }
 ```
 
@@ -230,15 +230,15 @@ Map an entity directly to a file (or glob pattern) and DuckDB reads it as a tabl
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
 
-[FromParquet("data/invoices/*.parquet")]
-public class InvoiceSnapshot
+[FromParquet("data/records/*.parquet")]
+public class RecordSnapshot
 {
     public int Id { get; set; }
-    public required string CustomerReference { get; set; }
+    public required string ReferenceCode { get; set; }
 }
 
-[FromCsv("data/customers.csv")]
-public class Customer
+[FromCsv("data/groups.csv")]
+public class Group
 {
     public int Id { get; set; }
     public required string Name { get; set; }
@@ -253,8 +253,8 @@ public class AuditEvent
 
 public class AnalyticsContext : DbContext
 {
-    public DbSet<InvoiceSnapshot> InvoiceSnapshots => Set<InvoiceSnapshot>();
-    public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<RecordSnapshot> RecordSnapshots => Set<RecordSnapshot>();
+    public DbSet<Group> Groups => Set<Group>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
@@ -269,8 +269,8 @@ using DuckDB.EFCoreProvider.Extensions;
 
 protected override void OnModelCreating(ModelBuilder modelBuilder)
 {
-    modelBuilder.Entity<InvoiceSnapshot>().FromParquet("data/invoices/*.parquet");
-    modelBuilder.Entity<Customer>().FromCsv("data/customers.csv");
+    modelBuilder.Entity<RecordSnapshot>().FromParquet("data/records/*.parquet");
+    modelBuilder.Entity<Group>().FromCsv("data/groups.csv");
     modelBuilder.Entity<AuditEvent>().FromJsonFile("data/events.json");
 }
 ```
@@ -280,21 +280,21 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 The [tiered-storage compatibility matrix](docs/TIERED-STORAGE-COMPATIBILITY.md) lists the supported registration,
 partition, query, lifecycle, and object-store combinations and their acceptance requirements.
 
-Keep recent invoices hot in the writable DuckDB file and archive older invoices and their lines to
+Keep recent records hot in the writable DuckDB file and archive older records and their parts to
 hive-partitioned Parquet. The offload is **idempotent and crash-safe**. Full guide:
 [docs/TIERED-STORAGE.md](docs/TIERED-STORAGE.md).
 
 ![A single timeline split by a watermark: rows before it live in the cold Parquet archive, rows at or after it stay hot in the DuckDB file.](docs/images/tiered-storage-boundary.png)
 
-![The cold Parquet archive partitioned first by customer and then by completed month, while recent rows remain in the hot DuckDB file.](docs/images/tiered-storage-partitions.png)
+![The cold Parquet archive partitioned first by group and then by effective month, while recent rows remain in the hot DuckDB file.](docs/images/tiered-storage-partitions.svg)
 
-The application may expose two invoice query paths:
+The application may expose two record query paths:
 
-- `Invoices` queries the normal `Invoice` entity in the hot DuckDB table. It supports writes, relationships,
-  and `Include(i => i.Lines)`.
-- `InvoiceHistory` queries a keyless `InvoiceHistory` model across the hot table and Parquet archive.
+- `Records` queries the normal `Record` entity in the hot DuckDB table. It supports writes, relationships,
+  and `Include(i => i.Parts)`.
+- `RecordHistory` queries a keyless `RecordHistory` model across the hot table and Parquet archive.
 
-`.WithReadModel<InvoiceHistory>()` connects the `InvoiceHistory` model to the provider-generated hot+cold view.
+`.WithReadModel<RecordHistory>()` connects the `RecordHistory` model to the provider-generated hot+cold view.
 When the application does not want a duplicate CLR projection, `.WithTieredView()` creates and maintains the same
 physical view without adding another entity type to this EF model. A separate keyless context can then map the
 application's existing entity type to that view.
@@ -304,27 +304,27 @@ using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
 
-public class BillingContext : DbContext
+public class SampleContext : DbContext
 {
-    // Hot Invoice entities.
-    public DbSet<Invoice> Invoices => Set<Invoice>();
+    // Hot Record entities.
+    public DbSet<Record> Records => Set<Record>();
 
-    // Read-only Invoice rows from hot DuckDB + cold Parquet.
-    public DbSet<InvoiceHistory> InvoiceHistory => Set<InvoiceHistory>();
+    // Read-only Record rows from hot DuckDB + cold Parquet.
+    public DbSet<RecordHistory> RecordHistory => Set<RecordHistory>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
-        => options.UseDuckDB("Data Source=billing.duckdb");
+        => options.UseDuckDB("Data Source=sample.duckdb");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // InvoiceDate defines the watermark; the ordered builder defines the physical Hive hierarchy.
-        modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
+        // EffectiveAt defines the watermark; the ordered builder defines the physical Hive hierarchy.
+        modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "/var/data/archive/records", TierGranularity.Month)
             .PartitionBy(partitions => partitions
-                .By(i => i.CustomerId)
-                .ByMonth(i => i.InvoiceDate))
-            .WithReadModel<InvoiceHistory>()
-            // Cold: InvoiceLines archive together with their Invoice.
-            .Including<InvoiceLine>(i => i.Lines);
+                .By(i => i.GroupId)
+                .ByMonth(i => i.EffectiveAt))
+            .WithReadModel<RecordHistory>()
+            // Cold: RecordParts archive together with their Record.
+            .Including<RecordPart>(i => i.Parts);
     }
 }
 ```
@@ -332,20 +332,20 @@ public class BillingContext : DbContext
 The view-only form keeps the writable model free of duplicate history classes:
 
 ```csharp
-static void ConfigureInvoicePartitions(TieredPartitionBuilder<Invoice> partitions)
-    => partitions.ByMonth(invoice => invoice.InvoiceDate);
+static void ConfigureRecordPartitions(TieredPartitionBuilder<Record> partitions)
+    => partitions.ByMonth(record => record.EffectiveAt);
 
-// Writable owner context: Invoice remains a keyed table entity.
-modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
-    .PartitionBy(ConfigureInvoicePartitions)
-    .WithTieredView() // invoices_tiered
-    .Including<InvoiceLine>(invoice => invoice.Lines, line => line.WithTieredView());
+// Writable owner context: Record remains a keyed table entity.
+modelBuilder.ToTieredStore<Record>(record => record.EffectiveAt, archivePath)
+    .PartitionBy(ConfigureRecordPartitions)
+    .WithTieredView() // records_tiered
+    .Including<RecordPart>(record => record.Parts, part => part.WithTieredView());
 
 // Separate read-only context: keyless mapping plus equivalent provider-derived pruning.
-modelBuilder.Entity<Invoice>(invoice =>
+modelBuilder.Entity<Record>(record =>
 {
-    invoice.ToTieredView("invoices_tiered", ConfigureInvoicePartitions);
-    invoice.Ignore(row => row.Lines); // the application owns navigation treatment and historical joins
+    record.ToTieredView("records_tiered", ConfigureRecordPartitions);
+    record.Ignore(row => row.Parts); // the application owns navigation treatment and historical joins
 });
 ```
 
@@ -357,7 +357,7 @@ whenever it adds a pruning predicate, so a stale or differently mapped context f
 filtering valid history. Refresh the owner-managed views before deploying a reader built against a changed partition
 contract; the read-only context cannot infer model metadata from a different `DbContext` by itself.
 
-`WithTieredView("invoice_history")` selects an explicit unqualified physical name. Repeated registration is
+`WithTieredView("record_history")` selects an explicit unqualified physical name. Repeated registration is
 idempotent when the name agrees; conflicting names fail, including conflicts beneath different roots that share one
 descendant entity. When a custom view is also mapped with `WithReadModel<T>()`, call `WithTieredView(name)` first so
 both registrations use the same physical name. Renaming a deployed view creates the new view but does not drop the
@@ -366,44 +366,44 @@ old object; remove the old view only after its consumers have migrated.
 The lifecycle selector may target `DateTime`, `DateOnly`, or their nullable forms; `NULL` roots
 and their children remain permanently hot until the application supplies a date. When the source system's stable
 identity differs from an EF surrogate primary key,
-add `.MatchBy(i => i.EdcId)` on the root and, independently, a single or anonymous-object composite key on each
+add `.MatchBy(i => i.ExternalKey)` on the root and, independently, a single or anonymous-object composite key on each
 included child that needs it. Match keys require a declared EF key/unique index unless the application explicitly
 uses `TierMatchKeyUniqueness.ExternallyEnforced`; archiveable key values must still be non-null. See the
 [tiered-storage guide](docs/TIERED-STORAGE.md#stable-hotcold-match-keys) for correction/reopen behavior and the
 late-row boundary.
 
-For example, a nullable completion date stays hot while it is `NULL`, the Kafka identity is used instead of a
+For example, a nullable lifecycle date stays hot while it is `NULL`, an external identity is used instead of a
 generated EF key, and the child uses its own composite stable identity:
 
 ```csharp
-modelBuilder.Entity<Invoice>()
-    .HasIndex(invoice => invoice.EdcId)
+modelBuilder.Entity<Record>()
+    .HasIndex(record => record.ExternalKey)
     .IsUnique();
-modelBuilder.Entity<InvoiceLine>()
-    .HasIndex(line => new { line.InvoiceEdcId, line.LineNumber })
+modelBuilder.Entity<RecordPart>()
+    .HasIndex(part => new { part.RecordExternalKey, part.PartNumber })
     .IsUnique();
 
 modelBuilder
-    .ToTieredStore<Invoice>(
-        invoice => invoice.CompletedDate, // DateTime?: NULL remains hot
-        "s3://invoice-archive/invoices",
+    .ToTieredStore<Record>(
+        record => record.EffectiveAt, // DateTime?: NULL remains hot
+        "s3://record-archive/records",
         TierGranularity.Month)
-    .MatchBy(invoice => invoice.EdcId)
+    .MatchBy(record => record.ExternalKey)
     .PartitionBy(partitions => partitions
-        .By(invoice => invoice.OwnerId, "root_owner_id")
-        .ByMonth(invoice => invoice.CompletedDate, "completed_month"))
-    .WithReadModel<InvoiceHistory>()
-    .Including<InvoiceLine>(
-        invoice => invoice.Lines,
-        lines => lines
-            .MatchBy(line => new { line.InvoiceEdcId, line.LineNumber })
-            .WithReadModel<InvoiceLineHistory>());
+        .By(record => record.GroupId, "root_group_id")
+        .ByMonth(record => record.EffectiveAt, "effective_month"))
+    .WithReadModel<RecordHistory>()
+    .Including<RecordPart>(
+        record => record.Parts,
+        parts => parts
+            .MatchBy(part => new { part.RecordExternalKey, part.PartNumber })
+            .WithReadModel<RecordPartHistory>());
 ```
 
-The optional names are physical Hive directory/virtual-column aliases; EF queries continue to use `OwnerId` and
-`CompletedDate`. This is useful when a child already maps a column such as `OwnerId`: naming the inherited root
-partition `root_owner_id` avoids replacing or colliding with the child's own data. For one exact key plus the
-implicit lifecycle bucket, use `.PartitionBy(invoice => invoice.OwnerId, "root_owner_id")`.
+The optional names are physical Hive directory/virtual-column aliases; EF queries continue to use `GroupId` and
+`EffectiveAt`. This is useful when a child already maps a column such as `GroupId`: naming the inherited root
+partition `root_group_id` avoids replacing or colliding with the child's own data. For one exact key plus the
+implicit lifecycle bucket, use `.PartitionBy(record => record.GroupId, "root_group_id")`.
 
 A shared child entity/table can be included beneath multiple independent tiered roots. The provider retains a
 deterministic binding for every root relationship and builds one combined child history view over the hot table
@@ -416,10 +416,10 @@ Parquet write or hot deletion. See
 db.Database.EnsureCreated();                 // creates the control table + hot/cold view
 // (when using Migrate() instead, call db.Database.EnsureTieredStoresCreated() once at startup)
 
-// Move invoices older than one year from hot DuckDB tables to cold Parquet.
-// On successful return, the archived Invoices and InvoiceLines have been deleted from DuckDB.
+// Move records older than one year from hot DuckDB tables to cold Parquet.
+// On successful return, the archived Records and RecordParts have been deleted from DuckDB.
 var archiveCutoff = DateTime.UtcNow.AddYears(-1);
-var result = await db.Database.ArchiveTierAsync<Invoice>(
+var result = await db.Database.ArchiveTierAsync<Record>(
     archiveCutoff,
     new TierArchiveOptions
     {
@@ -444,83 +444,83 @@ foreach (var node in result.Nodes)
 }
 
 // After validating late rows or corrections below the watermark, publish a new immutable cold generation.
-var reconciliation = await db.Database.ReconcileArchiveTierAsync<Invoice>();
+var reconciliation = await db.Database.ReconcileArchiveTierAsync<Record>();
 
 // Limit an approved correction to exact configured root match keys.
-var scoped = await db.Database.ReconcileArchiveTierAsync<Invoice>(
+var scoped = await db.Database.ReconcileArchiveTierAsync<Record>(
     new TierReconciliationOptions
     {
         Scope = TierMaintenanceScope.ForRootMatchKeys(
-            TierRowIdentity.For<Invoice>(
-                new Dictionary<string, object?> { ["EdcId"] = invoiceEdcId })),
+            TierRowIdentity.For<Record>(
+                new Dictionary<string, object?> { ["ExternalKey"] = recordExternalKey })),
     });
 
 // Explicitly remove a provider row; absence from a hot collection is never interpreted as deletion.
-var deleted = await db.Database.ReconcileArchiveTierAsync<Invoice>(
+var deleted = await db.Database.ReconcileArchiveTierAsync<Record>(
     new TierReconciliationOptions
     {
         Tombstones =
         [
-            TierRowIdentity.For<InvoiceLine>(
+            TierRowIdentity.For<RecordPart>(
                 new Dictionary<string, object?>
                 {
-                    ["InvoiceEdcId"] = invoiceEdcId,
-                    ["LineNumber"] = lineNumber,
+                    ["RecordExternalKey"] = recordExternalKey,
+                    ["PartNumber"] = partNumber,
                 }),
         ],
     });
 
 // Restore one archived aggregate graph to mapped hot tables without changing domain values.
-var restored = await db.Database.RestoreArchiveTierAsync<Invoice>(
+var restored = await db.Database.RestoreArchiveTierAsync<Record>(
     new TierRestoreOptions
     {
         Scope = TierMaintenanceScope.ForRootMatchKeys(
-            TierRowIdentity.For<Invoice>(
-                new Dictionary<string, object?> { ["EdcId"] = invoiceEdcId })),
+            TierRowIdentity.For<Record>(
+                new Dictionary<string, object?> { ["ExternalKey"] = recordExternalKey })),
     });
 
 // Operational diagnostics stay bounded.
-var conflicts = await db.Database.GetArchiveConflictsAsync<Invoice>(offset: 0, limit: 100);
-var inventory = await db.Database.GetArchiveGenerationInventoryAsync<Invoice>();
-var preflight = await db.Database.PreflightTieredStorageAsync<Invoice>();
+var conflicts = await db.Database.GetArchiveConflictsAsync<Record>(offset: 0, limit: 100);
+var inventory = await db.Database.GetArchiveGenerationInventoryAsync<Record>();
+var preflight = await db.Database.PreflightTieredStorageAsync<Record>();
 
-// Invoices: hot only, with their InvoiceLines. Parquet is not queried.
-var hotInvoices = await db.Invoices
-    .Include(i => i.Lines)
+// Records: hot only, with their RecordParts. Parquet is not queried.
+var hotRecords = await db.Records
+    .Include(i => i.Parts)
     .ToListAsync();
 
-// InvoiceHistory: hot + Parquet. No timestamp filter is required.
-var allInvoices = await db.InvoiceHistory.ToListAsync();
+// RecordHistory: hot + Parquet. No timestamp filter is required.
+var allRecords = await db.RecordHistory.ToListAsync();
 
-// InvoiceHistory with a date range: DuckDB can skip irrelevant monthly Parquet data.
+// RecordHistory with a date range: DuckDB can skip irrelevant monthly Parquet data.
 var from = new DateTime(2024, 1, 1);
 var toExclusive = new DateTime(2024, 4, 1);
-var rangedInvoices = await db.InvoiceHistory
-    .Where(i => i.InvoiceDate >= from && i.InvoiceDate < toExclusive)
+var rangedRecords = await db.RecordHistory
+    .Where(i => i.EffectiveAt >= from && i.EffectiveAt < toExclusive)
     .ToListAsync();
 ```
 
-The `InvoiceDate` filter is optional. With the declared `CustomerId` → invoice-month layout, customer-only queries
-scan that customer's month partitions; adding a date range lets DuckDB prune to the relevant months. The order is
+The `EffectiveAt` filter is optional. With the declared `GroupId` → record-month layout, group-only queries
+scan that group's month partitions; adding a date range lets DuckDB prune to the relevant months. The order is
 application-defined: reversing the builder calls reverses the directory hierarchy. The shorter
-`.PartitionBy(i => i.CustomerId)` form means an exact customer key followed by an implicit lifecycle month/day
+`.PartitionBy(i => i.GroupId)` form means an exact group key followed by an implicit lifecycle month/day
 bucket.
 
-Notice `ArchiveTierAsync<Invoice>` (and `PurgeArchiveOlderThan<Invoice>`) take **no path** — only the cutoff. The
-*where* (the archive path) and the *which date* (the timestamp property) come from the `ToTieredStore<Invoice>(...)`
+Notice `ArchiveTierAsync<Record>` (and `PurgeArchiveOlderThan<Record>`) take **no path** — only the cutoff. The
+*where* (the archive path) and the *which date* (the timestamp property) come from the `ToTieredStore<Record>(...)`
 configuration, looked up by the root type; the runtime call supplies only the *when*. The cutoff is an exclusive
 `DateTime` boundary, not a duration. The provider aligns it down to the configured granularity: with
-`TierGranularity.Month`, `new DateTime(2025, 7, 15)` becomes `2025-07-01`, and rows with an `InvoiceDate` before
+`TierGranularity.Month`, `new DateTime(2025, 7, 15)` becomes `2025-07-01`, and rows with an `EffectiveAt` before
 July are archived. To archive all of June 2025, pass `new DateTime(2025, 7, 1)`. Each table in the aggregate archives
-under `<archivePath>/<table>/CustomerId=…/InvoiceDate_month=…/`, and the generated views read back from the same
+under `<archivePath>/<table>/GroupId=…/EffectiveAt_month=…/`, and the generated views read back from the same
 path, so reads and writes always agree on the location. Partition configuration exists only on the aggregate root;
 declared children inherit the root values and order.
 
 `ArchiveTierAsync` is a complete hot-to-cold move, not a copy-only operation. It writes the root and all declared
 children to Parquet, advances the watermark, refreshes the hot+cold views, and then deletes the archived rows from
 the hot DuckDB tables before returning successfully. No separate `RemoveRange`, `ExecuteDelete`, or SQL `DELETE`
-is required. Queries through `Invoices` stop seeing those rows because that set is hot-only; queries through
-`InvoiceHistory` continue seeing them through Parquet.
+is required. Queries through `Records` stop seeing those rows because that set is hot-only; queries through
+`RecordHistory` continue seeing them through Parquet.
 
 Run `ArchiveTierAsync` from a scheduled job in the writing process (DuckDB is single-writer).
 Scheduling the cutoff one complete day/period behind the clock provides an ingestion grace window. It reduces
@@ -548,11 +548,11 @@ DuckDB transaction; a failed publication leaves the previous generation active a
 
 #### Archiving versus purging
 
-`PurgeArchiveOlderThan<Invoice>` serves a different, optional retention phase: it permanently deletes cold Parquet
+`PurgeArchiveOlderThan<Record>` serves a different, optional retention phase: it permanently deletes cold Parquet
 partitions older than its cutoff. It does not delete hot rows, move rows to Parquet, or change the archive watermark.
 Call it only after `ArchiveTierAsync` completes successfully, and normally give it an older cutoff.
 
-For example, to keep invoices hot for 12 months and then cold for another 24 months:
+For example, to keep records hot for 12 months and then cold for another 24 months:
 
 ```csharp
 var now = DateTime.UtcNow;
@@ -560,12 +560,12 @@ var now = DateTime.UtcNow;
 // 0-12 months old: remain in hot DuckDB.
 // More than 12 months old: move to Parquet and delete from the hot tables.
 var archiveCutoff = now.AddMonths(-12);
-await db.Database.ArchiveTierAsync<Invoice>(archiveCutoff);
+await db.Database.ArchiveTierAsync<Record>(archiveCutoff);
 
 // 12-36 months old: remain in cold Parquet.
 // More than 36 months old: permanently delete from cold Parquet.
 var purgeCutoff = now.AddMonths(-36); // equivalently: archiveCutoff.AddMonths(-24)
-db.Database.PurgeArchiveOlderThan<Invoice>(purgeCutoff);
+db.Database.PurgeArchiveOlderThan<Record>(purgeCutoff);
 ```
 
 Do not use the same cutoff for both operations or calculate the purge boundary with
@@ -593,22 +593,22 @@ no S3 credentials needed):
 
 ```bash
 # Hot: rows physically in the DuckDB file, plus the watermark that splits hot from cold.
-duckdb tiered_sample.duckdb -c "SELECT count(*) FROM Invoices; SELECT * FROM __duckdb_tier_control;"
+duckdb tiered_sample.duckdb -c "SELECT count(*) FROM Records; SELECT * FROM __duckdb_tier_control;"
 
 # Cold: the Parquet the archive actually wrote (S3 mode: mc ls --recursive local/tier).
-ls -R tiered_sample_archive/invoices/Invoices
+ls -R tiered_sample_archive/records/Records
 
 # The view is exactly hot + cold — count all three side by side:
 duckdb tiered_sample.duckdb -c "
-SELECT (SELECT count(*) FROM Invoices)                                     AS hot_duckdb,
-       (SELECT count(*) FROM read_parquet('tiered_sample_archive/invoices/Invoices/**/*.parquet',
+SELECT (SELECT count(*) FROM Records)                                     AS hot_duckdb,
+       (SELECT count(*) FROM read_parquet('tiered_sample_archive/records/Records/**/*.parquet',
                                           hive_partitioning = true))       AS cold_parquet,
-       (SELECT count(*) FROM Invoices_tiered)                              AS union_view;"
+       (SELECT count(*) FROM Records_tiered)                              AS union_view;"
 #  hot_duckdb + cold_parquet == union_view   (e.g. 13 + 6 == 19)
 ```
 
-`EXPLAIN SELECT * FROM Invoices_tiered` makes the union structural: a `UNION` of a `SEQ_SCAN` on the hot
-`Invoices` table beside a `READ_PARQUET` over the archive. (In local mode the sample runs a retention purge at
+`EXPLAIN SELECT * FROM Records_tiered` makes the union structural: a `UNION` of a `SEQ_SCAN` on the hot
+`Records` table beside a `READ_PARQUET` over the archive. (In local mode the sample runs a retention purge at
 the end, so some archived partitions are already gone when you look — `hot + cold == union` still holds, with
 fewer cold rows; remote modes skip the purge, so you see the full archive.)
 
@@ -641,10 +641,10 @@ more than it's worth, opt out with `.WithoutHotChildFilter()`; child views becom
 and the next `ArchiveTierAsync` still self-heals any transient double-count.
 
 ```csharp
-modelBuilder.ToTieredStore<Invoice>(i => i.InvoiceDate, "/var/data/archive/invoices", TierGranularity.Month)
+modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "/var/data/archive/records", TierGranularity.Month)
     .WithoutHotChildFilter()                        // trade the crash-window guard for faster child reads
-    .WithReadModel<InvoiceHistory>()
-    .Including<InvoiceLine>(i => i.Lines, line => line.WithReadModel<InvoiceLineReport>());
+    .WithReadModel<RecordHistory>()
+    .Including<RecordPart>(i => i.Parts, part => part.WithReadModel<RecordPartReport>());
 ```
 
 ### Bulk insert
