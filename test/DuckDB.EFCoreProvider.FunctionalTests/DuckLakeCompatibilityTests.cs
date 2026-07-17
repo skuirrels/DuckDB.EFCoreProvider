@@ -937,7 +937,7 @@ public sealed class DuckLakeCompatibilityTests
 
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = "SELECT count(*), sum(quantity) FROM items;";
+                command.CommandText = "SELECT count(*), CAST(sum(quantity) AS BIGINT) FROM items;";
                 using var reader = command.ExecuteReader();
                 Assert.True(reader.Read());
                 Assert.Equal(2L, reader.GetInt64(0));
