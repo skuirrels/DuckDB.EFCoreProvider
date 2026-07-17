@@ -1,6 +1,7 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
+using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -116,6 +117,7 @@ public class DuckDBModelValidator : RelationalModelValidator
             .Where(entityType => entityType.GetTieredStoreRole() == "Root" && entityType.GetTableName() is not null)
             .ToArray();
         ValidateUniqueRootControlKeys(roots);
+        ValidateTieredViewNames(model);
         var rootPartitionColumns = roots
             .ToDictionary(
                 entityType => entityType.Name,
@@ -198,6 +200,7 @@ public class DuckDBModelValidator : RelationalModelValidator
         }
 
         ValidateNoOverlappingArchivePaths(rootArchives);
+        _ = DuckDBTierPartitionPruningMetadata.ResolveAll(model);
     }
 
     private static void ValidateUniqueRootControlKeys(IReadOnlyList<IEntityType> roots)
@@ -226,6 +229,53 @@ public class DuckDBModelValidator : RelationalModelValidator
             $"Tiered-storage roots {rootNames} use the same control key '{duplicate.Key}'. Each configured root "
             + "must have a unique control key because watermarks, active generations, and archive contracts are "
             + "persisted by that key.");
+    }
+
+    private static void ValidateTieredViewNames(IModel model)
+    {
+        var tieredViews = model.GetEntityTypes()
+            .Where(entityType => entityType.GetTieredStoreRole() is not null)
+            .Select(entityType => (Entity: entityType, View: entityType.GetTieredStoreView()))
+            .Where(entry => entry.View is not null)
+            .Select(entry => (entry.Entity, View: entry.View!))
+            .ToArray();
+
+        var duplicate = tieredViews
+            .GroupBy(entry => entry.View, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Select(entry => entry.Entity.Name).Distinct(StringComparer.Ordinal).Count() > 1);
+        if (duplicate is not null)
+        {
+            var entities = string.Join(
+                ", ",
+                duplicate.OrderBy(entry => entry.Entity.Name, StringComparer.Ordinal)
+                    .Select(entry => $"'{entry.Entity.DisplayName()}'"));
+            throw new InvalidOperationException(
+                $"Tiered entities {entities} target the same physical view '{duplicate.Key}'. Each physical tiered "
+                + "entity must use a distinct view; a descendant shared by multiple roots remains one entity and may "
+                + "reuse its one entity-wide view.");
+        }
+
+        var tableNames = model.GetEntityTypes()
+            .Select(entityType => entityType.GetTableName())
+            .OfType<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var providerTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            DuckDBTierControl.ControlTable,
+            DuckDBTierControl.GenerationTable,
+            DuckDBTierControl.GenerationNodeTable,
+            DuckDBTierControl.GenerationFileTable,
+        };
+
+        foreach (var (entity, view) in tieredViews)
+        {
+            if (tableNames.Contains(view) || providerTables.Contains(view))
+            {
+                throw new InvalidOperationException(
+                    $"Tiered entity '{entity.DisplayName()}' targets view '{view}', but that name is already used by "
+                    + "a mapped table or provider-owned tier metadata table. Choose a distinct tiered view name.");
+            }
+        }
     }
 
     private static IReadOnlyList<string> ValidateRootPartitionProperties(

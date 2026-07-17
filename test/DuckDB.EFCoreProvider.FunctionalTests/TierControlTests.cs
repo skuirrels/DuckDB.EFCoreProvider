@@ -71,14 +71,16 @@ public sealed class TierControlTests
     [Fact]
     public void ViewSql_casts_hive_partition_values_back_to_their_mapped_store_types()
     {
+        DuckDBTierPartitionColumn[] partitions =
+        [
+            new("CustomerId", "INTEGER"),
+            new("AmountBand", "DECIMAL(10,2)"),
+            new("SnapshotAt", "TIMESTAMP"),
+        ];
         var sql = DuckDBTierControl.ViewSql(
             Sql, "events_tiered", "events", null, [.. Columns, "CustomerId", "AmountBand", "SnapshotAt"],
             ["Id"], "Ts", "events_tiered", "archive/events", TierGranularity.Month, includeCold: true,
-            [
-                new DuckDBTierPartitionColumn("CustomerId", "INTEGER"),
-                new DuckDBTierPartitionColumn("AmountBand", "DECIMAL(10,2)"),
-                new DuckDBTierPartitionColumn("SnapshotAt", "TIMESTAMP"),
-            ]);
+            partitions);
 
         Assert.Contains(
             "SELECT * REPLACE ("
@@ -86,6 +88,7 @@ public sealed class TierControlTests
             + "CAST(\"AmountBand\" AS DECIMAL(10,2)) AS \"AmountBand\", "
             + "CAST(\"SnapshotAt\" AS TIMESTAMP) AS \"SnapshotAt\")",
             sql);
+        Assert.Contains(DuckDBTierPartitionContract.GetValidationColumn(partitions), sql);
     }
 
     [Fact]

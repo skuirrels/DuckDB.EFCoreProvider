@@ -285,13 +285,16 @@ hive-partitioned Parquet. The offload is **idempotent and crash-safe**. Full gui
 
 ![The cold Parquet archive partitioned first by customer and then by completed month, while recent rows remain in the hot DuckDB file.](docs/images/tiered-storage-partitions.png)
 
-The application exposes exactly two invoice query paths:
+The application may expose two invoice query paths:
 
 - `Invoices` queries the normal `Invoice` entity in the hot DuckDB table. It supports writes, relationships,
   and `Include(i => i.Lines)`.
 - `InvoiceHistory` queries a keyless `InvoiceHistory` model across the hot table and Parquet archive.
 
 `.WithReadModel<InvoiceHistory>()` connects the `InvoiceHistory` model to the provider-generated hot+cold view.
+When the application does not want a duplicate CLR projection, `.WithTieredView()` creates and maintains the same
+physical view without adding another entity type to this EF model. A separate keyless context can then map the
+application's existing entity type to that view.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
@@ -322,6 +325,40 @@ public class BillingContext : DbContext
     }
 }
 ```
+
+The view-only form keeps the writable model free of duplicate history classes:
+
+```csharp
+static void ConfigureInvoicePartitions(TieredPartitionBuilder<Invoice> partitions)
+    => partitions.ByMonth(invoice => invoice.InvoiceDate);
+
+// Writable owner context: Invoice remains a keyed table entity.
+modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+    .PartitionBy(ConfigureInvoicePartitions)
+    .WithTieredView() // invoices_tiered
+    .Including<InvoiceLine>(invoice => invoice.Lines, line => line.WithTieredView());
+
+// Separate read-only context: keyless mapping plus equivalent provider-derived pruning.
+modelBuilder.Entity<Invoice>(invoice =>
+{
+    invoice.ToTieredView("invoices_tiered", ConfigureInvoicePartitions);
+    invoice.Ignore(row => row.Lines); // the application owns navigation treatment and historical joins
+});
+```
+
+`ToTieredView(...)` records the same physical partition plan in the read-only model, so predicates on source
+properties receive the same provider-derived Hive-bucket predicates as queries in the tier-owning model. Reusing one
+configuration delegate keeps both declarations aligned. The provider also publishes a contract marker derived from
+the resolved physical columns, order, transforms, aliases, and store types. A read-only query references that marker
+whenever it adds a pruning predicate, so a stale or differently mapped context fails explicitly instead of silently
+filtering valid history. Refresh the owner-managed views before deploying a reader built against a changed partition
+contract; the read-only context cannot infer model metadata from a different `DbContext` by itself.
+
+`WithTieredView("invoice_history")` selects an explicit unqualified physical name. Repeated registration is
+idempotent when the name agrees; conflicting names fail, including conflicts beneath different roots that share one
+descendant entity. When a custom view is also mapped with `WithReadModel<T>()`, call `WithTieredView(name)` first so
+both registrations use the same physical name. Renaming a deployed view creates the new view but does not drop the
+old object; remove the old view only after its consumers have migrated.
 
 The lifecycle selector may target `DateTime`, `DateOnly`, or their nullable forms; `NULL` roots
 and their children remain permanently hot until the application supplies a date. When the source system's stable
@@ -855,8 +892,8 @@ Operational implications:
 
 Contributions are welcome. If your organisation relies on this provider, contributing fixes, tests, and review is the most effective way to keep it healthy.
 
-## Project lineage
+## Acknowledgments
 
-This project began as a fork of [DuckDB.EFCore](https://github.com/denis-ivanov/DuckDB.EFCore) by [Denis Ivanov](https://github.com/denis-ivanov), and substantial portions of the code derive from that project. It is distributed under the same MIT licence; the original copyright notice is retained in [LICENSE](LICENSE).
+This project began as a fork of [**DuckDB.EFCore**](https://github.com/denis-ivanov/DuckDB.EFCore) by [**Denis Ivanov**](https://github.com/denis-ivanov). It is distributed under the same MIT licence; the original copyright notice is retained in [**LICENSE**](https://www.nuget.org/packages/DuckDB.EFCoreProvider.NTS).
 
 This provider is built on top of the [DuckDB.NET](https://github.com/Giorgi/DuckDB.NET) ADO.NET provider.

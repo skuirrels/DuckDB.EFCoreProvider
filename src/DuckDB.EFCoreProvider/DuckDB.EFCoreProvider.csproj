@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.9.0</PackageVersion>
-    <FileVersion>1.9.0</FileVersion>
-    <Version>1.9.0</Version>
+    <PackageVersion>1.10.0</PackageVersion>
+    <FileVersion>1.10.0</FileVersion>
+    <Version>1.10.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,11 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.8.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.9.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.10.0
+- Add WithTieredView(...) on roots and descendants so the provider can create and maintain hot/cold union views without registering duplicate CLR read models; add ToTieredView(...) so separate read-only contexts receive equivalent provider-derived partition predicates with a physical contract marker that rejects independently deployed partition-plan drift; support explicit names, shared descendants, every existing archive maintenance path, local file-pruning evidence, and disposable object-storage coverage.
+
 1.9.0
 - Add explicit physical Hive partition names to tiered-storage exact/year/month/day declarations, including inherited child layouts, typed hot/cold views, persisted layout checks, archive maintenance, and metadata-driven query pruning.
 

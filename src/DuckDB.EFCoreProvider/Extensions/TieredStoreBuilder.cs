@@ -7,7 +7,8 @@ using System.Linq.Expressions;
 namespace DuckDB.EFCoreProvider.Extensions;
 
 /// <summary>
-///     Configures a tiered-storage aggregate root: its cold-reporting read model and its aggregate children.
+///     Configures a tiered-storage aggregate root: its physical tiered view, optional EF read model, and aggregate
+///     children.
 /// </summary>
 /// <typeparam name="TRoot">The aggregate-root entity type.</typeparam>
 public sealed class TieredStoreBuilder<TRoot>
@@ -41,6 +42,21 @@ public sealed class TieredStoreBuilder<TRoot>
         where TReadModel : class
     {
         DuckDBTieredStoreExtensions.MapReadModel(_modelBuilder, _root, typeof(TReadModel));
+        return this;
+    }
+
+    /// <summary>
+    ///     Creates and maintains the root's physical hot+cold union view without registering a separate CLR read
+    ///     model in this EF model. When <paramref name="viewName" /> is omitted, the view is named
+    ///     <c>{table}_tiered</c> as it is for <see cref="WithReadModel{TReadModel}" />.
+    /// </summary>
+    /// <param name="viewName">
+    ///     An optional unqualified DuckDB view name. Repeated registrations for the same entity must resolve to the
+    ///     same name.
+    /// </param>
+    public TieredStoreBuilder<TRoot> WithTieredView(string? viewName = null)
+    {
+        DuckDBTieredStoreExtensions.ConfigureTieredView(_root, viewName);
         return this;
     }
 
@@ -302,7 +318,8 @@ public sealed class TieredPartitionBuilder<TRoot>
 }
 
 /// <summary>
-///     Configures a tiered-storage aggregate child: its cold-reporting read model and any deeper children.
+///     Configures a tiered-storage aggregate child: its physical tiered view, optional EF read model, and any deeper
+///     children.
 /// </summary>
 /// <typeparam name="TChild">The child entity type.</typeparam>
 public sealed class TieredChildBuilder<TChild>
@@ -336,6 +353,20 @@ public sealed class TieredChildBuilder<TChild>
         where TReadModel : class
     {
         DuckDBTieredStoreExtensions.MapReadModel(_modelBuilder, _child, typeof(TReadModel));
+        return this;
+    }
+
+    /// <summary>
+    ///     Creates and maintains this descendant's physical hot+cold union view without registering a separate CLR
+    ///     read model in this EF model. Shared descendants have one entity-wide view across every root binding.
+    /// </summary>
+    /// <param name="viewName">
+    ///     An optional unqualified DuckDB view name. Repeated registrations for the same entity must resolve to the
+    ///     same name.
+    /// </param>
+    public TieredChildBuilder<TChild> WithTieredView(string? viewName = null)
+    {
+        DuckDBTieredStoreExtensions.ConfigureTieredView(_child, viewName);
         return this;
     }
 

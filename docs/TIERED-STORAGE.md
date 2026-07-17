@@ -76,6 +76,71 @@ public class BillingContext : DbContext
 }
 ```
 
+### Generate views without duplicate CLR read models
+
+`WithReadModel<T>()` remains useful when one context should expose a dedicated analytical projection. If the
+application already has a separate historical-query context, request only the physical union views instead:
+
+```csharp
+static void ConfigureInvoicePartitions(TieredPartitionBuilder<Invoice> partitions)
+    => partitions.ByMonth(invoice => invoice.InvoiceDate);
+
+// Writable context: keyed tables, relationships, and provider-owned archive maintenance.
+modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+    .PartitionBy(ConfigureInvoicePartitions)
+    .WithTieredView() // inferred as invoices_tiered
+    .Including<InvoiceLine>(invoice => invoice.Lines, line => line.WithTieredView());
+```
+
+`WithTieredView()` sets the same physical view metadata used by `WithReadModel<T>()`, but it does not register a
+second CLR entity. It is available on roots, children, and deeper descendants. The provider creates a hot-only view
+before the first archive and replaces it with the normal hot/Parquet union whenever archive publication,
+reconciliation, restoration, compaction, contract rewrite, purge, or startup repair changes the active cold
+representation.
+
+The consuming application can map its existing entities in another context because EF models are context-specific:
+
+```csharp
+public sealed class BillingHistoryContext : DbContext
+{
+    public DbSet<Invoice> Invoices => Set<Invoice>();
+    public DbSet<InvoiceLine> Lines => Set<InvoiceLine>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Invoice>(invoice =>
+        {
+            invoice.ToTieredView("invoices_tiered", ConfigureInvoicePartitions);
+            invoice.Ignore(row => row.Lines);
+        });
+        modelBuilder.Entity<InvoiceLine>(line =>
+        {
+            line.HasNoKey();
+            line.ToView("invoice_lines_tiered");
+            line.Ignore(row => row.Invoice);
+        });
+    }
+}
+```
+
+The provider owns the physical views, hot/cold suppression, archive schema checks, refresh lifecycle, and derivation
+of Hive-bucket predicates in both EF models. The history context owns navigation treatment, historical joins,
+authorization, tenant isolation, and query bounds. `ToTieredView(...)` makes the existing application type keyless,
+maps it to the generated view, and records the complete physical partition plan in the read-only model. Reuse one
+partition configuration delegate in `PartitionBy(...)` and `ToTieredView(...)` to keep the declarations aligned.
+Because contexts and deployments can still evolve independently, each generated root view also exposes a
+provider-owned contract marker derived from the resolved partition columns, order, transforms, aliases, and store
+types. The read-only query path references that marker whenever it adds a pruning predicate. A stale or mismatched
+reader therefore fails explicitly instead of applying a potentially incorrect filter. A plain `ToView(...)` mapping
+still relies only on DuckDB's native pushdown and does not satisfy this pruning requirement.
+
+An explicit unqualified name may be supplied, for example `.WithTieredView("invoice_history")`. Names cannot collide
+with mapped tables, provider tier metadata tables, or another tiered entity's physical view. One descendant shared
+by several archive roots has one entity-wide combined view, so repeated explicit registrations must agree. Calling
+`WithTieredView(customName)` before `WithReadModel<T>()` maps the optional read model to that same custom view;
+attempting to change an already registered name fails. A later deployment may create a replacement name, but the
+provider does not drop the previous physical view because consumers may still depend on it.
+
 **Each root aggregate declares its own timestamp property** — the first argument to `ToTieredStore<TRoot>` (here,
 `i => i.InvoiceDate`). It governs that aggregate's entire hot/cold boundary and is chosen **per aggregate**, so
 `Invoice` can tier on `InvoiceDate` and `AuditEvent` on `OccurredOn` — each independent, each
@@ -160,7 +225,12 @@ var february = db.InvoiceHistory.Where(i =>
 ```
 
 With `CustomerId` then `InvoiceDate` month configured, DuckDB can prune to that customer's February directory.
-The same applies when those Hive keys are aliased; the provider adds predicates for the configured physical names.
+This works unchanged for `WithReadModel<T>()` in the tier-owning context and equivalently for an existing entity
+mapped by `ToTieredView(...)` in a separate read-only context. The same applies when those Hive keys are aliased;
+the provider adds predicates for the configured physical names. Before applying those read-only predicates, it also
+references the owner-generated partition-contract marker. If the owner and reader resolve different physical plans,
+or the owner view has not yet been refreshed after upgrading to a contract-aware provider version, DuckDB reports the
+missing provider marker instead of returning an incomplete result.
 If the date predicate is omitted, it scans that customer's completed-date partitions; if the customer predicate is
 omitted, it scans the matching month across customers. Predicates beneath `OR` are deliberately not inferred,
 because adding a bucket filter there could change query semantics.
@@ -606,7 +676,8 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
 - **Reference vs child.** Only `.Including`ed navigations archive. Archived rows are **snapshots** and may hold
   foreign keys into still-live tables (an archived line still points at a `Product` that could later be
   deleted) — correct for financial history, but a semantic to be aware of.
-- **Read-models mirror the hot columns.** A read-model whose column is missing on the source is rejected at
+- **Views project the hot columns.** Physical views are generated from every mapped scalar source column whether or
+  not an EF read model is registered. A read-model whose column is missing on the source is rejected at
   model validation. Adding a column to the hot entity is safe (cold rows read `NULL` after the view is
   regenerated) when the new column is nullable; removing, renaming, retyping, or adding a required archived
   column needs the affected archive migrated.
@@ -618,7 +689,8 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
   archive path, match keys, include layout, mapped names, or mapped store types after cold files exist requires
   rewriting or clearing that aggregate's archive. The provider records the complete versioned partition and
   aggregate contract before copying files, so crash-orphaned or mixed layouts are rejected rather than opened
-  with an incompatible schema.
+  with an incompatible schema. Separate `ToTieredView(...)` contexts additionally validate their resolved pruning
+  contract against a provider-owned marker in the physical view whenever pruning is applied.
 - **Child view guard.** A child row is shown as hot only when its root is hot (a semijoin), which keeps reads
   correct in the brief window if an archive crashes between its `COPY` and delete. For deep aggregates you can
   opt out with `ToTieredStore(...).WithoutHotChildFilter()` — child views become a plain `SELECT * FROM child`

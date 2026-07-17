@@ -2,6 +2,22 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.10.0
+
+- Add `.WithTieredView()` to tiered roots and descendants. It requests the same provider-managed hot/Parquet union
+  view as `.WithReadModel<T>()` without registering another CLR type in the owner EF model. The default physical
+  name remains `{table}_tiered`; an unqualified custom name may be supplied. Shared descendants retain one combined
+  entity-wide view across all root bindings, and existing read-model registrations remain compatible.
+- Cover hot-only creation, local and object-store archive publication, nested and shared descendants, stable-key
+  reconciliation, compaction, restoration, contract rewrite, purge refresh, full source-column projection, and a
+  separate keyless context that maps the application's existing CLR types to the generated views.
+- Add `ToTieredView(...)` for that separate read-only context. It records the owner's physical partition plan and
+  feeds the existing query postprocessor so provider-derived Hive-bucket predicates and Parquet pruning are
+  equivalent in both contexts. Generated root views carry a provider-owned partition-contract marker; read-only
+  pruning references the expected marker so independently deployed contexts fail explicitly on column, ordering,
+  transform, alias, or store-type drift instead of silently filtering valid history. Local and MinIO acceptance
+  coverage exercises the separate context and local `EXPLAIN ANALYZE` proves equivalent file pruning.
+
 ## 1.9.0
 
 - Add explicit Hive partition names to tiered-storage partition declarations. Exact-value shorthand supports

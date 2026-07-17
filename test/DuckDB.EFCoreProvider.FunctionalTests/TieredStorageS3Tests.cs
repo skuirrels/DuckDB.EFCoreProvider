@@ -1,10 +1,10 @@
-using System.Data.Common;
-using System.Text;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using System.Data.Common;
+using System.Text;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -56,6 +56,64 @@ public sealed class TieredStorageS3Tests : IDisposable
     [MinIoFact]
     public Task Archives_and_reads_an_aggregate_through_the_gcs_scheme()
         => ArchiveRoundTrip<GcsMarker>(ObjectStoreOptions.FromMinIoEnvironment("gcs")!, "gcs");
+
+    [MinIoFact]
+    public async Task Tiered_view_without_a_read_model_round_trips_through_disposable_object_storage()
+    {
+        var objectStore = ObjectStoreOptions.FromMinIoEnvironment("s3")!;
+        var archivePath = objectStore.CreateArchivePath("s3");
+        var dbPath = Path.Combine(_root, "view-only.duckdb");
+        using (var context = new ObjectStoreViewOnlyContext<ViewOnlyMarker>(dbPath, archivePath, objectStore))
+        {
+            context.Database.EnsureCreated();
+            context.Invoices.Add(new Invoice
+            {
+                Id = 1,
+                ExternalId = "view-only-1",
+                InvoiceDate = new DateTime(2024, 1, 15),
+                Status = "complete",
+            });
+            context.Invoices.Add(new Invoice
+            {
+                Id = 2,
+                ExternalId = "view-only-2",
+                InvoiceDate = new DateTime(2024, 2, 15),
+                Status = "complete",
+            });
+            context.SaveChanges();
+            Assert.Equal(
+                2,
+                context.Database.SqlQueryRaw<long>(
+                    "SELECT count(*) AS \"Value\" FROM object_view_only_history").Single());
+
+            await context.Database.ArchiveTierAsync<Invoice>(new DateTime(2024, 3, 1));
+
+            Assert.Empty(context.Invoices);
+            Assert.Equal(
+                2,
+                context.Database.SqlQueryRaw<long>(
+                    "SELECT count(*) AS \"Value\" FROM object_view_only_history").Single());
+        }
+
+        using (var restarted = new ObjectStoreViewOnlyContext<ViewOnlyMarker>(dbPath, archivePath, objectStore))
+        {
+            restarted.Database.EnsureTieredStoresCreated();
+            Assert.Equal(
+                ["view-only-1", "view-only-2"],
+                restarted.Database.SqlQueryRaw<string>(
+                        "SELECT \"ExternalId\" AS \"Value\" FROM object_view_only_history ORDER BY \"Id\"")
+                    .ToArray());
+        }
+
+        using var history = new ObjectStoreHistoryContext<ViewOnlyMarker>(dbPath, objectStore);
+        var from = new DateTime(2024, 1, 1);
+        var to = new DateTime(2024, 2, 1);
+        var january = history.Invoices.Where(invoice => invoice.InvoiceDate >= from && invoice.InvoiceDate < to);
+        var sql = january.ToQueryString();
+        Assert.Contains(DuckDBTierPartitionContract.ColumnPrefix, sql);
+        Assert.Contains("InvoiceDate_month", sql);
+        Assert.Equal(["view-only-1"], january.Select(invoice => invoice.ExternalId).ToArray());
+    }
 
     [MinIoFact]
     public Task Minio_archive_failure_retry_and_schema_evolution_matrix()
@@ -513,6 +571,61 @@ public sealed class TieredStorageS3Tests : IDisposable
         }
     }
 
+    private sealed class ObjectStoreViewOnlyContext<TMarker>(
+        string dbPath,
+        string archivePath,
+        ObjectStoreOptions objectStore) : DbContext
+    {
+        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public string ModelKey => archivePath + "|" + typeof(TMarker).Name;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+        {
+            options.UseDuckDB($"Data Source={dbPath}");
+            options.AddInterceptors(new HttpfsSetupInterceptor(objectStore));
+            options.ReplaceService<IModelCacheKeyFactory, ObjectStoreModelCacheKeyFactory>();
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTable("object_view_only_invoices");
+                builder.HasKey(invoice => invoice.Id);
+                builder.Ignore(invoice => invoice.Lines);
+                builder.Ignore(invoice => invoice.Note);
+            });
+            modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath)
+                .PartitionBy(partitions => partitions.ByMonth(invoice => invoice.InvoiceDate))
+                .WithTieredView("object_view_only_history");
+        }
+    }
+
+    private sealed class ObjectStoreHistoryContext<TMarker>(
+        string dbPath,
+        ObjectStoreOptions objectStore) : DbContext
+    {
+        public DbSet<Invoice> Invoices => Set<Invoice>();
+        public string ModelKey => typeof(TMarker).Name;
+
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+        {
+            options.UseDuckDB($"Data Source={dbPath}");
+            options.AddInterceptors(new HttpfsSetupInterceptor(objectStore));
+            options.ReplaceService<IModelCacheKeyFactory, ObjectStoreModelCacheKeyFactory>();
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Invoice>(builder =>
+            {
+                builder.ToTieredView(
+                    "object_view_only_history",
+                    partitions => partitions.ByMonth(invoice => invoice.InvoiceDate));
+                builder.Ignore(invoice => invoice.Lines);
+                builder.Ignore(invoice => invoice.Note);
+            });
+    }
+
     private sealed class ObjectStoreModelCacheKeyFactory : IModelCacheKeyFactory
     {
         public object Create(DbContext context, bool designTime)
@@ -529,6 +642,8 @@ public sealed class TieredStorageS3Tests : IDisposable
         protected override void OnModelCreating(ModelBuilder modelBuilder)
             => modelBuilder.ToTieredStore<Invoice>(invoice => invoice.InvoiceDate, archivePath, TierGranularity.Month);
     }
+
+    private sealed class ViewOnlyMarker;
 
     private sealed class HttpfsSetupInterceptor(ObjectStoreOptions options) : DbConnectionInterceptor
     {
