@@ -1,7 +1,9 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
@@ -20,15 +22,192 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
 {
     private readonly bool _reverseNullOrderingEnabled;
+    private readonly Stack<IReadOnlyList<TableExpressionBase>> _selectTableStack = new();
 
-    public DuckDBQuerySqlGenerator(QuerySqlGeneratorDependencies dependencies, bool reverseNullOrderingEnabled)
-        : base(dependencies)
-    {
-        _reverseNullOrderingEnabled = reverseNullOrderingEnabled;
-    }
+        public DuckDBQuerySqlGenerator(QuerySqlGeneratorDependencies dependencies, bool reverseNullOrderingEnabled)
+            : base(dependencies)
+        {
+            _reverseNullOrderingEnabled = reverseNullOrderingEnabled;
+        }
 
-    /// <inheritdoc />
-    protected override void GenerateLimitOffset(SelectExpression selectExpression)
+        /// <summary>
+        ///     Overrides <see cref="VisitSelect" /> to push the current select's tables onto a
+        ///     stack so that <see cref="VisitColumn" /> can look up entity metadata by table alias
+        ///     even when <see cref="ColumnExpression.Column" /> is null (which happens for struct
+        ///     sub-fields accessed through navigation/JOIN).
+        /// </summary>
+        protected override Expression VisitSelect(SelectExpression selectExpression)
+        {
+            _selectTableStack.Push(selectExpression.Tables);
+            try
+            {
+                return base.VisitSelect(selectExpression);
+            }
+            finally
+            {
+                _selectTableStack.Pop();
+            }
+        }
+
+        /// <summary>
+        ///     Generates SQL for a column, translating DuckDB STRUCT sub-field mappings to
+        ///     struct field access syntax. When a column's underlying property carries a
+        ///     <c>DuckDB:StructField</c> annotation (set via <c>HasStructField</c>), the SQL
+        ///     output becomes <c>t."StructColumn".field.nestedField</c> instead of
+        ///     <c>t."ColumnName"</c>. This enables SQL-level projection of individual struct
+        ///     sub-fields without encoding the struct path in the column name string.
+        /// </summary>
+        protected override Expression VisitColumn(ColumnExpression columnExpression)
+        {
+            // Primary path: Column metadata is populated — read the struct field annotation
+            // directly from the column's property mappings.
+            if (columnExpression.Column is { PropertyMappings: { Count: > 0 } propertyMappings }
+                && GetStructFieldInfo(propertyMappings) is { } structInfo)
+            {
+                EmitStructFieldAccess(columnExpression, structInfo);
+                return columnExpression;
+            }
+
+            // Fallback: Column is null — this happens when struct sub-fields are accessed
+            // through navigation properties (JOINs). EF Core doesn't populate Column for
+            // joined columns, so we traverse the current SelectExpression's tables to find
+            // the entity type by alias, then search its properties (including complex type
+            // sub-properties) for one whose column name matches and carries our annotation.
+            if (columnExpression.Column is null && _selectTableStack.Count > 0)
+            {
+                foreach (var tables in _selectTableStack)
+                {
+                    if (TryFindStructFieldInfo(tables, columnExpression.TableAlias, columnExpression.Name) is { } fallbackInfo)
+                    {
+                        EmitStructFieldAccess(columnExpression, fallbackInfo);
+                        return columnExpression;
+                    }
+                }
+            }
+
+            return base.VisitColumn(columnExpression);
+        }
+
+        /// <summary>
+        ///     Emits <c>alias."StructColumn".nestedField.leafFieldName</c> for a DuckDB struct
+        ///     sub-field access. The struct column name is delimited; intermediate and leaf
+        ///     field names are appended unquoted (DuckDB struct field names are case-sensitive
+        ///     lowercase identifiers).
+        /// </summary>
+        private void EmitStructFieldAccess(ColumnExpression columnExpression, DuckDBStructFieldInfo structInfo)
+        {
+            Sql.Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(columnExpression.TableAlias))
+               .Append(".")
+               .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structInfo.StructColumnName));
+
+            foreach (var field in structInfo.NestedFieldNames)
+            {
+                Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(field));
+            }
+
+            // Leaf field name comes from the column mapping (HasColumnName).
+            Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(columnExpression.Name));
+        }
+
+        /// <summary>
+        ///     Scans a column's property mappings for a <c>DuckDB:StructField</c>
+        ///     annotation and returns the associated <see cref="DuckDBStructFieldInfo" /> if found.
+        /// </summary>
+        private static DuckDBStructFieldInfo? GetStructFieldInfo(
+            IReadOnlyList<IColumnMappingBase> propertyMappings)
+        {
+            for (var i = 0; i < propertyMappings.Count; i++)
+            {
+                if (propertyMappings[i].Property.GetStructFieldInfo() is { } info)
+                {
+                    return info;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        ///     Searches the tables of a SelectExpression for the one matching
+        ///     <paramref name="tableAlias" />, then traverses its entity type's properties
+        ///     (including complex type sub-properties) for a property whose column name
+        ///     matches <paramref name="columnName" /> and carries a <c>DuckDB:StructField</c>
+        ///     annotation.
+        /// </summary>
+        private static DuckDBStructFieldInfo? TryFindStructFieldInfo(
+            IReadOnlyList<TableExpressionBase> tables,
+            string tableAlias,
+            string columnName)
+        {
+            foreach (var table in tables)
+            {
+                TableExpression? tableExpression = table switch
+                {
+                    TableExpression te => te,
+                    JoinExpressionBase jeb when jeb.Table is TableExpression te => te,
+                    _ => null
+                };
+
+                if (tableExpression is null || tableExpression.Alias != tableAlias)
+                {
+                    continue;
+                }
+
+                foreach (var mapping in tableExpression.Table.EntityTypeMappings)
+                {
+                    if (mapping.TypeBase is not IEntityType entityType)
+                    {
+                        continue;
+                    }
+
+                    var storeObject = StoreObjectIdentifier.Table(
+                        tableExpression.Table.Name,
+                        tableExpression.Table.Schema);
+
+                    if (FindStructFieldInfoRecursive(entityType, storeObject, columnName) is { } info)
+                    {
+                        return info;
+                    }
+                }
+
+                // Found the table for this alias but no struct field info — stop searching.
+                break;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        ///     Recursively searches an entity type or complex type's properties (and nested
+        ///     complex properties) for one whose column name matches <paramref name="columnName" />
+        ///     and carries a <c>DuckDB:StructField</c> annotation.
+        /// </summary>
+        private static DuckDBStructFieldInfo? FindStructFieldInfoRecursive(
+            ITypeBase typeBase,
+            in StoreObjectIdentifier storeObject,
+            string columnName)
+        {
+            foreach (var property in typeBase.GetProperties())
+            {
+                if (property.GetColumnName(storeObject) == columnName
+                    && property.GetStructFieldInfo() is { } info)
+                {
+                    return info;
+                }
+            }
+
+            foreach (var complexProperty in typeBase.GetComplexProperties())
+            {
+                if (FindStructFieldInfoRecursive(complexProperty.ComplexType, storeObject, columnName) is { } info)
+                {
+                    return info;
+                }
+            }
+
+            return null;
+        }
+
+        /// <inheritdoc />
+        protected override void GenerateLimitOffset(SelectExpression selectExpression)
     {
         if (selectExpression.Limit is not null)
         {

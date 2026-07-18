@@ -72,6 +72,7 @@ public static class DuckDBEntityTypeExtensions
         where TEntity : class
         => entityTypeBuilder.FromDuckDBFile("read_json", path);
 
+
     private static EntityTypeBuilder<TEntity> FromDuckDBFile<TEntity>(
         this EntityTypeBuilder<TEntity> entityTypeBuilder,
         string function,
