@@ -59,16 +59,18 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
     /// </summary>
     protected override Expression VisitColumn(ColumnExpression columnExpression)
     {
-        // Primary path: Column metadata is populated � read the struct field annotation
-        // directly from the column's property mappings.
+        // Primary path: Column metadata is populated — read the struct field annotation
+        // directly from the column's property mappings. Guard against non-direct-table
+        // columns (subqueries), which already project flat columns.
         if (columnExpression.Column is { PropertyMappings: { Count: > 0 } propertyMappings }
+            && IsDirectTableColumn(columnExpression)
             && GetStructFieldInfo(propertyMappings) is { } structInfo)
         {
             EmitStructFieldAccess(columnExpression, structInfo);
             return columnExpression;
         }
 
-        // Fallback: Column is null � this happens when struct sub-fields are accessed
+        // Fallback: Column is null — this happens when struct sub-fields are accessed
         // through navigation properties (JOINs). EF Core doesn't populate Column for
         // joined columns, so we traverse the current SelectExpression's tables to find
         // the entity type by alias, then search its properties (including complex type
@@ -86,6 +88,74 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         }
 
         return base.VisitColumn(columnExpression);
+    }
+
+    /// <summary>
+    ///     Returns <see langword="true" /> when a column originates from a direct table
+    ///     reference (e.g. a <c>read_parquet</c> file source) rather than a subquery
+    ///     projection. Struct field access syntax should only be emitted for direct-table
+    ///     columns; subqueries already project flat columns with no underlying struct.
+    /// </summary>
+    /// <remarks>
+    ///     Looks up the column's table alias in the current <see cref="SelectExpression" />
+    ///     FROM clause. If the alias resolves to a <see cref="TableExpression" /> or
+    ///     <see cref="FromSqlExpression" />, struct fields are present. If it resolves to a
+    ///     <see cref="SelectExpression" /> (subquery), the struct was already flattened.
+    ///     When no matching table is found the method conservatively returns
+    ///     <see langword="true" /> (outer references and synthesized columns are assumed
+    ///     to originate from direct sources).
+    /// </remarks>
+    private bool IsDirectTableColumn(ColumnExpression columnExpression)
+    {
+        if (_selectTableStack.Count == 0)
+        {
+            return true;
+        }
+
+        foreach (var tables in _selectTableStack)
+        {
+            foreach (var table in tables)
+            {
+                if (!AliasMatches(table, columnExpression.TableAlias))
+                {
+                    continue;
+                }
+
+                // Unwrap joins to get the actual source table.
+                TableExpressionBase source = table is JoinExpressionBase join ? join.Table : table;
+
+                // Only TableExpression and FromSqlExpression have struct columns.
+                return source is TableExpression || source is FromSqlExpression;
+            }
+        }
+
+        // No matching alias: outer reference or projection-only column — allow.
+        return true;
+    }
+
+    private static bool AliasMatches(TableExpressionBase table, string alias)
+    {
+        if (table is TableExpression te)
+        {
+            return te.Alias == alias;
+        }
+
+        if (table is FromSqlExpression fromSql)
+        {
+            return fromSql.Alias == alias;
+        }
+
+        if (table is SelectExpression se)
+        {
+            return se.Alias == alias;
+        }
+
+        if (table is JoinExpressionBase join)
+        {
+            return AliasMatches(join.Table, alias);
+        }
+
+        return false;
     }
 
     /// <summary>
