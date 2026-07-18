@@ -50,6 +50,66 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
     }
 
     /// <summary>
+    ///     Generates SQL for a projection, forcing the <c>AS "alias"</c> clause for
+    ///     columns that map to DuckDB STRUCT sub-fields. The base implementation skips
+    ///     the alias when <c>column.Name == projection.Alias</c>, but for struct fields
+    ///     the emitted SQL (e.g. <c>o."Shipping"."cost"</c>) is named <c>cost</c> by
+    ///     DuckDB while the EF column name remains <c>shipping_cost</c> — the names
+    ///     don't match the DuckDB output, so omitting the alias causes "column not
+    ///     found" errors in outer subquery references.
+    /// </summary>
+    protected override Expression VisitProjection(ProjectionExpression projectionExpression)
+    {
+        if (projectionExpression.Expression is ColumnExpression column
+            && ColumnHasStructFieldInfo(column))
+        {
+            // Visit generates the struct field access SQL (e.g. o."Shipping"."cost")
+            Visit(column);
+
+            // Always emit the alias since the DuckDB output column name (e.g. "cost")
+            // differs from the EF projection alias (e.g. "shipping_cost").
+            if (projectionExpression.Alias != string.Empty)
+            {
+                Sql.Append(AliasSeparator)
+                    .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(projectionExpression.Alias));
+            }
+
+            return projectionExpression;
+        }
+
+        return base.VisitProjection(projectionExpression);
+    }
+
+    /// <summary>
+    ///     Returns <see langword="true" /> when the given column expression maps to a
+    ///     DuckDB STRUCT sub-field via either the primary path (column metadata) or the
+    ///     fallback path (entity type traversal).
+    /// </summary>
+    private bool ColumnHasStructFieldInfo(ColumnExpression columnExpression)
+    {
+        // Primary path: column has populated metadata with struct field annotation.
+        if (columnExpression.Column is { PropertyMappings: { Count: > 0 } propertyMappings }
+            && GetStructFieldInfo(propertyMappings) is not null)
+        {
+            return true;
+        }
+
+        // Fallback path: column metadata is null (JOIN/navigation), search entity types.
+        if (columnExpression.Column is null && _selectTableStack.Count > 0)
+        {
+            foreach (var tables in _selectTableStack)
+            {
+                if (TryFindStructFieldInfo(tables, columnExpression.TableAlias, columnExpression.Name) is not null)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     ///     Generates SQL for a column, translating DuckDB STRUCT sub-field mappings to
     ///     struct field access syntax. When a column's underlying property carries a
     ///     <c>DuckDB:StructField</c> annotation (set via <c>HasStructField</c>), the SQL

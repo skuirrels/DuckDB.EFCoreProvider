@@ -386,21 +386,22 @@ public class DuckDBStructFieldConventionTest
     [Fact]
     public void Deeply_nested_subquery_with_struct_fields_does_not_throw_binder_error()
     {
-        // This test exercises the scenario where struct field access would
-        // previously be emitted on subquery aliases (e.g. s."Location"."city"
-        // when s is a subquery, not a direct table). DuckDB rejects struct
-        // access on subqueries because the struct fields are already projected
-        // as flat columns. The fix in DuckDBQuerySqlGenerator.VisitColumn
-        // detects non-direct-table columns and skips struct access.
+        // Exercises struct field access at 3+ levels of nesting. Previously:
+        // 1. Struct access was emitted on subquery aliases (causing DuckDB
+        //    "Referenced table not found" binder errors) — fixed by
+        //    IsDirectTableColumn() guard in VisitColumn.
+        // 2. Projection alias AS clauses were skipped because
+        //    column.Name == projection.Alias matched, but the actual DuckDB
+        //    SQL output name (leaf field) differed — fixed by overriding
+        //    VisitProjection to force AS for struct columns.
 
         var builder = new DbContextOptionsBuilder<NestedQueryContext>()
             .UseDuckDB("DataSource=:memory:")
             .EnableServiceProviderCaching(false);
         using var context = new NestedQueryContext(builder.Options);
 
-        // Create tables with struct columns and insert test data. We use the
-        // underlying DuckDB connection directly to ensure all DDL/DML share
-        // the same in-memory database session.
+        // Use the underlying DuckDB connection directly for DDL/DML to avoid
+        // string.Format issues with DuckDB struct literals ({...}).
         var conn = context.Database.GetDbConnection();
         if (conn.State != ConnectionState.Open)
         {
@@ -440,10 +441,6 @@ public class DuckDBStructFieldConventionTest
             """;
         cmd.ExecuteNonQuery();
 
-        // Execute a deeply nested query that projects struct sub-fields through
-        // multiple navigation levels. This generates subqueries (SelectExpression)
-        // in the FROM clause where struct field access was previously incorrectly
-        // emitted on subquery aliases.
         var results = context.Customers
             .OrderBy(c => c.Id)
             .Select(c => new
@@ -457,24 +454,31 @@ public class DuckDBStructFieldConventionTest
                     Cost = o.Shipping.Cost,
                     Method = o.Shipping.Method,
                     Zip = o.Shipping.Address.Zip,
-                    // Navigate back to customer — generates additional subquery nesting
-                    CustomerCity = o.Customer!.Location.City
+                    DeeperOrders = o.Customer!.Orders.OrderBy(o2 => o2.Id).Select(o2 => new
+                    {
+                        o2.Id,
+                        o2.Shipping.Cost,
+                        CustomerCity = o2.Customer!.Location.City
+                    }).ToList()
                 }).ToList()
             })
             .ToList();
 
-        // Verify the results are correct — no DuckDB binder error occurred.
         Assert.Equal(2, results.Count);
-
-        Assert.Equal(1, results[0].Id);
         Assert.Equal("NYC", results[0].City);
         Assert.Equal("US", results[0].Country);
         Assert.Equal(2, results[0].Orders.Count);
+
         Assert.Equal(10, results[0].Orders[0].Id);
         Assert.Equal(9.99, results[0].Orders[0].Cost);
         Assert.Equal("air", results[0].Orders[0].Method);
         Assert.Equal("10001", results[0].Orders[0].Zip);
-        Assert.Equal("NYC", results[0].Orders[0].CustomerCity);
+        Assert.Equal(2, results[0].Orders[0].DeeperOrders.Count);
+        Assert.Equal(10, results[0].Orders[0].DeeperOrders[0].Id);
+        Assert.Equal("NYC", results[0].Orders[0].DeeperOrders[0].CustomerCity);
+        Assert.Equal(11, results[0].Orders[0].DeeperOrders[1].Id);
+        Assert.Equal("NYC", results[0].Orders[0].DeeperOrders[1].CustomerCity);
+
         Assert.Equal(11, results[0].Orders[1].Id);
         Assert.Equal("ground", results[0].Orders[1].Method);
 
@@ -483,7 +487,9 @@ public class DuckDBStructFieldConventionTest
         Assert.Single(results[1].Orders);
         Assert.Equal(20, results[1].Orders[0].Id);
         Assert.Equal("SW1A", results[1].Orders[0].Zip);
-        Assert.Equal("London", results[1].Orders[0].CustomerCity);
+        Assert.Single(results[1].Orders[0].DeeperOrders);
+        Assert.Equal(20, results[1].Orders[0].DeeperOrders[0].Id);
+        Assert.Equal("London", results[1].Orders[0].DeeperOrders[0].CustomerCity);
     }
 
     [Fact]
