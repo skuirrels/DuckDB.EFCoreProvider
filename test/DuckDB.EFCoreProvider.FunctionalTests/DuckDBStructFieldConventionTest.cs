@@ -3,6 +3,7 @@ using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using System.Data;
 using Xunit;
 
 namespace DuckDB.EFCoreProvider.FunctionalTests;
@@ -318,6 +319,171 @@ public class DuckDBStructFieldConventionTest
         Assert.Null(GetStructFieldInfo(notStructCityProp));
         // EF Core defaults column name to property name — the convention didn't override it.
         Assert.Equal("City", notStructCityProp.GetColumnName());
+    }
+
+    // ─── Models for deeply nested subquery struct access test ──────────
+
+    private sealed class NestedCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public required NestedLocation Location { get; set; }
+        public List<NestedOrder> Orders { get; set; } = [];
+    }
+
+    private sealed class NestedOrder
+    {
+        public int Id { get; set; }
+        public int CustomerId { get; set; }
+        [UseStructMapping]
+        public required NestedShipping Shipping { get; set; }
+        public NestedCustomer? Customer { get; set; }
+    }
+
+    private sealed class NestedLocation
+    {
+        public required string City { get; set; }
+        public required string Country { get; set; }
+    }
+
+    private sealed class NestedShipping
+    {
+        public double Cost { get; set; }
+        public required string Method { get; set; }
+        public required NestedAddress Address { get; set; }
+    }
+
+    private sealed class NestedAddress
+    {
+        public required string Zip { get; set; }
+    }
+
+    private sealed class NestedQueryContext(DbContextOptions<NestedQueryContext> options)
+        : DbContext(options)
+    {
+        public DbSet<NestedCustomer> Customers => Set<NestedCustomer>();
+        public DbSet<NestedOrder> Orders => Set<NestedOrder>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NestedCustomer>(e =>
+            {
+                e.ToTable("Customers");
+                e.ComplexProperty(c => c.Location);
+                e.HasMany(c => c.Orders)
+                    .WithOne(o => o.Customer)
+                    .HasForeignKey(o => o.CustomerId);
+            });
+
+            modelBuilder.Entity<NestedOrder>(e =>
+            {
+                e.ToTable("Orders");
+                e.ComplexProperty(o => o.Shipping);
+            });
+        }
+    }
+
+    [Fact]
+    public void Deeply_nested_subquery_with_struct_fields_does_not_throw_binder_error()
+    {
+        // This test exercises the scenario where struct field access would
+        // previously be emitted on subquery aliases (e.g. s."Location"."city"
+        // when s is a subquery, not a direct table). DuckDB rejects struct
+        // access on subqueries because the struct fields are already projected
+        // as flat columns. The fix in DuckDBQuerySqlGenerator.VisitColumn
+        // detects non-direct-table columns and skips struct access.
+
+        var builder = new DbContextOptionsBuilder<NestedQueryContext>()
+            .UseDuckDB("DataSource=:memory:")
+            .EnableServiceProviderCaching(false);
+        using var context = new NestedQueryContext(builder.Options);
+
+        // Create tables with struct columns and insert test data. We use the
+        // underlying DuckDB connection directly to ensure all DDL/DML share
+        // the same in-memory database session.
+        var conn = context.Database.GetDbConnection();
+        if (conn.State != ConnectionState.Open)
+        {
+            conn.Open();
+        }
+        using var cmd = conn.CreateCommand();
+
+        cmd.CommandText = """
+            CREATE TABLE Customers (
+                Id INTEGER,
+                Location STRUCT(City VARCHAR, Country VARCHAR)
+            )
+            """;
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            CREATE TABLE Orders (
+                Id INTEGER,
+                CustomerId INTEGER,
+                Shipping STRUCT(Cost DOUBLE, Method VARCHAR, Address STRUCT(Zip VARCHAR))
+            )
+            """;
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            INSERT INTO Customers VALUES
+            (1, {City: 'NYC', Country: 'US'}),
+            (2, {City: 'London', Country: 'UK'})
+            """;
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            INSERT INTO Orders VALUES
+            (10, 1, {Cost: 9.99, Method: 'air', Address: {Zip: '10001'}}),
+            (11, 1, {Cost: 4.50, Method: 'ground', Address: {Zip: '10002'}}),
+            (20, 2, {Cost: 12.00, Method: 'air', Address: {Zip: 'SW1A'}})
+            """;
+        cmd.ExecuteNonQuery();
+
+        // Execute a deeply nested query that projects struct sub-fields through
+        // multiple navigation levels. This generates subqueries (SelectExpression)
+        // in the FROM clause where struct field access was previously incorrectly
+        // emitted on subquery aliases.
+        var results = context.Customers
+            .OrderBy(c => c.Id)
+            .Select(c => new
+            {
+                c.Id,
+                City = c.Location.City,
+                Country = c.Location.Country,
+                Orders = c.Orders.OrderBy(o => o.Id).Select(o => new
+                {
+                    o.Id,
+                    Cost = o.Shipping.Cost,
+                    Method = o.Shipping.Method,
+                    Zip = o.Shipping.Address.Zip,
+                    // Navigate back to customer — generates additional subquery nesting
+                    CustomerCity = o.Customer!.Location.City
+                }).ToList()
+            })
+            .ToList();
+
+        // Verify the results are correct — no DuckDB binder error occurred.
+        Assert.Equal(2, results.Count);
+
+        Assert.Equal(1, results[0].Id);
+        Assert.Equal("NYC", results[0].City);
+        Assert.Equal("US", results[0].Country);
+        Assert.Equal(2, results[0].Orders.Count);
+        Assert.Equal(10, results[0].Orders[0].Id);
+        Assert.Equal(9.99, results[0].Orders[0].Cost);
+        Assert.Equal("air", results[0].Orders[0].Method);
+        Assert.Equal("10001", results[0].Orders[0].Zip);
+        Assert.Equal("NYC", results[0].Orders[0].CustomerCity);
+        Assert.Equal(11, results[0].Orders[1].Id);
+        Assert.Equal("ground", results[0].Orders[1].Method);
+
+        Assert.Equal(2, results[1].Id);
+        Assert.Equal("London", results[1].City);
+        Assert.Single(results[1].Orders);
+        Assert.Equal(20, results[1].Orders[0].Id);
+        Assert.Equal("SW1A", results[1].Orders[0].Zip);
+        Assert.Equal("London", results[1].Orders[0].CustomerCity);
     }
 
     [Fact]
