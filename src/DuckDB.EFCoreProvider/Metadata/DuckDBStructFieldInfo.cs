@@ -33,12 +33,18 @@ public sealed class DuckDBStructFieldInfo
     /// <param name="nestedFieldNames">
     ///     Zero or more intermediate struct field names between the struct column and the leaf field.
     ///     For a single-level struct this is empty. For <c>t."Shipping".address.street</c> it would be
-    ///     <c>{ "address" }</c> — the leaf field <c>"street"</c> comes from <c>HasColumnName</c>.
+    ///     <c>{ "address" }</c> — the leaf field <c>"street"</c> comes from <c>LeafFieldName</c>.
     /// </param>
-    public DuckDBStructFieldInfo(string structColumnName, params string[] nestedFieldNames)
+    /// <param name="leafFieldName">
+    ///     The DuckDB leaf field name inside the struct (e.g. <c>"city"</c>). When <see langword="null" />,
+    ///     the SQL generator falls back to the property's column name. The convention sets this to a
+    ///     lowercased version of the CLR property name.
+    /// </param>
+    public DuckDBStructFieldInfo(string structColumnName, string[] nestedFieldNames, string? leafFieldName = null)
     {
         StructColumnName = structColumnName;
         NestedFieldNames = nestedFieldNames;
+        LeafFieldName = leafFieldName;
     }
 
     /// <summary>The physical DuckDB STRUCT column name.</summary>
@@ -46,21 +52,29 @@ public sealed class DuckDBStructFieldInfo
 
     /// <summary>
     ///     Intermediate struct field names between the struct column and the leaf field (may be empty for
-    ///     single-level structs). The leaf field name itself comes from the property's column mapping.
+    ///     single-level structs).
     /// </summary>
     public IReadOnlyList<string> NestedFieldNames { get; }
+
+    /// <summary>
+    ///     The DuckDB struct leaf field name (e.g. <c>"city"</c>). When <see langword="null" />, the SQL
+    ///     generator uses the property's column name instead.
+    /// </summary>
+    public string? LeafFieldName { get; }
 
     /// <inheritdoc />
     public override bool Equals(object? obj)
         => obj is DuckDBStructFieldInfo other
            && StructColumnName == other.StructColumnName
-           && NestedFieldNames.SequenceEqual(other.NestedFieldNames);
+           && NestedFieldNames.SequenceEqual(other.NestedFieldNames)
+           && LeafFieldName == other.LeafFieldName;
 
     /// <inheritdoc />
     public override int GetHashCode()
     {
         var hash = new HashCode();
         hash.Add(StructColumnName);
+        hash.Add(LeafFieldName);
         foreach (var field in NestedFieldNames)
         {
             hash.Add(field);

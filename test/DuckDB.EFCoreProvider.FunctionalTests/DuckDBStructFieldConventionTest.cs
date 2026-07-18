@@ -71,6 +71,19 @@ public class DuckDBStructFieldConventionTest
         public required CustomerLocation NotStructMapped { get; set; }
     }
 
+    // ── Collision scenario: two struct properties with same leaf names ─
+
+    private sealed class EntityWithCollidingStructLeaves
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public required CustomerLocation Billing { get; set; }
+
+        [UseStructMapping]
+        public required CustomerLocation Shipping { get; set; }
+    }
+
     // ─── Helper: build and finalize a model with DuckDB conventions ─────
 
     /// <summary>Navigates an entity → complex property → complex type → sub-property.</summary>
@@ -125,10 +138,11 @@ public class DuckDBStructFieldConventionTest
         var cityProp = GetComplexScalar(model, typeof(CustomerWithAttribute), "Location", "City");
         Assert.NotNull(cityProp);
 
-        Assert.Equal("city", cityProp.GetColumnName());
+        Assert.Equal("location_city", cityProp.GetColumnName());
         var info = GetStructFieldInfo(cityProp);
         Assert.NotNull(info);
         Assert.Equal("Location", info.StructColumnName);
+        Assert.Equal("city", info.LeafFieldName);
         Assert.Empty(info.NestedFieldNames);
     }
 
@@ -140,10 +154,11 @@ public class DuckDBStructFieldConventionTest
                 e.ComplexProperty(c => c.Location).UseStructMapping()));
 
         var cityProp = GetComplexScalar(model, typeof(CustomerWithFluent), "Location", "City");
-        Assert.Equal("city", cityProp.GetColumnName());
+        Assert.Equal("location_city", cityProp.GetColumnName());
         var info = GetStructFieldInfo(cityProp);
         Assert.NotNull(info);
         Assert.Equal("Location", info.StructColumnName);
+        Assert.Equal("city", info.LeafFieldName);
     }
 
     [Fact]
@@ -171,10 +186,11 @@ public class DuckDBStructFieldConventionTest
 
         // Top-level scalar under Shipping: Method
         var methodProp = shippingType.FindProperty("Method")!;
-        Assert.Equal("method", methodProp.GetColumnName());
+        Assert.Equal("shipping_method", methodProp.GetColumnName());
         var methodInfo = GetStructFieldInfo(methodProp);
         Assert.NotNull(methodInfo);
         Assert.Equal("Shipping", methodInfo.StructColumnName);
+        Assert.Equal("method", methodInfo.LeafFieldName);
         Assert.Empty(methodInfo.NestedFieldNames);
 
         // Nested complex: Shipping → Address → Street
@@ -182,17 +198,19 @@ public class DuckDBStructFieldConventionTest
         var addressType = addressComplex.ComplexType;
 
         var streetProp = addressType.FindProperty("Street")!;
-        Assert.Equal("street", streetProp.GetColumnName());
+        Assert.Equal("shipping_address_street", streetProp.GetColumnName());
         var streetInfo = GetStructFieldInfo(streetProp);
         Assert.NotNull(streetInfo);
         Assert.Equal("Shipping", streetInfo.StructColumnName);
+        Assert.Equal("street", streetInfo.LeafFieldName);
         Assert.Equal(["address"], streetInfo.NestedFieldNames);
 
         var zipProp = addressType.FindProperty("Zip")!;
-        Assert.Equal("zip", zipProp.GetColumnName());
+        Assert.Equal("shipping_address_zip", zipProp.GetColumnName());
         var zipInfo = GetStructFieldInfo(zipProp);
         Assert.NotNull(zipInfo);
         Assert.Equal("Shipping", zipInfo.StructColumnName);
+        Assert.Equal("zip", zipInfo.LeafFieldName);
         Assert.Equal(["address"], zipInfo.NestedFieldNames);
     }
 
@@ -205,9 +223,13 @@ public class DuckDBStructFieldConventionTest
                     loc.Property(l => l.City).HasStructField("CustomerLocation"))));
 
         var cityProp = GetComplexScalar(model, typeof(CustomerWithAttribute), "Location", "City");
+        // Column name is still set by the convention (not overridden by HasStructField).
+        Assert.Equal("location_city", cityProp.GetColumnName());
         var info = GetStructFieldInfo(cityProp);
         Assert.NotNull(info);
         Assert.Equal("CustomerLocation", info.StructColumnName);
+        // LeafFieldName is set by the convention since HasStructField didn't provide one.
+        Assert.Equal("city", info.LeafFieldName);
     }
 
     [Fact]
@@ -231,8 +253,10 @@ public class DuckDBStructFieldConventionTest
             mb.Entity<CustomerWithAttribute>().ComplexProperty(c => c.Location));
 
         var countryProp = GetComplexScalar(model, typeof(CustomerWithAttribute), "Location", "Country");
-        Assert.Equal("country", countryProp.GetColumnName());
-        Assert.NotNull(GetStructFieldInfo(countryProp));
+        Assert.Equal("location_country", countryProp.GetColumnName());
+        var info = GetStructFieldInfo(countryProp);
+        Assert.NotNull(info);
+        Assert.Equal("country", info.LeafFieldName);
     }
 
     [Fact]
@@ -257,9 +281,11 @@ public class DuckDBStructFieldConventionTest
         var streetProp = address.ComplexType.FindProperty("Street");
         Assert.NotNull(streetProp);
 
+        Assert.Equal("shipping_address_street", streetProp.GetColumnName());
         var info = GetStructFieldInfo(streetProp);
         Assert.NotNull(info);
         Assert.Equal("ShippingInfo", info.StructColumnName);
+        Assert.Equal("street", info.LeafFieldName);
         Assert.Equal(["addr"], info.NestedFieldNames);
     }
 
@@ -280,10 +306,11 @@ public class DuckDBStructFieldConventionTest
         // StructMapped.City -> should have struct annotation
         var structCityProp = GetComplexScalar(model, typeof(EntityWithMixedComplexProperties),
             "StructMapped", "City");
-        Assert.Equal("city", structCityProp.GetColumnName());
+        Assert.Equal("structMapped_city", structCityProp.GetColumnName());
         var structInfo = GetStructFieldInfo(structCityProp);
         Assert.NotNull(structInfo);
         Assert.Equal("StructMapped", structInfo.StructColumnName);
+        Assert.Equal("city", structInfo.LeafFieldName);
 
         // NotStructMapped.City -> should NOT have struct annotation
         var notStructCityProp = GetComplexScalar(model, typeof(EntityWithMixedComplexProperties),
@@ -291,5 +318,42 @@ public class DuckDBStructFieldConventionTest
         Assert.Null(GetStructFieldInfo(notStructCityProp));
         // EF Core defaults column name to property name — the convention didn't override it.
         Assert.Equal("City", notStructCityProp.GetColumnName());
+    }
+
+    [Fact]
+    public void Same_leaf_name_under_different_struct_columns_gets_unique_ef_column_names()
+    {
+        // Billing.City and Shipping.City share the same CLR property name "City".
+        // The convention must assign unique EF column names (e.g. "billing_city" and
+        // "shipping_city") so EF's relational model treats them as distinct columns,
+        // while both get the correct LeafFieldName "city" for DuckDB SQL generation.
+        var model = BuildModel<EntityWithCollidingStructLeaves>(mb =>
+        {
+            mb.Entity<EntityWithCollidingStructLeaves>(e =>
+            {
+                e.ComplexProperty(c => c.Billing);
+                e.ComplexProperty(c => c.Shipping);
+            });
+        });
+
+        var billingCity = GetComplexScalar(model, typeof(EntityWithCollidingStructLeaves),
+            "Billing", "City");
+        var shippingCity = GetComplexScalar(model, typeof(EntityWithCollidingStructLeaves),
+            "Shipping", "City");
+
+        // Distinct EF column names — no collision.
+        Assert.Equal("billing_city", billingCity.GetColumnName());
+        Assert.Equal("shipping_city", shippingCity.GetColumnName());
+
+        // Both correctly report the same DuckDB leaf field name.
+        var billingInfo = GetStructFieldInfo(billingCity);
+        Assert.NotNull(billingInfo);
+        Assert.Equal("Billing", billingInfo.StructColumnName);
+        Assert.Equal("city", billingInfo.LeafFieldName);
+
+        var shippingInfo = GetStructFieldInfo(shippingCity);
+        Assert.NotNull(shippingInfo);
+        Assert.Equal("Shipping", shippingInfo.StructColumnName);
+        Assert.Equal("city", shippingInfo.LeafFieldName);
     }
 }

@@ -105,8 +105,11 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(field));
         }
 
-        // Leaf field name comes from the column mapping (HasColumnName).
-        Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(columnExpression.Name));
+        // Leaf field name: use the DuckDB-specific name if set, otherwise fall back
+        // to the EF column name (e.g. when configured via explicit HasColumnName).
+        Sql.Append(".").Append(
+            Dependencies.SqlGenerationHelper.DelimitIdentifier(
+                structInfo.LeafFieldName ?? columnExpression.Name));
     }
 
     /// <summary>
