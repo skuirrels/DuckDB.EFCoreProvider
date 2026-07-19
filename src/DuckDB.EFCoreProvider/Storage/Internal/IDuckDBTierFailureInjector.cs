@@ -5,6 +5,10 @@ internal enum DuckDBTierFailurePoint
     AfterCopy,
     AfterPublication,
     AfterNodeDelete,
+    BeforeCopy,
+    BeforeVerify,
+    AfterVerify,
+    BeforePublication,
 }
 
 internal interface IDuckDBTierFailureInjector

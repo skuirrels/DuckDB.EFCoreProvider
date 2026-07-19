@@ -120,6 +120,54 @@ public sealed class TieredStorageS3Tests : IDisposable
         => RunFailureMatrix<MinIoMatrixMarker>(ObjectStoreOptions.FromMinIoEnvironment("s3")!, "s3");
 
     [MinIoFact]
+    public async Task Retention_trim_publishes_an_exact_remote_catalogue_without_deleting_the_input_generation()
+    {
+        var objectStore = ObjectStoreOptions.FromMinIoEnvironment("s3")!;
+        var archivePath = objectStore.CreateArchivePath("s3");
+        var dbPath = Path.Combine(_root, "retention-minio.duckdb");
+        TierArchiveRetentionPlan plan;
+        using (var context = new ObjectStoreContext<RetentionMarker, SchemaV1>(dbPath, archivePath, objectStore))
+        {
+            context.Database.EnsureCreated();
+            SeedRecords(context);
+            await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
+            plan = await context.Database.PlanArchiveRetentionAsync<Record>(
+                new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 4, 1) });
+
+            Assert.Equal(7, plan.Nodes.Single(node => node.EntityType == typeof(Record)).InputRows);
+            Assert.Equal(4, plan.Nodes.Single(node => node.EntityType == typeof(Record)).RetainedRows);
+            Assert.Equal(3, plan.Nodes.Single(node => node.EntityType == typeof(Record)).ExcludedRows);
+
+            var result = await context.Database.PublishArchiveRetentionAsync<Record>(plan);
+
+            Assert.Equal(TierArchiveOperation.RetentionTrim, result.Operation);
+            Assert.Equal(11, context.RecordHistory.Count());
+            Assert.Equal(11, context.PartHistory.Count());
+        }
+
+        using var restarted = new ObjectStoreContext<RetentionMarker, SchemaV1>(dbPath, archivePath, objectStore);
+        restarted.Database.EnsureTieredStoresCreated();
+        Assert.Equal(11, restarted.RecordHistory.Count());
+        Assert.Equal(11, restarted.PartHistory.Count());
+        var inventory = await restarted.Database.GetArchiveGenerationInventoryAsync<Record>();
+        Assert.Equal(plan.ExpectedOutputGenerationId, inventory.ActiveGenerationId);
+        Assert.Contains(
+            inventory.Generations,
+            generation => generation.GenerationId == plan.InputGenerationId
+                          && generation.State == TierArchiveGenerationState.Published
+                          && generation.FileCount > 0);
+        var active = inventory.Generations.Single(generation => generation.State == TierArchiveGenerationState.Active);
+        var files = restarted.Database.SqlQueryRaw<string>(
+                "SELECT file_path AS \"Value\" FROM __duckdb_tier_generation_files "
+                + "WHERE control_key = 'records' AND generation_id = {0} ORDER BY file_path",
+                plan.ExpectedOutputGenerationId)
+            .ToArray();
+        Assert.Equal(active.FileCount, files.Length);
+        Assert.NotEmpty(files);
+        Assert.All(files, file => Assert.Contains(plan.ExpectedOutputGenerationId, file));
+    }
+
+    [MinIoFact]
     public async Task Shared_child_bindings_are_root_scoped_on_disposable_object_storage()
     {
         var objectStore = ObjectStoreOptions.FromMinIoEnvironment("s3")!;
@@ -410,6 +458,7 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed class S3Marker;
     private sealed class GcsMarker;
     private sealed class MinIoMatrixMarker;
+    private sealed class RetentionMarker;
     private sealed class RealAwsMatrixMarker;
     private sealed class RealGcsMatrixMarker;
     private sealed class RealAzureMatrixMarker;

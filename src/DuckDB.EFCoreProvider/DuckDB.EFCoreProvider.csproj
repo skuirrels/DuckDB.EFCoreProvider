@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.10.2</PackageVersion>
-    <FileVersion>1.10.2.0</FileVersion>
-    <Version>1.10.2</Version>
+    <PackageVersion>1.11.0</PackageVersion>
+    <FileVersion>1.11.0.0</FileVersion>
+    <Version>1.11.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,13 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.10.1</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.10.2</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.11.0
+- Add provider-neutral immutable cold-tier retention through fingerprinted planning and verified, atomic generation publication, preserving the previous generation for rollback and separately authorised cleanup.
+- Add bounded first archive publication over an aligned [from, cutoff) lifecycle range, with exact idempotent retry semantics.
+- Add generic local, shared-descendant, month/day, failure-injection, exact-catalogue, MinIO, and catalogue-scale acceptance coverage. The provider does not interpret business retention or automatically delete obsolete remote generations.
+
 1.10.2
 - Replace application-specific tiered-storage entities, identifiers, lifecycle fields, release evidence, and the partition diagram with provider-neutral record examples across the README, guide, sample, validation text, and tests. No public API changes.
 

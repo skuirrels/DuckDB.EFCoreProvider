@@ -528,9 +528,56 @@ changes are rejected as ambiguous rather than inferred.
 ## 5. Retention
 
 ```csharp
-// Delete archived partitions older than 3 years, across every aggregate table.
-int partitionsDeleted = db.Database.PurgeArchiveOlderThan<Record>(DateTime.UtcNow.AddYears(-3));
+TierArchiveRetentionPlan plan =
+    await db.Database.PlanArchiveRetentionAsync<Record>(
+        new TierArchiveRetentionOptions
+        {
+            RetainFrom = retainFromUtc,
+            RetainedPartitionScopes =
+            [
+                // Exact values from the configured root PartitionBy(...) contract.
+                TierMaintenanceScope.ForPartitionValues(
+                    new Dictionary<string, object?> { [nameof(Record.GroupId)] = retainedGroupId }),
+            ],
+        });
+
+// Review/approve plan.Fingerprint, boundary, binding, counts, input/output generations and scopes.
+TierArchiveResult result =
+    await db.Database.PublishArchiveRetentionAsync<Record>(plan);
 ```
+
+Planning is read-only. It starts from the currently active cold generation and validates that the provider's
+persisted exact file catalogue matches the physical files. Publication copies only rows on or after the aligned
+lifecycle boundary plus rows in the exact declared-partition scopes into a new immutable generation. It verifies the
+complete root/descendant graph, stable match keys, row counts, schema/partition contracts, and exact output catalogue,
+then atomically switches the generation metadata and all affected views.
+
+The hot tier is not changed. The input generation remains published and inventory-visible for rollback and a later,
+separately authorised cleanup operation; publication never deletes its local files or remote objects. A stale plan is
+rejected, a deterministic retry is safe before or after publication, and a caller-owned transaction is rejected
+because Parquet writes are external side effects.
+
+The Provider treats `RetainFrom` and `RetainedPartitionScopes` as technical inputs only. It does not decide or infer
+retention periods, legal holds, ownership, tenancy, approvals, or cleanup authorisation. The application must resolve
+those policies before planning and supply only exact values declared by the aggregate's `PartitionBy(...)` contract.
+
+For an explicitly bounded first archive, use:
+
+```csharp
+TierArchiveResult first = await db.Database.BootstrapArchiveTierAsync<Record>(
+    fromInclusive,
+    cutoffExclusive);
+```
+
+Both values use `[fromInclusive, cutoffExclusive)` and the lower bound must align with the configured month/day
+granularity. The provider persists both bounds atomically with the first publication. It accepts an exact retry only
+while the active watermark still equals that original cutoff; after later archive advancement, bootstrap calls are
+rejected and `ArchiveTierAsync` remains the normal forward operation. Rows older than the lower bound stay hot and
+visible.
+
+`PurgeArchiveOlderThan<Record>` remains a local-filesystem-only, in-place physical purge for callers that explicitly
+want that older behavior. It is not used by immutable retention publication and remains unsupported for remote
+archives.
 
 ## 6. Cold storage on S3, Google Cloud Storage, and other object stores
 
@@ -617,12 +664,12 @@ modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "azure://my-container/arc
     .Including<RecordPart>(i => i.Parts, l => l.WithReadModel<RecordPartReport>());
 ```
 
-**Retention on object storage.** Object stores can't delete files through DuckDB, so
-`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive. Enforce retention with the store's
-own age-based expiry instead — an **S3 bucket lifecycle rule**, **GCS Object Lifecycle Management**, or an
-**Azure Blob lifecycle-management policy** on the archive prefix (for example, expire objects under
-`archive/records/` after 7 years). These policies normally use object creation/upload age. If retention must
-follow the partition's logical date, especially for backfilled data, use a prefix-aware external cleanup job.
+**Retention on object storage.** `PlanArchiveRetentionAsync` / `PublishArchiveRetentionAsync` is the safe logical
+retention path: it publishes an exact replacement generation and leaves the old objects untouched. Do not apply a
+blind lifecycle-expiry rule to the active archive prefix because upload age is not the same as the logical lifecycle
+boundary and can remove files still referenced by the active catalogue. `PurgeArchiveOlderThan` continues to throw
+`NotSupportedException` for remote archives. After an obsolete generation appears in cleanup inventory and the
+application separately authorises its deletion, use an object-store cleanup process scoped to that exact generation.
 
 **Try it.** The sample ships a compose file with MinIO and Azurite. MinIO serves both the local S3 mode and the
 GCS interoperability mode, using separate buckets; Azurite serves Azure:
@@ -653,7 +700,8 @@ scripts/test-tiered-storage-s3.sh
 ```
 
 It covers first archive, no-op rerun, restart/read, failure after copy, failure after control/view publication,
-partial child deletion, reconciliation publication failure, and nullable-column schema evolution. The same test
+partial child deletion, reconciliation publication failure, immutable retention publication with an exact remote
+catalogue, and nullable-column schema evolution. The same test
 class runs against a unique disposable real-AWS prefix when `DUCKDB_AWS_S3_TEST_BUCKET` is set. Optional variables
 are `DUCKDB_AWS_S3_TEST_PREFIX`, `DUCKDB_AWS_S3_TEST_REGION`, and the paired
 `DUCKDB_AWS_S3_TEST_KEY`/`DUCKDB_AWS_S3_TEST_SECRET` plus `DUCKDB_AWS_S3_TEST_SESSION_TOKEN`; when explicit keys
@@ -676,7 +724,7 @@ at your buckets/containers (it's configured entirely by `BENCH_*` environment va
 ## Production notes
 
 - **Single writer.** DuckDB allows one writer. Run archive, reconciliation, restoration, compaction, contract
-  rewrite, and `PurgeArchiveOlderThan` from the
+  rewrite, retention planning/publication, and `PurgeArchiveOlderThan` from the
   writing process with no other writer active (a maintenance window or the app's own scheduler).
 - **Absolute archive paths.** DuckDB resolves a relative archive path against the process working directory;
   prefer an absolute path in production. Each table archives under
