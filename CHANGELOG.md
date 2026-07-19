@@ -2,6 +2,23 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.11.0
+
+- Add provider-neutral immutable cold-tier retention. `PlanArchiveRetentionAsync<TRoot>` fingerprints the active
+  generation, exact provider/physical file catalogue, aggregate and partition contracts, aligned lifecycle boundary,
+  exact retained partition scopes, and per-node counts. `PublishArchiveRetentionAsync<TRoot>` copies and verifies the
+  retained root/descendant graph, then atomically publishes a new generation while leaving the input generation
+  available for rollback and separately authorised cleanup. Publication is stale-plan safe, caller-transaction
+  rejecting, deterministic on retry, and covered before/after copy, verify, publication, and restart.
+- Add bounded first publication with `BootstrapArchiveTierAsync<TRoot>(fromInclusive, cutoffExclusive)`. The lower
+  bound must align with the configured month/day granularity and is accepted only for the first archive or its exact
+  idempotent retry; older rows remain in the hot table and therefore remain visible.
+- Add local, shared-descendant, day/month, complete/no-op/partial-scope, failure-injection, exact-catalogue, and MinIO
+  acceptance coverage. The catalogue-scale BenchmarkDotNet fixture supports local and remote S3-compatible archives;
+  its disposable MinIO lane records generated exact-catalogue SQL, query/restart measurements, memory, and concrete
+  LIST/HEAD/GET request counts. The provider assigns no meaning to retention boundaries or exact partition values and
+  never automatically deletes an obsolete remote generation.
+
 ## 1.10.2
 
 - Replace application-specific tiered-storage entities, identifiers, lifecycle fields, release evidence, and the

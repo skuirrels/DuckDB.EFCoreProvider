@@ -64,11 +64,14 @@ public static class DuckDBTierControl
     public static string ControlTableDdl(ISqlGenerationHelper sql)
         => $"CREATE TABLE IF NOT EXISTS {sql.DelimitIdentifier(ControlTable)} ("
            + "name TEXT PRIMARY KEY, watermark TIMESTAMP, archive_path TEXT, granularity TEXT, partition_spec TEXT, "
-           + "archive_spec TEXT, active_archive_path TEXT, archive_revision TEXT); "
+           + "archive_spec TEXT, active_archive_path TEXT, archive_revision TEXT, "
+           + "bootstrap_from TIMESTAMP, bootstrap_to TIMESTAMP); "
            + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS partition_spec TEXT; "
            + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS archive_spec TEXT; "
            + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS active_archive_path TEXT; "
            + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS archive_revision TEXT; "
+           + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS bootstrap_from TIMESTAMP; "
+           + $"ALTER TABLE {sql.DelimitIdentifier(ControlTable)} ADD COLUMN IF NOT EXISTS bootstrap_to TIMESTAMP; "
            + $"CREATE TABLE IF NOT EXISTS {sql.DelimitIdentifier(GenerationTable)} ("
            + "control_key TEXT NOT NULL, generation_id TEXT NOT NULL, archive_path TEXT NOT NULL, "
            + "watermark TIMESTAMP NOT NULL, created_at_utc TIMESTAMP NOT NULL, archive_spec TEXT NOT NULL, "
@@ -199,6 +202,24 @@ public static class DuckDBTierControl
     /// <summary>Builds the scalar <c>SELECT</c> that reads the active archive generation revision.</summary>
     public static string ReadArchiveRevisionSql(ISqlGenerationHelper sql, string controlKey)
         => $"SELECT archive_revision FROM {sql.DelimitIdentifier(ControlTable)} WHERE name = {Literal(controlKey)};";
+
+    /// <summary>Reads the persisted lower bound of the first bounded bootstrap publication.</summary>
+    public static string ReadBootstrapFromSql(ISqlGenerationHelper sql, string controlKey)
+        => $"SELECT bootstrap_from FROM {sql.DelimitIdentifier(ControlTable)} WHERE name = {Literal(controlKey)};";
+
+    /// <summary>Reads the persisted exclusive cutoff of the first bounded bootstrap publication.</summary>
+    public static string ReadBootstrapToSql(ISqlGenerationHelper sql, string controlKey)
+        => $"SELECT bootstrap_to FROM {sql.DelimitIdentifier(ControlTable)} WHERE name = {Literal(controlKey)};";
+
+    /// <summary>Persists the exact first-bootstrap window without changing active generation metadata.</summary>
+    public static string RecordBootstrapWindowSql(
+        ISqlGenerationHelper sql,
+        string controlKey,
+        DateTime fromInclusive,
+        DateTime cutoffExclusive)
+        => $"UPDATE {sql.DelimitIdentifier(ControlTable)} SET "
+           + $"bootstrap_from = {TimestampLiteral(fromInclusive)}, bootstrap_to = {TimestampLiteral(cutoffExclusive)} "
+           + $"WHERE name = {Literal(controlKey)};";
 
     /// <summary>Persists the current aggregate archive contract without advancing the watermark.</summary>
     public static string UpsertArchiveSpecSql(
@@ -868,6 +889,101 @@ public static class DuckDBTierControl
                + $"TO {Literal(NormalizePath(archivePath))} "
                + $"({ParquetCopyOptions(partitionBy, writerOptions)});";
     }
+
+    /// <summary>Builds the retained root rows selected from one active immutable cold generation.</summary>
+    public static string RetentionRootSourceSql(
+        ISqlGenerationHelper sql,
+        IReadOnlyList<string> columns,
+        string timestampColumn,
+        string activeArchivePath,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        DateTime retainFrom,
+        DateTime watermark,
+        string? retainedScopePredicate)
+    {
+        const string alias = "c";
+        var timestamp = $"{alias}.{sql.DelimitIdentifier(timestampColumn)}";
+        var retained = $"({timestamp} >= {TimestampLiteral(retainFrom)} AND {timestamp} < {TimestampLiteral(watermark)})";
+        if (!string.IsNullOrWhiteSpace(retainedScopePredicate))
+        {
+            retained = $"({retained} OR ({retainedScopePredicate}))";
+        }
+
+        return $"SELECT {ColumnList(sql, columns, alias)} "
+               + $"FROM {TypedParquetRead(sql, activeArchivePath, rootPartitions)} AS {alias} "
+               + $"WHERE {timestamp} IS NOT NULL AND {timestamp} < {TimestampLiteral(watermark)} AND {retained}";
+    }
+
+    /// <summary>Builds retained child rows using the root-owned Hive partition contract.</summary>
+    public static string RetentionChildSourceSql(
+        ISqlGenerationHelper sql,
+        string activeArchivePath,
+        string rootTimestampColumn,
+        TierGranularity granularity,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        DateTime retainFrom,
+        DateTime watermark,
+        string? retainedScopePredicate)
+    {
+        const string alias = "c";
+        var publication = ArchivePartitionRangePredicate(
+            sql,
+            rootTimestampColumn,
+            granularity,
+            retainFrom,
+            watermark,
+            rootPartitions,
+            alias);
+        var retained = string.IsNullOrWhiteSpace(retainedScopePredicate)
+            ? publication
+            : $"(({publication}) OR ({retainedScopePredicate}))";
+        var projection = rootPartitions is { Count: > 0 }
+            ? StarProjection(sql, [], rootPartitions)
+            : "*";
+        return $"SELECT {projection} FROM read_parquet({Literal(ReadGlob(activeArchivePath))}, "
+               + $"hive_partitioning = true, union_by_name = true) AS {alias} WHERE {retained}";
+    }
+
+    /// <summary>Counts null configured match-key values in an arbitrary replacement source.</summary>
+    public static string SourceNullMatchKeyCountSql(
+        ISqlGenerationHelper sql,
+        string sourceSql,
+        IReadOnlyList<string> keyColumns)
+    {
+        EnsureKeyColumns(keyColumns, "replacement source");
+        var predicate = string.Join(
+            " OR ",
+            keyColumns.Select(column => $"s.{sql.DelimitIdentifier(column)} IS NULL"));
+        return $"SELECT count(*) FROM ({sourceSql}) AS s WHERE {predicate};";
+    }
+
+    /// <summary>Counts duplicate configured match-key groups in an arbitrary replacement source.</summary>
+    public static string SourceDuplicateMatchKeyCountSql(
+        ISqlGenerationHelper sql,
+        string sourceSql,
+        IReadOnlyList<string> keyColumns)
+    {
+        EnsureKeyColumns(keyColumns, "replacement source");
+        var keys = string.Join(", ", keyColumns.Select(column => $"s.{sql.DelimitIdentifier(column)}"));
+        return $"SELECT count(*) FROM (SELECT {keys} FROM ({sourceSql}) AS s "
+               + $"GROUP BY {keys} HAVING count(*) > 1) AS duplicate_keys;";
+    }
+
+    /// <summary>Counts retained child rows whose configured immediate parent is absent from the retained source.</summary>
+    public static string SourceOrphanCountSql(
+        ISqlGenerationHelper sql,
+        string childSourceSql,
+        string parentSourceSql,
+        TierJoinHop parentHop)
+        => $"SELECT count(*) FROM ({childSourceSql}) AS c WHERE NOT EXISTS ("
+           + $"SELECT 1 FROM ({parentSourceSql}) AS p WHERE "
+           + JoinPredicate(
+               sql,
+               parentHop.ForeignKeyColumns,
+               "c",
+               parentHop.PrincipalKeyColumns,
+               "p")
+           + ");";
 
     /// <summary>Builds the selected cold-root source used by an explicit restore workflow.</summary>
     public static string RestoreRootSourceSql(

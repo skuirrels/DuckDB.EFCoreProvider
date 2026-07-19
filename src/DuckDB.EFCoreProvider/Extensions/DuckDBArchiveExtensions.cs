@@ -164,11 +164,60 @@ public static partial class DuckDBArchiveExtensions
     /// <summary>
     ///     Offloads an archive window using explicit provider-owned Parquet writer and manifest controls.
     /// </summary>
-    public static async Task<TierArchiveResult> ArchiveTierAsync<TRoot>(
+    public static Task<TierArchiveResult> ArchiveTierAsync<TRoot>(
         this DatabaseFacade database,
         DateTime cutoff,
         TierArchiveOptions options,
         CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ArchiveTierCoreAsync<TRoot>(
+            database,
+            cutoff,
+            options,
+            initialFrom: null,
+            requireInitialWindow: false,
+            cancellationToken);
+
+    /// <summary>
+    ///     Performs the first archive using an explicit aligned half-open window
+    ///     <c>[fromInclusive, cutoffExclusive)</c>. It prevents rows before the lower bound from being published to
+    ///     cold storage; it does not delete or hide such rows if they remain in hot tables.
+    /// </summary>
+    public static Task<TierArchiveResult> BootstrapArchiveTierAsync<TRoot>(
+        this DatabaseFacade database,
+        DateTime fromInclusive,
+        DateTime cutoffExclusive,
+        CancellationToken cancellationToken = default)
+        where TRoot : class
+        => database.BootstrapArchiveTierAsync<TRoot>(
+            fromInclusive,
+            cutoffExclusive,
+            new TierArchiveOptions(),
+            cancellationToken);
+
+    /// <summary>Performs a bounded first archive with explicit writer and manifest controls.</summary>
+    public static Task<TierArchiveResult> BootstrapArchiveTierAsync<TRoot>(
+        this DatabaseFacade database,
+        DateTime fromInclusive,
+        DateTime cutoffExclusive,
+        TierArchiveOptions options,
+        CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ArchiveTierCoreAsync<TRoot>(
+            database,
+            cutoffExclusive,
+            options,
+            fromInclusive,
+            requireInitialWindow: true,
+            cancellationToken);
+
+    private static async Task<TierArchiveResult> ArchiveTierCoreAsync<TRoot>(
+        DatabaseFacade database,
+        DateTime cutoff,
+        TierArchiveOptions options,
+        DateTime? initialFrom,
+        bool requireInitialWindow,
+        CancellationToken cancellationToken)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -210,7 +259,40 @@ public static partial class DuckDBArchiveExtensions
                 cancellationToken).ConfigureAwait(false);
 
             var current = ReadWatermark(connection, sql, aggregate.ControlKey);
-            var from = current ?? DateTime.MinValue;
+            BootstrapArchiveWindow? bootstrapWindow = null;
+            if (initialFrom is { } requestedFrom)
+            {
+                var alignedFrom = DuckDBTierControl.AlignCutoff(requestedFrom, aggregate.Granularity);
+                if (alignedFrom != requestedFrom)
+                {
+                    throw new ArgumentException(
+                        $"The bootstrap lower bound must align to the configured {aggregate.Granularity.ToString().ToLowerInvariant()} boundary.",
+                        nameof(initialFrom));
+                }
+
+                if (requestedFrom >= aligned)
+                {
+                    throw new ArgumentException(
+                        "The bootstrap lower bound must precede the aligned cutoff.",
+                        nameof(initialFrom));
+                }
+
+                bootstrapWindow = new BootstrapArchiveWindow(requestedFrom, aligned);
+                if (requireInitialWindow && current is { } existingWatermark)
+                {
+                    var publishedWindow = ReadBootstrapWindow(connection, sql, aggregate.ControlKey);
+                    if (publishedWindow is null
+                        || publishedWindow.Value != bootstrapWindow.Value
+                        || existingWatermark != aligned)
+                    {
+                        throw new InvalidOperationException(
+                            "BootstrapArchiveTierAsync is supported only before the first archive publication or "
+                            + "as an exact idempotent retry of the originally published window.");
+                    }
+                }
+            }
+
+            var from = current ?? initialFrom ?? DateTime.MinValue;
             var windowEnd = current is { } currentWatermark && aligned <= currentWatermark
                 ? currentWatermark
                 : aligned;
@@ -327,7 +409,8 @@ public static partial class DuckDBArchiveExtensions
                 stage = TierArchiveStage.Publish;
                 await PublishArchiveAsync(
                         connection, sql, archiveFileProbe, aggregate, activeArchiveBasePath, revision, aligned,
-                        useInternalTransaction: true, cancellationToken)
+                        useInternalTransaction: true, cancellationToken,
+                        bootstrapWindow: requireInitialWindow ? bootstrapWindow : null)
                     .ConfigureAwait(false);
                 failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterPublication, table: null);
                 stage = TierArchiveStage.DeleteHot;
@@ -700,6 +783,23 @@ public static partial class DuckDBArchiveExtensions
         TierArchiveOptions options)
         where TRoot : class
         => database.ArchiveTierAsync<TRoot>(cutoff, options).GetAwaiter().GetResult();
+
+    /// <summary>Synchronous bounded first archive.</summary>
+    public static TierArchiveResult BootstrapArchiveTier<TRoot>(
+        this DatabaseFacade database,
+        DateTime fromInclusive,
+        DateTime cutoffExclusive)
+        where TRoot : class
+        => database.BootstrapArchiveTierAsync<TRoot>(fromInclusive, cutoffExclusive).GetAwaiter().GetResult();
+
+    /// <summary>Synchronous bounded first archive with writer and manifest controls.</summary>
+    public static TierArchiveResult BootstrapArchiveTier<TRoot>(
+        this DatabaseFacade database,
+        DateTime fromInclusive,
+        DateTime cutoffExclusive,
+        TierArchiveOptions options)
+        where TRoot : class
+        => database.BootstrapArchiveTierAsync<TRoot>(fromInclusive, cutoffExclusive, options).GetAwaiter().GetResult();
 
     /// <summary>
     ///     Returns read-only provider evidence for active, previously published, and locally discoverable
@@ -1802,7 +1902,8 @@ public static partial class DuckDBArchiveExtensions
         string? revision,
         DateTime watermark,
         bool useInternalTransaction,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        BootstrapArchiveWindow? bootstrapWindow = null)
     {
         if (useInternalTransaction)
         {
@@ -1877,6 +1978,19 @@ public static partial class DuckDBArchiveExtensions
                         aggregate.PartitionSpec),
                     cancellationToken)
                 .ConfigureAwait(false);
+            if (bootstrapWindow is { } window)
+            {
+                await ExecuteNonQueryAsync(
+                        connection,
+                        DuckDBTierControl.RecordBootstrapWindowSql(
+                            sql,
+                            aggregate.ControlKey,
+                            window.FromInclusive,
+                            window.CutoffExclusive),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             RegenerateViews(connection, sql, archiveFileProbe, aggregate, activeArchiveBasePath);
             if (useInternalTransaction)
             {
@@ -1916,6 +2030,27 @@ public static partial class DuckDBArchiveExtensions
         ISqlGenerationHelper sql,
         string controlKey)
         => ExecuteScalar(connection, DuckDBTierControl.ReadArchiveRevisionSql(sql, controlKey)) as string;
+
+    private static BootstrapArchiveWindow? ReadBootstrapWindow(
+        DuckDBConnection connection,
+        ISqlGenerationHelper sql,
+        string controlKey)
+    {
+        var from = ExecuteScalar(connection, DuckDBTierControl.ReadBootstrapFromSql(sql, controlKey)) as DateTime?;
+        var to = ExecuteScalar(connection, DuckDBTierControl.ReadBootstrapToSql(sql, controlKey)) as DateTime?;
+        if (from is null && to is null)
+        {
+            return null;
+        }
+
+        if (from is null || to is null)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage control metadata for '{controlKey}' contains an incomplete bootstrap window.");
+        }
+
+        return new BootstrapArchiveWindow(from.Value, to.Value);
+    }
 
     private static string CreateArchiveRevision()
         => DateTime.UtcNow.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture)
@@ -2304,6 +2439,8 @@ public static partial class DuckDBArchiveExtensions
 
     private static DateTime? ReadWatermark(DuckDBConnection connection, ISqlGenerationHelper sql, string controlKey)
         => ExecuteScalar(connection, DuckDBTierControl.ReadWatermarkSql(sql, controlKey)) is DateTime dt ? dt : null;
+
+    private readonly record struct BootstrapArchiveWindow(DateTime FromInclusive, DateTime CutoffExclusive);
 
     // Open/close through the EF Core database facade (not the raw ADO connection) so registered connection
     // interceptors run — in particular any that load DuckDB's httpfs extension and configure object-store

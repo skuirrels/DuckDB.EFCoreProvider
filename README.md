@@ -546,13 +546,41 @@ transaction. Their Parquet writes are external side effects and cannot be rolled
 Restore nevertheless commits its hot-table inserts and active-generation metadata/view switch in one internal
 DuckDB transaction; a failed publication leaves the previous generation active and rolls the hot inserts back.
 
-#### Archiving versus purging
+#### Archiving, bounded bootstrap, and retention
 
-`PurgeArchiveOlderThan<Record>` serves a different, optional retention phase: it permanently deletes cold Parquet
-partitions older than its cutoff. It does not delete hot rows, move rows to Parquet, or change the archive watermark.
-Call it only after `ArchiveTierAsync` completes successfully, and normally give it an older cutoff.
+For an initial archive that must not publish rows older than an explicit lower bound, use the half-open
+`BootstrapArchiveTierAsync<Record>(fromInclusive, cutoffExclusive)` operation. Its lower bound must align with the
+configured month/day granularity and it is accepted only for the first publication or its exact idempotent retry.
+The provider persists both bounds atomically with publication; a retry is exact only while the active watermark still
+equals the original cutoff. Older rows stay hot and visible.
 
-For example, to keep records hot for 12 months and then cold for another 24 months:
+For logical cold-tier retention, plan and publish an immutable replacement generation:
+
+```csharp
+var plan = await db.Database.PlanArchiveRetentionAsync<Record>(
+    new TierArchiveRetentionOptions
+    {
+        RetainFrom = retainFromUtc,
+        RetainedPartitionScopes =
+        [
+            TierMaintenanceScope.ForPartitionValues(
+                new Dictionary<string, object?> { [nameof(Record.GroupId)] = retainedGroupId }),
+        ],
+    });
+
+var result = await db.Database.PublishArchiveRetentionAsync<Record>(plan);
+```
+
+The plan fingerprints the active generation, exact physical/provider catalogue, contracts, aligned lifecycle
+boundary, exact declared-partition scopes, and root/descendant counts. Publication copies and verifies retained rows,
+atomically switches provider metadata and views, and leaves the previous generation intact for rollback and
+separately authorised cleanup. It never changes hot rows or assigns business meaning to the boundary/scopes.
+
+`PurgeArchiveOlderThan<Record>` is the older local-filesystem-only in-place physical purge. It permanently deletes
+cold Parquet partitions older than its cutoff, does not delete hot rows or change the archive watermark, and is not
+supported for remote archives.
+
+For example, a consumer may decide to keep records hot for 12 months and then cold for another 24 months:
 
 ```csharp
 var now = DateTime.UtcNow;
@@ -562,15 +590,15 @@ var now = DateTime.UtcNow;
 var archiveCutoff = now.AddMonths(-12);
 await db.Database.ArchiveTierAsync<Record>(archiveCutoff);
 
-// 12-36 months old: remain in cold Parquet.
-// More than 36 months old: permanently delete from cold Parquet.
-var purgeCutoff = now.AddMonths(-36); // equivalently: archiveCutoff.AddMonths(-24)
-db.Database.PurgeArchiveOlderThan<Record>(purgeCutoff);
+// The application resolves policy/holds/approvals, then supplies technical inputs.
+var plan = await db.Database.PlanArchiveRetentionAsync<Record>(
+    new TierArchiveRetentionOptions { RetainFrom = now.AddMonths(-36) });
+await db.Database.PublishArchiveRetentionAsync<Record>(plan);
 ```
 
-Do not use the same cutoff for both operations or calculate the purge boundary with
-`archiveCutoff.AddMonths(24)`: that moves the boundary forward and can immediately delete the history just archived.
-For remote S3, GCS, or Azure archives, enforce the purge boundary with an object-storage lifecycle rule instead.
+Do not use the same cutoff for archive and retention or calculate the retention boundary with
+`archiveCutoff.AddMonths(24)`: that moves the boundary forward and can immediately remove the history just archived
+from the active representation.
 
 > **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app demonstrates archiving
 > and reporting across hot + cold:
@@ -626,10 +654,10 @@ Azure-typed secret.
   MinIO. Setting `DUCKDB_AWS_S3_TEST_BUCKET` (plus optional prefix/region or paired explicit credentials) runs the
   same first-archive, no-op, restart, failure/retry, reconciliation, and schema-evolution scenarios against a
   unique disposable AWS prefix.
-- **`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive** — DuckDB can't delete objects
-  from an object store. Enforce upload-age retention with an **S3 lifecycle rule**, **GCS Object Lifecycle
-  Management**, or an **Azure Blob lifecycle-management policy**. If retention must follow the partition's
-  business date (including backfills), use a prefix-aware external cleanup job instead of upload age.
+- **Immutable retention publication works on local and remote archives.** It creates and verifies a replacement
+  generation, atomically switches the exact active catalogue/views, and leaves the obsolete generation untouched.
+  `PurgeArchiveOlderThan` still throws for remote archives. Delete old objects only after generation cleanup inventory
+  and separate application authorisation; do not apply blind upload-age expiry to an active archive prefix.
 
 Full guide: [Cold storage on S3 and GCS](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-google-cloud-storage-and-other-object-stores);
 the sample above runs the GCS path with `-- gcs`.

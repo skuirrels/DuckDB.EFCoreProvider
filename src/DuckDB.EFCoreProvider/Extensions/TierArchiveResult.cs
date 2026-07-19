@@ -17,6 +17,9 @@ public enum TierArchiveOperation
 
     /// <summary>Rewrites archived files to the currently configured archive contract.</summary>
     RewriteContract,
+
+    /// <summary>Publishes a replacement cold generation that omits rows before a caller-supplied boundary.</summary>
+    RetentionTrim,
 }
 
 /// <summary>The last archive stage reached by a successful or failed tiered-storage operation.</summary>

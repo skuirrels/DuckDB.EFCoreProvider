@@ -127,6 +127,29 @@ internal sealed class DuckDBTierMaintenanceBoundary
                 }));
     }
 
+    /// <summary>
+    ///     Builds the equivalent predicate over typed Hive partition columns returned by a cold Parquet read.
+    /// </summary>
+    public string? ArchivePartitionScopePredicate(string alias)
+    {
+        if (_partitionScope.Count == 0)
+        {
+            return null;
+        }
+
+        return string.Join(
+            " AND ",
+            _aggregate.RootPartitions
+                .Take(_partitionScope.Count)
+                .Select(partition =>
+                {
+                    var property = _aggregate.Root.Entity.FindProperty(partition.PropertyName)!;
+                    var literal = property.GetRelationalTypeMapping()
+                        .GenerateSqlLiteral(_partitionScope[partition.PropertyName]);
+                    return $"{alias}.{_sql.DelimitIdentifier(partition.Name)} = CAST({literal} AS {partition.StoreType})";
+                }));
+    }
+
     public string? DirectTombstonePredicate(DuckDBTierNode node, string alias)
         => CombineOr(
             _tombstones.TryGetValue(node, out var identities)
