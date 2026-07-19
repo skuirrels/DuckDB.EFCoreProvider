@@ -17,6 +17,20 @@ public readonly record struct TierConflictPage(
     public bool HasMore => Offset + Keys.Count < TotalConflicts;
 }
 
+/// <summary>
+///     A bounded read-only page of hot descendants whose complete configured parent chain exists only in the
+///     active cold generation and whose stable identity is not already represented there.
+/// </summary>
+public readonly record struct TierDetachedDescendantPage(
+    long TotalDescendants,
+    int Offset,
+    int Limit,
+    IReadOnlyList<TierConflictKey> Keys)
+{
+    /// <summary><see langword="true" /> when additional diagnostic identities exist after this page.</summary>
+    public bool HasMore => Offset + Keys.Count < TotalDescendants;
+}
+
 /// <summary>The publication evidence attached to an archive generation.</summary>
 public enum TierArchiveGenerationState
 {
@@ -40,6 +54,33 @@ public readonly record struct TierArchiveGenerationInfo(
     string ArchivePath,
     DateTime Watermark,
     DateTime CreatedAtUtc,
+    long FileCount,
+    long TotalBytes,
+    IReadOnlyList<string> RepresentativeFiles)
+{
+    /// <summary>The provider operation that created a recoverable unpublished candidate, when known.</summary>
+    public TierArchiveOperation? Operation { get; init; }
+
+    /// <summary><see langword="true" /> when the Provider found its durable candidate marker.</summary>
+    public bool HasCandidateMarker { get; init; }
+
+    /// <summary>
+    ///     <see langword="true" /> when the marker proves that the candidate belongs to the exact configured
+    ///     root binding, aggregate graph, archive contract, and partition contract.
+    /// </summary>
+    public bool ContractCompatible { get; init; }
+
+    /// <summary>Per-node file evidence for a contract-compatible unpublished candidate.</summary>
+    public IReadOnlyList<TierArchiveGenerationNodeInfo> Nodes { get; init; } = [];
+
+    internal string? ProviderArchivePath { get; init; }
+}
+
+/// <summary>Read-only per-node evidence for a recoverable unpublished archive candidate.</summary>
+public readonly record struct TierArchiveGenerationNodeInfo(
+    string Table,
+    string? Schema,
+    string BindingId,
     long FileCount,
     long TotalBytes,
     IReadOnlyList<string> RepresentativeFiles);
@@ -321,7 +362,11 @@ public readonly record struct TierArchiveCleanupCandidate(
     TierArchiveGenerationState State,
     string ArchivePath,
     long FileCount,
-    long TotalBytes);
+    long TotalBytes)
+{
+    /// <summary>A SHA-256 fingerprint of the Provider-enumerated exact Parquet file catalogue.</summary>
+    public string FileCatalogueFingerprint { get; init; } = string.Empty;
+}
 
 /// <summary>A reviewed cleanup plan whose fingerprint can be required by a later execution API.</summary>
 public readonly record struct TierArchiveCleanupPlan(

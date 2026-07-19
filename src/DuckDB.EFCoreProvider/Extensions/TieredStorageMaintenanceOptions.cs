@@ -325,6 +325,8 @@ public sealed class TierMaintenanceScope
 /// <summary>Options for immutable-generation reconciliation.</summary>
 public sealed class TierReconciliationOptions
 {
+    internal TierArchiveOperation Operation { get; init; } = TierArchiveOperation.Reconcile;
+
     internal bool OmitScopeFromCold { get; init; }
 
     internal bool ForceRewrite { get; init; }

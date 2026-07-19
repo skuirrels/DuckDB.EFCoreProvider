@@ -149,6 +149,16 @@ public static partial class DuckDBArchiveExtensions
             var stage = TierArchiveStage.Preflight;
             try
             {
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCandidateRegistration, table: null);
+                await RegisterRemoteArchiveCandidateAsync(
+                        connection,
+                        aggregate,
+                        plan.ExpectedOutputGenerationId,
+                        replacementBasePath,
+                        TierArchiveOperation.RetentionTrim,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCandidateRegistration, table: null);
                 stage = TierArchiveStage.Copy;
                 failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCopy, table: null);
                 foreach (var node in aggregate.Nodes)
@@ -211,11 +221,13 @@ public static partial class DuckDBArchiveExtensions
                             new TierManifestOptions { Detail = TierManifestDetail.AllFiles });
                     EnsureExactFileSummary(node.Table, summary);
                     verifiedFiles[node] = summary.Files;
-                    manifest.SetCopied(node, copied, summary);
+                    manifest.SetCopiedFromExactSummary(node, copied, summary);
                 }
 
                 failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterVerify, table: null);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCatalogueValidation, table: null);
                 VerifyCandidateFileCatalogue(connection, archiveFileProbe, aggregate, manifest, verifiedFiles);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCatalogueValidation, table: null);
                 stage = TierArchiveStage.Publish;
                 failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforePublication, table: null);
                 await PublishArchiveAsync(

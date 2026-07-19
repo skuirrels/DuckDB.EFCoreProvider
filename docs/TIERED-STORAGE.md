@@ -477,20 +477,35 @@ Operational reads are bounded:
 TierConflictPage conflicts =
     await db.Database.GetArchiveConflictsAsync<Record>(offset: 0, limit: 100);
 
+TierDetachedDescendantPage detached =
+    await db.Database.GetArchiveDetachedDescendantsAsync<Record>(offset: 0, limit: 100);
+
 TierArchiveGenerationInventory inventory =
     await db.Database.GetArchiveGenerationInventoryAsync<Record>();
 
 TierArchiveCleanupPlan cleanup =
     await db.Database.PlanArchiveGenerationCleanupAsync<Record>(selectedGenerationIds);
 
+cleanup = await db.Database.RevalidateArchiveGenerationCleanupPlanAsync<Record>(cleanup);
+
 TierStoragePreflightResult preflight =
     await db.Database.PreflightTieredStorageAsync<Record>();
 ```
 
-Inventory classifies the active generation, prior provider-published generations, and locally discoverable
-unpublished candidates. Cleanup planning is read-only: retention, legal hold, rollback depth, and actual object
-deletion remain application/deployment policy. For remote active generations, generated views use the provider's
-persisted exact file catalogue when available and fall back compatibly to recursive glob discovery.
+Inventory classifies the active generation, prior provider-published generations, and local or remote unpublished
+candidates discoverable from Provider-owned layout and remote candidate markers. Remote reconciliation, contract
+rewrite, and retention replacement operations persist the marker before copy. A compatible marker plus intact
+control metadata is `UnpublishedCandidate`; missing or incompatible evidence is conservatively `Unknown` and cannot
+enter a cleanup plan. Applications never reproduce revision paths. Cleanup planning and revalidation are read-only:
+retention, legal hold, rollback depth, authorization, and actual object deletion remain application/deployment
+policy. Revalidation rejects a reviewed plan if active generation, binding, classification, path, or file evidence
+changed; the plan fingerprints the Provider-enumerated exact Parquet catalogue without exposing Provider path logic.
+For remote active generations, generated views use the provider's persisted exact file catalogue when
+available and fall back compatibly to recursive glob discovery.
+
+The detached-descendant diagnostic reports only technical evidence: a hot descendant whose complete configured
+parent chain exists in active cold data, not in hot tables, and whose stable key is not already cold. It does not
+quarantine, reconcile, approve, or interpret the row.
 Archive results, restoration publication results, inventory, cleanup plans, and preflight results expose
 non-secret `Binding` evidence (`BindingId`, root CLR type, and control key) so callers can prove which root-scoped
 operation was performed.

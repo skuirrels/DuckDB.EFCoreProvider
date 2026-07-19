@@ -149,6 +149,48 @@ public sealed class TieredStorageSafetyTests : IDisposable
     }
 
     [Fact]
+    public async Task Detached_descendant_diagnostic_returns_only_unseen_stable_keys_without_mutating_rows()
+    {
+        var archivePath = Path.Combine(_root, "detached-descendant-archive");
+        using var context = new StableRecordContext(
+            Path.Combine(_root, "detached-descendant.duckdb"),
+            archivePath);
+        context.Database.ExecuteSqlRaw(
+            "CREATE TABLE stable_records (\"Id\" INTEGER PRIMARY KEY, \"ExternalId\" VARCHAR NOT NULL, "
+            + "\"EffectiveAt\" TIMESTAMP, \"Status\" VARCHAR NOT NULL); "
+            + "CREATE TABLE stable_record_parts (\"Id\" INTEGER PRIMARY KEY, \"RecordId\" INTEGER NOT NULL, "
+            + "\"RecordExternalKey\" VARCHAR, \"PartCode\" VARCHAR NOT NULL, \"Value\" DECIMAL(18,2) NOT NULL);");
+        context.Database.EnsureTieredStoresCreated();
+        context.Database.ExecuteSqlRaw(
+            "INSERT INTO stable_records VALUES (1, 'record-1', TIMESTAMP '2024-01-15', 'complete'); "
+            + "INSERT INTO stable_record_parts VALUES (1, 1, 'record-1', 'A', 10);");
+        await context.Database.ArchiveTierAsync<StableRecord>(new DateTime(2024, 2, 1));
+        context.Database.ExecuteSqlRaw(
+            "INSERT INTO stable_record_parts VALUES "
+            + "(201, 1, 'record-1', 'A', 10), "
+            + "(202, 1, 'record-1', 'B', 20);");
+
+        var diagnostic = await context.Database.GetArchiveDetachedDescendantsAsync<StableRecord>();
+
+        Assert.Equal(1, diagnostic.TotalDescendants);
+        var key = Assert.Single(diagnostic.Keys);
+        Assert.Equal(typeof(StableRecordPart), key.EntityType);
+        Assert.Equal("stable_record_parts", key.Table);
+        Assert.Equal("record-1", key.Values[nameof(StableRecordPart.RecordExternalKey)]);
+        Assert.Equal("B", key.Values[nameof(StableRecordPart.PartCode)]);
+        Assert.Equal(2, context.Parts.Count());
+
+        var streamed = new List<TierDetachedDescendantPage>();
+        await foreach (var page in context.Database.StreamArchiveDetachedDescendantsAsync<StableRecord>(pageSize: 1))
+        {
+            streamed.Add(page);
+        }
+
+        Assert.Single(streamed);
+        Assert.Equal(2, context.Parts.Count());
+    }
+
+    [Fact]
     public async Task Corrected_archived_key_is_rejected_and_preserved_hot()
     {
         var archivePath = Path.Combine(_root, "correction-archive");
@@ -478,10 +520,12 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         var contract = await context.Database.InspectArchiveContractAsync<StableRecord>();
         var conflicts = await context.Database.GetArchiveConflictsAsync<StableRecord>();
+        var detached = await context.Database.GetArchiveDetachedDescendantsAsync<StableRecord>();
         var inventory = await context.Database.GetArchiveGenerationInventoryAsync<StableRecord>();
 
         Assert.Null(contract.PersistedContractJson);
         Assert.Empty(conflicts.Keys);
+        Assert.Empty(detached.Keys);
         Assert.Empty(inventory.Generations);
         await context.Database.OpenConnectionAsync();
         await using var command = context.Database.GetDbConnection().CreateCommand();

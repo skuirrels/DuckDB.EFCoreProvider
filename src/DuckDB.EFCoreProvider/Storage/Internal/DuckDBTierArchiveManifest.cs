@@ -57,6 +57,24 @@ internal sealed class DuckDBTierArchiveManifest
         SetFileSummary(node, summary);
     }
 
+    public void SetCopiedFromExactSummary(DuckDBTierNode node, long rows, DuckDBArchiveFileSummary summary)
+    {
+        var files = _manifestOptions.Detail switch
+        {
+            TierManifestDetail.Summary => [],
+            TierManifestDetail.RepresentativeFiles => summary.Files.Take(_manifestOptions.MaxFilesPerNode).ToArray(),
+            _ => summary.Files,
+        };
+        SetCopied(
+            node,
+            rows,
+            new DuckDBArchiveFileSummary(
+                summary.FileCount,
+                summary.TotalBytes,
+                files,
+                IsTruncated: files.Count < summary.FileCount));
+    }
+
     public void SetFiles(DuckDBTierNode node, IReadOnlyList<string> files)
     {
         _nodes[node].Files = files;

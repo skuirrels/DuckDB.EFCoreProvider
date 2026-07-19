@@ -12,11 +12,18 @@ dotnet run -c Release \
   --filter '*TieredCatalogueScaleBenchmarks*'
 ```
 
-`TieredCatalogueScaleBenchmarks` generates root and child Parquet nodes for these dimensions:
+`TieredCatalogueScaleBenchmarks` exposes these independent technical dimensions:
 
-- leading exact-partition cardinality: 16 and 128;
-- lifecycle periods: 12 and 60 months; and
-- one file per exact-partition/period/node combination.
+- leading exact-partition cardinality;
+- lifecycle periods;
+- primary graph node count from one through four (root, child, grandchild, leaf);
+- exact file fan-out per leading-partition/lifecycle/node combination;
+- exact retained-scope cardinality and one- or two-partition prefix width; and
+- an optional shared-descendant preset with two root bindings to one descendant table.
+
+The defaults are a deliberately small `16 partitions x 12 periods x 2 nodes x 1 file shard` smoke fixture with no
+retained scopes and no shared descendant. Configure representative values explicitly for acceptance; defaults are
+not a capacity claim.
 
 It reports exact catalogue file count and generated view SQL size, and measures:
 
@@ -30,8 +37,12 @@ Override the dimensions with comma-separated positive integers so the acceptance
 inventory:
 
 ```bash
-DUCKDB_TIER_SCALE_PARTITIONS=500,2000 \
-DUCKDB_TIER_SCALE_PERIODS=36,84 \
+DUCKDB_TIER_SCALE_PARTITIONS=500 \
+DUCKDB_TIER_SCALE_PERIODS=84 \
+DUCKDB_TIER_SCALE_NODES=4 \
+DUCKDB_TIER_SCALE_FILE_FANOUT=3 \
+DUCKDB_TIER_SCALE_RETAINED_SCOPES=250 \
+DUCKDB_TIER_SCALE_SCOPE_PREFIX_WIDTH=2 \
 dotnet run -c Release \
   --project test/DuckDB.EFCoreProvider.Benchmarks \
   --filter '*TieredCatalogueScaleBenchmarks*'
@@ -39,9 +50,24 @@ dotnet run -c Release \
 
 BenchmarkDotNet reports elapsed time and managed memory. Setup also runs DuckDB `EXPLAIN ANALYZE` and reports the
 scoped query's aggregate `Total Files Read` evidence; no threshold is guessed before measuring the target inventory.
+The scope prefix width is limited to the two declared neutral partitions (`ScopeKey`, `FanOutKey`). Scope cardinality
+must not exceed the distinct prefixes available at the selected width. Multiple comma-separated values are allowed
+for every integer dimension, but BenchmarkDotNet evaluates their Cartesian product, so controlled acceptance runs
+normally supply one representative value per dimension.
+
+Run the shared-descendant preset separately; it fixes the primary graph at two nodes and adds a second root binding:
+
+```bash
+DUCKDB_TIER_SCALE_NODES=2 \
+DUCKDB_TIER_SCALE_SHARED_DESCENDANT=true \
+dotnet run -c Release \
+  --project test/DuckDB.EFCoreProvider.Benchmarks \
+  --filter '*TieredCatalogueScaleBenchmarks*'
+```
+
 Capture the global-query plan alongside the run. Use the consuming application's expected partition counts, periods,
-tables, and files for the production acceptance run; the included parameters are regression fixtures, not capacity
-limits.
+nodes, exact files, shared-binding shape, and retained technical scopes for production acceptance; the fixture does
+not assign owner, tenant, hold, or approval meaning to any dimension.
 
 ## Remote exact-catalogue acceptance
 
@@ -58,10 +84,9 @@ DUCKDB_TIER_SCALE_PERIODS=84 \
 ./scripts/bench-tiered-storage-s3.sh
 ```
 
-The script defaults to a small `16 x 12 x 2 tables` dry benchmark, creates a unique remote prefix, and destroys the
-MinIO volume afterwards. Override the two dimensions with the proposed production inventory. The fixture reports the
-exact resulting file count; the two configured nodes provide a root-plus-child graph rather than assuming a
-consumer-specific table model.
+The script defaults to the small smoke fixture, creates a unique remote prefix, and destroys the MinIO volume
+afterwards. Override all applicable technical dimensions with the proposed inventory. The fixture reports the exact
+resulting file and node counts rather than inferring them from the requested inputs.
 
 To target another disposable S3-compatible endpoint or real S3 directly, set:
 

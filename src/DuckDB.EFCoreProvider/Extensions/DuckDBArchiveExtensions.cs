@@ -506,7 +506,7 @@ public static partial class DuckDBArchiveExtensions
             {
                 var empty = new DuckDBTierArchiveManifest(
                     aggregate,
-                    TierArchiveOperation.Reconcile,
+                    options.Operation,
                     previousWatermark: null,
                     DateTime.MinValue,
                     DateTime.MinValue,
@@ -521,7 +521,7 @@ public static partial class DuckDBArchiveExtensions
             var replacementBasePath = aggregate.ArchiveBasePath + "/_revisions/" + revision;
             var manifest = new DuckDBTierArchiveManifest(
                 aggregate,
-                TierArchiveOperation.Reconcile,
+                options.Operation,
                 watermark,
                 DateTime.MinValue,
                 watermark.Value,
@@ -610,7 +610,7 @@ public static partial class DuckDBArchiveExtensions
                     RegenerateViews(connection, sql, archiveFileProbe, aggregate, activeArchiveBasePath);
                     var noOp = new DuckDBTierArchiveManifest(
                         aggregate,
-                        TierArchiveOperation.Reconcile,
+                        options.Operation,
                         watermark,
                         DateTime.MinValue,
                         watermark.Value,
@@ -659,7 +659,18 @@ public static partial class DuckDBArchiveExtensions
                             .ConfigureAwait(false));
                 }
 
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCandidateRegistration, table: null);
+                await RegisterRemoteArchiveCandidateAsync(
+                        connection,
+                        aggregate,
+                        revision,
+                        replacementBasePath,
+                        options.Operation,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCandidateRegistration, table: null);
                 stage = TierArchiveStage.Copy;
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCopy, table: null);
                 foreach (var node in aggregate.Nodes)
                 {
                     var selected = manifest.SelectedRows(node);
@@ -680,7 +691,10 @@ public static partial class DuckDBArchiveExtensions
                     await ExecuteNonQueryAsync(connection, copySql, cancellationToken).ConfigureAwait(false);
                 }
 
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCopy, table: null);
                 stage = TierArchiveStage.Verify;
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeVerify, table: null);
+                var verifiedFiles = new Dictionary<DuckDBTierNode, IReadOnlyList<string>>();
                 foreach (var node in aggregate.Nodes)
                 {
                     var nodePath = manifest.ArchivePath(node);
@@ -697,20 +711,22 @@ public static partial class DuckDBArchiveExtensions
                             + $"{selected} row(s), but found {copied} row(s) in replacement Parquet.");
                     }
 
-                    manifest.SetCopied(
-                        node,
-                        copied,
-                        copied == 0
-                            ? new DuckDBArchiveFileSummary(0, 0, [], IsTruncated: false)
-                            : archiveFileProbe.GetArchiveFileSummary(
-                                connection,
-                                nodePath,
-                                manifest.ManifestOptions));
+                    var summary = copied == 0
+                        ? new DuckDBArchiveFileSummary(0, 0, [], IsTruncated: false)
+                        : archiveFileProbe.GetArchiveFileSummary(
+                            connection,
+                            nodePath,
+                            new TierManifestOptions { Detail = TierManifestDetail.AllFiles });
+                    verifiedFiles[node] = summary.Files;
+                    manifest.SetCopiedFromExactSummary(node, copied, summary);
                 }
 
-                stage = TierArchiveStage.Copy;
-                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCopy, table: null);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterVerify, table: null);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCatalogueValidation, table: null);
+                VerifyCandidateFileCatalogue(connection, archiveFileProbe, aggregate, manifest, verifiedFiles);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCatalogueValidation, table: null);
                 stage = TierArchiveStage.Publish;
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforePublication, table: null);
                 await PublishArchiveAsync(
                         connection, sql, archiveFileProbe, aggregate, replacementBasePath, revision,
                         watermark.Value, useInternalTransaction: !options.UseExistingTransaction, cancellationToken)
@@ -802,7 +818,7 @@ public static partial class DuckDBArchiveExtensions
         => database.BootstrapArchiveTierAsync<TRoot>(fromInclusive, cutoffExclusive, options).GetAwaiter().GetResult();
 
     /// <summary>
-    ///     Returns read-only provider evidence for active, previously published, and locally discoverable
+    ///     Returns read-only provider evidence for active, previously published, and provider-discoverable
     ///     unpublished archive generations. No cleanup or retention decision is made.
     /// </summary>
     public static async Task<TierArchiveGenerationInventory> GetArchiveGenerationInventoryAsync<TRoot>(
@@ -908,12 +924,15 @@ public static partial class DuckDBArchiveExtensions
                     generation.Id == activeGenerationId
                         ? TierArchiveGenerationState.Active
                         : TierArchiveGenerationState.Published,
-                    generation.Path,
+                    DuckDBTierArchiveManifest.RedactCredentials(generation.Path),
                     generation.Watermark,
                     generation.CreatedAt,
                     generation.Files,
                     generation.Bytes,
-                    files));
+                    files.Select(DuckDBTierArchiveManifest.RedactCredentials).ToArray())
+                {
+                    ProviderArchivePath = generation.Path,
+                });
             }
 
             if (watermark is { } activeWatermark && !recordedIds.Contains(activeGenerationId))
@@ -945,21 +964,43 @@ public static partial class DuckDBArchiveExtensions
                 generations.Add(new TierArchiveGenerationInfo(
                     activeGenerationId,
                     TierArchiveGenerationState.Active,
-                    activePath,
+                    DuckDBTierArchiveManifest.RedactCredentials(activePath),
                     activeWatermark,
                     DateTime.MinValue,
                     fileCount,
                     totalBytes,
-                    files));
+                    files.Select(DuckDBTierArchiveManifest.RedactCredentials).ToArray())
+                {
+                    ProviderArchivePath = activePath,
+                });
             }
 
-            AddLocalUnpublishedCandidates(
-                aggregate,
-                watermark ?? DateTime.MinValue,
-                activeGenerationId,
-                recordedIds,
-                representativeFiles,
-                generations);
+            if (IsRemoteArchive(aggregate.ArchiveBasePath))
+            {
+                await AddRemoteUnpublishedCandidatesAsync(
+                        connection,
+                        archiveFileProbe,
+                        aggregate,
+                        watermark ?? DateTime.MinValue,
+                        activeGenerationId,
+                        recordedIds,
+                        representativeFiles,
+                        hasControlTable && watermark is not null,
+                        hasGenerationCatalogue,
+                        generations,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                AddLocalUnpublishedCandidates(
+                    aggregate,
+                    watermark ?? DateTime.MinValue,
+                    activeGenerationId,
+                    recordedIds,
+                    representativeFiles,
+                    generations);
+            }
             return new TierArchiveGenerationInventory(
                 aggregate.ControlKey,
                 activeGenerationId,
@@ -1009,46 +1050,114 @@ public static partial class DuckDBArchiveExtensions
                 representativeFiles: 1,
                 cancellationToken)
             .ConfigureAwait(false);
-        var byId = inventory.Generations.ToDictionary(generation => generation.GenerationId, StringComparer.Ordinal);
-        var candidates = new List<TierArchiveCleanupCandidate>(selected.Length);
-        foreach (var generationId in selected)
+        var (_, _, archiveFileProbe, _) = Services(database);
+        var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
+        var connection = (DuckDBConnection)database.GetDbConnection();
+        try
         {
-            if (!byId.TryGetValue(generationId, out var generation))
+            var byId = inventory.Generations.ToDictionary(
+                generation => generation.GenerationId,
+                StringComparer.Ordinal);
+            var candidates = new List<TierArchiveCleanupCandidate>(selected.Length);
+            foreach (var generationId in selected)
             {
-                throw new InvalidOperationException(
-                    $"Archive generation '{generationId}' is not present in provider inventory.");
+                if (!byId.TryGetValue(generationId, out var generation))
+                {
+                    throw new InvalidOperationException(
+                        $"Archive generation '{generationId}' is not present in provider inventory.");
+                }
+
+                if (generation.State == TierArchiveGenerationState.Active)
+                {
+                    throw new InvalidOperationException(
+                        $"Archive generation '{generationId}' is active and cannot be a cleanup candidate.");
+                }
+
+                if (generation.State == TierArchiveGenerationState.Unknown)
+                {
+                    throw new InvalidOperationException(
+                        $"Archive generation '{generationId}' has unknown publication or contract evidence and cannot "
+                        + "be planned for cleanup.");
+                }
+
+                var providerPath = generation.ProviderArchivePath ?? generation.ArchivePath;
+                var exactFiles = archiveFileProbe.HasArchiveFiles(connection, providerPath)
+                    ? archiveFileProbe.GetArchiveFiles(connection, providerPath)
+                    : [];
+                var catalogueFingerprint = Sha256(string.Join("\n", exactFiles.Order(StringComparer.Ordinal)));
+                candidates.Add(new TierArchiveCleanupCandidate(
+                    generation.GenerationId,
+                    generation.State,
+                    generation.ArchivePath,
+                    generation.FileCount,
+                    generation.TotalBytes)
+                {
+                    FileCatalogueFingerprint = catalogueFingerprint,
+                });
             }
 
-            if (generation.State == TierArchiveGenerationState.Active)
+            var fingerprintInput = inventory.ControlKey + "\n"
+                                   + inventory.ActiveGenerationId + "\n"
+                                   + string.Join(
+                                       "\n",
+                                       candidates.Select(candidate =>
+                                           $"{candidate.GenerationId}|{candidate.State}|{candidate.ArchivePath}|"
+                                           + $"{candidate.FileCount}|{candidate.TotalBytes}|"
+                                           + candidate.FileCatalogueFingerprint));
+            return new TierArchiveCleanupPlan(
+                inventory.ControlKey,
+                inventory.ActiveGenerationId,
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintInput))),
+                candidates)
             {
-                throw new InvalidOperationException(
-                    $"Archive generation '{generationId}' is active and cannot be a cleanup candidate.");
-            }
+                Binding = inventory.Binding,
+            };
+        }
+        finally
+        {
+            await CloseTrackedAsync(database, openedHere).ConfigureAwait(false);
+        }
+    }
 
-            candidates.Add(new TierArchiveCleanupCandidate(
-                generation.GenerationId,
-                generation.State,
-                generation.ArchivePath,
-                generation.FileCount,
-                generation.TotalBytes));
+    /// <summary>
+    ///     Rebuilds and compares a reviewed cleanup plan against current Provider control metadata and remote file
+    ///     evidence. No objects are deleted and no application retention meaning is inferred.
+    /// </summary>
+    public static async Task<TierArchiveCleanupPlan> RevalidateArchiveGenerationCleanupPlanAsync<TRoot>(
+        this DatabaseFacade database,
+        TierArchiveCleanupPlan plan,
+        CancellationToken cancellationToken = default)
+        where TRoot : class
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        if (plan.Candidates is null || plan.Candidates.Count == 0)
+        {
+            throw new ArgumentException("The cleanup plan must contain at least one candidate.", nameof(plan));
         }
 
-        var fingerprintInput = inventory.ControlKey + "\n"
-                               + inventory.ActiveGenerationId + "\n"
-                               + string.Join(
-                                   "\n",
-                                   candidates.Select(candidate =>
-                                       $"{candidate.GenerationId}|{candidate.State}|{candidate.ArchivePath}|"
-                                       + $"{candidate.FileCount}|{candidate.TotalBytes}"));
-        return new TierArchiveCleanupPlan(
-            inventory.ControlKey,
-            inventory.ActiveGenerationId,
-            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintInput))),
-            candidates)
+        var current = await database.PlanArchiveGenerationCleanupAsync<TRoot>(
+                plan.Candidates.Select(candidate => candidate.GenerationId),
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!string.Equals(plan.ControlKey, current.ControlKey, StringComparison.Ordinal)
+            || !string.Equals(plan.ActiveGenerationId, current.ActiveGenerationId, StringComparison.Ordinal)
+            || !string.Equals(plan.Fingerprint, current.Fingerprint, StringComparison.Ordinal)
+            || plan.Binding != current.Binding)
         {
-            Binding = inventory.Binding,
-        };
+            throw new InvalidOperationException(
+                "The archive cleanup plan is stale because the active generation, candidate classification, "
+                + "binding, path, or file evidence changed. Create and review a new plan.");
+        }
+
+        return current;
     }
+
+    /// <summary>Synchronous version of <c>RevalidateArchiveGenerationCleanupPlanAsync</c>.</summary>
+    public static TierArchiveCleanupPlan RevalidateArchiveGenerationCleanupPlan<TRoot>(
+        this DatabaseFacade database,
+        TierArchiveCleanupPlan plan)
+        where TRoot : class
+        => database.RevalidateArchiveGenerationCleanupPlanAsync<TRoot>(plan).GetAwaiter().GetResult();
 
     /// <summary>
     ///     Checks non-secret storage capabilities for a configured tiered aggregate. The default is read-only;
@@ -2288,7 +2397,11 @@ public static partial class DuckDBArchiveExtensions
                 Directory.GetCreationTimeUtc(directory),
                 files.LongLength,
                 files.Sum(file => new FileInfo(file).Length),
-                files.Take(representativeFiles).ToArray()));
+                files.Take(representativeFiles).ToArray())
+            {
+                ContractCompatible = true,
+                ProviderArchivePath = directory,
+            });
         }
     }
 
