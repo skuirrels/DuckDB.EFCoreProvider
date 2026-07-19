@@ -2,6 +2,7 @@ using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using System.Text.Json;
 using Xunit;
 using static Microsoft.EntityFrameworkCore.TieredStorageTestHelpers;
 
@@ -394,6 +395,86 @@ public sealed class TieredStorageTests : IDisposable
         var inventory = await context.Database.GetArchiveGenerationInventoryAsync<Record>();
         Assert.Equal(0, inventory.Generations.Single(generation => generation.State == TierArchiveGenerationState.Active).FileCount);
         Assert.Contains(inventory.Generations, generation => generation.GenerationId == completePlan.InputGenerationId);
+    }
+
+    [Fact]
+    public async Task Recovery_checkpoint_restores_control_catalogue_and_tiered_views_without_exposing_paths()
+    {
+        var dbPath = Path.Combine(_root, "recovery.duckdb");
+        var archivePath = Path.Combine(_root, "recovery-archive");
+        using var context = new RecordContext(dbPath, archivePath);
+        context.Database.EnsureCreated();
+        context.Records.AddRange(
+            new Record { EffectiveAt = new DateTime(2024, 1, 15) },
+            new Record { EffectiveAt = new DateTime(2024, 3, 15) });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+        await context.Database.CompactArchiveTierAsync<Record>();
+
+        var checkpoint = await context.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+        var json = JsonSerializer.Serialize(checkpoint);
+        Assert.DoesNotContain(archivePath, json, StringComparison.Ordinal);
+        var persistedCheckpoint = JsonSerializer.Deserialize<TierArchiveRecoveryCheckpoint>(json)!;
+
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control WHERE name = 'records';");
+
+        var controlLoss = await context.Database.GetArchiveGenerationInventoryAsync<Record>();
+        Assert.False(controlLoss.HasAuthoritativeActiveGeneration);
+        Assert.NotEmpty(controlLoss.Generations);
+        Assert.All(controlLoss.Generations, generation => Assert.Equal(TierArchiveGenerationState.Unknown, generation.State));
+        var cleanupError = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PlanArchiveGenerationCleanupAsync<Record>([checkpoint.ActiveGenerationId]));
+        Assert.Contains("no authoritative active-generation control evidence", cleanupError.Message);
+
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_files;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_nodes;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generations;");
+
+        var plan = await context.Database.PlanArchiveRecoveryAsync<Record>(persistedCheckpoint);
+        Assert.Equal(checkpoint.ActiveGenerationId, plan.Checkpoint.ActiveGenerationId);
+        Assert.Equal("records", plan.Binding.ControlKey);
+        var inventory = await context.Database.ApplyArchiveRecoveryAsync<Record>(plan);
+
+        Assert.True(inventory.HasAuthoritativeActiveGeneration);
+        Assert.Equal(checkpoint.ActiveGenerationId, inventory.ActiveGenerationId);
+        Assert.Equal(
+            checkpoint.Nodes.Sum(node => node.FileCount),
+            inventory.Generations.Single(generation => generation.State == TierArchiveGenerationState.Active).FileCount);
+        Assert.Equal(2, context.RecordHistory.Count());
+        Assert.Single(context.Records);
+    }
+
+    [Fact]
+    public async Task Recovery_rejects_a_different_active_generation_and_changed_files_after_planning()
+    {
+        var archivePath = Path.Combine(_root, "recovery-stale-archive");
+        using var context = new RecordContext(
+            Path.Combine(_root, "recovery-stale.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Records.Add(new Record { EffectiveAt = new DateTime(2024, 1, 15) });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+        var baseCheckpoint = await context.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+
+        await context.Database.CompactArchiveTierAsync<Record>();
+
+        var activeError = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PlanArchiveRecoveryAsync<Record>(baseCheckpoint));
+        Assert.Contains("different authoritative active generation evidence", activeError.Message);
+
+        var checkpoint = await context.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_files;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_nodes;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generations;");
+        var plan = await context.Database.PlanArchiveRecoveryAsync<Record>(checkpoint);
+        var selectedFile = Directory.EnumerateFiles(plan.ArchivePath, "*.parquet", SearchOption.AllDirectories).First();
+        File.Copy(selectedFile, Path.Combine(Path.GetDirectoryName(selectedFile)!, "changed-after-plan.parquet"));
+
+        var staleError = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.ApplyArchiveRecoveryAsync<Record>(plan));
+        Assert.Contains("exact file, size, row-count, or node evidence changed", staleError.Message);
     }
 
     [Fact]

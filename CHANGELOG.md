@@ -2,6 +2,14 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.12.0
+
+- Fail cleanup planning closed whenever archive generations exist without authoritative active-generation control
+  evidence; catalogued generations are now `Unknown` rather than implicitly non-active after control-row loss.
+- Add exportable recovery checkpoints plus read-only plan and atomic apply APIs. Recovery re-derives Provider paths,
+  validates binding, contract, watermark, row counts, and exact file evidence, then rebuilds the selected active
+  control/catalogue/view state without changing remote objects or requiring application path interpretation.
+
 ## 1.11.1
 
 - Persist a provider-owned marker before copying a remote replacement generation. Generation inventory can now

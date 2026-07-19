@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.11.1</PackageVersion>
-    <FileVersion>1.11.1.0</FileVersion>
-    <Version>1.11.1</Version>
+    <PackageVersion>1.12.0</PackageVersion>
+    <FileVersion>1.12.0.0</FileVersion>
+    <Version>1.12.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,12 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.11.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.11.1</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.12.0
+- Add exportable, path-free recovery checkpoints plus read-only planning and atomic apply APIs for rebuilding provider-owned tiered-storage control, catalogue, and view state after local evidence loss.
+- Fail archive-generation cleanup planning closed whenever authoritative active-generation control is missing, classifying local and remote candidates as Unknown until control state is recovered.
+
 1.11.1
 - Persist provider-owned markers for failed remote replacement generations and discover them after restart without requiring applications to reproduce revision paths. Unknown or contract-incompatible evidence remains ineligible for cleanup planning.
 - Add exact-catalogue cleanup fingerprints and stale-plan revalidation, plus disposable MinIO coverage across candidate registration, copy, verification, catalogue validation, publication, cancellation, restart, exact retry, and deliberate abandonment.

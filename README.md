@@ -487,6 +487,16 @@ var cleanup = await db.Database.PlanArchiveGenerationCleanupAsync<Record>(select
 cleanup = await db.Database.RevalidateArchiveGenerationCleanupPlanAsync<Record>(cleanup);
 var preflight = await db.Database.PreflightTieredStorageAsync<Record>();
 
+// Persist this serializable checkpoint outside the DuckDB database after each successful publication.
+var recoveryCheckpoint =
+    await db.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+
+// After verified local Provider-metadata loss, the Provider re-derives every path and revalidates exact evidence.
+var recoveryPlan =
+    await db.Database.PlanArchiveRecoveryAsync<Record>(persistedRecoveryCheckpoint);
+var recoveredInventory =
+    await db.Database.ApplyArchiveRecoveryAsync<Record>(recoveryPlan);
+
 // Records: hot only, with their RecordParts. Parquet is not queried.
 var hotRecords = await db.Records
     .Include(i => i.Parts)
