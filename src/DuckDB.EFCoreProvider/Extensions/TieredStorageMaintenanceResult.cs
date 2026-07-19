@@ -93,6 +93,12 @@ public readonly record struct TierArchiveGenerationInventory(
 {
     /// <summary>The root-scoped binding represented by this inventory.</summary>
     public TieredStorageBindingInfo? Binding { get; init; }
+
+    /// <summary>
+    ///     <see langword="true" /> when the Provider has an authoritative watermark and active-generation
+    ///     selection for this binding. Cleanup must fail closed when this evidence is absent.
+    /// </summary>
+    public bool HasAuthoritativeActiveGeneration { get; init; }
 }
 
 /// <summary>The result of moving a selected cold aggregate set back into mapped hot tables.</summary>

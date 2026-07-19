@@ -186,6 +186,7 @@ public sealed class TieredStorageS3Tests : IDisposable
         context.Database.EnsureCreated();
         SeedRecords(context);
         await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
+        var recoveryCheckpoint = await context.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
         var retention = await context.Database.PlanArchiveRetentionAsync<Record>(
             new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 4, 1) });
         ObjectStoreFailureInjector.FailOnce(DuckDBTierFailurePoint.AfterCandidateRegistration);
@@ -198,6 +199,9 @@ public sealed class TieredStorageS3Tests : IDisposable
                 generation => generation.GenerationId == retention.ExpectedOutputGenerationId).State);
 
         context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control WHERE name = 'records';");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_files;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_nodes;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generations;");
 
         var inventory = await context.Database.GetArchiveGenerationInventoryAsync<Record>();
         Assert.Empty(inventory.ActiveGenerationId);
@@ -210,6 +214,20 @@ public sealed class TieredStorageS3Tests : IDisposable
         Assert.True(candidate.ContractCompatible);
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => context.Database.PlanArchiveGenerationCleanupAsync<Record>([candidate.GenerationId]));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PlanArchiveGenerationCleanupAsync<Record>([retention.InputGenerationId]));
+
+        var recovery = await context.Database.PlanArchiveRecoveryAsync<Record>(recoveryCheckpoint);
+        var recoveredInventory = await context.Database.ApplyArchiveRecoveryAsync<Record>(recovery);
+        Assert.True(recoveredInventory.HasAuthoritativeActiveGeneration);
+        Assert.Equal(recoveryCheckpoint.ActiveGenerationId, recoveredInventory.ActiveGenerationId);
+        var recoveredCandidate = Assert.Single(
+            recoveredInventory.Generations,
+            generation => generation.GenerationId == retention.ExpectedOutputGenerationId);
+        Assert.Equal(TierArchiveGenerationState.UnpublishedCandidate, recoveredCandidate.State);
+        Assert.Single(
+            (await context.Database.PlanArchiveGenerationCleanupAsync<Record>([recoveredCandidate.GenerationId]))
+            .Candidates);
     }
 
     [MinIoFact]

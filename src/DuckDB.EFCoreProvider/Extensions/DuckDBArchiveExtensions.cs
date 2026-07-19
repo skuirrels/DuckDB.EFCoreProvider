@@ -871,6 +871,8 @@ public static partial class DuckDBArchiveExtensions
                       .ConfigureAwait(false)
                     ? ReadArchiveRevision(connection, sql, aggregate.ControlKey) ?? "base"
                     : "base";
+            var hasAuthoritativeActiveGeneration = watermark is not null
+                                                   && !string.IsNullOrEmpty(activeGenerationId);
             var generations = new List<TierArchiveGenerationInfo>();
             var recordedIds = new HashSet<string>(StringComparer.Ordinal);
             var recorded = new List<(string Id, string Path, DateTime Watermark, DateTime CreatedAt, long Files, long Bytes)>();
@@ -921,7 +923,9 @@ public static partial class DuckDBArchiveExtensions
                     .ConfigureAwait(false);
                 generations.Add(new TierArchiveGenerationInfo(
                     generation.Id,
-                    generation.Id == activeGenerationId
+                    !hasAuthoritativeActiveGeneration
+                        ? TierArchiveGenerationState.Unknown
+                        : generation.Id == activeGenerationId
                         ? TierArchiveGenerationState.Active
                         : TierArchiveGenerationState.Published,
                     DuckDBTierArchiveManifest.RedactCredentials(generation.Path),
@@ -999,6 +1003,7 @@ public static partial class DuckDBArchiveExtensions
                     activeGenerationId,
                     recordedIds,
                     representativeFiles,
+                    hasAuthoritativeActiveGeneration,
                     generations);
             }
             return new TierArchiveGenerationInventory(
@@ -1007,6 +1012,7 @@ public static partial class DuckDBArchiveExtensions
                 generations.OrderByDescending(generation => generation.CreatedAtUtc).ToArray())
             {
                 Binding = BindingInfo(aggregate),
+                HasAuthoritativeActiveGeneration = hasAuthoritativeActiveGeneration,
             };
         }
         finally
@@ -1050,6 +1056,13 @@ public static partial class DuckDBArchiveExtensions
                 representativeFiles: 1,
                 cancellationToken)
             .ConfigureAwait(false);
+        if (!inventory.HasAuthoritativeActiveGeneration && inventory.Generations.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Tiered-storage aggregate '{inventory.ControlKey}' has archive generations but no authoritative "
+                + "active-generation control evidence. Restore a Provider recovery checkpoint before planning cleanup.");
+        }
+
         var (_, _, archiveFileProbe, _) = Services(database);
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
         var connection = (DuckDBConnection)database.GetDbConnection();
@@ -1084,7 +1097,7 @@ public static partial class DuckDBArchiveExtensions
                 var exactFiles = archiveFileProbe.HasArchiveFiles(connection, providerPath)
                     ? archiveFileProbe.GetArchiveFiles(connection, providerPath)
                     : [];
-                var catalogueFingerprint = Sha256(string.Join("\n", exactFiles.Order(StringComparer.Ordinal)));
+                var catalogueFingerprint = FileCatalogueFingerprint(exactFiles);
                 candidates.Add(new TierArchiveCleanupCandidate(
                     generation.GenerationId,
                     generation.State,
@@ -2365,6 +2378,7 @@ public static partial class DuckDBArchiveExtensions
         string activeGenerationId,
         IReadOnlySet<string> recordedIds,
         int representativeFiles,
+        bool hasAuthoritativeActiveGeneration,
         ICollection<TierArchiveGenerationInfo> generations)
     {
         if (IsRemoteArchive(aggregate.ArchiveBasePath))
@@ -2391,7 +2405,9 @@ public static partial class DuckDBArchiveExtensions
                 .ToArray();
             generations.Add(new TierArchiveGenerationInfo(
                 generationId,
-                TierArchiveGenerationState.UnpublishedCandidate,
+                hasAuthoritativeActiveGeneration
+                    ? TierArchiveGenerationState.UnpublishedCandidate
+                    : TierArchiveGenerationState.Unknown,
                 directory,
                 watermark,
                 Directory.GetCreationTimeUtc(directory),

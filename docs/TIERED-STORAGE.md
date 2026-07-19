@@ -496,12 +496,56 @@ Inventory classifies the active generation, prior provider-published generations
 candidates discoverable from Provider-owned layout and remote candidate markers. Remote reconciliation, contract
 rewrite, and retention replacement operations persist the marker before copy. A compatible marker plus intact
 control metadata is `UnpublishedCandidate`; missing or incompatible evidence is conservatively `Unknown` and cannot
-enter a cleanup plan. Applications never reproduce revision paths. Cleanup planning and revalidation are read-only:
+enter a cleanup plan. If generations exist but the control row cannot identify an authoritative active generation,
+cleanup planning fails globally; a formerly active catalogued generation is not assumed to be merely `Published`.
+Applications never reproduce revision paths. Cleanup planning and revalidation are read-only:
 retention, legal hold, rollback depth, authorization, and actual object deletion remain application/deployment
 policy. Revalidation rejects a reviewed plan if active generation, binding, classification, path, or file evidence
 changed; the plan fingerprints the Provider-enumerated exact Parquet catalogue without exposing Provider path logic.
 For remote active generations, generated views use the provider's persisted exact file catalogue when
 available and fall back compatibly to recursive glob discovery.
+
+### Control and catalogue disaster recovery
+
+Process restart recovery and local Provider-metadata recovery are different failure modes. Remote candidate markers
+allow an interrupted replacement operation to be retried while the authoritative DuckDB control state survives.
+They do not contain the active-generation selection or watermark and cannot reconstruct lost control state alone.
+
+Capture a serializable recovery checkpoint after each successful archive publication and persist it outside the
+DuckDB database:
+
+```csharp
+TierArchiveRecoveryCheckpoint checkpoint =
+    await db.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+
+// Serialize and durably store checkpoint outside the DuckDB file.
+```
+
+The checkpoint contains the root binding, active generation identifier, watermark, optional bootstrap window,
+archive/partition contract fingerprints, and per-node row, file, byte, and exact-file-catalogue fingerprints. It
+contains no archive path. Recovery remains a reviewed two-step operation:
+
+```csharp
+TierArchiveRecoveryPlan recovery =
+    await db.Database.PlanArchiveRecoveryAsync<Record>(persistedCheckpoint);
+
+TierArchiveGenerationInventory recovered =
+    await db.Database.ApplyArchiveRecoveryAsync<Record>(recovery);
+```
+
+Planning is read-only. It validates the checkpoint fingerprint and current model, derives the configured base or
+revision path inside the Provider, checks any remote candidate marker, enumerates the exact current Parquet objects,
+reads every node, and rejects data at or beyond the checkpoint watermark. If a different authoritative active
+generation still exists, recovery refuses to replace it. Apply revalidates the plan and atomically rebuilds the
+selected active generation's control row, generation/node/file catalogue, bootstrap window, and generated views.
+It never creates, changes, or deletes Parquet objects.
+
+A checkpoint must exist before local state is lost; an `Unknown` generation cannot be adopted by inference. Restoring
+a consistent backup of the complete DuckDB database remains the preferred way to recover all historical generation
+catalogue entries. Checkpoint recovery restores the authoritative active generation; other remote revisions are
+re-inventoried from Provider markers, while a lost legacy/base historical entry may require full database restore.
+During recovery, stop archive publication, retention, cleanup, and historical reads until inventory again reports
+`HasAuthoritativeActiveGeneration == true` and the expected active generation.
 
 The detached-descendant diagnostic reports only technical evidence: a hot descendant whose complete configured
 parent chain exists in active cold data, not in hot tables, and whose stable key is not already cold. It does not

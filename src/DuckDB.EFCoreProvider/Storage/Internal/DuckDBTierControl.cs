@@ -1628,6 +1628,17 @@ public static class DuckDBTierControl
         => $"SELECT count(*) FROM read_parquet({Literal(ReadGlob(archivePath))}, "
            + "hive_partitioning = true, union_by_name = true);";
 
+    /// <summary>Counts archived root rows that cannot belong below an authoritative recovery watermark.</summary>
+    public static string ArchiveRowsOutsideWatermarkSql(
+        ISqlGenerationHelper sql,
+        string archivePath,
+        string timestampColumn,
+        DateTime watermark)
+        => $"SELECT count(*) FROM read_parquet({Literal(ReadGlob(archivePath))}, "
+           + "hive_partitioning = true, union_by_name = true) "
+           + $"WHERE {sql.DelimitIdentifier(timestampColumn)} IS NULL "
+           + $"OR {sql.DelimitIdentifier(timestampColumn)} >= {TimestampLiteral(watermark)};";
+
     /// <summary>Counts the rows visible in one archive window for manifest verification.</summary>
     public static string ArchiveWindowCountSql(
         ISqlGenerationHelper sql,

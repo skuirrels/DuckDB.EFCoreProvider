@@ -82,6 +82,12 @@ empty/no-op/complete/partial trim, persisted-versus-physical exact catalogue val
 caller-owned transactions, failure before/after copy/verify/publication, retry, and restart. The previous generation
 is inventory-visible and is never automatically deleted.
 
+Recovery acceptance covers JSON-round-trippable external checkpoints with no archive paths, global cleanup refusal
+after active-control loss, exact active-generation reconstruction after control/catalogue loss, rejection of a
+checkpoint when a different authoritative generation is active, and stale-plan rejection after file evidence changes.
+The disposable MinIO lane also proves that a remote `Unknown` candidate becomes cleanup-plannable only after the
+checkpoint restores authoritative active-generation evidence.
+
 The query-composition suite also covers reader-before-owner creation order, simultaneous owner and read context,
 multiple independent reader contexts, concurrent asynchronous reads, and model-cache keys containing dynamic archive
 locations. EF model configuration is immutable after construction: when a context type varies database/archive paths
