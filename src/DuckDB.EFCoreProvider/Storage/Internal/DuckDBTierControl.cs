@@ -1797,6 +1797,94 @@ public static class DuckDBTierControl
                + $"LIMIT {limit.ToString(CultureInfo.InvariantCulture)};";
     }
 
+    /// <summary>
+    ///     Counts hot descendant rows whose complete relationship chain is absent from hot tables, present in the
+    ///     active cold generation, and whose configured stable key is not already present in that generation.
+    /// </summary>
+    public static string DetachedDescendantCountSql(
+        ISqlGenerationHelper sql,
+        string table,
+        string? schema,
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<TierJoinHop> chain,
+        string activeArchiveBasePath,
+        string nodeArchivePath,
+        bool hasColdNodeFiles,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+        => "SELECT count(*) FROM " + Table(sql, table, schema) + " AS h WHERE "
+           + DetachedDescendantPredicate(
+               sql,
+               table,
+               keyColumns,
+               chain,
+               activeArchiveBasePath,
+               nodeArchivePath,
+               hasColdNodeFiles,
+               rootPartitions)
+           + ";";
+
+    /// <summary>Reads one bounded deterministic page of detached hot-descendant match keys.</summary>
+    public static string DetachedDescendantKeysSql(
+        ISqlGenerationHelper sql,
+        string table,
+        string? schema,
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<TierJoinHop> chain,
+        string activeArchiveBasePath,
+        string nodeArchivePath,
+        bool hasColdNodeFiles,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions,
+        int offset,
+        int limit)
+    {
+        var keys = ColumnList(sql, keyColumns, "h");
+        return $"SELECT {keys} FROM {Table(sql, table, schema)} AS h WHERE "
+               + DetachedDescendantPredicate(
+                   sql,
+                   table,
+                   keyColumns,
+                   chain,
+                   activeArchiveBasePath,
+                   nodeArchivePath,
+                   hasColdNodeFiles,
+                   rootPartitions)
+               + $" ORDER BY {keys} OFFSET {offset.ToString(CultureInfo.InvariantCulture)} "
+               + $"LIMIT {limit.ToString(CultureInfo.InvariantCulture)};";
+    }
+
+    private static string DetachedDescendantPredicate(
+        ISqlGenerationHelper sql,
+        string table,
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<TierJoinHop> chain,
+        string activeArchiveBasePath,
+        string nodeArchivePath,
+        bool hasColdNodeFiles,
+        IReadOnlyList<DuckDBTierPartitionColumn>? rootPartitions)
+    {
+        EnsureKeyColumns(keyColumns, table);
+        if (chain.Count == 0)
+        {
+            throw new ArgumentException("A detached-descendant query requires a non-root node.", nameof(chain));
+        }
+
+        var coldParents = ColdRootExistsPredicate(
+            sql,
+            chain,
+            activeArchiveBasePath,
+            "h",
+            "TRUE");
+        var hotParents = BindingExistsPredicate(sql, chain, "h");
+        if (!hasColdNodeFiles)
+        {
+            return $"{coldParents} AND NOT ({hotParents})";
+        }
+
+        return $"{coldParents} AND NOT ({hotParents}) AND NOT EXISTS (SELECT 1 FROM "
+               + $"{TypedParquetRead(sql, nodeArchivePath, rootPartitions)} AS c WHERE "
+               + $"{KeyMatchPredicate(sql, keyColumns, "c", "h")})";
+    }
+
     /// <summary>The recursive Parquet glob that matches every archived partition file under the archive root.</summary>
     public static string ReadGlob(string archivePath) => NormalizePath(archivePath) + "/**/*.parquet";
 

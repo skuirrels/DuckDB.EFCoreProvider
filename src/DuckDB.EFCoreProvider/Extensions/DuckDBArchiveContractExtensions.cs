@@ -198,7 +198,18 @@ public static partial class DuckDBArchiveExtensions
                             .ConfigureAwait(false));
                 }
 
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCandidateRegistration, table: null);
+                await RegisterRemoteArchiveCandidateAsync(
+                        connection,
+                        aggregate,
+                        revision,
+                        replacementBasePath,
+                        TierArchiveOperation.RewriteContract,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCandidateRegistration, table: null);
                 stage = TierArchiveStage.Copy;
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCopy, table: null);
                 foreach (var node in aggregate.Nodes)
                 {
                     if (!sources.TryGetValue(node, out var source) || manifest.SelectedRows(node) == 0)
@@ -228,7 +239,10 @@ public static partial class DuckDBArchiveExtensions
                     await ExecuteNonQueryAsync(connection, copySql, cancellationToken).ConfigureAwait(false);
                 }
 
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCopy, table: null);
                 stage = TierArchiveStage.Verify;
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeVerify, table: null);
+                var verifiedFiles = new Dictionary<DuckDBTierNode, IReadOnlyList<string>>();
                 foreach (var node in aggregate.Nodes)
                 {
                     var nodePath = manifest.ArchivePath(node);
@@ -246,16 +260,22 @@ public static partial class DuckDBArchiveExtensions
                             + $"{manifest.SelectedRows(node)} row(s), but found {copied} row(s).");
                     }
 
-                    manifest.SetCopied(
-                        node,
-                        copied,
-                        copied == 0
-                            ? new DuckDBArchiveFileSummary(0, 0, [], IsTruncated: false)
-                            : archiveFileProbe.GetArchiveFileSummary(connection, nodePath, manifest.ManifestOptions));
+                    var summary = copied == 0
+                        ? new DuckDBArchiveFileSummary(0, 0, [], IsTruncated: false)
+                        : archiveFileProbe.GetArchiveFileSummary(
+                            connection,
+                            nodePath,
+                            new TierManifestOptions { Detail = TierManifestDetail.AllFiles });
+                    verifiedFiles[node] = summary.Files;
+                    manifest.SetCopiedFromExactSummary(node, copied, summary);
                 }
 
-                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCopy, table: null);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterVerify, table: null);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforeCatalogueValidation, table: null);
+                VerifyCandidateFileCatalogue(connection, archiveFileProbe, aggregate, manifest, verifiedFiles);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterCatalogueValidation, table: null);
                 stage = TierArchiveStage.Publish;
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.BeforePublication, table: null);
                 await PublishArchiveAsync(
                         connection,
                         sql,
@@ -267,6 +287,7 @@ public static partial class DuckDBArchiveExtensions
                         useInternalTransaction: true,
                         cancellationToken)
                     .ConfigureAwait(false);
+                failureInjector.ThrowIfRequested(DuckDBTierFailurePoint.AfterPublication, table: null);
                 await ExecuteNonQueryAsync(connection, "CHECKPOINT;", cancellationToken).ConfigureAwait(false);
                 return manifest.Build(watermark.Value, noOp: false, TierArchiveStage.Completed);
             }

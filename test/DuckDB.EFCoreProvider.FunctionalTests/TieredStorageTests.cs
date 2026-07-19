@@ -265,6 +265,7 @@ public sealed class TieredStorageTests : IDisposable
                         TierMaintenanceScope.ForPartitionValues(
                             new Dictionary<string, object?> { [nameof(PartitionedRecord.GroupId)] = 10 }),
                     ],
+                    Manifest = new TierManifestOptions { Detail = TierManifestDetail.Summary },
                 });
 
             Assert.Equal(new DateTime(2024, 2, 1), plan.EffectiveRetainFrom);
@@ -290,6 +291,9 @@ public sealed class TieredStorageTests : IDisposable
             Assert.Equal(TierArchiveOperation.RetentionTrim, result.Operation);
             Assert.Equal(plan.ExpectedOutputGenerationId, result.Revision);
             Assert.False(result.NoOp);
+            Assert.All(result.Nodes, node => Assert.Empty(node.Files));
+            Assert.All(result.Nodes, node => Assert.True(node.FileCount > 0));
+            Assert.All(result.Nodes, node => Assert.True(node.FilesTruncated));
             Assert.Equal(
                 [(10, 1), (20, 2), (30, 3), (40, 1)],
                 context.PartitionedRecordHistory
@@ -336,6 +340,11 @@ public sealed class TieredStorageTests : IDisposable
             var cleanup = await restarted.Database.PlanArchiveGenerationCleanupAsync<PartitionedRecord>([inputGeneration]);
             Assert.Single(cleanup.Candidates);
             Assert.Equal(inputGeneration, cleanup.Candidates[0].GenerationId);
+            Assert.NotEmpty(cleanup.Candidates[0].FileCatalogueFingerprint);
+            Assert.Equal(
+                cleanup.Fingerprint,
+                (await restarted.Database.RevalidateArchiveGenerationCleanupPlanAsync<PartitionedRecord>(cleanup))
+                .Fingerprint);
         }
     }
 

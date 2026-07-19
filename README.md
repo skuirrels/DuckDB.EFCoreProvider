@@ -481,7 +481,10 @@ var restored = await db.Database.RestoreArchiveTierAsync<Record>(
 
 // Operational diagnostics stay bounded.
 var conflicts = await db.Database.GetArchiveConflictsAsync<Record>(offset: 0, limit: 100);
+var detached = await db.Database.GetArchiveDetachedDescendantsAsync<Record>(offset: 0, limit: 100);
 var inventory = await db.Database.GetArchiveGenerationInventoryAsync<Record>();
+var cleanup = await db.Database.PlanArchiveGenerationCleanupAsync<Record>(selectedGenerationIds);
+cleanup = await db.Database.RevalidateArchiveGenerationCleanupPlanAsync<Record>(cleanup);
 var preflight = await db.Database.PreflightTieredStorageAsync<Record>();
 
 // Records: hot only, with their RecordParts. Parquet is not queried.

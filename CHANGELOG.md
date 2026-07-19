@@ -2,6 +2,23 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.11.1
+
+- Persist a provider-owned marker before copying a remote replacement generation. Generation inventory can now
+  recover failed retention, reconciliation, compaction, restoration, and contract-rewrite candidates after restart
+  without callers reproducing the provider's revision layout. A compatible marker plus intact provider control
+  evidence is classified as an unpublished candidate; missing or incompatible evidence is conservatively `Unknown`
+  and cannot enter a cleanup plan.
+- Fingerprint the provider-enumerated exact Parquet catalogue in cleanup plans and add explicit revalidation so a
+  reviewed plan fails if its active generation, binding, classification, path, or file catalogue changes. Cleanup
+  remains read-only and never deletes remote objects automatically.
+- Complete the disposable MinIO retention matrix across candidate registration, copy, verification, exact-catalogue
+  validation, publication, cancellation, restart, exact retry, and deliberate abandonment. Expand the neutral scale
+  fixture across configurable graph depth, file fan-out, retained technical scopes, and a shared-descendant preset.
+- Add a bounded read-only detached-descendant diagnostic. It identifies a hot descendant whose configured parent
+  chain exists only in the active cold generation and whose stable key is not already cold; it does not quarantine,
+  reconcile, approve, or assign business meaning to the row.
+
 ## 1.11.0
 
 - Add provider-neutral immutable cold-tier retention. `PlanArchiveRetentionAsync<TRoot>` fingerprints the active

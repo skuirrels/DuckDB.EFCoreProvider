@@ -24,6 +24,7 @@ public static partial class DuckDBArchiveExtensions
         var result = await database.ReconcileArchiveTierAsync<TRoot>(
                 new TierReconciliationOptions
                 {
+                    Operation = TierArchiveOperation.Compact,
                     ForceRewrite = true,
                     Writer = options.Writer,
                     Manifest = options.Manifest,
@@ -221,6 +222,7 @@ public static partial class DuckDBArchiveExtensions
                 var publication = await database.ReconcileArchiveTierAsync<TRoot>(
                         new TierReconciliationOptions
                         {
+                            Operation = TierArchiveOperation.Restore,
                             Scope = options.Scope,
                             OmitScopeFromCold = true,
                             UseExistingTransaction = true,

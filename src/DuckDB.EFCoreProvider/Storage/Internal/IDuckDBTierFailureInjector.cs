@@ -2,12 +2,16 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 
 internal enum DuckDBTierFailurePoint
 {
+    BeforeCandidateRegistration,
+    AfterCandidateRegistration,
     AfterCopy,
     AfterPublication,
     AfterNodeDelete,
     BeforeCopy,
     BeforeVerify,
     AfterVerify,
+    BeforeCatalogueValidation,
+    AfterCatalogueValidation,
     BeforePublication,
 }
 
