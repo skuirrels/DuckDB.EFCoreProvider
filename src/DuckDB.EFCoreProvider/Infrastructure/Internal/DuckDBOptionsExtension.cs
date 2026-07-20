@@ -316,22 +316,53 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             return;
         }
 
-        if (_duckLakeOptions.MetadataSource is null
-            || !_duckLakeOptions.UsesSecret && string.IsNullOrWhiteSpace(_duckLakeOptions.MetadataSource))
+        var catalogNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in _duckLakeOptions.AdditionalCatalogs.Prepend(_duckLakeOptions))
+        {
+            if (!catalogNames.Add(profile.CatalogName))
+            {
+                throw new InvalidOperationException(
+                    $"DuckLake catalog alias '{profile.CatalogName}' is configured more than once.");
+            }
+
+            if (profile.AdditionalCatalogs.Count > 0 && !ReferenceEquals(profile, _duckLakeOptions))
+            {
+                throw new InvalidOperationException("Nested additional DuckLake catalog profiles are not supported.");
+            }
+
+            ValidateDuckLakeProfile(profile);
+        }
+    }
+
+    private static void ValidateDuckLakeProfile(DuckLakeOptions profile)
+    {
+        if (profile.MetadataSource is null
+            || !profile.UsesSecret && string.IsNullOrWhiteSpace(profile.MetadataSource))
         {
             throw new InvalidOperationException(
                 "The DuckLake profile has no metadata source. Call UseLocalMetadata(...) or UseNamedSecret(...).");
         }
 
-        if (_duckLakeOptions.IsReadOnly && (_duckLakeOptions.CreateIfNotExists || _duckLakeOptions.AutomaticMigration))
+        if (profile.IsReadOnly && (profile.CreateIfNotExists || profile.AutomaticMigration))
         {
             throw new InvalidOperationException(
                 "A read-only DuckLake profile cannot create a missing catalog or perform automatic catalog migration.");
         }
 
-        if (_duckLakeOptions.OverrideDataPath && string.IsNullOrWhiteSpace(_duckLakeOptions.DataPath))
+        if (profile.OverrideDataPath && string.IsNullOrWhiteSpace(profile.DataPath))
         {
             throw new InvalidOperationException("OverrideDataPath requires a DuckLake data path.");
+        }
+
+        if (profile.SnapshotVersion is not null && profile.SnapshotTime is not null)
+        {
+            throw new InvalidOperationException(
+                "A DuckLake historical profile can select either a snapshot identifier or a timestamp, not both.");
+        }
+
+        if ((profile.SnapshotVersion is not null || profile.SnapshotTime is not null) && !profile.IsReadOnly)
+        {
+            throw new InvalidOperationException("A DuckLake historical profile must be read-only.");
         }
     }
 

@@ -118,10 +118,13 @@ options.UseDuckLake(
 ```
 
 Supported workflows include LINQ, tracked `SaveChanges`, transactions, optimistic concurrency, initial
-`EnsureCreated`, appender-backed `BulkInsert`, `MERGE`-backed `Upsert`, and read-only profiles. DuckLake does
+`EnsureCreated`, appender-backed `BulkInsert`, `MERGE`-backed `Upsert`, read-only profiles, historical LINQ
+profiles, typed maintenance, additional read-only local catalogs, streaming dynamic SQL, and local-metadata
+database-first scaffolding. DuckLake does
 not physically enforce keys, foreign keys, unique/check constraints, or indexes, and it does not support
-sequences, store-generated values, or `RETURNING`. EF migrations, `EnsureDeleted`, scaffolding, provider tiered
-storage, and `SaveChanges` batching are therefore deliberately unavailable in this profile. See the complete
+sequences, store-generated values, or `RETURNING`. EF migrations, `EnsureDeleted`, provider tiered storage,
+`SaveChanges` batching, and EF entity mappings to non-primary attached catalogs are therefore deliberately
+unavailable in this profile. See the complete
 [DuckLake configuration, security, and limitations guide](docs/DUCKLAKE.md).
 
 ## Configuration and connection strings
@@ -167,6 +170,30 @@ The batching, memory, and file-search options are explained in detail under [Per
 ## Data workflows
 
 The provider supports standard EF Core persistence together with DuckDB-specific ingestion, file-query, and archival workflows. See the [capability map](docs/CAPABILITY-MAP.md) for the detailed support matrix and documented engine limitations.
+
+### Stream an unknown result shape
+
+Use the dynamic result API for user-authored analytical SQL whose columns are not known at compile time:
+
+```csharp
+await using var result = await context.Database.SqlQueryDynamicRawAsync(sql, cancellationToken);
+
+foreach (var column in result.Columns)
+{
+    Console.WriteLine($"{column.Name}: {column.DuckDBTypeName} ({column.ClrType.Name})");
+}
+
+await foreach (var row in result.ReadRowsAsync(cancellationToken))
+{
+    // ReadOnlyMemory<object?> aligned with result.Columns by ordinal.
+}
+```
+
+Rows stream without result-set buffering and own their backing arrays. Values remain the lossless CLR objects
+returned by DuckDB.NET; database nulls become `null`. Use `SqlQueryDynamicAsync($"... {value} ...")` or the raw
+overload with `{0}` placeholders and a parameter list for values. Raw SQL text is trusted SQL and is not sanitized.
+The provider does not impose UI row limits or choose a JSON serialization policy. See the
+[type-mapping contract](docs/TYPE-MAPPINGS.md).
 
 ### Export a query to Parquet
 
@@ -825,6 +852,8 @@ For the full feature support matrix, the DuckDB engine limitations, and the road
 DuckDB-specific details, see the [migrations guide](docs/MIGRATIONS.md). See also
 [CHANGELOG.md](CHANGELOG.md) for release history, [VERSIONING.md](VERSIONING.md) for the
 versioning / breaking-change policy, and [SECURITY.md](SECURITY.md) for vulnerability reporting.
+The [type-mapping guide](docs/TYPE-MAPPINGS.md) distinguishes EF entity-property mappings from the broader raw
+DuckDB.NET reader value surface.
 
 ## Performance
 

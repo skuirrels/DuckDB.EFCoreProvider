@@ -23,6 +23,18 @@ internal sealed record DuckLakeOptions
 
     public bool OverrideDataPath { get; init; }
 
+    public long? SnapshotVersion { get; init; }
+
+    public DateTimeOffset? SnapshotTime { get; init; }
+
+    public IReadOnlyList<DuckLakeOptions> AdditionalCatalogs { get; init; } = [];
+
     public DuckLakeOptions AsReadOnly()
-        => this with { IsReadOnly = true, CreateIfNotExists = false, AutomaticMigration = false };
+        => this with
+        {
+            IsReadOnly = true,
+            CreateIfNotExists = false,
+            AutomaticMigration = false,
+            AdditionalCatalogs = AdditionalCatalogs.Select(catalog => catalog.AsReadOnly()).ToArray()
+        };
 }

@@ -4,7 +4,21 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 
 ## Unreleased
 
-## 1.12.1
+## 1.13.0
+
+- Add `SqlQueryDynamicRawAsync(...)` and `SqlQueryDynamicAsync(...)` for streaming SQL whose result shape is
+  unknown until execution. Results expose runtime DuckDB/CLR column metadata, preserve nested values, normalize
+  database nulls, and clone reader-backed streams so every yielded row remains stable after the reader advances.
+- Add typed DuckLake snapshot, expiry, cleanup, orphan-file deletion, inline-data flush, adjacent-file merge, and
+  deleted-row rewrite operations. Destructive lifecycle functions default to DuckLake dry-run mode.
+- Add table-scoped and catalog-wide historical LINQ through snapshot identifiers and timestamps. Catalog-wide
+  profiles are read-only and keep multi-table queries on one coherent historical attachment.
+- Add verified local DuckLake attachments through `AlsoAttach(...)`. Existing aliases are reused only when their
+  metadata source and access mode match the configured profile.
+- Add local-metadata DuckLake database-first scaffolding with exact catalog filtering, schema/table filters, and
+  keyless entity generation. Remote and named-secret metadata remain on caller-initialized connections so
+  credentials do not enter command-line arguments.
+- Document the separate EF entity-property and raw DuckDB.NET reader type-mapping contracts.
 
 - Add stable `DuckDBEventId` lifecycle events and structured `DuckDBOperationEventData` payloads through EF Core's
   existing `ILogger`, `LogTo`, and `DiagnosticSource` pipeline. Raw bulk insert, upsert, Parquet export, tiered
