@@ -106,5 +106,6 @@ free up to several hundred.
 
 - Numbers above are from a single machine and a quick harness; treat them as orders of magnitude, not
   precise figures. Use the BenchmarkDotNet project for rigorous, reproducible measurement.
-- `BulkInsert` is a raw fast path: no change tracking, concurrency, interceptors, or store-generated
-  values. Use `SaveChanges` when you need those.
+- `BulkInsert` is a raw fast path: no change tracking, concurrency, EF command interceptors, or store-generated
+  values. It does emit bounded provider start/completion/failure diagnostics for the overall operation. Use
+  `SaveChanges` when you need the EF update pipeline.

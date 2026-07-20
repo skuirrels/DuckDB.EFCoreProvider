@@ -10,4 +10,12 @@ namespace DuckDB.EFCoreProvider.Diagnostics.Internal;
 /// </summary>
 public class DuckDBLoggingDefinitions : RelationalLoggingDefinitions
 {
+    internal EventDefinitionBase?[] OperationStarting { get; } =
+        new EventDefinitionBase?[(int)DuckDBProviderOperation.Count];
+
+    internal EventDefinitionBase?[] OperationCompleted { get; } =
+        new EventDefinitionBase?[(int)DuckDBProviderOperation.Count];
+
+    internal EventDefinitionBase?[] OperationFailed { get; } =
+        new EventDefinitionBase?[(int)DuckDBProviderOperation.Count];
 }

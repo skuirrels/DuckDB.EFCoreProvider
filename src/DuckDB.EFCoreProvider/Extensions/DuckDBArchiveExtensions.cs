@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Diagnostics.Internal;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Storage.Internal;
@@ -211,7 +212,27 @@ public static partial class DuckDBArchiveExtensions
             requireInitialWindow: true,
             cancellationToken);
 
-    private static async Task<TierArchiveResult> ArchiveTierCoreAsync<TRoot>(
+    private static Task<TierArchiveResult> ArchiveTierCoreAsync<TRoot>(
+        DatabaseFacade database,
+        DateTime cutoff,
+        TierArchiveOptions options,
+        DateTime? initialFrom,
+        bool requireInitialWindow,
+        CancellationToken cancellationToken)
+        where TRoot : class
+        => ExecuteTieredOperationAsync<TRoot, TierArchiveResult>(
+            database,
+            requireInitialWindow ? "BootstrapArchiveTier" : "ArchiveTier",
+            () => ArchiveTierImplementationAsync<TRoot>(
+                database,
+                cutoff,
+                options,
+                initialFrom,
+                requireInitialWindow,
+                cancellationToken),
+            result => result.RowsArchived);
+
+    private static async Task<TierArchiveResult> ArchiveTierImplementationAsync<TRoot>(
         DatabaseFacade database,
         DateTime cutoff,
         TierArchiveOptions options,
@@ -467,10 +488,21 @@ public static partial class DuckDBArchiveExtensions
     ///     Rebuilds the published cold range using an explicit technical scope, caller-authorised tombstones,
     ///     Parquet writer controls, and bounded manifest evidence.
     /// </summary>
-    public static async Task<TierArchiveResult> ReconcileArchiveTierAsync<TRoot>(
+    public static Task<TierArchiveResult> ReconcileArchiveTierAsync<TRoot>(
         this DatabaseFacade database,
         TierReconciliationOptions options,
         CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ExecuteTieredOperationAsync<TRoot, TierArchiveResult>(
+            database,
+            options.Operation.ToString(),
+            () => ReconcileArchiveTierImplementationAsync<TRoot>(database, options, cancellationToken),
+            result => result.RowsArchived);
+
+    private static async Task<TierArchiveResult> ReconcileArchiveTierImplementationAsync<TRoot>(
+        DatabaseFacade database,
+        TierReconciliationOptions options,
+        CancellationToken cancellationToken)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -1335,6 +1367,13 @@ public static partial class DuckDBArchiveExtensions
     /// </summary>
     /// <returns>The number of partition directories deleted across all aggregate tables.</returns>
     public static int PurgeArchiveOlderThan<TRoot>(this DatabaseFacade database, DateTime olderThan)
+        where TRoot : class
+        => ExecuteTieredOperation<TRoot, int>(
+            database,
+            "PurgeArchiveOlderThan",
+            () => PurgeArchiveOlderThanImplementation<TRoot>(database, olderThan));
+
+    private static int PurgeArchiveOlderThanImplementation<TRoot>(DatabaseFacade database, DateTime olderThan)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -2610,6 +2649,66 @@ public static partial class DuckDBArchiveExtensions
         {
             await database.CloseConnectionAsync().ConfigureAwait(false);
         }
+    }
+
+    private static async Task<TResult> ExecuteTieredOperationAsync<TRoot, TResult>(
+        DatabaseFacade database,
+        string operationName,
+        Func<Task<TResult>> operation,
+        Func<TResult, long?>? rowsAffected = null)
+        where TRoot : class
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        var context = database.GetService<ICurrentDbContext>().Context;
+        var diagnostics = DuckDBOperationDiagnostics.StartCommand(
+            context,
+            DuckDBProviderOperation.TieredStorage,
+            operationName,
+            typeof(TRoot).Name);
+
+        TResult result;
+        try
+        {
+            result = await operation().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            diagnostics.Fail(exception);
+            throw;
+        }
+
+        diagnostics.Complete(rowsAffected?.Invoke(result));
+        return result;
+    }
+
+    private static TResult ExecuteTieredOperation<TRoot, TResult>(
+        DatabaseFacade database,
+        string operationName,
+        Func<TResult> operation,
+        Func<TResult, long?>? rowsAffected = null)
+        where TRoot : class
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        var context = database.GetService<ICurrentDbContext>().Context;
+        var diagnostics = DuckDBOperationDiagnostics.StartCommand(
+            context,
+            DuckDBProviderOperation.TieredStorage,
+            operationName,
+            typeof(TRoot).Name);
+
+        TResult result;
+        try
+        {
+            result = operation();
+        }
+        catch (Exception exception)
+        {
+            diagnostics.Fail(exception);
+            throw;
+        }
+
+        diagnostics.Complete(rowsAffected?.Invoke(result));
+        return result;
     }
 
     private static void ExecuteNonQuery(DuckDBConnection connection, string commandText)

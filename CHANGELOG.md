@@ -2,6 +2,13 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- Add stable `DuckDBEventId` lifecycle events and structured `DuckDBOperationEventData` payloads through EF Core's
+  existing `ILogger`, `LogTo`, and `DiagnosticSource` pipeline. Raw bulk insert, upsert, Parquet export, tiered
+  maintenance, extension loading, and DuckLake attachment now expose bounded start/completion/failure diagnostics
+  without introducing a provider-specific consumer logger interface or per-command overhead.
+
 ## 1.12.0
 
 - Fail cleanup planning closed whenever archive generations exist without authoritative active-generation control
