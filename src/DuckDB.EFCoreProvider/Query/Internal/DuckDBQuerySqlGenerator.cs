@@ -1,4 +1,4 @@
-﻿using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
@@ -220,27 +220,56 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
 
     /// <summary>
     ///     Emits <c>alias."StructColumn".nestedField.leafFieldName</c> for a DuckDB struct
-    ///     sub-field access. The struct column name is delimited; intermediate and leaf
-    ///     field names are appended unquoted (DuckDB struct field names are case-sensitive
-    ///     lowercase identifiers).
-    /// </summary>
-    private void EmitStructFieldAccess(ColumnExpression columnExpression, DuckDBStructFieldInfo structInfo)
-    {
-        Sql.Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(columnExpression.TableAlias))
-           .Append(".")
-           .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structInfo.StructColumnName));
-
-        foreach (var field in structInfo.NestedFieldNames)
+        ///     sub-field access by delegating to <see cref="VisitStructField" />.
+        /// </summary>
+        private void EmitStructFieldAccess(ColumnExpression columnExpression, DuckDBStructFieldInfo structInfo)
         {
-            Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(field));
+            // Delegate rendering to the dedicated DuckDBStructFieldExpression so struct access
+            // SQL has a single authoring/regeneration point (#3). Constructing the expression
+            // here rather than emitting directly lets future phases produce these earlier in
+            // the query pipeline (e.g. from the SQL translating visitor) for cleaner flattening.
+            Visit(new DuckDBStructFieldExpression(
+                columnExpression.TableAlias,
+                structInfo.StructColumnName,
+                structInfo,
+                columnExpression.Type,
+                columnExpression.TypeMapping));
         }
 
-        // Leaf field name: use the DuckDB-specific name if set, otherwise fall back
-        // to the EF column name (e.g. when configured via explicit HasColumnName).
-        Sql.Append(".").Append(
-            Dependencies.SqlGenerationHelper.DelimitIdentifier(
-                structInfo.LeafFieldName ?? columnExpression.Name));
-    }
+        /// <summary>
+        ///     Renders a DuckDB struct field access expression:
+        ///     <c>alias."StructColumn".nested1.nested2.leaf</c>. The alias and struct column
+        ///     name are delimited (per SQL convention); intermediate nested field names and
+        ///     the leaf field name are appended unquoted (DuckDB struct field names are
+        ///     case-sensitive lowercase identifiers).
+        /// </summary>
+        /// <remarks>
+        ///     This is the single rendering path for <see cref="DuckDBStructFieldExpression" />.
+        ///     Resolving STRUCT paths earlier in the query pipeline (per the plan in #3) lets
+        ///     subqueries naturally flatten — outer references become plain column projections
+        ///     and never reach this renderer.
+        /// </remarks>
+        protected virtual Expression VisitStructField(DuckDBStructFieldExpression structFieldExpression)
+        {
+            Sql.Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structFieldExpression.TableAlias))
+               .Append(".")
+               .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structFieldExpression.StructColumnName));
+
+            // Intermediate nested field names are appended unquoted: DuckDB struct field names
+            // are case-sensitive lowercase identifiers and don't support quoting.
+            foreach (var field in structFieldExpression.StructFieldInfo.NestedFieldNames)
+            {
+                Sql.Append(".").Append(field);
+            }
+
+            // Leaf field name: use the DuckDB-specific name if set, otherwise fall back to
+            // the column's EF identity (e.g. when configured via explicit HasColumnName that
+            // sets both the column name and the leaf field name).
+            Sql.Append(".").Append(
+                structFieldExpression.StructFieldInfo.LeafFieldName ?? structFieldExpression.TableAlias);
+
+            return structFieldExpression;
+        }
 
     /// <summary>
     ///     Scans a column's property mappings for a <c>DuckDB:StructField</c>
@@ -402,7 +431,8 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             DuckDBArraySliceExpression e => VisitArraySlice(e),
             DuckDBJsonEachExpression e => VisitJsonEach(e),
             DuckDBRowValueExpression e => VisitRowValue(e),
-            _ => base.VisitExtension(extensionExpression)
+                        DuckDBStructFieldExpression e => VisitStructField(e),
+                        _ => base.VisitExtension(extensionExpression)
         };
     }
 
