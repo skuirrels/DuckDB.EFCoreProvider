@@ -116,32 +116,47 @@ public class DuckDBSqlExpressionFactory : SqlExpressionFactory
 
     public virtual SqlExpression AddYears(SqlExpression timestamp, SqlExpression years, Type returnType)
     {
-        return Function(
-            name: "date_add",
-            arguments: [timestamp, ToYears(years)],
-            argumentsPropagateNullability: [true, true],
-            nullable: true,
-            returnType: returnType);
+        return DateAdd(timestamp, ToYears(years), returnType);
     }
 
     public virtual SqlExpression AddMonths(SqlExpression timestamp, SqlExpression months, Type returnType)
     {
-        return Function(
-            name: "date_add",
-            arguments: [timestamp, ToMonths(months)],
-            argumentsPropagateNullability: [true, true],
-            nullable: true,
-            returnType: returnType);
+        return DateAdd(timestamp, ToMonths(months), returnType);
     }
 
     public virtual SqlExpression AddDays(SqlExpression timestamp, SqlExpression days, Type returnType)
     {
-        return Function(
+        return DateAdd(
+            timestamp,
+            returnType == typeof(DateOnly) ? ToDays(days) : ToFractionalDays(days),
+            returnType);
+    }
+
+    private SqlExpression DateAdd(SqlExpression timestamp, SqlExpression interval, Type returnType)
+    {
+        var dateAddReturnType = returnType == typeof(DateOnly) ? typeof(DateTime) : returnType;
+        var result = Function(
             name: "date_add",
-            arguments: [timestamp, ToDays(days)],
+            arguments: [timestamp, interval],
             argumentsPropagateNullability: [true, true],
             nullable: true,
-            returnType: returnType);
+            returnType: dateAddReturnType);
+
+        // DuckDB returns TIMESTAMP when an interval is added to a DATE. Convert the physical result back to DATE
+        // so it remains aligned with the DateOnly type represented by EF Core's SQL tree.
+        return returnType == typeof(DateOnly)
+            ? Convert(result, returnType, _typeMappingSource.FindMapping(returnType))
+            : result;
+    }
+
+    private SqlExpression ToFractionalDays(SqlExpression days)
+    {
+        return new SqlBinaryExpression(
+            ExpressionType.Multiply,
+            ApplyDefaultTypeMapping(days),
+            Fragment("INTERVAL '1 day'"),
+            typeof(TimeSpan),
+            _typeMappingSource.FindMapping(typeof(TimeSpan)));
     }
 
     public virtual SqlExpression ToYears(SqlExpression years)
@@ -230,10 +245,50 @@ public class DuckDBSqlExpressionFactory : SqlExpressionFactory
                 _ => base.ApplyTypeMapping(sqlExpression, typeMapping)
             };
 
+            if (sqlExpression is SqlBinaryExpression
+                {
+                    OperatorType: ExpressionType.Divide,
+                    TypeMapping: { } resultTypeMapping
+                } division
+                && division.Type.UnwrapNullableType() == typeof(decimal))
+            {
+                // DuckDB's division operator returns DOUBLE, including for DECIMAL operands. Cast the result to a
+                // widened DECIMAL mapping so it materializes correctly without rounding before enclosing arithmetic.
+                return Convert(
+                    division,
+                    division.Type,
+                    CreateDecimalDivisionTypeMapping(division, resultTypeMapping));
+            }
+
             return sqlExpression;
         }
 
         return base.ApplyTypeMapping(sqlExpression, typeMapping);
+    }
+
+    private static RelationalTypeMapping CreateDecimalDivisionTypeMapping(
+        SqlBinaryExpression division,
+        RelationalTypeMapping resultTypeMapping)
+    {
+        const int maxPrecision = 38;
+        const int minimumScale = 6;
+
+        var defaultMapping = DuckDBDecimalTypeMapping.Default;
+        var defaultPrecision = defaultMapping.Precision!.Value;
+        var defaultScale = defaultMapping.Scale!.Value;
+        var leftPrecision = division.Left.TypeMapping?.Precision ?? resultTypeMapping.Precision ?? defaultPrecision;
+        var leftScale = division.Left.TypeMapping?.Scale ?? resultTypeMapping.Scale ?? defaultScale;
+        var rightPrecision = division.Right.TypeMapping?.Precision ?? resultTypeMapping.Precision ?? defaultPrecision;
+        var rightScale = division.Right.TypeMapping?.Scale ?? resultTypeMapping.Scale ?? defaultScale;
+
+        // Division can require more fractional digits than either operand. Retain enough integral digits for the
+        // declared operand ranges, then use the remaining DuckDB DECIMAL width for fractional precision.
+        var integralDigits = Math.Min(maxPrecision, Math.Max(0, leftPrecision - leftScale + rightScale));
+        var desiredScale = Math.Max(minimumScale, leftScale + rightPrecision + 1);
+        var scale = Math.Min(desiredScale, maxPrecision - integralDigits);
+        var precision = Math.Max(1, integralDigits + scale);
+
+        return new DuckDBDecimalTypeMapping(precision, scale);
     }
 
     private SqlBinaryExpression ApplyTypeMappingOnSqlBinary(SqlBinaryExpression binary, RelationalTypeMapping? typeMapping)
@@ -304,7 +359,7 @@ public class DuckDBSqlExpressionFactory : SqlExpressionFactory
                     values = rowValueExpression.Values;
                     return true;
 
-                case SqlConstantExpression { Value : ITuple constantTuple }:
+                case SqlConstantExpression { Value: ITuple constantTuple }:
                     var v = new SqlExpression[constantTuple.Length];
 
                     for (var i = 0; i < v.Length; i++)
@@ -341,7 +396,7 @@ public class DuckDBSqlExpressionFactory : SqlExpressionFactory
         var (item, array) = ApplyTypeMappingsOnItemAndArray(duckDbAnyExpression.Item, duckDbAnyExpression.Array);
         return new DuckDBAnyExpression(item, array, _boolTypeMapping);
     }
-    
+
     private SqlExpression ApplyTypeMappingOnArrayIndex(
         DuckDBArrayIndexExpression arrayIndexExpression,
         RelationalTypeMapping? typeMapping)
