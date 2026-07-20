@@ -107,48 +107,61 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
         string structColumnName,
         string[] nestedPath)
     {
-        var leafFieldName = ToCamelCase(property.Name);
+            // Determine the DuckDB struct leaf field name. This DEFENSIVELY decouples the
+            // physical STRUCT leaf name from the EF column identity (alias) used in
+            // projections/joins (#2):
+            //   1. If the user set HasColumnName explicitly, treat that as the physical
+            //      DuckDB leaf name (since HasColumnName IS the physical column name on a
+            //      regular column, and the struct leaf IS the physical column for a sub-field).
+            //   2. Otherwise, infer from the CLR property name (camelCased).
+            var explicitColumnNameConfigurationSource = property.GetColumnNameConfigurationSource();
+            var explicitColumnName = explicitColumnNameConfigurationSource is null
+                ? null
+                : property.GetColumnName();
+            var inferredLeafFromClr = ToCamelCase(property.Name);
 
-        // Build a unique EF column name that includes the struct path so that
-        // properties with the same leaf name under different struct columns
-        // (e.g. Billing.City vs Shipping.City) don't collide in EF's column
-        // namespace. The actual DuckDB struct field name is stored separately
-        // in DuckDBStructFieldInfo.LeafFieldName.
-        if (property.GetColumnNameConfigurationSource() is null)
-        {
-            property.SetColumnName(
-                FormatUniqueColumnName(structColumnName, nestedPath, leafFieldName),
-                fromDataAnnotation: false);
-        }
+            var leafFieldName = explicitColumnName ?? inferredLeafFromClr;
 
-        // Infer struct field annotation, if not already set explicitly.
-        var existing = property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value as DuckDBStructFieldInfo;
-        if (existing is null)
+            // EF column identity (alias in SELECT/JOIN). When the user did NOT explicitly
+            // set HasColumnName, derive a unique name from the struct path so properties
+            // sharing the same leaf under different struct columns (e.g. Billing.City vs
+            // Shipping.City) don't collide in EF's column namespace. The actual DuckDB
+            // struct leaf name is stored separately in DuckDBStructFieldInfo.LeafFieldName.
+            if (explicitColumnNameConfigurationSource is null)
+            {
+                property.SetColumnName(
+                    FormatUniqueColumnName(structColumnName, nestedPath, inferredLeafFromClr),
+                    fromDataAnnotation: false);
+            }
+
+            // Infer struct field annotation, if not already set explicitly.
+            var existing = property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value as DuckDBStructFieldInfo;
+            if (existing is null)
         {
             property.SetOrRemoveAnnotation(
                 DuckDBAnnotationNames.StructField,
-                new DuckDBStructFieldInfo(structColumnName, nestedPath, leafFieldName),
+                    new DuckDBStructFieldInfo(structColumnName, nestedPath, leafFieldName),
                 fromDataAnnotation: false);
-            return;
-        }
+                return;
+            }
 
-        // Struct field was already set explicitly (e.g. via HasStructField) — don't
-        // overwrite it, but if the explicit annotation doesn't carry a LeafFieldName,
-        // set it so the SQL generator uses the correct DuckDB field name instead of
-        // the unique-ified EF column name.
-        if (existing.LeafFieldName is null)
-        {
-            property.SetOrRemoveAnnotation(
-                DuckDBAnnotationNames.StructField,
-                new DuckDBStructFieldInfo(existing.StructColumnName, existing.NestedFieldNames.ToArray(), leafFieldName),
-                fromDataAnnotation: false);
-        }
+            // Struct field was already set explicitly (e.g. via HasStructField). Don't
+            // overwrite it, but if the explicit annotation doesn't carry a LeafFieldName,
+            // fill it in so the SQL generator uses the user's intent (HasColumnName wins
+            // over camelCase inference).
+            if (existing.LeafFieldName is null)
+            {
+                property.SetOrRemoveAnnotation(
+                    DuckDBAnnotationNames.StructField,
+                    new DuckDBStructFieldInfo(existing.StructColumnName, [..existing.NestedFieldNames], leafFieldName),
+                    fromDataAnnotation: false);
+            }
 
-        // If the annotation was already set by a previous entity (shared complex type
-        // used under a different struct column), do not overwrite — the first entity
-        // processed wins. Users must use explicit HasStructField per-entity to
-        // disambiguate shared complex types mapped to different struct columns.
-    }
+            // If the annotation was already set by a previous entity (shared complex type
+            // used under a different struct column), do not overwrite — the first entity
+            // processed wins. Users must use explicit HasStructField per-entity to
+            // disambiguate shared complex types mapped to different struct columns.
+        }
 
     /// <summary>
     ///     Builds a unique column name from the struct column path and leaf property
