@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.12.0</PackageVersion>
-    <FileVersion>1.12.0.0</FileVersion>
-    <Version>1.12.0</Version>
+    <PackageVersion>1.12.1</PackageVersion>
+    <FileVersion>1.12.1.0</FileVersion>
+    <Version>1.12.1</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
@@ -19,8 +19,12 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.11.1</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.12.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.12.1
+- Add stable provider-operation lifecycle events and structured payloads through EF Core logging and diagnostics for bulk insert, upsert, Parquet export, tiered maintenance, extension loading, and DuckLake attachment.
+- Preserve decimal result typing for division, including correlated CASE projections, and translate fractional date additions without passing DOUBLE values to DuckDB's integer-only to_days function.
+
 1.12.0
 - Add exportable, path-free recovery checkpoints plus read-only planning and atomic apply APIs for rebuilding provider-owned tiered-storage control, catalogue, and view state after local evidence loss.
 - Fail archive-generation cleanup planning closed whenever authoritative active-generation control is missing, classifying local and remote candidates as Unknown until control state is recovered.

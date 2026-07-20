@@ -4,10 +4,17 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 
 ## Unreleased
 
+## 1.12.1
+
 - Add stable `DuckDBEventId` lifecycle events and structured `DuckDBOperationEventData` payloads through EF Core's
   existing `ILogger`, `LogTo`, and `DiagnosticSource` pipeline. Raw bulk insert, upsert, Parquet export, tiered
   maintenance, extension loading, and DuckLake attachment now expose bounded start/completion/failure diagnostics
   without introducing a provider-specific consumer logger interface or per-command overhead.
+- Preserve decimal result typing for division, including correlated `CASE` projections, so DuckDB results retain
+  their CLR decimal materialization shape without prematurely rounding narrow decimal operands.
+- Translate fractional `DateTime` and `DateTimeOffset` day additions with interval multiplication, and keep
+  `DateOnly` additions typed as `DATE`, avoiding calls to DuckDB's integer-only `to_days` function with `DOUBLE`
+  values.
 
 ## 1.12.0
 
