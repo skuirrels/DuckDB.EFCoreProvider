@@ -690,7 +690,7 @@ modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "/var/data/archive/record
 
 ### Bulk insert
 
-For high-throughput loading, `BulkInsert` / `BulkInsertAsync` append rows directly through DuckDB's columnar `Appender` — much faster than `SaveChanges` for large batches. It is a deliberate raw fast path: it bypasses the change tracker, concurrency checks, interceptors, and store-generated values (provide a value for every mapped column), and the target table must already exist.
+For high-throughput loading, `BulkInsert` / `BulkInsertAsync` append rows directly through DuckDB's columnar `Appender` — much faster than `SaveChanges` for large batches. It is a deliberate raw fast path: it bypasses the change tracker, concurrency checks, EF command interceptors, and store-generated values (provide a value for every mapped column), and the target table must already exist. The provider still emits one structured start/completion/failure diagnostic for the overall operation.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
@@ -732,9 +732,9 @@ var processed = context.Upsert(rows);
 // batch size is configurable: context.Upsert(rows, batchSize: 200);
 ```
 
-Like `BulkInsert`, this is a raw fast path: it bypasses the change tracker, concurrency checks, and
-interceptors, requires primary-key values (store-generated keys are not supported), and does not support
-shadow or database-computed columns.
+Like `BulkInsert`, this is a raw fast path: it bypasses the change tracker, concurrency checks, and EF command
+interceptors, requires primary-key values (store-generated keys are not supported), and does not support shadow or
+database-computed columns. Structured provider diagnostics cover the complete upsert rather than every staging command.
 
 ### JSON, owned JSON, and arrays
 
@@ -887,6 +887,39 @@ small fixed per-call cost (~200 µs once warm) and substantially lower increment
 Rough throughput: `BulkInsert` ≈ 1M rows/s; `SaveChanges` ≈ 6–8k rows/s. Use a single `BulkInsert` call rather
 than repeated `SaveChanges` calls for bulk loads. A BenchmarkDotNet project lives in `test/DuckDB.EFCoreProvider.Benchmarks`; see
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for full results, the crossover table, methodology, and guidance.
+
+## Diagnostics and logging
+
+Normal queries, `SaveChanges`, connections, transactions, and migrations use EF Core's standard logging,
+`DiagnosticSource`, and interceptor pipeline. Provider-owned raw operations additionally publish stable
+`DuckDBEventId` start/completion/failure events for:
+
+- `BulkInsert` and `Upsert`;
+- Parquet export;
+- tiered archive, bootstrap, reconciliation, restore, retention, recovery, and purge operations;
+- configured DuckDB extension loading and DuckLake catalogue attachment.
+
+No DuckDB-specific logger interface is required. Use the normal EF Core configuration:
+
+```csharp
+using DuckDB.EFCoreProvider.Diagnostics;
+using Microsoft.Extensions.Logging;
+
+options.UseDuckDB("Data Source=analytics.duckdb")
+    .LogTo(
+        Console.WriteLine,
+        new[]
+        {
+            DuckDBEventId.BulkInsertCompleted,
+            DuckDBEventId.TieredStorageOperationFailed,
+        },
+        LogLevel.Information);
+```
+
+For structured consumption, use the `LogTo` overload receiving `EventData` or subscribe to EF Core's
+`DiagnosticListener`, then cast provider events to `DuckDBOperationEventData`. Its payload exposes the operation,
+non-secret target, duration, optional affected-row count, exception, and `DbContext`. Raw paths intentionally remain
+outside `DbCommandInterceptor`; the provider emits bounded lifecycle events instead of every internal SQL statement.
 
 ## Testing
 

@@ -1,4 +1,5 @@
-﻿using DuckDB.EFCoreProvider.Extensions;
+﻿using DuckDB.EFCoreProvider.Diagnostics.Internal;
+using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +23,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     private readonly IRawSqlCommandBuilder _rawSqlCommandBuilder;
     private readonly IDiagnosticsLogger<DbLoggerCategory.Infrastructure> _logger;
+    private readonly DbContext _context;
     private readonly bool _loadSpatial;
     private readonly string? _memoryLimit;
     private readonly string? _fileSearchPath;
@@ -40,6 +42,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     {
         _rawSqlCommandBuilder = rawSqlCommandBuilder;
         _logger = logger;
+        _context = dependencies.CurrentContext.Context;
 
         var optionsExtension = dependencies.ContextOptions.FindExtension<DuckDBOptionsExtension>();
         _loadSpatial = optionsExtension?.LoadSpatialite == true;
@@ -410,11 +413,28 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
                 continue;
             }
 
-            using var command = DbConnection.CreateCommand();
-            command.CommandText = extension.Mode == DuckDBExtensionLoadMode.LoadOnly
-                ? $"LOAD {extension.Name};"
-                : $"INSTALL {extension.Name}; LOAD {extension.Name};";
-            command.ExecuteNonQuery();
+            var operation = DuckDBOperationScope<DbLoggerCategory.Infrastructure>.Start(
+                _logger,
+                _context,
+                DuckDBProviderOperation.ExtensionLoad,
+                "ExtensionLoad",
+                extension.Name);
+
+            try
+            {
+                using var command = DbConnection.CreateCommand();
+                command.CommandText = extension.Mode == DuckDBExtensionLoadMode.LoadOnly
+                    ? $"LOAD {extension.Name};"
+                    : $"INSTALL {extension.Name}; LOAD {extension.Name};";
+                command.ExecuteNonQuery();
+            }
+            catch (Exception exception)
+            {
+                operation.Fail(exception);
+                throw;
+            }
+
+            operation.Complete();
         }
     }
 
@@ -427,11 +447,28 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
                 continue;
             }
 
-            await using var command = DbConnection.CreateCommand();
-            command.CommandText = extension.Mode == DuckDBExtensionLoadMode.LoadOnly
-                ? $"LOAD {extension.Name};"
-                : $"INSTALL {extension.Name}; LOAD {extension.Name};";
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            var operation = DuckDBOperationScope<DbLoggerCategory.Infrastructure>.Start(
+                _logger,
+                _context,
+                DuckDBProviderOperation.ExtensionLoad,
+                "ExtensionLoad",
+                extension.Name);
+
+            try
+            {
+                await using var command = DbConnection.CreateCommand();
+                command.CommandText = extension.Mode == DuckDBExtensionLoadMode.LoadOnly
+                    ? $"LOAD {extension.Name};"
+                    : $"INSTALL {extension.Name}; LOAD {extension.Name};";
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                operation.Fail(exception);
+                throw;
+            }
+
+            operation.Complete();
         }
     }
 
@@ -442,14 +479,31 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             return;
         }
 
-        var attachedDatabaseType = GetAttachedDatabaseType(_duckLakeOptions.CatalogName);
-        EnsureCompatibleAttachedDatabase(attachedDatabaseType);
+        var operation = DuckDBOperationScope<DbLoggerCategory.Infrastructure>.Start(
+            _logger,
+            _context,
+            DuckDBProviderOperation.DuckLakeAttachment,
+            "DuckLakeAttachment",
+            _duckLakeOptions.CatalogName);
 
-        using var command = DbConnection.CreateCommand();
-        command.CommandText = attachedDatabaseType is null
-            ? DuckLakeAttachCommandBuilder.Build(_duckLakeOptions)
-            : DuckLakeAttachCommandBuilder.BuildUse(_duckLakeOptions);
-        command.ExecuteNonQuery();
+        try
+        {
+            var attachedDatabaseType = GetAttachedDatabaseType(_duckLakeOptions.CatalogName);
+            EnsureCompatibleAttachedDatabase(attachedDatabaseType);
+
+            using var command = DbConnection.CreateCommand();
+            command.CommandText = attachedDatabaseType is null
+                ? DuckLakeAttachCommandBuilder.Build(_duckLakeOptions)
+                : DuckLakeAttachCommandBuilder.BuildUse(_duckLakeOptions);
+            command.ExecuteNonQuery();
+        }
+        catch (Exception exception)
+        {
+            operation.Fail(exception);
+            throw;
+        }
+
+        operation.Complete();
     }
 
     private async Task AttachOrSelectDuckLakeCatalogAsync(CancellationToken cancellationToken)
@@ -459,15 +513,32 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             return;
         }
 
-        var attachedDatabaseType = await GetAttachedDatabaseTypeAsync(_duckLakeOptions.CatalogName, cancellationToken)
-            .ConfigureAwait(false);
-        EnsureCompatibleAttachedDatabase(attachedDatabaseType);
+        var operation = DuckDBOperationScope<DbLoggerCategory.Infrastructure>.Start(
+            _logger,
+            _context,
+            DuckDBProviderOperation.DuckLakeAttachment,
+            "DuckLakeAttachment",
+            _duckLakeOptions.CatalogName);
 
-        await using var command = DbConnection.CreateCommand();
-        command.CommandText = attachedDatabaseType is null
-            ? DuckLakeAttachCommandBuilder.Build(_duckLakeOptions)
-            : DuckLakeAttachCommandBuilder.BuildUse(_duckLakeOptions);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var attachedDatabaseType = await GetAttachedDatabaseTypeAsync(_duckLakeOptions.CatalogName, cancellationToken)
+                .ConfigureAwait(false);
+            EnsureCompatibleAttachedDatabase(attachedDatabaseType);
+
+            await using var command = DbConnection.CreateCommand();
+            command.CommandText = attachedDatabaseType is null
+                ? DuckLakeAttachCommandBuilder.Build(_duckLakeOptions)
+                : DuckLakeAttachCommandBuilder.BuildUse(_duckLakeOptions);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            operation.Fail(exception);
+            throw;
+        }
+
+        operation.Complete();
     }
 
     private string? GetAttachedDatabaseType(string catalogName)

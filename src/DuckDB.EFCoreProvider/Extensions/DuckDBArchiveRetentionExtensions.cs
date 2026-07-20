@@ -16,10 +16,20 @@ public static partial class DuckDBArchiveExtensions
     ///     Plans a replacement active cold generation that retains rows on or after a lifecycle boundary plus exact
     ///     caller-supplied declared-partition scopes. Planning is read-only and assigns no business meaning to either.
     /// </summary>
-    public static async Task<TierArchiveRetentionPlan> PlanArchiveRetentionAsync<TRoot>(
+    public static Task<TierArchiveRetentionPlan> PlanArchiveRetentionAsync<TRoot>(
         this DatabaseFacade database,
         TierArchiveRetentionOptions options,
         CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ExecuteTieredOperationAsync<TRoot, TierArchiveRetentionPlan>(
+            database,
+            "PlanArchiveRetention",
+            () => PlanArchiveRetentionImplementationAsync<TRoot>(database, options, cancellationToken));
+
+    private static async Task<TierArchiveRetentionPlan> PlanArchiveRetentionImplementationAsync<TRoot>(
+        DatabaseFacade database,
+        TierArchiveRetentionOptions options,
+        CancellationToken cancellationToken)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -59,10 +69,21 @@ public static partial class DuckDBArchiveExtensions
     ///     Publishes a planned retention-trimmed cold generation without changing hot tables or deleting any object
     ///     in the input generation. The supplied plan is rejected if its active generation or contract is stale.
     /// </summary>
-    public static async Task<TierArchiveResult> PublishArchiveRetentionAsync<TRoot>(
+    public static Task<TierArchiveResult> PublishArchiveRetentionAsync<TRoot>(
         this DatabaseFacade database,
         TierArchiveRetentionPlan plan,
         CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ExecuteTieredOperationAsync<TRoot, TierArchiveResult>(
+            database,
+            "PublishArchiveRetention",
+            () => PublishArchiveRetentionImplementationAsync<TRoot>(database, plan, cancellationToken),
+            result => result.RowsArchived);
+
+    private static async Task<TierArchiveResult> PublishArchiveRetentionImplementationAsync<TRoot>(
+        DatabaseFacade database,
+        TierArchiveRetentionPlan plan,
+        CancellationToken cancellationToken)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);

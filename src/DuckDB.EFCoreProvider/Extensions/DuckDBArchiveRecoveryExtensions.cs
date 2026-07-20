@@ -16,9 +16,18 @@ public static partial class DuckDBArchiveExtensions
     ///     Captures persistable evidence for the currently active generation. Persist the returned checkpoint outside
     ///     the DuckDB database before relying on Provider recovery after local control or catalogue loss.
     /// </summary>
-    public static async Task<TierArchiveRecoveryCheckpoint> CaptureArchiveRecoveryCheckpointAsync<TRoot>(
+    public static Task<TierArchiveRecoveryCheckpoint> CaptureArchiveRecoveryCheckpointAsync<TRoot>(
         this DatabaseFacade database,
         CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ExecuteTieredOperationAsync<TRoot, TierArchiveRecoveryCheckpoint>(
+            database,
+            "CaptureArchiveRecoveryCheckpoint",
+            () => CaptureArchiveRecoveryCheckpointImplementationAsync<TRoot>(database, cancellationToken));
+
+    private static async Task<TierArchiveRecoveryCheckpoint> CaptureArchiveRecoveryCheckpointImplementationAsync<TRoot>(
+        DatabaseFacade database,
+        CancellationToken cancellationToken)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -94,10 +103,20 @@ public static partial class DuckDBArchiveExtensions
     ///     Re-derives the selected generation path and validates an external checkpoint against the current model,
     ///     current control state when present, and exact Parquet evidence. Planning is read-only.
     /// </summary>
-    public static async Task<TierArchiveRecoveryPlan> PlanArchiveRecoveryAsync<TRoot>(
+    public static Task<TierArchiveRecoveryPlan> PlanArchiveRecoveryAsync<TRoot>(
         this DatabaseFacade database,
         TierArchiveRecoveryCheckpoint checkpoint,
         CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ExecuteTieredOperationAsync<TRoot, TierArchiveRecoveryPlan>(
+            database,
+            "PlanArchiveRecovery",
+            () => PlanArchiveRecoveryImplementationAsync<TRoot>(database, checkpoint, cancellationToken));
+
+    private static async Task<TierArchiveRecoveryPlan> PlanArchiveRecoveryImplementationAsync<TRoot>(
+        DatabaseFacade database,
+        TierArchiveRecoveryCheckpoint checkpoint,
+        CancellationToken cancellationToken)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -169,10 +188,20 @@ public static partial class DuckDBArchiveExtensions
     ///     Revalidates and atomically restores Provider control, generation, exact-file catalogue, and generated-view
     ///     state from a reviewed recovery plan. No Parquet object is created, changed, or deleted.
     /// </summary>
-    public static async Task<TierArchiveGenerationInventory> ApplyArchiveRecoveryAsync<TRoot>(
+    public static Task<TierArchiveGenerationInventory> ApplyArchiveRecoveryAsync<TRoot>(
         this DatabaseFacade database,
         TierArchiveRecoveryPlan plan,
         CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ExecuteTieredOperationAsync<TRoot, TierArchiveGenerationInventory>(
+            database,
+            "ApplyArchiveRecovery",
+            () => ApplyArchiveRecoveryImplementationAsync<TRoot>(database, plan, cancellationToken));
+
+    private static async Task<TierArchiveGenerationInventory> ApplyArchiveRecoveryImplementationAsync<TRoot>(
+        DatabaseFacade database,
+        TierArchiveRecoveryPlan plan,
+        CancellationToken cancellationToken)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
