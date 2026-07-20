@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.12.1</PackageVersion>
-    <FileVersion>1.12.1.0</FileVersion>
-    <Version>1.12.1</Version>
+    <PackageVersion>1.13.0</PackageVersion>
+    <FileVersion>1.13.0.0</FileVersion>
+    <Version>1.13.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
@@ -21,7 +21,10 @@
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
     <PackageValidationBaselineVersion>1.12.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
-1.12.1
+1.13.0
+- Add streaming unknown-shape SQL with runtime column metadata and stable row-owned values, including nested BLOB streams.
+- Add typed DuckLake maintenance, table-scoped and catalog-wide historical LINQ, verified additional local catalog attachments, and local-metadata database-first scaffolding.
+- Document the distinct EF model and raw DuckDB.NET reader type-mapping contracts.
 - Add stable provider-operation lifecycle events and structured payloads through EF Core logging and diagnostics for bulk insert, upsert, Parquet export, tiered maintenance, extension loading, and DuckLake attachment.
 - Preserve decimal result typing for division, including correlated CASE projections, and translate fractional date additions without passing DOUBLE values to DuckDB's integer-only to_days function.
 

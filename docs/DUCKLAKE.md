@@ -74,6 +74,10 @@ Opening the raw connection does not itself attach DuckLake; initialization occur
 - `BulkInsert`/`BulkInsertAsync` through the DuckDB appender.
 - `Upsert`/`UpsertAsync` through DuckLake-compatible `MERGE INTO`.
 - read-only profiles and named-secret profiles.
+- streaming unknown-shape SQL through `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync`.
+- typed snapshot and physical-file maintenance through `Database.DuckLake()`.
+- catalog-wide historical LINQ profiles through `AsOfSnapshot(...)` and `AsOfTimestamp(...)`.
+- additional local, read-only catalogs for catalog-qualified dynamic/raw SQL.
 
 ## Model rules and limitations
 
@@ -112,9 +116,20 @@ checks do not provision or mutate storage.
 storage, so deleting the in-memory DuckDB host would be misleading and deleting the backing stores would be
 dangerous. Destroy metadata and data storage explicitly with their native administration tools.
 
-Database-first scaffolding does not currently accept a DuckLake profile through `dotnet ef dbcontext scaffold`.
-Create the EF model explicitly or scaffold a compatible native DuckDB copy, then review keys and value-generation
-settings before using the model with DuckLake.
+Database-first scaffolding accepts a local DuckLake metadata file through a `ducklake:` source:
+
+```bash
+dotnet ef dbcontext scaffold \
+  "ducklake:/absolute/path/metadata.ducklake" \
+  DuckDB.EFCoreProvider
+```
+
+The scaffolder attaches the catalog read-only, filters metadata by the exact selected `table_catalog`, and applies
+the normal `--schema` and `--table` filters. DuckLake does not expose physical primary or foreign keys, so generated
+entities are keyless until reviewed and given logical keys explicitly. The scaffolder does not exclude names by a
+`ducklake_` prefix because that could hide valid user tables; exact catalog selection prevents tables from other
+attachments from entering the model. Named-secret and remote profiles require a caller-initialized open
+`DuckDBConnection` so credentials remain outside command-line arguments.
 
 ## Operational notes
 
@@ -124,6 +139,107 @@ settings before using the model with DuckLake.
 - The profile name and paths are safely quoted. Catalog and secret names are restricted to ASCII identifiers;
   credentials stay inside the secret callback.
 - Test schema and write behaviour against the same DuckDB/DuckLake extension versions used in production.
+
+### Concurrency and read scaling
+
+DuckLake concurrency is governed by the metadata catalog as well as by EF Core:
+
+| Metadata catalog | Intended concurrency model |
+|---|---|
+| DuckDB file | One client. Use it for local, single-client workloads. |
+| SQLite | Multiple local clients, with SQLite locking and retry limitations. |
+| PostgreSQL | Multiple local or remote clients. Use this profile for multi-user deployments. |
+
+`ReadOnly()` controls the permissions of one DuckLake attachment; it does not create or manage a replica. Scale
+reads with separate read-only `DbContext` instances/connections attached to a metadata catalog that supports the
+required client concurrency. A `DbContext` is not thread-safe and must not run parallel operations. Use one
+context per concurrent operation, for example through `IDbContextFactory<TContext>`.
+
+DuckLake can coordinate multiple writers when the metadata catalog supports them, but it does not physically
+enforce the logical primary/unique keys in the EF model. Applications that permit concurrent writes must provide
+their own uniqueness and workflow guarantees. The provider does not add process-local semaphores, distributed
+leases, scheduling, or authorization policy.
+
+## Historical queries
+
+Use a dedicated context profile to attach the entire DuckLake catalog at one historical snapshot. Normal EF LINQ
+then runs against a consistent, read-only view, including joins across tables in that catalog:
+
+```csharp
+var historicalOptions = new DbContextOptionsBuilder<AnalyticsContext>()
+    .UseDuckLake(
+        "metadata.ducklake",
+        lake => lake.AsOfSnapshot(snapshotId))
+    .Options;
+
+await using var historical = new AnalyticsContext(historicalOptions);
+var rows = await historical.Events.Where(e => e.RecordedAt < cutoff).ToListAsync();
+```
+
+`AsOfTimestamp(DateTimeOffset)` selects the latest snapshot at or before that time. Both historical modes force
+`READ_ONLY`, disable catalog creation and automatic metadata migration, and require a separate `DbContext`. Use
+`context.Database.DuckLake().GetSnapshotsAsync()` to discover the provider-native 64-bit snapshot identifiers and
+timestamps. The provider intentionally applies time travel catalog-wide rather than rewriting individual table
+expressions, so multi-table LINQ queries cannot accidentally mix snapshot versions.
+
+For a deliberately table-scoped read, start directly from a `DbSet`:
+
+```csharp
+var rows = await context.Events
+    .AsOfSnapshot(snapshotId)
+    .Where(e => e.RecordedAt < cutoff)
+    .ToListAsync();
+```
+
+`DbSet.AsOfSnapshot(...)` and `DbSet.AsOfTimestamp(...)` emit DuckLake's native `AT (...)` table clause and
+remain LINQ-composable. The pin applies only to that root. Another root in a join, an included navigation, or a
+split query remains current unless it has its own historical root, so use the catalog-wide profile whenever a
+multi-table query needs one coherent point in time. Table-scoped and catalog-wide pins cannot be combined.
+
+## Maintenance
+
+`Database.DuckLake()` exposes typed, catalog-scoped wrappers around DuckLake's technical maintenance functions:
+
+```csharp
+var lake = context.Database.DuckLake();
+var snapshots = await lake.GetSnapshotsAsync(cancellationToken);
+
+// Destructive lifecycle operations default to discovery-only dry runs.
+var expiryCandidates = await lake.ExpireSnapshotsAsync(cutoff, cancellationToken: cancellationToken);
+var files = await lake.CleanupOldFilesAsync(cutoff, cancellationToken: cancellationToken);
+
+await lake.FlushInlinedDataAsync(
+    new DuckLakeFlushOptions { SchemaName = "main", TableName = "events" },
+    cancellationToken);
+await lake.MergeAdjacentFilesAsync(
+    new DuckLakeMergeOptions { TableName = "events", MaximumCompactedFiles = 4 },
+    cancellationToken);
+```
+
+Snapshot identifiers remain 64-bit values and `rows_flushed` remains a `BigInteger`, matching DuckLake and
+DuckDB.NET rather than narrowing values. Timestamps and all function arguments are parameterized. The facade
+does not choose retention cutoffs, schedule jobs, authorize callers, or add distributed locks; the application
+passes those decisions in explicitly. Mutation is rejected for a read-only profile.
+
+## Additional catalogs
+
+Attach an existing local sharing/reference catalog read-only on the same connection:
+
+```csharp
+options.UseDuckLake(
+    "analytics.ducklake",
+    lake => lake
+        .CatalogName("analytics")
+        .AlsoAttach("reference", "reference.ducklake"));
+```
+
+The primary catalog remains selected for EF LINQ and tracked entities. Additional catalogs are available to
+catalog-qualified dynamic/raw SQL such as `reference.main.ports`. Mapping an entity to a non-primary catalog and
+cross-catalog LINQ translation are intentionally not implied by `AlsoAttach`; that requires a separate model-level
+contract. Additional attachments default to `READ_ONLY`, use safely delimited aliases, reject duplicates, and are
+recreated on provider-owned read-only connections. A caller-owned connection may reuse an existing alias only when
+its local metadata path and read-only/writable mode exactly match the configured attachment; otherwise initialization
+fails before the provider issues the catalog-selection command.
 
 Provider contributors can run `scripts/test-ducklake-external.sh` to exercise the named-secret profile against
 PostgreSQL metadata and MinIO S3-compatible storage. The same isolated integration lane runs on Linux in CI.
