@@ -272,6 +272,163 @@ public class StructRoundTripTests : DuckDBTestBase
         }
     }
 
+    [ConditionalFact]
+    public void Duplicate_leaf_names_projection_works()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new Account
+            {
+                Id = 1,
+                Billing = new Address { City = "Seattle", Country = "US" },
+                Shipping = new Address { City = "Portland", Country = "US" }
+            });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var result = context.Set<Account>()
+                            .Select(a => new { BillingCity = a.Billing.City, ShippingCity = a.Shipping.City })
+                            .Single();
+                        Assert.Equal("Seattle", result.BillingCity);
+                        Assert.Equal("Portland", result.ShippingCity);
+        }
+    }
+
+    [ConditionalFact]
+    public void Explicit_naming_round_trips()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new LabeledItem
+            {
+                Id = 1,
+                Tags = new Tag { Category = "electronics", Label = "gadget" }
+            });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var item = context.Set<LabeledItem>().Single(x => x.Id == 1);
+            Assert.Equal("electronics", item.Tags.Category);
+            Assert.Equal("gadget", item.Tags.Label);
+        }
+    }
+
+    [ConditionalFact]
+    public void Explicit_naming_filter_works()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new LabeledItem { Id = 1, Tags = new Tag { Category = "books", Label = "novel" } },
+                new LabeledItem { Id = 2, Tags = new Tag { Category = "electronics", Label = "gadget" } });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var items = context.Set<LabeledItem>()
+                .Where(i => i.Tags.Category == "electronics")
+                .Select(i => i.Tags.Label)
+                .ToList();
+            Assert.Equal(["gadget"], items);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_sub_field_subquery_works()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Customer { Id = 1, Location = new Address { City = "NYC", Country = "US" } },
+                new Customer { Id = 2, Location = new Address { City = "LDN", Country = "UK" } },
+                new Customer { Id = 3, Location = new Address { City = "LA", Country = "US" } },
+                new Customer { Id = 4, Location = new Address { City = "Paris", Country = "FR" } });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            // Subquery: find cities of customers in US (the subquery should flatten struct
+            // field access into a regular column projection).
+            var usCities = context.Set<Customer>()
+                .Where(c => context.Set<Customer>()
+                    .Where(c2 => c2.Location.Country == "US")
+                    .Select(c2 => c2.Location.City)
+                    .Contains(c.Location.City))
+                .Select(c => c.Location.City)
+                .OrderBy(c => c)
+                .ToList();
+            // NYC and LA are US cities; both are in the US subquery result.
+            Assert.Equal(["LA", "NYC"], usCities);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_join_works()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Customer { Id = 1, Location = new Address { City = "NYC", Country = "US" } },
+                new Customer { Id = 2, Location = new Address { City = "LDN", Country = "UK" } });
+            context.AddRange(
+                new Order { Id = 101, CustomerId = 1, Shipping = new Shipping { Method = "Express", Address = new ShippingAddress { Street = "5th Ave", Zip = "10001" } } },
+                new Order { Id = 102, CustomerId = 2, Shipping = new Shipping { Method = "Standard", Address = new ShippingAddress { Street = "Oxford St", Zip = "SW1" } } });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var results = (from c in context.Set<Customer>()
+                           join o in context.Set<Order>() on c.Id equals o.CustomerId
+                           orderby o.Id
+                           select new { c.Location.City, o.Shipping.Method }).ToList();
+            Assert.Equal(2, results.Count);
+            Assert.Equal("NYC", results[0].City);
+            Assert.Equal("Express", results[0].Method);
+            Assert.Equal("LDN", results[1].City);
+            Assert.Equal("Standard", results[1].Method);
+        }
+    }
+
+    [ConditionalFact]
+    public void Bulk_insert_with_struct_throws()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+
+        var customers = new[]
+        {
+            new Customer { Id = 1, Location = new Address { City = "NYC", Country = "US" } },
+            new Customer { Id = 2, Location = new Address { City = "LDN", Country = "UK" } }
+        };
+
+        Assert.Throws<NotSupportedException>(() =>
+            context.BulkInsert(customers));
+    }
+
+    [ConditionalFact]
+    public void Upsert_with_struct_throws()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+
+        var customer = new Customer { Id = 1, Location = new Address { City = "NYC", Country = "US" } };
+
+        Assert.Throws<NotSupportedException>(() =>
+            context.Upsert(new[] { customer }));
+    }
+
     // ─── Model ──────────────────────────────────────────────────────
 
     private sealed class StructContext(DbContextOptions<StructContext> options) : DbContext(options)
@@ -297,8 +454,18 @@ public class StructRoundTripTests : DuckDBTestBase
                 e.Property(p => p.Id).ValueGeneratedNever();
                 e.ComplexProperty(c => c.Shipping);
             });
+
+                modelBuilder.Entity<LabeledItem>(e =>
+                {
+                    e.Property(p => p.Id).ValueGeneratedNever();
+                    e.ComplexProperty(c => c.Tags, b =>
+                    {
+                        b.Property(t => t.Category).HasColumnName("cat").HasStructField("category");
+                        b.Property(t => t.Label).HasColumnName("lbl").HasStructField("label");
+                    });
+                });
+            }
         }
-    }
 
     private sealed class Customer
     {
@@ -332,20 +499,34 @@ public class StructRoundTripTests : DuckDBTestBase
     private sealed class Order
     {
         public int Id { get; set; }
-        [UseStructMapping]
-        public required Shipping Shipping { get; set; }
-    }
+            public int CustomerId { get; set; }
+            [UseStructMapping]
+            public required Shipping Shipping { get; set; }
+        }
 
-    private sealed class Shipping
-    {
-        public required string Method { get; set; }
-        [UseStructMapping]
-        public required ShippingAddress Address { get; set; }
-    }
+        private sealed class Shipping
+        {
+            public required string Method { get; set; }
+            [UseStructMapping]
+            public required ShippingAddress Address { get; set; }
+        }
 
-    private sealed class ShippingAddress
-    {
-        public required string Street { get; set; }
-        public required string Zip { get; set; }
+        private sealed class ShippingAddress
+        {
+            public required string Street { get; set; }
+            public required string Zip { get; set; }
+        }
+
+        private sealed class LabeledItem
+        {
+            public int Id { get; set; }
+            [UseStructMapping]
+            public required Tag Tags { get; set; }
+        }
+
+        private sealed class Tag
+        {
+            public required string Category { get; set; }
+            public required string Label { get; set; }
+        }
     }
-}
