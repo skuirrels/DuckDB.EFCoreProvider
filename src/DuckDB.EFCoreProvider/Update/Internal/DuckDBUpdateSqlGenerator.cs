@@ -1,4 +1,4 @@
-﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -359,7 +359,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             List<StructAwareEntry> structEntries,
             ISqlGenerationHelper helper)
         {
-            // UPDATE <table> SET <col> = v.<col>, <struct> = v.<struct>, ...
+            // UPDATE <table> SET <col> = v.<col>, <struct> = struct_update(<struct>, ...), ...
             commandStringBuilder.Append("UPDATE ");
             commandStringBuilder.Append(helper.DelimitIdentifier(table, schema));
             commandStringBuilder.Append(" SET ");
@@ -370,9 +370,19 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                     commandStringBuilder.Append(", ");
                 }
 
-                var column = helper.DelimitIdentifier(structEntries[i].ColumnName);
-                commandStringBuilder.Append(column).Append(" = v.").Append(column);
-            }
+                            switch (structEntries[i])
+                                            {
+                                                case StandaloneEntry:
+                                                    var column = helper.DelimitIdentifier(structEntries[i].ColumnName);
+                                                    commandStringBuilder.Append(column).Append(" = v.").Append(column);
+                                                    break;
+                                                case StructGroupEntry structGroup:
+                                                    var structColumn = helper.DelimitIdentifier(structGroup.StructColumnName);
+                                                    commandStringBuilder.Append(structColumn).Append(" = ");
+                                                    AppendStructUpdateBulk(commandStringBuilder, structColumn, structGroup.Fields, helper);
+                                                    break;
+                                            }
+                                        }
 
             // FROM (VALUES (key.., struct_literal..), ...) AS v(keyCols.., structCols..)
             commandStringBuilder.AppendLine();
@@ -403,18 +413,35 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 
             for (var i = 0; i < structEntries.Count; i++)
             {
-                if (!firstColumn)
+                            switch (structEntries[i])
                 {
-                    commandStringBuilder.Append(", ");
-                }
+                                                case StandaloneEntry standalone:
+                                                    if (!firstColumn)
+                                                    {
+                                                        commandStringBuilder.Append(", ");
+                                                    }
 
-                commandStringBuilder.Append(helper.DelimitIdentifier(structEntries[i].ColumnName));
-                firstColumn = false;
-            }
+                                                    commandStringBuilder.Append(helper.DelimitIdentifier(standalone.ColumnName));
+                                                    firstColumn = false;
+                                                    break;
+                                                case StructGroupEntry structGroup:
+                                                    foreach (var (_, mod) in structGroup.Fields)
+                                                    {
+                                                        if (!firstColumn)
+                                                        {
+                                                            commandStringBuilder.Append(", ");
+                                                        }
 
-            commandStringBuilder.Append(')');
+                                                        commandStringBuilder.Append(helper.DelimitIdentifier(mod.ColumnName));
+                                                        firstColumn = false;
+                                                    }
+                                                    break;
+                                            }
+                                        }
 
-            // WHERE <table>.<key> = v.<key> AND ...
+                                        commandStringBuilder.Append(')');
+
+                                        // WHERE <table>.<key> = v.<key> AND ...
             commandStringBuilder.AppendLine();
             commandStringBuilder.Append("WHERE ");
             for (var i = 0; i < keyOperations.Count; i++)
@@ -492,7 +519,18 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                             commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(standalone.Modification.ParameterName!));
                             break;
                         case StructGroupEntry structGroup:
-                            AppendStructLiteral(commandStringBuilder, structGroup.Fields, helper);
+                                                    // Emit individual sub-field parameters (not struct literals);
+                            // the SET clause uses struct_update to apply them selectively.
+                            foreach (var (_, mod) in structGroup.Fields)
+                            {
+                                if (!first)
+                                {
+                                    commandStringBuilder.Append(", ");
+                                }
+
+                                commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(mod.ParameterName!));
+                                first = false;
+                            }
                             break;
                     }
 
@@ -504,8 +542,8 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         }
 
     private void AppendBulkUpdateValuesTuple(
-        StringBuilder commandStringBuilder,
-        IReadOnlyModificationCommand command,
+                    StringBuilder commandStringBuilder,
+                    IReadOnlyModificationCommand command,
         IReadOnlyList<int> keyIndexes,
         IReadOnlyList<int> writeIndexes,
         ISqlGenerationHelper helper)
@@ -726,7 +764,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 
         private sealed record StructGroupEntry(
             string StructColumnName,
-            IReadOnlyList<(string LeafName, IColumnModification Modification)> Fields)
+                    IReadOnlyList<(DuckDBStructFieldInfo FieldInfo, IColumnModification Modification)> Fields)
             : StructAwareEntry
         {
             public override string ColumnName => StructColumnName;
@@ -739,7 +777,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         private List<StructAwareEntry>? GroupStructuredEntries(IReadOnlyList<IColumnModification> modifications)
         {
             List<StructAwareEntry>? result = null;
-            Dictionary<string, List<(string, IColumnModification)>>? structGroups = null;
+            Dictionary<string, List<(DuckDBStructFieldInfo, IColumnModification)>>? structGroups = null;
             var seenStructColumns = new HashSet<string>();
 
             foreach (var mod in modifications)
@@ -758,7 +796,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                     fields = [];
                     structGroups[sfi.StructColumnName] = fields;
                 }
-                fields.Add((sfi.LeafFieldName ?? mod.ColumnName, mod));
+                fields.Add((sfi, mod));
             }
 
             if (result is null || structGroups is null)
@@ -892,31 +930,162 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                         break;
                     case StructGroupEntry structGroup:
                         commandStringBuilder.Append(columnName).Append(" = ");
-                        AppendStructLiteral(commandStringBuilder, structGroup.Fields, helper);
-                        break;
-                }
+                                            AppendStructUpdate(commandStringBuilder, columnName, structGroup.Fields, helper);
+                                            break;
+                                    }
             }
         }
 
+        private static StructLiteralNode BuildStructTree(
+            IReadOnlyList<(DuckDBStructFieldInfo FieldInfo, IColumnModification Modification)> fields)
+        {
+            // Build a tree from the flat field list using NestedFieldNames, so that intermediate
+            // struct levels (e.g. shipping.address.street) are rendered as nested struct expressions
+            // matching the DDL: {'method': @p0, 'address': {'street': @p1, 'zip': @p2}}.
+            var root = new StructLiteralNode();
+            foreach (var (fieldInfo, mod) in fields)
+            {
+                var current = root;
+                foreach (var nestedName in fieldInfo.NestedFieldNames)
+                {
+                    var child = current.Children.Find(c => c.FieldName == nestedName);
+                    if (child is null)
+                    {
+                        child = new StructLiteralNode { FieldName = nestedName };
+                        current.Children.Add(child);
+                    }
+                    current = child;
+                }
+
+                current.Children.Add(new StructLiteralNode
+                {
+                    FieldName = fieldInfo.LeafFieldName ?? mod.ColumnName,
+                    ParameterName = mod.ParameterName,
+                    ColumnName = mod.ColumnName
+                });
+            }
+
+            return root;
+        }
+
+        /// <summary>
+        /// Renders a full struct literal for INSERT: {'field': @param, 'nested': {'leaf': @param}}.
+        /// All sub-fields must be present.
+        /// </summary>
         private static void AppendStructLiteral(
             StringBuilder sb,
-            IReadOnlyList<(string LeafName, IColumnModification Modification)> fields,
+            IReadOnlyList<(DuckDBStructFieldInfo FieldInfo, IColumnModification Modification)> fields,
             ISqlGenerationHelper helper)
         {
+            var root = BuildStructTree(fields);
+            RenderStructLiteralNode(sb, root, helper);
+        }
+
+        private static void RenderStructLiteralNode(StringBuilder sb, StructLiteralNode node, ISqlGenerationHelper helper)
+        {
             sb.Append('{');
-            for (var i = 0; i < fields.Count; i++)
+            for (var i = 0; i < node.Children.Count; i++)
             {
                 if (i > 0)
                 {
                     sb.Append(", ");
                 }
 
-                sb.Append('\'').Append(fields[i].LeafName).Append("': ");
-                sb.Append(helper.GenerateParameterNamePlaceholder(fields[i].Modification.ParameterName!));
+                var child = node.Children[i];
+                sb.Append('\'').Append(child.FieldName).Append("': ");
+                if (child.ParameterName is not null)
+                {
+                    sb.Append(helper.GenerateParameterNamePlaceholder(child.ParameterName));
+                }
+                else
+                {
+                    RenderStructLiteralNode(sb, child, helper);
+                }
             }
 
             sb.Append('}');
         }
+
+        /// <summary>
+        /// Renders a DuckDB <c>struct_update()</c> expression for partial UPDATE: only the modified
+        /// sub-fields are targeted, preserving all other fields. Supports nested structs by chaining
+        /// <c>struct_update(struct_extract(...), ...)</c> for intermediate levels.
+        /// </summary>
+        /// <example>
+        /// Single level:  <c>struct_update("location", 'city', @p0)</c>
+        /// Nested:        <c>struct_update("shipping", 'method', @p0, 'address', struct_update(struct_extract("shipping", 'address'), 'street', @p1))</c>
+        /// Multiple fields: <c>struct_update("location", 'city', @p0, 'country', @p1)</c>
+        /// </example>
+        private static void AppendStructUpdate(
+            StringBuilder sb,
+            string columnRef,
+            IReadOnlyList<(DuckDBStructFieldInfo FieldInfo, IColumnModification Modification)> fields,
+            ISqlGenerationHelper helper)
+        {
+            var root = BuildStructTree(fields);
+            RenderStructUpdate(sb, root, columnRef, helper, useParameterPlaceholder: true);
+        }
+
+        /// <summary>
+        /// Renders a DuckDB <c>struct_update()</c> for bulk UPDATE where leaf values come from
+        /// the VALUES subquery alias <c>v."col_name"</c> instead of parameter placeholders.
+        /// </summary>
+        private static void AppendStructUpdateBulk(
+            StringBuilder sb,
+            string columnRef,
+            IReadOnlyList<(DuckDBStructFieldInfo FieldInfo, IColumnModification Modification)> fields,
+            ISqlGenerationHelper helper)
+        {
+            var root = BuildStructTree(fields);
+            RenderStructUpdate(sb, root, columnRef, helper, useParameterPlaceholder: false);
+        }
+
+        private static void RenderStructUpdate(
+            StringBuilder sb,
+            StructLiteralNode node,
+            string columnRef,
+            ISqlGenerationHelper helper,
+            bool useParameterPlaceholder)
+        {
+            sb.Append("struct_update(");
+            sb.Append(columnRef);
+
+            for (var i = 0; i < node.Children.Count; i++)
+            {
+                var child = node.Children[i];
+                // DuckDB struct_update uses named-argument syntax: field := value
+                sb.Append(", ").Append(child.FieldName).Append(" := ");
+
+                if (child.ParameterName is not null)
+                {
+                    // Leaf node: emit parameter placeholder (@p0) or VALUES subquery ref (v."col")
+                    if (useParameterPlaceholder)
+                    {
+                        sb.Append(helper.GenerateParameterNamePlaceholder(child.ParameterName));
+                    }
+                    else
+                    {
+                        sb.Append("v.").Append(helper.DelimitIdentifier(child.ColumnName!));
+                    }
+                }
+                else
+                {
+                    // Intermediate node: chain struct_update on the nested struct value
+                    var nestedRef = "struct_extract(" + columnRef + ", '" + child.FieldName + "')";
+                    RenderStructUpdate(sb, child, nestedRef, helper, useParameterPlaceholder);
+                }
+            }
+
+            sb.Append(')');
+        }
+
+        private sealed class StructLiteralNode
+        {
+            public string? FieldName { get; set; }
+            public string? ParameterName { get; set; }
+                    public string? ColumnName { get; set; }
+                    public List<StructLiteralNode> Children { get; } = [];
+                }
 
         #endregion
     }

@@ -18,35 +18,37 @@ public class DuckDBAnnotationProvider : RelationalAnnotationProvider
     }
 
     public override IEnumerable<IAnnotation> For(IColumn column, bool designTime)
-    {
-        if (!designTime)
         {
-            yield break;
-        }
+            // Surface the DuckDB:StructField annotation (set by DuckDBStructFieldConvention on
+            // scalar sub-properties of struct-mapped complex properties) so the DDL and write
+            // pipelines can group sub-property columns into single STRUCT columns.
+            // Available at both runtime and design time — DDL consolidation (EnsureCreated, migrations)
+            // and the write pipeline (SaveChanges) need this annotation at runtime.
+            var structFieldAnnotation = column.PropertyMappings
+                .Select(m => m.Property.FindAnnotation(DuckDBAnnotationNames.StructField))
+                .FirstOrDefault(a => a is not null);
 
-        var property = column.PropertyMappings
-            .Select(m => m.Property)
-            .FirstOrDefault(p => p.GetValueGenerationStrategy() != DuckDBValueGenerationStrategy.None);
-
-        if (property != null)
-        {
-            var strategy = property.GetValueGenerationStrategy();
-            if (strategy != DuckDBValueGenerationStrategy.None)
+            if (structFieldAnnotation?.Value is DuckDBStructFieldInfo structFieldInfo)
             {
-                yield return new Annotation(DuckDBAnnotationNames.ValueGenerationStrategy, strategy);
+                yield return new Annotation(DuckDBAnnotationNames.StructField, structFieldInfo);
             }
-        }
 
-                // Surface the DuckDB:StructField annotation (set by DuckDBStructFieldConvention on
-                // scalar sub-properties of struct-mapped complex properties) so the DDL and write
-                // pipelines can group sub-property columns into single STRUCT columns.
-                var structFieldAnnotation = column.PropertyMappings
-                    .Select(m => m.Property.FindAnnotation(DuckDBAnnotationNames.StructField))
-                    .FirstOrDefault(a => a is not null);
+            if (!designTime)
+            {
+                yield break;
+            }
 
-                if (structFieldAnnotation?.Value is DuckDBStructFieldInfo structFieldInfo)
+            var property = column.PropertyMappings
+                .Select(m => m.Property)
+                .FirstOrDefault(p => p.GetValueGenerationStrategy() != DuckDBValueGenerationStrategy.None);
+
+            if (property != null)
+            {
+                var strategy = property.GetValueGenerationStrategy();
+                if (strategy != DuckDBValueGenerationStrategy.None)
                 {
-                    yield return new Annotation(DuckDBAnnotationNames.StructField, structFieldInfo);
+                    yield return new Annotation(DuckDBAnnotationNames.ValueGenerationStrategy, strategy);
                 }
             }
         }
+    }

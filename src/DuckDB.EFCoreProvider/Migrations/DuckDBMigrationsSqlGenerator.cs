@@ -1,4 +1,4 @@
-﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
@@ -335,75 +335,76 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
             Comment = table.Comment
         };
 
-            // Group columns that belong to STRUCT columns by their StructColumnName annotation.
-            // Each group of sub-property columns will be consolidated into a single STRUCT(...) column.
-            var structGroups = new Dictionary<string, List<(IColumn Column, DuckDBStructFieldInfo FieldInfo)>>();
-            var columnsInStructGroups = new HashSet<IColumn>();
+                // Group columns that belong to STRUCT columns by their StructColumnName annotation.
+                // Each group of sub-property columns will be consolidated into a single STRUCT(...) column.
+                var structGroups = new Dictionary<string, List<(IColumn Column, DuckDBStructFieldInfo FieldInfo)>>();
+                var columnsInStructGroups = new HashSet<IColumn>();
 
-            foreach (var column in table.Columns)
-            {
-                if (column.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value is DuckDBStructFieldInfo structFieldInfo)
+                foreach (var column in table.Columns)
                 {
-                    var structColumnName = structFieldInfo.StructColumnName;
-                    if (!structGroups.TryGetValue(structColumnName, out var group))
+                    if (column.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value is DuckDBStructFieldInfo structFieldInfo)
                     {
-                        group = [];
-                        structGroups[structColumnName] = group;
+                        var structColumnName = structFieldInfo.StructColumnName;
+                        if (!structGroups.TryGetValue(structColumnName, out var group))
+                        {
+                            group = [];
+                            structGroups[structColumnName] = group;
+                        }
+                        group.Add((column, structFieldInfo));
+                        columnsInStructGroups.Add(column);
                     }
-                    group.Add((column, structFieldInfo));
-                    columnsInStructGroups.Add(column);
                 }
-            }
 
-            var emittedStructColumns = new HashSet<string>();
+                var emittedStructColumns = new HashSet<string>();
 
-            foreach (var column in table.Columns.Where(column => column.Order.HasValue).OrderBy(column => column.Order)
-                         .Concat(table.Columns.Where(column => !column.Order.HasValue)))
-            {
-                if (columnsInStructGroups.Contains(column))
+                foreach (var column in table.Columns.Where(column => column.Order.HasValue).OrderBy(column => column.Order)
+                             .Concat(table.Columns.Where(column => !column.Order.HasValue)))
                 {
-                    var structFieldInfo = (DuckDBStructFieldInfo)column.FindAnnotation(DuckDBAnnotationNames.StructField)!.Value!;
-                    var structColumnName = structFieldInfo.StructColumnName;
-                    if (emittedStructColumns.Contains(structColumnName))
+                    if (columnsInStructGroups.Contains(column))
                     {
+                        var structFieldInfo = (DuckDBStructFieldInfo)column.FindAnnotation(DuckDBAnnotationNames.StructField)!.Value!;
+                        var structColumnName = structFieldInfo.StructColumnName;
+                        if (emittedStructColumns.Contains(structColumnName))
+                        {
+                            continue;
+                        }
+
+                        // Emit one consolidated STRUCT column for the group.
+                        var group = structGroups[structColumnName];
+                        var addColumn = new AddColumnOperation
+                        {
+                            Name = structColumnName,
+                            Table = table.Name,
+                            Schema = table.Schema,
+                            ClrType = typeof(object),
+                            ColumnType = BuildStructStoreType(
+                                group.Select(g => (g.Column.Name, g.Column.StoreType, g.FieldInfo)).ToList()),
+                            IsNullable = group.Any(f => f.Column.IsNullable),
+                        };
+                        operation.Columns.Add(addColumn);
+                        emittedStructColumns.Add(structColumnName);
                         continue;
                     }
 
-                    // Emit one consolidated STRUCT column for the group.
-                    var group = structGroups[structColumnName];
-                    var addColumn = new AddColumnOperation
+                    column.TryGetDefaultValue(out var defaultValue);
+                    var standaloneColumn = new AddColumnOperation
                     {
-                        Name = structColumnName,
+                        Name = column.Name,
                         Table = table.Name,
                         Schema = table.Schema,
-                        ClrType = typeof(object),
-                        ColumnType = BuildStructStoreType(group),
-                        IsNullable = group.Any(f => f.Column.IsNullable),
+                        ClrType = column.StoreTypeMapping.ClrType,
+                        ColumnType = column.StoreType,
+                        IsNullable = column.IsNullable,
+                        DefaultValue = defaultValue,
+                        DefaultValueSql = column.DefaultValueSql,
+                        ComputedColumnSql = column.ComputedColumnSql,
+                        IsStored = column.IsStored,
+                        Comment = column.Comment,
+                        Collation = column.Collation
                     };
-                    operation.Columns.Add(addColumn);
-                    emittedStructColumns.Add(structColumnName);
-                    continue;
+                    standaloneColumn.AddAnnotations(column.GetAnnotations());
+                    operation.Columns.Add(standaloneColumn);
                 }
-
-                column.TryGetDefaultValue(out var defaultValue);
-                var standaloneColumn = new AddColumnOperation
-                {
-                    Name = column.Name,
-                    Table = table.Name,
-                    Schema = table.Schema,
-                    ClrType = column.StoreTypeMapping.ClrType,
-                    ColumnType = column.StoreType,
-                    IsNullable = column.IsNullable,
-                    DefaultValue = defaultValue,
-                    DefaultValueSql = column.DefaultValueSql,
-                    ComputedColumnSql = column.ComputedColumnSql,
-                    IsStored = column.IsStored,
-                    Comment = column.Comment,
-                    Collation = column.Collation
-                };
-                standaloneColumn.AddAnnotations(column.GetAnnotations());
-                operation.Columns.Add(standaloneColumn);
-            }
 
         if (table.PrimaryKey is { } primaryKey)
         {
@@ -429,85 +430,164 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         return operation;
     }
 
-            /// <summary>
-            /// Builds a DuckDB <c>STRUCT(field1 TYPE1, field2 STRUCT(...), ...)</c> store type string
-            /// from a group of sub-property columns that share a <see cref="DuckDBAnnotationNames.StructField" />
-            /// annotation. Supports nested structs via <see cref="DuckDBStructFieldInfo.NestedFieldNames" />.
-            /// </summary>
-            private static string BuildStructStoreType(
-                IReadOnlyList<(IColumn Column, DuckDBStructFieldInfo FieldInfo)> fields)
-            {
-                var root = BuildStructFieldTree(fields);
-                return RenderStructType(root);
-            }
+    /// <summary>
+    ///     Creates a copy of <paramref name="operation" /> where struct sub-field
+    ///     <see cref="AddColumnOperation" />s are grouped by their
+    ///     <see cref="DuckDBStructFieldInfo.StructColumnName" /> and replaced with a single
+    ///     <c>STRUCT(...)</c> column per group. Non-struct columns are preserved as-is.
+    /// </summary>
+    private static CreateTableOperation ConsolidateCreateTableStructColumns(CreateTableOperation operation)
+    {
+        var structGroups = new Dictionary<string, List<(AddColumnOperation Column, DuckDBStructFieldInfo FieldInfo)>>();
+        var columnsInStructGroups = new HashSet<AddColumnOperation>();
 
-            /// <summary>
-            /// Builds a tree of struct field nodes from the flat list of sub-property columns,
-            /// expanding <see cref="DuckDBStructFieldInfo.NestedFieldNames" /> into intermediate nodes.
-            /// </summary>
-            private static StructFieldNode BuildStructFieldTree(
-                IReadOnlyList<(IColumn Column, DuckDBStructFieldInfo FieldInfo)> fields)
+        foreach (var column in operation.Columns)
+        {
+            if (column.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value is DuckDBStructFieldInfo structFieldInfo)
             {
-                var root = new StructFieldNode();
-
-                foreach (var (column, fieldInfo) in fields)
+                var structColumnName = structFieldInfo.StructColumnName;
+                if (!structGroups.TryGetValue(structColumnName, out var group))
                 {
-                    var current = root;
-                    foreach (var nestedName in fieldInfo.NestedFieldNames)
-                    {
-                        var child = current.Children.Find(c => c.FieldName == nestedName);
-                        if (child is null)
-                        {
-                            child = new StructFieldNode { FieldName = nestedName };
-                            current.Children.Add(child);
-                        }
-                        current = child;
-                    }
+                    group = [];
+                    structGroups[structColumnName] = group;
+                }
+                group.Add((column, structFieldInfo));
+                columnsInStructGroups.Add(column);
+            }
+        }
 
-                    current.Children.Add(new StructFieldNode
-                    {
-                        FieldName = fieldInfo.LeafFieldName ?? column.Name,
-                        StoreType = column.StoreType
-                    });
+        if (structGroups.Count == 0)
+        {
+            return operation;
+        }
+
+        var consolidated = new CreateTableOperation
+        {
+            Name = operation.Name,
+            Schema = operation.Schema,
+            Comment = operation.Comment
+        };
+        consolidated.AddAnnotations(operation.GetAnnotations());
+
+        var emittedStructColumns = new HashSet<string>();
+
+        foreach (var column in operation.Columns)
+        {
+            if (columnsInStructGroups.Contains(column))
+            {
+                var structFieldInfo = (DuckDBStructFieldInfo)column.FindAnnotation(DuckDBAnnotationNames.StructField)!.Value!;
+                var structColumnName = structFieldInfo.StructColumnName;
+                if (emittedStructColumns.Contains(structColumnName))
+                {
+                    continue;
                 }
 
-                return root;
-            }
-
-            private static string RenderStructType(StructFieldNode node)
-            {
-                var sb = new StringBuilder("STRUCT(");
-                for (var i = 0; i < node.Children.Count; i++)
+                var group = structGroups[structColumnName];
+                consolidated.Columns.Add(new AddColumnOperation
                 {
-                    if (i > 0)
-                    {
-                        sb.Append(", ");
-                    }
-
-                    var child = node.Children[i];
-                    sb.Append(child.FieldName).Append(' ');
-                    if (child.StoreType is not null)
-                    {
-                        sb.Append(child.StoreType);
-                    }
-                    else
-                    {
-                        sb.Append(RenderStructType(child));
-                    }
-                }
-
-                sb.Append(')');
-                return sb.ToString();
+                    Name = structColumnName,
+                    Table = operation.Name,
+                    Schema = operation.Schema,
+                    ClrType = typeof(object),
+                    ColumnType = BuildStructStoreType(
+                        group.Select(g => (g.Column.Name, g.Column.ColumnType!, g.FieldInfo)).ToList()),
+                    IsNullable = group.Any(f => f.Column.IsNullable),
+                });
+                emittedStructColumns.Add(structColumnName);
             }
-
-            private sealed class StructFieldNode
+            else
             {
-                public string? FieldName { get; set; }
-                public string? StoreType { get; set; }
-                public List<StructFieldNode> Children { get; } = [];
+                consolidated.Columns.Add(column);
+            }
+        }
+
+        consolidated.PrimaryKey = operation.PrimaryKey;
+        consolidated.ForeignKeys.AddRange(operation.ForeignKeys);
+        consolidated.UniqueConstraints.AddRange(operation.UniqueConstraints);
+        consolidated.CheckConstraints.AddRange(operation.CheckConstraints);
+
+        return consolidated;
+    }
+
+            /// <summary>
+                /// Builds a DuckDB <c>STRUCT(field1 TYPE1, field2 STRUCT(...), ...)</c> store type string
+                /// from a group of sub-property columns that share a <see cref="DuckDBAnnotationNames.StructField" />
+                /// annotation. Supports nested structs via <see cref="DuckDBStructFieldInfo.NestedFieldNames" />.
+                /// </summary>
+                private static string BuildStructStoreType(
+                    IReadOnlyList<(string Name, string StoreType, DuckDBStructFieldInfo FieldInfo)> fields)
+    {
+        var root = BuildStructFieldTree(fields);
+        return RenderStructType(root);
+    }
+
+    /// <summary>
+    /// Builds a tree of struct field nodes from the flat list of sub-property columns,
+    /// expanding <see cref="DuckDBStructFieldInfo.NestedFieldNames" /> into intermediate nodes.
+    /// </summary>
+    private static StructFieldNode BuildStructFieldTree(
+            IReadOnlyList<(string Name, string StoreType, DuckDBStructFieldInfo FieldInfo)> fields)
+    {
+        var root = new StructFieldNode();
+
+            foreach (var (name, storeType, fieldInfo) in fields)
+        {
+            var current = root;
+            foreach (var nestedName in fieldInfo.NestedFieldNames)
+            {
+                var child = current.Children.Find(c => c.FieldName == nestedName);
+                if (child is null)
+                {
+                    child = new StructFieldNode { FieldName = nestedName };
+                    current.Children.Add(child);
+                }
+                current = child;
             }
 
-            private static bool IsConstraintAlterOperation(MigrationOperation operation)
+            current.Children.Add(new StructFieldNode
+            {
+                            FieldName = fieldInfo.LeafFieldName ?? name,
+                            StoreType = storeType
+            });
+        }
+
+        return root;
+    }
+
+    private static string RenderStructType(StructFieldNode node)
+    {
+        var sb = new StringBuilder("STRUCT(");
+        for (var i = 0; i < node.Children.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
+            var child = node.Children[i];
+            sb.Append(child.FieldName).Append(' ');
+            if (child.StoreType is not null)
+            {
+                sb.Append(child.StoreType);
+            }
+            else
+            {
+                sb.Append(RenderStructType(child));
+            }
+        }
+
+        sb.Append(')');
+        return sb.ToString();
+    }
+
+    private sealed class StructFieldNode
+    {
+        public string? FieldName { get; set; }
+        public string? StoreType { get; set; }
+        public List<StructFieldNode> Children { get; } = [];
+    }
+
+    private static bool IsConstraintAlterOperation(MigrationOperation operation)
         => operation is AddForeignKeyOperation or DropForeignKeyOperation
             or AddPrimaryKeyOperation or DropPrimaryKeyOperation
             or AddUniqueConstraintOperation or DropUniqueConstraintOperation
@@ -617,27 +697,36 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         MigrationCommandListBuilder builder,
         bool terminate = true)
     {
-        foreach (var column in operation.Columns)
-        {
-            ConfigureAutoIncrementColumn(operation.Name, operation.Schema, column, model, builder);
+            // Consolidate struct sub-field columns into single STRUCT(...) columns.
+            // This runs on both the EnsureCreated path (MigrationsModelDiffer creates flat
+            // CreateTableOperations with one AddColumnOperation per IColumn) and the migration
+            // table-rebuild path, ensuring identical DDL output.
+            if (operation.Columns.Any(c => c.FindAnnotation(DuckDBAnnotationNames.StructField) is not null))
+            {
+                operation = ConsolidateCreateTableStructColumns(operation);
+            }
+
+            foreach (var column in operation.Columns)
+            {
+                ConfigureAutoIncrementColumn(operation.Name, operation.Schema, column, model, builder);
+            }
+
+            base.Generate(operation, model, builder, terminate);
+
+            if (!string.IsNullOrEmpty(operation.Comment))
+            {
+                Comment(builder, "TABLE", Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name, operation.Schema), operation.Comment);
         }
 
-        base.Generate(operation, model, builder, terminate);
-
-        if (!string.IsNullOrEmpty(operation.Comment))
-        {
-            Comment(builder, "TABLE", Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name, operation.Schema), operation.Comment);
+            foreach (var addColumnOperation in operation.Columns.Where(c => c.Comment != null))
+            {
+                Comment(
+                    builder,
+                    "COLUMN",
+                    Dependencies.SqlGenerationHelper.DelimitIdentifier(addColumnOperation.Name, operation.Name),
+                    addColumnOperation.Comment);
+            }
         }
-
-        foreach (var addColumnOperation in operation.Columns.Where(c => c.Comment != null))
-        {
-            Comment(
-                builder,
-                "COLUMN",
-                Dependencies.SqlGenerationHelper.DelimitIdentifier(addColumnOperation.Name, operation.Name),
-                addColumnOperation.Comment);
-        }
-    }
 
     /// <inheritdoc />
     protected override void Generate(AlterTableOperation operation, IModel? model, MigrationCommandListBuilder builder)
