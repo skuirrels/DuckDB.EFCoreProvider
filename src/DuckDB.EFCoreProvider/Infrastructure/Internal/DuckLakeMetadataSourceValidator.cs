@@ -9,7 +9,7 @@ internal static class DuckLakeMetadataSourceValidator
         {
             throw new ArgumentException(
                 "DuckLake local metadata sources must be file paths. Configure remote metadata and credentials "
-                + "through a named-secret profile on a caller-initialized connection.",
+                + "with UseNamedSecret(...) and create that secret on the caller-initialized connection.",
                 parameterName);
         }
     }

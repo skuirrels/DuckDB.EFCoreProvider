@@ -49,6 +49,20 @@ The callback runs after extensions load and before `ATTACH`. Resolve credentials
 put a PostgreSQL connection string or object-store key directly in the model or options profile.
 `UseLocalMetadata(...)` rejects URI-style metadata sources; remote metadata must use a named or default secret.
 
+A PostgreSQL-backed profile secret has this shape; create the referenced PostgreSQL and object-storage secrets on
+the same connection:
+
+```sql
+CREATE SECRET application_lake (
+    TYPE ducklake,
+    METADATA_PATH '',
+    DATA_PATH 's3://bucket/lake/',
+    METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'application_postgres'});
+```
+
+Other metadata backends use different parameters. `UseNamedSecret(...)` requires a `TYPE ducklake` profile but does
+not assume PostgreSQL or copy any secret contents into EF options.
+
 Additional catalog options:
 
 | Option | Behaviour |
@@ -77,7 +91,8 @@ Opening the raw connection does not itself attach DuckLake; initialization occur
 - streaming unknown-shape SQL through `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync`.
 - typed snapshot and physical-file maintenance through `Database.DuckLake()`.
 - catalog-wide historical LINQ profiles through `AsOfSnapshot(...)` and `AsOfTimestamp(...)`.
-- additional local, read-only catalogs for catalog-qualified dynamic/raw SQL.
+- additional local or named-secret catalogs, read-only by default, for catalog-qualified dynamic/raw SQL through
+  `AlsoAttach(...)` and `AlsoAttachNamedSecret(...)`.
 
 ## Model rules and limitations
 
@@ -216,6 +231,22 @@ await lake.MergeAdjacentFilesAsync(
     cancellationToken);
 ```
 
+To make a write snapshot self-describing, set its metadata inside the same explicit transaction as the writes:
+
+```csharp
+await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+await context.SaveChangesAsync(cancellationToken);
+await context.Database.DuckLake().SetCommitMessageAsync(
+    author,
+    commitMessage,
+    extraInfo,
+    cancellationToken);
+await transaction.CommitAsync(cancellationToken);
+```
+
+The provider requires an active writable transaction and passes the caller-supplied strings to DuckLake. It does
+not derive authors, messages, or application identifiers from tracked entities or ambient state.
+
 Snapshot identifiers remain 64-bit values and `rows_flushed` remains a `BigInteger`, matching DuckLake and
 DuckDB.NET rather than narrowing values. Timestamps and all function arguments are parameterized. The facade
 does not choose retention cutoffs, schedule jobs, authorize callers, or add distributed locks; the application
@@ -233,13 +264,26 @@ options.UseDuckLake(
         .AlsoAttach("reference", "reference.ducklake"));
 ```
 
+For remote metadata, create another `TYPE ducklake` secret in the same connection initializer and store only its
+name in the additional profile:
+
+```csharp
+options.UseDuckLake(
+    lake => lake
+        .UseNamedSecret("analytics_profile")
+        .CatalogName("analytics")
+        .AlsoAttachNamedSecret("reference", "reference_profile"),
+    duckDB => duckDB.ConfigureConnection(CreateCatalogSecrets));
+```
+
 The primary catalog remains selected for EF LINQ and tracked entities. Additional catalogs are available to
 catalog-qualified dynamic/raw SQL such as `reference.main.ports`. Mapping an entity to a non-primary catalog and
 cross-catalog LINQ translation are intentionally not implied by `AlsoAttach`; that requires a separate model-level
 contract. Additional attachments default to `READ_ONLY`, use safely delimited aliases, reject duplicates, and are
-recreated on provider-owned read-only connections. A caller-owned connection may reuse an existing alias only when
-its local metadata path and read-only/writable mode exactly match the configured attachment; otherwise initialization
-fails before the provider issues the catalog-selection command.
+recreated on provider-owned read-only connections. A caller-owned connection may reuse an existing local alias only
+when its metadata path and read-only/writable mode exactly match the configured attachment. Named-secret attachment
+identity cannot be recovered from `duckdb_databases()`, so an existing alias is rejected and a fresh connection must
+let the provider attach it. Initialization fails before catalog selection when these checks do not pass.
 
 Provider contributors can run `scripts/test-ducklake-external.sh` to exercise the named-secret profile against
 PostgreSQL metadata and MinIO S3-compatible storage. The same isolated integration lane runs on Linux in CI.

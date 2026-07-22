@@ -22,6 +22,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private bool _bulkUpdateBatching;
     private bool _bulkDeleteBatching;
     private string? _memoryLimit;
+    private int? _threads;
     private string? _fileSearchPath;
     private TimeSpan? _migrationLockTimeout;
     private bool _migrationTableRebuilds;
@@ -42,6 +43,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _bulkUpdateBatching = copyFrom._bulkUpdateBatching;
         _bulkDeleteBatching = copyFrom._bulkDeleteBatching;
         _memoryLimit = copyFrom._memoryLimit;
+        _threads = copyFrom._threads;
         _fileSearchPath = copyFrom._fileSearchPath;
         _migrationLockTimeout = copyFrom._migrationLockTimeout;
         _migrationTableRebuilds = copyFrom._migrationTableRebuilds;
@@ -117,6 +119,12 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     ///     <c>"4GB"</c>), or <see langword="null" /> to leave DuckDB's default (80% of physical RAM) in place.
     /// </summary>
     public virtual string? MemoryLimit => _memoryLimit;
+
+    /// <summary>
+    ///     The positive value applied to DuckDB's global <c>threads</c> setting when a connection opens, or
+    ///     <see langword="null" /> to leave DuckDB's default in place.
+    /// </summary>
+    public virtual int? Threads => _threads;
 
     /// <summary>
     ///     The value applied to DuckDB's <c>file_search_path</c> setting when a connection opens — one or more
@@ -218,6 +226,19 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         var clone = (DuckDBOptionsExtension)Clone();
 
         clone._memoryLimit = memoryLimit;
+
+        return clone;
+    }
+
+    /// <summary>
+    ///     Returns a copy configured with the specified positive DuckDB <c>threads</c> value, or
+    ///     <see langword="null" /> to leave the default in place.
+    /// </summary>
+    public virtual DuckDBOptionsExtension WithThreads(int? threads)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+
+        clone._threads = threads;
 
         return clone;
     }

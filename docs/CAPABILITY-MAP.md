@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-20.
+**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-22.
 
 ---
 
@@ -40,6 +40,7 @@ This document is the published capability matrix for the provider. It serves two
 | Bulk insert | `DbContext.BulkInsert(...)` / `BulkInsertAsync(...)` via the DuckDB `Appender` (raw fast path — see §4) |
 | Spatial (NetTopologySuite) | `UseNetTopologySuite()`; native DuckDB `GEOMETRY` columns (WKT is only the driver wire format) |
 | Raw SQL | EF Core relational raw-SQL APIs |
+| Resource settings | `MemoryLimit(...)` and `Threads(...)` apply DuckDB's global instance settings when a connection opens |
 | Database-first scaffolding | `dotnet ef dbcontext scaffold` (tables, columns, keys, indexes, sequences, FKs) |
 
 ### DuckLake backend profile
@@ -52,15 +53,15 @@ The profile is covered by real-extension functional tests, not inferred from nat
 | Connection lifecycle | ✅ extension load, secret callback, safe `ATTACH`, and `USE` before EF uses provider-owned or caller-owned connections, including already-open connections |
 | Queries / raw SQL | ✅ normal EF LINQ and relational raw SQL against the selected catalog |
 | Tracked writes | ✅ insert/update/delete without `RETURNING`; affected-row optimistic-concurrency checks |
-| Transactions | ✅ commit/rollback through DuckDB/DuckLake |
+| Transactions | ✅ commit/rollback through DuckDB/DuckLake; explicit transactions can set snapshot author/message/extra information through `SetCommitMessageAsync(...)` |
 | Initial schema | ✅ `EnsureCreated`; unsupported physical constraints and indexes are omitted |
 | Bulk insert | ✅ DuckDB appender after provider-controlled connection initialization |
 | Upsert | ✅ staged appender batch plus `MERGE INTO` |
 | Read-only / named secret | ✅ dedicated profile options; credentials remain in the connection initializer |
-| Dynamic unknown-shape SQL | ✅ `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync` stream raw DuckDB.NET values with runtime column metadata |
+| Dynamic unknown-shape SQL | ✅ `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync` stream raw DuckDB.NET values with runtime column metadata; known DML that needs an affected-row count uses `ExecuteSqlRawAsync` because DuckDB.NET readers currently report `RecordsAffected == -1` |
 | Maintenance | ✅ typed snapshot, expiry, cleanup, orphan deletion, flush, merge, and rewrite operations; destructive lifecycle calls default to dry-run where DuckLake supports it |
 | Historical LINQ | ✅ `DbSet.AsOfSnapshot(long)` / `DbSet.AsOfTimestamp(DateTimeOffset)` for an explicit table root, plus catalog-wide read-only context profiles for coherent joins |
-| Additional catalogs | ✅ local catalogs through `AlsoAttach(...)`; catalog-qualified dynamic/raw SQL is supported, while non-primary EF entity mapping remains roadmap |
+| Additional catalogs | ✅ local catalogs through `AlsoAttach(...)` and secret-backed catalogs through `AlsoAttachNamedSecret(...)`; catalog-qualified dynamic/raw SQL is supported, while non-primary EF entity mapping remains roadmap |
 | Physical PK/FK/unique/check/index | ⛔ not supported by DuckLake; EF metadata remains logical only |
 | Sequences/store-generated values/SQL defaults | ⛔ store generation rejected; client-assigned or client-generated values required (literal defaults may exist in DDL but cannot be read back) |
 | EF migrations | ⛔ explicitly rejected; no safe EF history/locking contract without enforced uniqueness and `RETURNING` |
@@ -172,7 +173,7 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | `COPY` export to Parquet | ✅ exposed | `ExportToParquet` / `ExportToParquetAsync` over translated queries |
 | Other `COPY` import/export formats | ❌ not exposed | raw SQL only |
 | `httpfs` / S3 / GCS / remote URLs | ✅ configurable | `LoadExtension("httpfs")` plus `ConfigureConnection(...)` for secrets |
-| DuckLake `ATTACH` (additional catalogs) | ✅ partially exposed | `AlsoAttach(...)` adds local catalogs; catalog-qualified dynamic/raw SQL works, non-primary EF entity mapping is roadmap |
+| DuckLake `ATTACH` (additional catalogs) | ✅ partially exposed | `AlsoAttach(...)` adds local catalogs and `AlsoAttachNamedSecret(...)` adds catalogs configured by caller-created `TYPE ducklake` secrets; catalog-qualified dynamic/raw SQL works, non-primary EF entity mapping is roadmap |
 | Other DuckDB `ATTACH` targets | ❌ not exposed | raw SQL only |
 
 ### Analytical SQL constructs

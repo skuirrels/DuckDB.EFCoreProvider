@@ -1,12 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.13.0</PackageVersion>
-    <FileVersion>1.13.0.0</FileVersion>
-    <Version>1.13.0</Version>
+    <PackageVersion>1.14.0</PackageVersion>
+    <FileVersion>1.14.0.0</FileVersion>
+    <Version>1.14.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
-    <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
+    <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
+         "Entity Framework Core" would index as three separate tokens. -->
+    <PackageTags>duckdb;ducklake;efcore;ef-core;entity-framework-core;orm;provider;database;analytics;olap;parquet;lakehouse;tiered-storage;data-lake;object-storage;bulk-insert;upsert;dotnet</PackageTags>
     <PackageIcon>DuckDB_icon-lightmode.png</PackageIcon>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -19,8 +21,13 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.12.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.13.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.14.0
+- Add configurable global DuckDB thread limits, including provider-owned connection propagation.
+- Add named-secret additional DuckLake catalog attachments and transaction-scoped snapshot commit metadata.
+- Improve DuckLake read-scaling, secret-profile, and dynamic affected-row-count guidance.
+
 1.13.0
 - Add streaming unknown-shape SQL with runtime column metadata and stable row-owned values, including nested BLOB streams.
 - Add typed DuckLake maintenance, table-scoped and catalog-wide historical LINQ, verified additional local catalog attachments, and local-metadata database-first scaffolding.

@@ -69,6 +69,60 @@ public sealed class DuckLakeMaintenanceTests
     }
 
     [ConditionalFact]
+    public async Task Commit_message_is_attached_to_the_current_transaction_snapshot()
+    {
+        var root = CreateDirectories(out var metadataPath, out var dataPath);
+        try
+        {
+            var options = CreateOptions(metadataPath, dataPath);
+            await using var context = new MaintenanceContext(options);
+            await context.Database.EnsureCreatedAsync();
+
+            await using (var transaction = await context.Database.BeginTransactionAsync())
+            {
+                context.Items.Add(new MaintenanceItem { Id = 1, Value = "documented" });
+                await context.SaveChangesAsync();
+                await context.Database.DuckLake().SetCommitMessageAsync(
+                    "provider-test",
+                    "Insert maintenance item",
+                    "{\"source\":\"functional-test\"}");
+                await transaction.CommitAsync();
+            }
+
+            var snapshot = Assert.Single(
+                (await context.Database.DuckLake().GetSnapshotsAsync())
+                .Where(candidate => candidate.CommitMessage is not null));
+            Assert.Equal("provider-test", snapshot.Author);
+            Assert.Equal("Insert maintenance item", snapshot.CommitMessage);
+            Assert.Equal("{\"source\":\"functional-test\"}", snapshot.CommitExtraInfo);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [ConditionalFact]
+    public async Task Commit_message_requires_an_explicit_transaction()
+    {
+        var root = CreateDirectories(out var metadataPath, out var dataPath);
+        try
+        {
+            await using var context = new MaintenanceContext(CreateOptions(metadataPath, dataPath));
+            await context.Database.EnsureCreatedAsync();
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => context.Database.DuckLake().SetCommitMessageAsync("author", "message"));
+
+            Assert.Contains("requires an active transaction", exception.Message);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [ConditionalFact]
     public async Task Rejects_mutation_through_read_only_profile()
     {
         var root = CreateDirectories(out var metadataPath, out var dataPath);
@@ -87,6 +141,12 @@ public sealed class DuckLakeMaintenanceTests
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => readContext.Database.DuckLake().FlushInlinedDataAsync());
             Assert.Equal("DuckLake maintenance operations cannot run through a read-only profile.", exception.Message);
+
+            var commitException = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => readContext.Database.DuckLake().SetCommitMessageAsync("author", "message"));
+            Assert.Equal(
+                "DuckLake commit messages cannot be set through a read-only profile.",
+                commitException.Message);
         }
         finally
         {

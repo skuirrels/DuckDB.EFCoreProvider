@@ -88,6 +88,52 @@ public sealed class DuckLakeMaintenanceFacade
             [_options.CatalogName],
             cancellationToken);
 
+    /// <summary>Sets the author, commit message, and optional extra information for the current transaction.</summary>
+    /// <remarks>
+    ///     <para>
+    ///         DuckLake records one snapshot for a committed transaction. Begin an explicit EF transaction, perform
+    ///         the writes, call this method before commit, and then commit that transaction. The provider stores no
+    ///         ambient author or message and does not derive either value from application state.
+    ///     </para>
+    ///     <para><paramref name="extraInfo" /> is passed to DuckLake as an opaque string, commonly JSON.</para>
+    /// </remarks>
+    /// <param name="author">The snapshot author supplied by the caller.</param>
+    /// <param name="commitMessage">The snapshot commit message supplied by the caller.</param>
+    /// <param name="extraInfo">Optional opaque information associated with the snapshot.</param>
+    /// <param name="cancellationToken">A token used to cancel the command.</param>
+    /// <exception cref="InvalidOperationException">
+    ///     The profile is read-only or the context has no active transaction.
+    /// </exception>
+    public async Task SetCommitMessageAsync(
+        string author,
+        string commitMessage,
+        string? extraInfo = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(author);
+        ArgumentException.ThrowIfNullOrWhiteSpace(commitMessage);
+        if (_options.IsReadOnly)
+        {
+            throw new InvalidOperationException("DuckLake commit messages cannot be set through a read-only profile.");
+        }
+
+        if (_database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "SetCommitMessageAsync requires an active transaction so the metadata is attached to one DuckLake snapshot.");
+        }
+
+        var catalog = DelimitIdentifier(_options.CatalogName);
+        var sql = extraInfo is null
+            ? $"CALL {catalog}.set_commit_message({{0}}, {{1}})"
+            : $"CALL {catalog}.set_commit_message({{0}}, {{1}}, extra_info => {{2}})";
+        var parameters = extraInfo is null
+            ? new object[] { author, commitMessage }
+            : new object[] { author, commitMessage, extraInfo };
+
+        await _database.ExecuteSqlRawAsync(sql, parameters, cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>
     ///     Expires snapshots older than <paramref name="olderThan" />. Dry-run mode is enabled by default.
     /// </summary>
@@ -351,6 +397,9 @@ public sealed class DuckLakeMaintenanceFacade
         arguments.Add($"{name} => {{{parameters.Count}}}");
         parameters.Add(value.Value);
     }
+
+    private static string DelimitIdentifier(string identifier)
+        => '"' + identifier.Replace("\"", "\"\"", StringComparison.Ordinal) + '"';
 
     private void EnsureWritable()
     {
