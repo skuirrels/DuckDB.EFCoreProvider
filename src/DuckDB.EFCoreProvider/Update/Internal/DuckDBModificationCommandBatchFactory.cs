@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Update;
 using System.Diagnostics.CodeAnalysis;
@@ -32,11 +33,19 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
     private readonly bool _bulkInsertBatching;
     private readonly bool _bulkUpdateBatching;
     private readonly bool _bulkDeleteBatching;
-    private readonly bool _isDuckLake;
+    private readonly IDuckDBEngineCapabilities _capabilities;
 
     public DuckDBModificationCommandBatchFactory(
         ModificationCommandBatchFactoryDependencies dependencies,
         IDbContextOptions options)
+        : this(dependencies, options, null)
+    {
+    }
+
+    public DuckDBModificationCommandBatchFactory(
+        ModificationCommandBatchFactoryDependencies dependencies,
+        IDbContextOptions options,
+        IDuckDBEngineCapabilities? capabilities)
     {
         Dependencies = dependencies;
 
@@ -45,7 +54,8 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
         _bulkInsertBatching = optionsExtension?.BulkInsertBatching ?? false;
         _bulkUpdateBatching = optionsExtension?.BulkUpdateBatching ?? false;
         _bulkDeleteBatching = optionsExtension?.BulkDeleteBatching ?? false;
-        _isDuckLake = optionsExtension?.DuckLakeOptions is not null;
+        _capabilities = capabilities
+            ?? new DuckDBEngineCapabilities(optionsExtension?.DuckLakeOptions is not null);
 
         if (_maxBatchSize <= 0)
         {
@@ -60,7 +70,7 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
 
     public ModificationCommandBatch Create()
     {
-        if (_isDuckLake)
+        if (!_capabilities.SupportsSaveChangesBatching)
         {
             if (_bulkInsertBatching || _bulkUpdateBatching || _bulkDeleteBatching)
             {

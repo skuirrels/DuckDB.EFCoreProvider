@@ -1,6 +1,9 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Update.Internal;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using System.Data.Common;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -9,6 +12,12 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
 {
     private UpdateContext CreateContext()
         => new(FileOptions<UpdateContext>(duckdb => duckdb.EnableBulkUpdateBatching()));
+
+    private UpdateContext CreateContext(DbCommandInterceptor interceptor)
+        => new(new DbContextOptionsBuilder<UpdateContext>(
+                FileOptions<UpdateContext>(duckdb => duckdb.EnableBulkUpdateBatching()))
+            .AddInterceptors(interceptor)
+            .Options);
 
     [ConditionalFact]
     public void SaveChanges_with_update_batching_applies_distinct_values_per_row()
@@ -70,6 +79,78 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
             Assert.All(context.Items.AsEnumerable(), x =>
                 Assert.Equal(x.Id % 2 == 0 ? "even" : $"orig-{x.Id}", x.Name));
         }
+    }
+
+    [ConditionalFact]
+    public void SaveChanges_with_update_batching_preserves_planned_sql_shape()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Item { Id = 1, Name = "one", Value = 10 },
+                new Item { Id = 2, Name = "two", Value = 20 });
+            context.SaveChanges();
+        }
+
+        var interceptor = new CommandCaptureInterceptor();
+        using (var context = CreateContext(interceptor))
+        {
+            foreach (var item in context.Items.OrderBy(item => item.Id))
+            {
+                item.Name += "-updated";
+                item.Value *= 10;
+            }
+
+            context.SaveChanges();
+        }
+
+        var sql = Assert.Single(interceptor.CommandTexts.Where(
+            commandText => commandText.StartsWith("UPDATE ", StringComparison.Ordinal)));
+        Assert.Contains("UPDATE \"Items\" SET \"Name\" = v.\"Name\", \"Value\" = v.\"Value\"", sql);
+        Assert.Contains(
+            "FROM (VALUES ($p0, $p1, $p2), ($p3, $p4, $p5)) AS v(\"Id\", \"Name\", \"Value\")",
+            sql);
+        Assert.Contains("WHERE \"Items\".\"Id\" = v.\"Id\";", sql);
+    }
+
+    [ConditionalFact]
+    public void Bulk_update_planner_rejects_an_empty_command_run()
+    {
+        Assert.False(DuckDBBulkUpdatePlanner.TryCreate([], out var plan));
+        Assert.Null(plan);
+    }
+
+    [ConditionalFact]
+    public void SaveChanges_with_update_batching_separates_incompatible_column_shapes()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Item { Id = 1, Name = "one", Value = 10 },
+                new Item { Id = 2, Name = "two", Value = 20 });
+            context.SaveChanges();
+        }
+
+        var interceptor = new CommandCaptureInterceptor();
+        using (var context = CreateContext(interceptor))
+        {
+            var items = context.Items.OrderBy(item => item.Id).ToArray();
+            items[0].Name = "one-updated";
+            items[1].Value = 200;
+            context.SaveChanges();
+        }
+
+        var sql = string.Join(
+            Environment.NewLine,
+            interceptor.CommandTexts.Where(commandText => commandText.Contains("UPDATE ", StringComparison.Ordinal)));
+        Assert.Equal(2, sql.Split("UPDATE ", StringSplitOptions.None).Length - 1);
+        Assert.Equal(2, sql.Split("FROM (VALUES ", StringSplitOptions.None).Length - 1);
+
+        using var verificationContext = CreateContext();
+        Assert.Equal("one-updated", verificationContext.Items.Single(item => item.Id == 1).Name);
+        Assert.Equal(200, verificationContext.Items.Single(item => item.Id == 2).Value);
     }
 
     [ConditionalFact]
@@ -206,5 +287,28 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
         public int KeyA { get; set; }
         public int KeyB { get; set; }
         public string Name { get; set; } = "";
+    }
+
+    private sealed class CommandCaptureInterceptor : DbCommandInterceptor
+    {
+        public List<string> CommandTexts { get; } = [];
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result)
+        {
+            CommandTexts.Add(command.CommandText);
+            return result;
+        }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            CommandTexts.Add(command.CommandText);
+            return result;
+        }
     }
 }
