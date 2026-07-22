@@ -62,6 +62,60 @@ public sealed class DuckLakeAdditionalAttachmentTests
         }
     }
 
+    [ConditionalFact]
+    public async Task Additional_named_secret_catalog_is_recreated_on_provider_owned_read_only_connections()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"ducklake_secret_attachments_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var referenceMetadata = Path.Combine(root, "reference.ducklake");
+        var referenceData = Path.Combine(root, "reference-data");
+        var primaryMetadata = Path.Combine(root, "primary.ducklake");
+        var primaryData = Path.Combine(root, "primary-data");
+        Directory.CreateDirectory(referenceData);
+        Directory.CreateDirectory(primaryData);
+
+        try
+        {
+            await CreateReferenceCatalogAsync(referenceMetadata, referenceData, "secret-backed");
+
+            var primaryOptions = new DbContextOptionsBuilder<PrimaryContext>()
+                .UseDuckLake(
+                    primaryMetadata,
+                    duckLake => duckLake
+                        .CatalogName("analytics")
+                        .DataPath(primaryData)
+                        .AlsoAttachNamedSecret("reference", "reference_profile"),
+                    duckDB => duckDB.ConfigureConnection(connection =>
+                    {
+                        using var command = connection.CreateCommand();
+                        command.CommandText =
+                            $"CREATE OR REPLACE SECRET reference_profile (TYPE ducklake, "
+                            + $"METADATA_PATH '{EscapeSqlLiteral(referenceMetadata)}', "
+                            + $"DATA_PATH '{EscapeSqlLiteral(referenceData)}');";
+                        command.ExecuteNonQuery();
+                    }))
+                .Options;
+            await using var primary = new PrimaryContext(primaryOptions);
+            await primary.Database.EnsureCreatedAsync();
+
+            await using var result = await primary.Database.SqlQueryDynamicRawAsync(
+                "SELECT Value FROM reference.main.reference_items");
+            var values = new List<string>();
+            await foreach (var row in result.ReadRowsAsync())
+            {
+                values.Add((string)row.Span[0]!);
+            }
+
+            Assert.Equal(["secret-backed"], values);
+
+            Assert.True(await primary.Database.CanConnectAsync());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public void Additional_attachment_is_safely_quoted_and_duplicate_aliases_are_rejected()
     {

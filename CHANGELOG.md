@@ -2,7 +2,18 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
-## Unreleased
+## 1.14.0
+
+- Add `Threads(...)` for configuring DuckDB's global parallel-query thread count when connections open, with the
+  same provider-owned connection propagation as other DuckDB settings.
+- Add `AlsoAttachNamedSecret(...)` for additional DuckLake catalogs whose metadata and storage configuration remain
+  in caller-created `TYPE ducklake` secrets.
+- Add transaction-scoped DuckLake snapshot metadata through `SetCommitMessageAsync(...)`, requiring an explicit
+  writable transaction and caller-supplied author, message, and optional extra information.
+- Improve packaged README and IntelliSense guidance for DuckLake read scaling and named-secret construction, and
+  direct known DML that requires an affected-row count to `ExecuteSqlRawAsync` while DuckDB.NET readers report `-1`.
+- Release `DuckDB.EFCoreProvider.NTS` 1.0.7 with refreshed NuGet discovery tags; it has no runtime or public API
+  changes and tracks the core 1.14.0 package.
 
 ## 1.13.0
 

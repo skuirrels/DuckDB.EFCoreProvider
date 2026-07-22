@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Text;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
@@ -27,6 +28,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly DbContext _context;
     private readonly bool _loadSpatial;
     private readonly string? _memoryLimit;
+    private readonly int? _threads;
     private readonly string? _fileSearchPath;
     private readonly IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions;
     private readonly Action<DuckDBConnection>? _connectionInitializer;
@@ -48,6 +50,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         var optionsExtension = dependencies.ContextOptions.FindExtension<DuckDBOptionsExtension>();
         _loadSpatial = optionsExtension?.LoadSpatialite == true;
         _memoryLimit = optionsExtension?.MemoryLimit;
+        _threads = optionsExtension?.Threads;
         _fileSearchPath = optionsExtension?.FileSearchPath;
         _configuredExtensions = optionsExtension?.ConfiguredExtensions ?? [];
         _connectionInitializer = optionsExtension?.ConnectionInitializer;
@@ -167,6 +170,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             options =>
             {
                 if (_memoryLimit is not null) options.MemoryLimit(_memoryLimit);
+                if (_threads is not null) options.Threads(_threads.Value);
                 if (_fileSearchPath is not null) options.FileSearchPath(_fileSearchPath);
                 foreach (var extension in _configuredExtensions)
                 {
@@ -209,10 +213,20 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
                         foreach (var additionalCatalog in readOnlyProfile.AdditionalCatalogs)
                         {
-                            duckLake.AlsoAttach(
-                                additionalCatalog.CatalogName,
-                                additionalCatalog.MetadataSource!,
-                                readOnly: true);
+                            if (additionalCatalog.UsesSecret)
+                            {
+                                duckLake.AlsoAttachNamedSecret(
+                                    additionalCatalog.CatalogName,
+                                    additionalCatalog.MetadataSource!,
+                                    readOnly: true);
+                            }
+                            else
+                            {
+                                duckLake.AlsoAttach(
+                                    additionalCatalog.CatalogName,
+                                    additionalCatalog.MetadataSource!,
+                                    readOnly: true);
+                            }
                         }
                     });
                 }
@@ -387,6 +401,11 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         if (!string.IsNullOrWhiteSpace(_memoryLimit))
         {
             statements.Add($"SET memory_limit = '{_memoryLimit.Replace("'", "''")}'");
+        }
+
+        if (_threads is not null)
+        {
+            statements.Add($"SET threads = {_threads.Value.ToString(CultureInfo.InvariantCulture)}");
         }
 
         if (!string.IsNullOrWhiteSpace(_fileSearchPath))

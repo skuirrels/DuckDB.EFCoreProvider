@@ -17,6 +17,9 @@ public static class DuckDBDbContextOptionsBuilderExtensions
     /// <remarks>
     ///     The provider creates an in-memory DuckDB host connection, installs and loads the DuckLake extension,
     ///     attaches the catalog before EF uses provider-owned or caller-owned connections, and selects it as the default catalog.
+    ///     For remote metadata, use the action overload and call
+    ///     <see cref="DuckLakeDbContextOptionsBuilder.UseNamedSecret" /> or
+    ///     <see cref="DuckLakeDbContextOptionsBuilder.UseDefaultSecret" />.
     /// </remarks>
     /// <param name="optionsBuilder">The builder being used to configure the context.</param>
     /// <param name="metadataPath">The local DuckDB file used for DuckLake metadata.</param>
@@ -66,6 +69,11 @@ public static class DuckDBDbContextOptionsBuilderExtensions
     }
 
     /// <summary>Configures the context to use a local DuckLake catalog.</summary>
+    /// <remarks>
+    ///     For remote metadata, use the action overload and call
+    ///     <see cref="DuckLakeDbContextOptionsBuilder.UseNamedSecret" /> or
+    ///     <see cref="DuckLakeDbContextOptionsBuilder.UseDefaultSecret" />.
+    /// </remarks>
     /// <param name="optionsBuilder">The builder being used to configure the context.</param>
     /// <param name="metadataPath">The local DuckDB file used for DuckLake metadata.</param>
     /// <param name="duckLakeOptionsAction">Optional DuckLake catalog configuration.</param>
