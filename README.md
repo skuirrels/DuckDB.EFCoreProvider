@@ -883,42 +883,31 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
-### DuckDB STRUCT columns
+### DuckDB STRUCT support
 
-Map an EF Core complex property to a DuckDB `STRUCT` column by opting in with `[UseStructMapping]` or `UseStructMapping()` on the complex property:
+The provider supports native `STRUCT` mapping end to end for physical table entities. See
+[Complex properties mapped to DuckDB STRUCT columns](#complex-properties-mapped-to-duckdb-struct-columns)
+for configuration examples.
 
-```csharp
-using DuckDB.EFCoreProvider.Metadata;
-using Microsoft.EntityFrameworkCore;
+Supported behavior includes:
 
-public class Customer
-{
-    public int Id { get; set; }
-    [UseStructMapping]
-    public Address Location { get; set; } = null!;
-}
+- `EnsureCreated` and migrations create consolidated `STRUCT(...)` columns.
+- `SaveChanges` writes complete STRUCT literals and uses DuckDB `struct_update(...)` for partial
+  updates, including nested paths.
+- LINQ projection, filtering, sorting, joins, and subqueries translate individual STRUCT fields.
+- Parquet queries and exports preserve STRUCT values when a STRUCT field is not used as a partition key.
+- `FromSqlRaw` and composable raw SQL can query STRUCT-backed data.
+- Non-STRUCT complex properties continue to use their existing scalar mapping.
 
-public class Address
-{
-    public string City { get; set; } = null!;
-    public string Country { get; set; } = null!;
-}
+The following operations reject STRUCT-mapped entities or columns with a clear
+`NotSupportedException` rather than flattening the data or generating an invalid schema:
 
-protected override void OnModelCreating(ModelBuilder modelBuilder)
-{
-    modelBuilder.Entity<Customer>(entity =>
-    {
-        entity.ComplexProperty(c => c.Location).UseStructMapping();
-    });
-}
-```
+- `BulkInsert` and `Upsert`;
+- tiered-storage archiving;
+- Parquet export partitioning by a STRUCT-mapped complex property; and
+- mapped database views containing STRUCT-mapped complex properties.
 
-The provider stores `Location` as a single `STRUCT("city" VARCHAR, "country" VARCHAR)` column. LINQ projection, filtering, sorting, joins, and Parquet round-trips over `STRUCT` columns are supported. Field names are camel-cased by convention; use `HasStructField` to override individual field names when the DuckDB schema differs.
-
-`STRUCT` support is currently read-only for these paths:
-- `SaveChanges`, `BulkInsert`, and `Upsert` flatten struct-mapped properties into scalar columns, so they are not supported when a struct-mapped complex property is present.
-- Tiered-storage archive rejects struct-mapped aggregate roots with a clear `NotSupportedException`.
-- Entities mapped with `ToView` are rejected when they contain struct-mapped complex properties; query such views via `FromSqlRaw` instead.
+For a mapped view with STRUCT data, use `FromSqlRaw` or map the entity to a physical table.
 
 ### Spatial queries
 
