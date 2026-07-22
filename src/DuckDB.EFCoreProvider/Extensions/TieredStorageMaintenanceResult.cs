@@ -17,6 +17,20 @@ public readonly record struct TierConflictPage(
     public bool HasMore => Offset + Keys.Count < TotalConflicts;
 }
 
+/// <summary>
+///     A bounded read-only page of hot descendants whose complete configured parent chain exists only in the
+///     active cold generation and whose stable identity is not already represented there.
+/// </summary>
+public readonly record struct TierDetachedDescendantPage(
+    long TotalDescendants,
+    int Offset,
+    int Limit,
+    IReadOnlyList<TierConflictKey> Keys)
+{
+    /// <summary><see langword="true" /> when additional diagnostic identities exist after this page.</summary>
+    public bool HasMore => Offset + Keys.Count < TotalDescendants;
+}
+
 /// <summary>The publication evidence attached to an archive generation.</summary>
 public enum TierArchiveGenerationState
 {
@@ -42,6 +56,33 @@ public readonly record struct TierArchiveGenerationInfo(
     DateTime CreatedAtUtc,
     long FileCount,
     long TotalBytes,
+    IReadOnlyList<string> RepresentativeFiles)
+{
+    /// <summary>The provider operation that created a recoverable unpublished candidate, when known.</summary>
+    public TierArchiveOperation? Operation { get; init; }
+
+    /// <summary><see langword="true" /> when the Provider found its durable candidate marker.</summary>
+    public bool HasCandidateMarker { get; init; }
+
+    /// <summary>
+    ///     <see langword="true" /> when the marker proves that the candidate belongs to the exact configured
+    ///     root binding, aggregate graph, archive contract, and partition contract.
+    /// </summary>
+    public bool ContractCompatible { get; init; }
+
+    /// <summary>Per-node file evidence for a contract-compatible unpublished candidate.</summary>
+    public IReadOnlyList<TierArchiveGenerationNodeInfo> Nodes { get; init; } = [];
+
+    internal string? ProviderArchivePath { get; init; }
+}
+
+/// <summary>Read-only per-node evidence for a recoverable unpublished archive candidate.</summary>
+public readonly record struct TierArchiveGenerationNodeInfo(
+    string Table,
+    string? Schema,
+    string BindingId,
+    long FileCount,
+    long TotalBytes,
     IReadOnlyList<string> RepresentativeFiles);
 
 /// <summary>A read-only inventory of active and historical archive generations.</summary>
@@ -52,6 +93,12 @@ public readonly record struct TierArchiveGenerationInventory(
 {
     /// <summary>The root-scoped binding represented by this inventory.</summary>
     public TieredStorageBindingInfo? Binding { get; init; }
+
+    /// <summary>
+    ///     <see langword="true" /> when the Provider has an authoritative watermark and active-generation
+    ///     selection for this binding. Cleanup must fail closed when this evidence is absent.
+    /// </summary>
+    public bool HasAuthoritativeActiveGeneration { get; init; }
 }
 
 /// <summary>The result of moving a selected cold aggregate set back into mapped hot tables.</summary>
@@ -211,13 +258,121 @@ public readonly record struct TierArchiveRewritePlan(
     IReadOnlyList<TierArchiveColumnRewrite> ColumnRewrites,
     TierParquetWriterOptions Writer);
 
+/// <summary>Per-table evidence captured by a retention plan.</summary>
+public readonly record struct TierArchiveRetentionNodePlan(
+    Type EntityType,
+    string Table,
+    string? Schema,
+    long InputRows,
+    long RetainedRows,
+    long ExcludedRows,
+    long InputFileCount,
+    long InputBytes)
+{
+    /// <summary>The deterministic root or descendant relationship binding represented by this node.</summary>
+    public string BindingId { get; init; } = string.Empty;
+}
+
+/// <summary>
+///     An immutable, reviewable plan for publishing a retention-trimmed cold generation. The provider gives no
+///     business meaning to the boundary or retained partition scopes.
+/// </summary>
+public sealed class TierArchiveRetentionPlan
+{
+    internal TierArchiveRetentionPlan(
+        string controlKey,
+        string fingerprint,
+        TieredStorageBindingInfo binding,
+        DateTime requestedRetainFrom,
+        DateTime effectiveRetainFrom,
+        DateTime watermark,
+        string inputGenerationId,
+        string expectedOutputGenerationId,
+        string inputArchivePath,
+        IReadOnlyList<TierMaintenanceScope> retainedPartitionScopes,
+        IReadOnlyList<TierArchiveRetentionNodePlan> nodes,
+        long inputFileCount,
+        long inputBytes,
+        TierParquetWriterOptions writer,
+        TierManifestOptions manifest)
+    {
+        ControlKey = controlKey;
+        Fingerprint = fingerprint;
+        Binding = binding;
+        RequestedRetainFrom = requestedRetainFrom;
+        EffectiveRetainFrom = effectiveRetainFrom;
+        Watermark = watermark;
+        InputGenerationId = inputGenerationId;
+        ExpectedOutputGenerationId = expectedOutputGenerationId;
+        InputArchivePath = inputArchivePath;
+        RetainedPartitionScopes = retainedPartitionScopes;
+        Nodes = nodes;
+        InputFileCount = inputFileCount;
+        InputBytes = inputBytes;
+        Writer = writer;
+        Manifest = manifest;
+    }
+
+    /// <summary>The provider control key for the exact root-scoped binding.</summary>
+    public string ControlKey { get; }
+
+    /// <summary>A deterministic fingerprint of the active generation, contracts, scopes, counts, and exact files.</summary>
+    public string Fingerprint { get; }
+
+    /// <summary>The exact root-scoped binding represented by this plan.</summary>
+    public TieredStorageBindingInfo Binding { get; }
+
+    /// <summary>The boundary supplied by the caller.</summary>
+    public DateTime RequestedRetainFrom { get; }
+
+    /// <summary>The boundary aligned down to the configured lifecycle granularity.</summary>
+    public DateTime EffectiveRetainFrom { get; }
+
+    /// <summary>The active archive watermark retained by the replacement generation.</summary>
+    public DateTime Watermark { get; }
+
+    /// <summary>The active generation from which this plan was produced.</summary>
+    public string InputGenerationId { get; }
+
+    /// <summary>The deterministic generation expected after a non-empty trim.</summary>
+    public string ExpectedOutputGenerationId { get; }
+
+    /// <summary>The redacted active archive path at planning time.</summary>
+    public string InputArchivePath { get; }
+
+    /// <summary>Caller-supplied exact technical partition scopes retained below the boundary.</summary>
+    public IReadOnlyList<TierMaintenanceScope> RetainedPartitionScopes { get; }
+
+    /// <summary>Per-table input, retained, excluded, and file evidence.</summary>
+    public IReadOnlyList<TierArchiveRetentionNodePlan> Nodes { get; }
+
+    /// <summary>The exact number of files in the input generation.</summary>
+    public long InputFileCount { get; }
+
+    /// <summary>The combined size of input-generation files when reported by DuckDB.</summary>
+    public long InputBytes { get; }
+
+    /// <summary>Parquet writer controls bound into the plan fingerprint.</summary>
+    public TierParquetWriterOptions Writer { get; }
+
+    /// <summary>Manifest controls used by publication.</summary>
+    public TierManifestOptions Manifest { get; }
+
+    /// <summary><see langword="true" /> when the planned publication would exclude no cold rows.</summary>
+    public bool IsNoOp => Nodes.All(node => node.ExcludedRows == 0);
+}
+
 /// <summary>A read-only cleanup candidate. The provider assigns no retention or legal meaning to it.</summary>
 public readonly record struct TierArchiveCleanupCandidate(
     string GenerationId,
     TierArchiveGenerationState State,
     string ArchivePath,
     long FileCount,
-    long TotalBytes);
+    long TotalBytes)
+{
+    /// <summary>A SHA-256 fingerprint of the Provider-enumerated exact Parquet file catalogue.</summary>
+    public string FileCatalogueFingerprint { get; init; } = string.Empty;
+}
 
 /// <summary>A reviewed cleanup plan whose fingerprint can be required by a later execution API.</summary>
 public readonly record struct TierArchiveCleanupPlan(

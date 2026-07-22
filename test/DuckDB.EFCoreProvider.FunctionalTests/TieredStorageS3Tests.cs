@@ -120,6 +120,117 @@ public sealed class TieredStorageS3Tests : IDisposable
         => RunFailureMatrix<MinIoMatrixMarker>(ObjectStoreOptions.FromMinIoEnvironment("s3")!, "s3");
 
     [MinIoFact]
+    public async Task Retention_trim_publishes_an_exact_remote_catalogue_without_deleting_the_input_generation()
+    {
+        var objectStore = ObjectStoreOptions.FromMinIoEnvironment("s3")!;
+        var archivePath = objectStore.CreateArchivePath("s3");
+        var dbPath = Path.Combine(_root, "retention-minio.duckdb");
+        TierArchiveRetentionPlan plan;
+        using (var context = new ObjectStoreContext<RetentionMarker, SchemaV1>(dbPath, archivePath, objectStore))
+        {
+            context.Database.EnsureCreated();
+            SeedRecords(context);
+            await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
+            plan = await context.Database.PlanArchiveRetentionAsync<Record>(
+                new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 4, 1) });
+
+            Assert.Equal(7, plan.Nodes.Single(node => node.EntityType == typeof(Record)).InputRows);
+            Assert.Equal(4, plan.Nodes.Single(node => node.EntityType == typeof(Record)).RetainedRows);
+            Assert.Equal(3, plan.Nodes.Single(node => node.EntityType == typeof(Record)).ExcludedRows);
+
+            var result = await context.Database.PublishArchiveRetentionAsync<Record>(plan);
+
+            Assert.Equal(TierArchiveOperation.RetentionTrim, result.Operation);
+            Assert.Equal(11, context.RecordHistory.Count());
+            Assert.Equal(11, context.PartHistory.Count());
+        }
+
+        using var restarted = new ObjectStoreContext<RetentionMarker, SchemaV1>(dbPath, archivePath, objectStore);
+        restarted.Database.EnsureTieredStoresCreated();
+        Assert.Equal(11, restarted.RecordHistory.Count());
+        Assert.Equal(11, restarted.PartHistory.Count());
+        var inventory = await restarted.Database.GetArchiveGenerationInventoryAsync<Record>();
+        Assert.Equal(plan.ExpectedOutputGenerationId, inventory.ActiveGenerationId);
+        Assert.Contains(
+            inventory.Generations,
+            generation => generation.GenerationId == plan.InputGenerationId
+                          && generation.State == TierArchiveGenerationState.Published
+                          && generation.FileCount > 0);
+        var active = inventory.Generations.Single(generation => generation.State == TierArchiveGenerationState.Active);
+        var files = restarted.Database.SqlQueryRaw<string>(
+                "SELECT file_path AS \"Value\" FROM __duckdb_tier_generation_files "
+                + "WHERE control_key = 'records' AND generation_id = {0} ORDER BY file_path",
+                plan.ExpectedOutputGenerationId)
+            .ToArray();
+        Assert.Equal(active.FileCount, files.Length);
+        Assert.NotEmpty(files);
+        Assert.All(files, file => Assert.Contains(plan.ExpectedOutputGenerationId, file));
+    }
+
+    [MinIoFact]
+    public Task Retention_remote_failure_restart_retry_cancellation_and_abandonment_matrix()
+        => RunRemoteRetentionFailureMatrix<RetentionFailureMarker>(
+            ObjectStoreOptions.FromMinIoEnvironment("s3")!,
+            "s3");
+
+    [MinIoFact]
+    public async Task Remote_candidate_is_unknown_after_control_evidence_loss_and_cannot_be_cleanup_planned()
+    {
+        var objectStore = ObjectStoreOptions.FromMinIoEnvironment("s3")!;
+        var archivePath = objectStore.CreateArchivePath("s3");
+        var dbPath = Path.Combine(_root, "retention-control-loss.duckdb");
+        using var context = new ObjectStoreContext<RetentionControlLossMarker, SchemaV1>(
+            dbPath,
+            archivePath,
+            objectStore);
+        context.Database.EnsureCreated();
+        SeedRecords(context);
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
+        var recoveryCheckpoint = await context.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+        var retention = await context.Database.PlanArchiveRetentionAsync<Record>(
+            new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 4, 1) });
+        ObjectStoreFailureInjector.FailOnce(DuckDBTierFailurePoint.AfterCandidateRegistration);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PublishArchiveRetentionAsync<Record>(retention));
+        Assert.Equal(
+            TierArchiveGenerationState.UnpublishedCandidate,
+            Assert.Single(
+                (await context.Database.GetArchiveGenerationInventoryAsync<Record>()).Generations,
+                generation => generation.GenerationId == retention.ExpectedOutputGenerationId).State);
+
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control WHERE name = 'records';");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_files;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_nodes;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generations;");
+
+        var inventory = await context.Database.GetArchiveGenerationInventoryAsync<Record>();
+        Assert.Empty(inventory.ActiveGenerationId);
+        Assert.DoesNotContain(inventory.Generations, generation => generation.State == TierArchiveGenerationState.Active);
+        var candidate = Assert.Single(
+            inventory.Generations,
+            generation => generation.GenerationId == retention.ExpectedOutputGenerationId);
+        Assert.Equal(TierArchiveGenerationState.Unknown, candidate.State);
+        Assert.True(candidate.HasCandidateMarker);
+        Assert.True(candidate.ContractCompatible);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PlanArchiveGenerationCleanupAsync<Record>([candidate.GenerationId]));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PlanArchiveGenerationCleanupAsync<Record>([retention.InputGenerationId]));
+
+        var recovery = await context.Database.PlanArchiveRecoveryAsync<Record>(recoveryCheckpoint);
+        var recoveredInventory = await context.Database.ApplyArchiveRecoveryAsync<Record>(recovery);
+        Assert.True(recoveredInventory.HasAuthoritativeActiveGeneration);
+        Assert.Equal(recoveryCheckpoint.ActiveGenerationId, recoveredInventory.ActiveGenerationId);
+        var recoveredCandidate = Assert.Single(
+            recoveredInventory.Generations,
+            generation => generation.GenerationId == retention.ExpectedOutputGenerationId);
+        Assert.Equal(TierArchiveGenerationState.UnpublishedCandidate, recoveredCandidate.State);
+        Assert.Single(
+            (await context.Database.PlanArchiveGenerationCleanupAsync<Record>([recoveredCandidate.GenerationId]))
+            .Candidates);
+    }
+
+    [MinIoFact]
     public async Task Shared_child_bindings_are_root_scoped_on_disposable_object_storage()
     {
         var objectStore = ObjectStoreOptions.FromMinIoEnvironment("s3")!;
@@ -336,6 +447,141 @@ public sealed class TieredStorageS3Tests : IDisposable
             evolved.RecordHistory.Single(record => record.ExternalId == "record-2").Note);
     }
 
+    private async Task RunRemoteRetentionFailureMatrix<TMarker>(IObjectStoreOptions objectStore, string scheme)
+    {
+        var points = new[]
+        {
+            DuckDBTierFailurePoint.BeforeCandidateRegistration,
+            DuckDBTierFailurePoint.AfterCandidateRegistration,
+            DuckDBTierFailurePoint.BeforeCopy,
+            DuckDBTierFailurePoint.AfterCopy,
+            DuckDBTierFailurePoint.BeforeVerify,
+            DuckDBTierFailurePoint.AfterVerify,
+            DuckDBTierFailurePoint.BeforeCatalogueValidation,
+            DuckDBTierFailurePoint.AfterCatalogueValidation,
+            DuckDBTierFailurePoint.BeforePublication,
+            DuckDBTierFailurePoint.AfterPublication,
+        };
+        foreach (var point in points)
+        {
+            var archivePath = objectStore.CreateArchivePath(scheme);
+            var dbPath = Path.Combine(_root, $"{typeof(TMarker).Name}-retention-{point}.duckdb");
+            TierArchiveRetentionPlan plan;
+            using (var context = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore))
+            {
+                context.Database.EnsureCreated();
+                SeedRecords(context);
+                await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
+                plan = await context.Database.PlanArchiveRetentionAsync<Record>(
+                    new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 4, 1) });
+                ObjectStoreFailureInjector.FailOnce(point);
+
+                var failure = await Xunit.Record.ExceptionAsync(
+                    () => context.Database.PublishArchiveRetentionAsync<Record>(plan));
+
+                Assert.NotNull(failure);
+                var inventory = await context.Database.GetArchiveGenerationInventoryAsync<Record>();
+                if (point == DuckDBTierFailurePoint.BeforeCandidateRegistration)
+                {
+                    Assert.DoesNotContain(
+                        inventory.Generations,
+                        generation => generation.GenerationId == plan.ExpectedOutputGenerationId);
+                }
+                else if (point == DuckDBTierFailurePoint.AfterPublication)
+                {
+                    Assert.Equal(plan.ExpectedOutputGenerationId, inventory.ActiveGenerationId);
+                    Assert.Equal(11, context.RecordHistory.Count());
+                }
+                else
+                {
+                    var candidate = Assert.Single(
+                        inventory.Generations,
+                        generation => generation.GenerationId == plan.ExpectedOutputGenerationId);
+                    Assert.Equal(TierArchiveGenerationState.UnpublishedCandidate, candidate.State);
+                    Assert.True(candidate.HasCandidateMarker);
+                    Assert.True(candidate.ContractCompatible);
+                    Assert.Equal(TierArchiveOperation.RetentionTrim, candidate.Operation);
+                    Assert.Equal(2, candidate.Nodes.Count);
+                    Assert.Equal(plan.InputGenerationId, inventory.ActiveGenerationId);
+                    Assert.Equal(14, context.RecordHistory.Count());
+                }
+            }
+
+            using var restarted = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore);
+            restarted.Database.EnsureTieredStoresCreated();
+            Assert.Equal(
+                point == DuckDBTierFailurePoint.AfterPublication ? 11 : 14,
+                restarted.RecordHistory.Count());
+
+            var retry = await restarted.Database.PublishArchiveRetentionAsync<Record>(plan);
+
+            Assert.Equal(TierArchiveStage.Completed, retry.Stage);
+            Assert.Equal(11, restarted.RecordHistory.Count());
+            var retryInventory = await restarted.Database.GetArchiveGenerationInventoryAsync<Record>();
+            Assert.Equal(plan.ExpectedOutputGenerationId, retryInventory.ActiveGenerationId);
+            Assert.Contains(
+                retryInventory.Generations,
+                generation => generation.GenerationId == plan.InputGenerationId
+                              && generation.State == TierArchiveGenerationState.Published);
+        }
+
+        await VerifyRemoteRetentionCancellation<TMarker>(objectStore, scheme);
+        await VerifyRemoteRetentionAbandonment<TMarker>(objectStore, scheme);
+    }
+
+    private async Task VerifyRemoteRetentionCancellation<TMarker>(IObjectStoreOptions objectStore, string scheme)
+    {
+        var archivePath = objectStore.CreateArchivePath(scheme);
+        var dbPath = Path.Combine(_root, $"{typeof(TMarker).Name}-retention-cancel.duckdb");
+        TierArchiveRetentionPlan plan;
+        using (var context = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore))
+        {
+            context.Database.EnsureCreated();
+            SeedRecords(context);
+            await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
+            plan = await context.Database.PlanArchiveRetentionAsync<Record>(
+                new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 4, 1) });
+            ObjectStoreFailureInjector.CancelOnce(DuckDBTierFailurePoint.AfterCopy);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => context.Database.PublishArchiveRetentionAsync<Record>(plan));
+
+            var candidate = Assert.Single(
+                (await context.Database.GetArchiveGenerationInventoryAsync<Record>()).Generations,
+                generation => generation.GenerationId == plan.ExpectedOutputGenerationId);
+            Assert.Equal(TierArchiveGenerationState.UnpublishedCandidate, candidate.State);
+        }
+
+        using var restarted = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore);
+        restarted.Database.EnsureTieredStoresCreated();
+        await restarted.Database.PublishArchiveRetentionAsync<Record>(plan);
+        Assert.Equal(11, restarted.RecordHistory.Count());
+    }
+
+    private async Task VerifyRemoteRetentionAbandonment<TMarker>(IObjectStoreOptions objectStore, string scheme)
+    {
+        var archivePath = objectStore.CreateArchivePath(scheme);
+        var dbPath = Path.Combine(_root, $"{typeof(TMarker).Name}-retention-abandon.duckdb");
+        using var context = new ObjectStoreContext<TMarker, SchemaV1>(dbPath, archivePath, objectStore);
+        context.Database.EnsureCreated();
+        SeedRecords(context);
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 8, 1));
+        var retention = await context.Database.PlanArchiveRetentionAsync<Record>(
+            new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 4, 1) });
+        ObjectStoreFailureInjector.FailOnce(DuckDBTierFailurePoint.AfterCopy);
+        await Assert.ThrowsAsync<TierArchiveOperationException>(
+            () => context.Database.PublishArchiveRetentionAsync<Record>(retention));
+
+        var cleanup = await context.Database.PlanArchiveGenerationCleanupAsync<Record>(
+            [retention.ExpectedOutputGenerationId]);
+        var revalidated = await context.Database.RevalidateArchiveGenerationCleanupPlanAsync<Record>(cleanup);
+
+        Assert.Equal(cleanup.Fingerprint, revalidated.Fingerprint);
+        Assert.Equal(TierArchiveGenerationState.UnpublishedCandidate, Assert.Single(revalidated.Candidates).State);
+        Assert.Equal(retention.InputGenerationId, revalidated.ActiveGenerationId);
+        Assert.Equal(14, context.RecordHistory.Count());
+    }
+
     private static void SeedRecords(DbContextWithHistory context)
     {
         var baseDate = new DateTime(2025, 2, 1);
@@ -410,6 +656,9 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed class S3Marker;
     private sealed class GcsMarker;
     private sealed class MinIoMatrixMarker;
+    private sealed class RetentionMarker;
+    private sealed class RetentionFailureMarker;
+    private sealed class RetentionControlLossMarker;
     private sealed class RealAwsMatrixMarker;
     private sealed class RealGcsMatrixMarker;
     private sealed class RealAzureMatrixMarker;
@@ -853,6 +1102,14 @@ public sealed class TieredStorageS3Tests : IDisposable
             }
         }
 
+        public static void CancelOnce(DuckDBTierFailurePoint point, string? table = null)
+        {
+            lock (Sync)
+            {
+                _current = new FailureScenario(point, table, TierArchiveStage.Preflight, Cancel: true);
+            }
+        }
+
         public static void Clear()
         {
             lock (Sync)
@@ -863,6 +1120,7 @@ public sealed class TieredStorageS3Tests : IDisposable
 
         public void ThrowIfRequested(DuckDBTierFailurePoint point, string? table)
         {
+            bool cancel;
             lock (Sync)
             {
                 if (_current is not { } plan
@@ -872,7 +1130,13 @@ public sealed class TieredStorageS3Tests : IDisposable
                     return;
                 }
 
+                cancel = plan.Cancel;
                 _current = null;
+            }
+
+            if (cancel)
+            {
+                throw new OperationCanceledException($"Injected object-store tier cancellation at {point}.");
             }
 
             throw new InvalidOperationException($"Injected object-store tier failure at {point}.");
@@ -882,7 +1146,8 @@ public sealed class TieredStorageS3Tests : IDisposable
     private sealed record FailureScenario(
         DuckDBTierFailurePoint Point,
         string? Table,
-        TierArchiveStage Stage);
+        TierArchiveStage Stage,
+        bool Cancel = false);
 }
 
 /// <summary>A <see cref="FactAttribute" /> that skips unless a live S3-compatible endpoint is configured.</summary>

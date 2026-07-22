@@ -2,6 +2,7 @@ using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using System.Text.Json;
 using Xunit;
 using static Microsoft.EntityFrameworkCore.TieredStorageTestHelpers;
 
@@ -209,6 +210,469 @@ public sealed class TieredStorageTests : IDisposable
         var child = Assert.Single(result.Publication.Nodes, node => node.Table == "partitioned_record_parts");
         Assert.True(Directory.Exists(Path.Combine(
             child.ArchivePath, "root_group_id=20", "effective_month=2024-01-01")));
+    }
+
+    [Fact]
+    public async Task Retention_trim_preserves_exact_partition_scopes_and_hot_rows_across_restart()
+    {
+        var dbPath = Path.Combine(_root, "retention.duckdb");
+        var archivePath = Path.Combine(_root, "retention-archive");
+        TierArchiveRetentionPlan plan;
+        string inputGeneration;
+        using (var context = new AliasedPartitionContext(dbPath, archivePath))
+        {
+            context.Database.EnsureCreated();
+            context.PartitionedRecords.AddRange(
+                new PartitionedRecord
+                {
+                    GroupId = 10,
+                    EffectiveAt = new DateTime(2024, 1, 10),
+                    PartitionedParts = { new PartitionedRecordPart { GroupId = 101 } },
+                },
+                new PartitionedRecord
+                {
+                    GroupId = 20,
+                    EffectiveAt = new DateTime(2024, 1, 20),
+                    PartitionedParts = { new PartitionedRecordPart { GroupId = 201 } },
+                },
+                new PartitionedRecord
+                {
+                    GroupId = 20,
+                    EffectiveAt = new DateTime(2024, 2, 20),
+                    PartitionedParts = { new PartitionedRecordPart { GroupId = 202 } },
+                },
+                new PartitionedRecord
+                {
+                    GroupId = 30,
+                    EffectiveAt = new DateTime(2024, 3, 20),
+                    PartitionedParts = { new PartitionedRecordPart { GroupId = 301 } },
+                });
+            await context.SaveChangesAsync();
+            await context.Database.ArchiveTierAsync<PartitionedRecord>(new DateTime(2024, 3, 1));
+            context.PartitionedRecords.Add(new PartitionedRecord
+            {
+                GroupId = 40,
+                EffectiveAt = new DateTime(2024, 1, 25),
+                PartitionedParts = { new PartitionedRecordPart { GroupId = 401 } },
+            });
+            await context.SaveChangesAsync();
+
+            plan = await context.Database.PlanArchiveRetentionAsync<PartitionedRecord>(
+                new TierArchiveRetentionOptions
+                {
+                    RetainFrom = new DateTime(2024, 2, 18),
+                    RetainedPartitionScopes =
+                    [
+                        TierMaintenanceScope.ForPartitionValues(
+                            new Dictionary<string, object?> { [nameof(PartitionedRecord.GroupId)] = 10 }),
+                    ],
+                    Manifest = new TierManifestOptions { Detail = TierManifestDetail.Summary },
+                });
+
+            Assert.Equal(new DateTime(2024, 2, 1), plan.EffectiveRetainFrom);
+            Assert.Equal("partitioned_records", plan.ControlKey);
+            Assert.Equal(3, plan.Nodes.Single(node => node.EntityType == typeof(PartitionedRecord)).InputRows);
+            Assert.Equal(2, plan.Nodes.Single(node => node.EntityType == typeof(PartitionedRecord)).RetainedRows);
+            Assert.Equal(1, plan.Nodes.Single(node => node.EntityType == typeof(PartitionedRecord)).ExcludedRows);
+            Assert.Equal(2, plan.Nodes.Single(node => node.EntityType == typeof(PartitionedRecordPart)).RetainedRows);
+            Assert.False(plan.IsNoOp);
+            Assert.StartsWith("retention-", plan.ExpectedOutputGenerationId);
+            inputGeneration = plan.InputGenerationId;
+
+            await using (var transaction = await context.Database.BeginTransactionAsync())
+            {
+                var transactionError = await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => context.Database.PublishArchiveRetentionAsync<PartitionedRecord>(plan));
+                Assert.Contains("caller transaction", transactionError.Message);
+                await transaction.RollbackAsync();
+            }
+
+            var result = await context.Database.PublishArchiveRetentionAsync<PartitionedRecord>(plan);
+
+            Assert.Equal(TierArchiveOperation.RetentionTrim, result.Operation);
+            Assert.Equal(plan.ExpectedOutputGenerationId, result.Revision);
+            Assert.False(result.NoOp);
+            Assert.All(result.Nodes, node => Assert.Empty(node.Files));
+            Assert.All(result.Nodes, node => Assert.True(node.FileCount > 0));
+            Assert.All(result.Nodes, node => Assert.True(node.FilesTruncated));
+            Assert.Equal(
+                [(10, 1), (20, 2), (30, 3), (40, 1)],
+                context.PartitionedRecordHistory
+                    .OrderBy(root => root.GroupId)
+                    .Select(root => new ValueTuple<int, int>(root.GroupId, root.EffectiveAt.Month))
+                    .ToArray());
+            Assert.Equal(
+                [101, 202, 301, 401],
+                context.PartitionedPartHistory.OrderBy(item => item.GroupId).Select(item => item.GroupId).ToArray());
+            Assert.Single(context.PartitionedRecords, root => root.GroupId == 40);
+            Assert.Single(context.PartitionedRecords, root => root.GroupId == 30);
+        }
+
+        using (var restarted = new AliasedPartitionContext(dbPath, archivePath))
+        {
+            restarted.Database.EnsureTieredStoresCreated();
+            Assert.Equal(
+                [(10, 1), (20, 2), (30, 3), (40, 1)],
+                restarted.PartitionedRecordHistory
+                    .OrderBy(root => root.GroupId)
+                    .Select(root => new ValueTuple<int, int>(root.GroupId, root.EffectiveAt.Month))
+                    .ToArray());
+
+            var inventory = await restarted.Database.GetArchiveGenerationInventoryAsync<PartitionedRecord>();
+            Assert.Equal(plan.ExpectedOutputGenerationId, inventory.ActiveGenerationId);
+            Assert.Contains(
+                inventory.Generations,
+                generation => generation.GenerationId == inputGeneration
+                              && generation.State == TierArchiveGenerationState.Published);
+            var active = inventory.Generations.Single(generation => generation.State == TierArchiveGenerationState.Active);
+            var cataloguedFiles = restarted.Database.SqlQueryRaw<string>(
+                    "SELECT file_path AS \"Value\" FROM __duckdb_tier_generation_files "
+                    + "WHERE control_key = 'partitioned_records' AND generation_id = {0} ORDER BY file_path",
+                    plan.ExpectedOutputGenerationId)
+                .ToArray();
+            Assert.Equal(active.FileCount, cataloguedFiles.Length);
+            Assert.All(cataloguedFiles, file => Assert.Contains(plan.ExpectedOutputGenerationId, file));
+            Assert.All(cataloguedFiles, file => Assert.True(File.Exists(file)));
+
+            var retry = await restarted.Database.PublishArchiveRetentionAsync<PartitionedRecord>(plan);
+            Assert.True(retry.NoOp);
+            Assert.Equal(plan.ExpectedOutputGenerationId, retry.Revision);
+
+            var cleanup = await restarted.Database.PlanArchiveGenerationCleanupAsync<PartitionedRecord>([inputGeneration]);
+            Assert.Single(cleanup.Candidates);
+            Assert.Equal(inputGeneration, cleanup.Candidates[0].GenerationId);
+            Assert.NotEmpty(cleanup.Candidates[0].FileCatalogueFingerprint);
+            Assert.Equal(
+                cleanup.Fingerprint,
+                (await restarted.Database.RevalidateArchiveGenerationCleanupPlanAsync<PartitionedRecord>(cleanup))
+                .Fingerprint);
+        }
+    }
+
+    [Fact]
+    public async Task Retention_trim_supports_no_op_and_complete_cold_trim()
+    {
+        var archivePath = Path.Combine(_root, "retention-complete-archive");
+        using var context = new RecordContext(
+            Path.Combine(_root, "retention-complete.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Records.Add(new Record
+        {
+            EffectiveAt = new DateTime(2024, 1, 15),
+            Parts =
+            {
+                new RecordPart
+                {
+                    Value = 10,
+                    Details = { new RecordPartDetail { Value = 11 } },
+                },
+            },
+        });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+
+        var noOpPlan = await context.Database.PlanArchiveRetentionAsync<Record>(
+            new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 1, 1) });
+        Assert.True(noOpPlan.IsNoOp);
+        Assert.Equal(noOpPlan.InputGenerationId, noOpPlan.ExpectedOutputGenerationId);
+        var noOp = await context.Database.PublishArchiveRetentionAsync<Record>(noOpPlan);
+        Assert.True(noOp.NoOp);
+        Assert.Single(context.RecordHistory);
+
+        var completePlan = await context.Database.PlanArchiveRetentionAsync<Record>(
+            new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 2, 1) });
+        Assert.False(completePlan.IsNoOp);
+        Assert.All(completePlan.Nodes, node => Assert.Equal(0, node.RetainedRows));
+
+        var result = await context.Database.PublishArchiveRetentionAsync<Record>(completePlan);
+
+        Assert.False(result.NoOp);
+        Assert.Empty(context.RecordHistory);
+        Assert.Empty(context.PartHistory);
+        Assert.Empty(context.DetailHistory);
+        Assert.All(result.Nodes, node => Assert.Equal(0, node.FileCount));
+        var inventory = await context.Database.GetArchiveGenerationInventoryAsync<Record>();
+        Assert.Equal(0, inventory.Generations.Single(generation => generation.State == TierArchiveGenerationState.Active).FileCount);
+        Assert.Contains(inventory.Generations, generation => generation.GenerationId == completePlan.InputGenerationId);
+    }
+
+    [Fact]
+    public async Task Recovery_checkpoint_restores_control_catalogue_and_tiered_views_without_exposing_paths()
+    {
+        var dbPath = Path.Combine(_root, "recovery.duckdb");
+        var archivePath = Path.Combine(_root, "recovery-archive");
+        using var context = new RecordContext(dbPath, archivePath);
+        context.Database.EnsureCreated();
+        context.Records.AddRange(
+            new Record { EffectiveAt = new DateTime(2024, 1, 15) },
+            new Record { EffectiveAt = new DateTime(2024, 3, 15) });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+        await context.Database.CompactArchiveTierAsync<Record>();
+
+        var checkpoint = await context.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+        var json = JsonSerializer.Serialize(checkpoint);
+        Assert.DoesNotContain(archivePath, json, StringComparison.Ordinal);
+        var persistedCheckpoint = JsonSerializer.Deserialize<TierArchiveRecoveryCheckpoint>(json)!;
+
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control WHERE name = 'records';");
+
+        var controlLoss = await context.Database.GetArchiveGenerationInventoryAsync<Record>();
+        Assert.False(controlLoss.HasAuthoritativeActiveGeneration);
+        Assert.NotEmpty(controlLoss.Generations);
+        Assert.All(controlLoss.Generations, generation => Assert.Equal(TierArchiveGenerationState.Unknown, generation.State));
+        var cleanupError = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PlanArchiveGenerationCleanupAsync<Record>([checkpoint.ActiveGenerationId]));
+        Assert.Contains("no authoritative active-generation control evidence", cleanupError.Message);
+
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_files;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_nodes;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generations;");
+
+        var plan = await context.Database.PlanArchiveRecoveryAsync<Record>(persistedCheckpoint);
+        Assert.Equal(checkpoint.ActiveGenerationId, plan.Checkpoint.ActiveGenerationId);
+        Assert.Equal("records", plan.Binding.ControlKey);
+        var inventory = await context.Database.ApplyArchiveRecoveryAsync<Record>(plan);
+
+        Assert.True(inventory.HasAuthoritativeActiveGeneration);
+        Assert.Equal(checkpoint.ActiveGenerationId, inventory.ActiveGenerationId);
+        Assert.Equal(
+            checkpoint.Nodes.Sum(node => node.FileCount),
+            inventory.Generations.Single(generation => generation.State == TierArchiveGenerationState.Active).FileCount);
+        Assert.Equal(2, context.RecordHistory.Count());
+        Assert.Single(context.Records);
+    }
+
+    [Fact]
+    public async Task Recovery_rejects_a_different_active_generation_and_changed_files_after_planning()
+    {
+        var archivePath = Path.Combine(_root, "recovery-stale-archive");
+        using var context = new RecordContext(
+            Path.Combine(_root, "recovery-stale.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Records.Add(new Record { EffectiveAt = new DateTime(2024, 1, 15) });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+        var baseCheckpoint = await context.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+
+        await context.Database.CompactArchiveTierAsync<Record>();
+
+        var activeError = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PlanArchiveRecoveryAsync<Record>(baseCheckpoint));
+        Assert.Contains("different authoritative active generation evidence", activeError.Message);
+
+        var checkpoint = await context.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_control;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_files;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generation_nodes;");
+        context.Database.ExecuteSqlRaw("DELETE FROM __duckdb_tier_generations;");
+        var plan = await context.Database.PlanArchiveRecoveryAsync<Record>(checkpoint);
+        var selectedFile = Directory.EnumerateFiles(plan.ArchivePath, "*.parquet", SearchOption.AllDirectories).First();
+        File.Copy(selectedFile, Path.Combine(Path.GetDirectoryName(selectedFile)!, "changed-after-plan.parquet"));
+
+        var staleError = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.ApplyArchiveRecoveryAsync<Record>(plan));
+        Assert.Contains("exact file, size, row-count, or node evidence changed", staleError.Message);
+    }
+
+    [Fact]
+    public async Task Retention_no_op_publication_revalidates_the_exact_active_catalogue()
+    {
+        using var context = new RecordContext(
+            Path.Combine(_root, "retention-no-op-stale.duckdb"),
+            Path.Combine(_root, "retention-no-op-stale-archive"));
+        context.Database.EnsureCreated();
+        context.Records.Add(new Record { EffectiveAt = new DateTime(2024, 1, 15) });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+        var plan = await context.Database.PlanArchiveRetentionAsync<Record>(
+            new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 1, 1) });
+        Assert.True(plan.IsNoOp);
+
+        context.Database.ExecuteSqlRaw(
+            "DELETE FROM __duckdb_tier_generation_files WHERE file_path = "
+            + "(SELECT min(file_path) FROM __duckdb_tier_generation_files WHERE control_key = 'records');");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PublishArchiveRetentionAsync<Record>(plan));
+
+        Assert.Contains("exact file catalogue", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("part-{uuid}.parquet")]
+    [InlineData("part-{uuidv4}.parquet")]
+    [InlineData("part-{uuidv7}.parquet")]
+    public async Task Retention_planning_rejects_nondeterministic_filename_patterns(string filenamePattern)
+    {
+        using var context = new RecordContext(
+            Path.Combine(_root, "retention-uuid.duckdb"),
+            Path.Combine(_root, "retention-uuid-archive"));
+        context.Database.EnsureCreated();
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => context.Database.PlanArchiveRetentionAsync<Record>(
+                new TierArchiveRetentionOptions
+                {
+                    RetainFrom = new DateTime(2024, 1, 1),
+                    Writer = new TierParquetWriterOptions { FilenamePattern = filenamePattern },
+                }));
+
+        Assert.Equal("FilenamePattern", exception.ParamName);
+        Assert.Contains("deterministic", exception.Message);
+    }
+
+    [Fact]
+    public async Task Retention_publication_rejects_a_plan_after_the_active_generation_changes()
+    {
+        var archivePath = Path.Combine(_root, "retention-stale-archive");
+        using var context = new RecordContext(
+            Path.Combine(_root, "retention-stale.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.Records.Add(new Record { EffectiveAt = new DateTime(2024, 1, 15) });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+        var plan = await context.Database.PlanArchiveRetentionAsync<Record>(
+            new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 2, 1) });
+        await context.Database.CompactArchiveTierAsync<Record>();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PublishArchiveRetentionAsync<Record>(plan));
+
+        Assert.Contains("stale", exception.Message);
+        Assert.Single(context.RecordHistory);
+    }
+
+    [Fact]
+    public async Task Retention_planning_rejects_an_inexact_active_generation_file_catalogue()
+    {
+        using var context = new RecordContext(
+            Path.Combine(_root, "retention-catalogue.duckdb"),
+            Path.Combine(_root, "retention-catalogue-archive"));
+        context.Database.EnsureCreated();
+        context.Records.Add(new Record { EffectiveAt = new DateTime(2024, 1, 15) });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 2, 1));
+        context.Database.ExecuteSqlRaw(
+            "DELETE FROM __duckdb_tier_generation_files WHERE file_path = "
+            + "(SELECT min(file_path) FROM __duckdb_tier_generation_files WHERE control_key = 'records');");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.PlanArchiveRetentionAsync<Record>(
+                new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 2, 1) }));
+
+        Assert.Contains("exact file catalogue", exception.Message);
+        Assert.Contains("does not match the physical files", exception.Message);
+    }
+
+    [Fact]
+    public async Task Retention_scopes_accept_only_exact_declared_partition_values()
+    {
+        using var context = new AliasedPartitionContext(
+            Path.Combine(_root, "retention-scope-validation.duckdb"),
+            Path.Combine(_root, "retention-scope-validation-archive"));
+        context.Database.EnsureCreated();
+        context.PartitionedRecords.Add(new PartitionedRecord
+        {
+            GroupId = 10,
+            EffectiveAt = new DateTime(2024, 1, 15),
+        });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<PartitionedRecord>(new DateTime(2024, 2, 1));
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => context.Database.PlanArchiveRetentionAsync<PartitionedRecord>(
+                new TierArchiveRetentionOptions
+                {
+                    RetainFrom = new DateTime(2024, 2, 1),
+                    RetainedPartitionScopes = [TierMaintenanceScope.All],
+                }));
+
+        Assert.Contains("exact declared partition values", exception.Message);
+    }
+
+    [Fact]
+    public async Task Bounded_bootstrap_archives_only_the_aligned_initial_window()
+    {
+        var dbPath = Path.Combine(_root, "bootstrap.duckdb");
+        var archivePath = Path.Combine(_root, "bootstrap-archive");
+        using var context = new RecordContext(dbPath, archivePath);
+        context.Database.EnsureCreated();
+        context.Records.AddRange(
+            new Record { EffectiveAt = new DateTime(2024, 1, 15) },
+            new Record { EffectiveAt = new DateTime(2024, 2, 15) },
+            new Record { EffectiveAt = new DateTime(2024, 3, 15) });
+        await context.SaveChangesAsync();
+
+        var result = await context.Database.BootstrapArchiveTierAsync<Record>(
+            new DateTime(2024, 2, 1),
+            new DateTime(2024, 3, 1));
+
+        Assert.Equal(new DateTime(2024, 2, 1), result.WindowStart);
+        Assert.Equal(new DateTime(2024, 3, 1), result.WindowEnd);
+        Assert.Equal(1, result.RowsArchived);
+        Assert.Equal(2, context.Records.Count());
+        Assert.Equal(3, context.RecordHistory.Count());
+        Assert.True(Directory.Exists(Path.Combine(archivePath, "records", "year=2024", "month=2")));
+        Assert.False(Directory.Exists(Path.Combine(archivePath, "records", "year=2024", "month=1")));
+
+        var retry = await context.Database.BootstrapArchiveTierAsync<Record>(
+            new DateTime(2024, 2, 1),
+            new DateTime(2024, 3, 1));
+        Assert.True(retry.NoOp);
+        Assert.Equal(
+            new DateTime(2024, 2, 1),
+            context.Database.SqlQueryRaw<DateTime>(
+                    "SELECT bootstrap_from AS \"Value\" FROM __duckdb_tier_control WHERE name = 'records'")
+                .Single());
+        Assert.Equal(
+            new DateTime(2024, 3, 1),
+            context.Database.SqlQueryRaw<DateTime>(
+                    "SELECT bootstrap_to AS \"Value\" FROM __duckdb_tier_control WHERE name = 'records'")
+                .Single());
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.BootstrapArchiveTierAsync<Record>(
+                new DateTime(2024, 2, 1),
+                new DateTime(2024, 4, 1)));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.BootstrapArchiveTierAsync<Record>(
+                new DateTime(2024, 1, 1),
+                new DateTime(2024, 3, 1)));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => context.Database.BootstrapArchiveTierAsync<Record>(
+                new DateTime(2024, 1, 1),
+                new DateTime(2024, 2, 1)));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => context.Database.BootstrapArchiveTierAsync<Record>(
+                new DateTime(2024, 2, 2),
+                new DateTime(2024, 3, 1)));
+    }
+
+    [Fact]
+    public async Task Daily_retention_trim_uses_the_configured_day_boundary()
+    {
+        var archivePath = Path.Combine(_root, "daily-retention-archive");
+        using var context = new DayGranularityContext(
+            Path.Combine(_root, "daily-retention.duckdb"),
+            archivePath);
+        context.Database.EnsureCreated();
+        context.AddRange(
+            new Record { EffectiveAt = new DateTime(2024, 1, 1, 12, 0, 0) },
+            new Record { EffectiveAt = new DateTime(2024, 1, 2, 12, 0, 0) },
+            new Record { EffectiveAt = new DateTime(2024, 1, 3, 12, 0, 0) });
+        await context.SaveChangesAsync();
+        await context.Database.ArchiveTierAsync<Record>(new DateTime(2024, 1, 4));
+
+        var plan = await context.Database.PlanArchiveRetentionAsync<Record>(
+            new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 1, 3, 18, 0, 0) });
+        var result = await context.Database.PublishArchiveRetentionAsync<Record>(plan);
+
+        Assert.Equal(new DateTime(2024, 1, 3), plan.EffectiveRetainFrom);
+        Assert.Equal(1, result.RowsArchived);
+        Assert.Equal([3], context.Set<RecordRm>().Select(record => record.EffectiveAt.Day).ToArray());
     }
 
     [Fact]
@@ -637,6 +1101,12 @@ public sealed class TieredStorageTests : IDisposable
                 "SELECT count(*) AS \"Value\" FROM pragma_table_info('__duckdb_tier_control') WHERE name = 'archive_spec'")
             .Single();
         Assert.Equal(1, archiveColumns);
+        var bootstrapColumns = context.Database
+            .SqlQueryRaw<long>(
+                "SELECT count(*) AS \"Value\" FROM pragma_table_info('__duckdb_tier_control') "
+                + "WHERE name IN ('bootstrap_from', 'bootstrap_to')")
+            .Single();
+        Assert.Equal(2, bootstrapColumns);
     }
 
     [Fact]

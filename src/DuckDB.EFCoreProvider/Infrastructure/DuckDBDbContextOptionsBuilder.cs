@@ -31,6 +31,11 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     }
 
     /// <summary>Configures an attached DuckLake catalog backed by a local metadata file.</summary>
+    /// <remarks>
+    ///     For remote metadata, use the action overload and select
+    ///     <see cref="DuckLakeDbContextOptionsBuilder.UseNamedSecret" /> or
+    ///     <see cref="DuckLakeDbContextOptionsBuilder.UseDefaultSecret" />.
+    /// </remarks>
     /// <param name="metadataPath">The local DuckDB file used as the DuckLake metadata catalog.</param>
     /// <param name="duckLakeOptionsAction">Optional DuckLake catalog configuration.</param>
     /// <returns>The DuckDB options builder so that further configuration can be chained.</returns>
@@ -156,6 +161,26 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
         ArgumentException.ThrowIfNullOrWhiteSpace(memoryLimit);
 
         return WithOption(e => e.WithMemoryLimit(memoryLimit));
+    }
+
+    /// <summary>
+    ///     Sets DuckDB's <c>threads</c> setting — the maximum number of threads used for parallel query execution —
+    ///     when a connection opens.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         DuckDB defines <c>threads</c> as a global setting for a database instance. Contexts that share an
+    ///         instance cannot maintain independent thread limits; opening a connection with a different configured
+    ///         value changes the setting for that shared instance.
+    ///     </para>
+    ///     <para>When not configured, DuckDB chooses its default based on the available CPU resources.</para>
+    /// </remarks>
+    /// <param name="threads">The positive number of threads available to DuckDB query execution.</param>
+    public virtual DuckDBDbContextOptionsBuilder Threads(int threads)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(threads);
+
+        return WithOption(e => e.WithThreads(threads));
     }
 
     /// <summary>

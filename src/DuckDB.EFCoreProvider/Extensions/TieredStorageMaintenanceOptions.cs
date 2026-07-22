@@ -136,6 +136,20 @@ public sealed class TierParquetWriterOptions
                 nameof(FilenamePattern));
         }
     }
+
+    internal void ValidateDeterministicRewriteFilenamePattern()
+    {
+        if (FilenamePattern is not null
+            && (FilenamePattern.Contains("{uuid}", StringComparison.Ordinal)
+                || FilenamePattern.Contains("{uuidv4}", StringComparison.Ordinal)
+                || FilenamePattern.Contains("{uuidv7}", StringComparison.Ordinal)))
+        {
+            throw new ArgumentException(
+                "Archive retention requires a deterministic filename pattern so a failed immutable-generation "
+                + "copy can be retried safely. Use {i} or DuckDB's default pattern.",
+                nameof(FilenamePattern));
+        }
+    }
 }
 
 /// <summary>Options shared by normal forward archive operations.</summary>
@@ -152,6 +166,51 @@ public sealed class TierArchiveOptions
         ArgumentNullException.ThrowIfNull(Writer);
         ArgumentNullException.ThrowIfNull(Manifest);
         Writer.Validate();
+        Manifest.Validate();
+    }
+}
+
+/// <summary>Options for planning a retention-trimmed immutable cold generation.</summary>
+public sealed class TierArchiveRetentionOptions
+{
+    /// <summary>
+    ///     The inclusive lower lifecycle boundary to retain in the cold generation. The provider aligns this value
+    ///     down to the configured month or day granularity and returns the effective boundary in the plan.
+    /// </summary>
+    public required DateTime RetainFrom { get; init; }
+
+    /// <summary>
+    ///     Exact declared-partition scopes retained even when their lifecycle period precedes
+    ///     <see cref="RetainFrom" />. Only <see cref="TierMaintenanceScopeKind.PartitionValues" /> scopes are valid;
+    ///     the provider assigns no tenant, legal-hold, ownership, or approval meaning to them.
+    /// </summary>
+    public IReadOnlyList<TierMaintenanceScope> RetainedPartitionScopes { get; init; } = [];
+
+    /// <summary>Parquet writer controls for the replacement generation.</summary>
+    public TierParquetWriterOptions Writer { get; init; } = TierParquetWriterOptions.Default;
+
+    /// <summary>Controls file evidence returned by publication.</summary>
+    public TierManifestOptions Manifest { get; init; } = TierManifestOptions.Default;
+
+    internal void Validate()
+    {
+        ArgumentNullException.ThrowIfNull(RetainedPartitionScopes);
+        ArgumentNullException.ThrowIfNull(Writer);
+        ArgumentNullException.ThrowIfNull(Manifest);
+        if (RetainedPartitionScopes.Any(scope => scope is null))
+        {
+            throw new ArgumentException("Retained partition scopes cannot contain null entries.", nameof(RetainedPartitionScopes));
+        }
+
+        if (RetainedPartitionScopes.Any(scope => scope.Kind != TierMaintenanceScopeKind.PartitionValues))
+        {
+            throw new ArgumentException(
+                "Retained partition scopes must use exact declared partition values.",
+                nameof(RetainedPartitionScopes));
+        }
+
+        Writer.Validate();
+        Writer.ValidateDeterministicRewriteFilenamePattern();
         Manifest.Validate();
     }
 }
@@ -266,6 +325,8 @@ public sealed class TierMaintenanceScope
 /// <summary>Options for immutable-generation reconciliation.</summary>
 public sealed class TierReconciliationOptions
 {
+    internal TierArchiveOperation Operation { get; init; } = TierArchiveOperation.Reconcile;
+
     internal bool OmitScopeFromCold { get; init; }
 
     internal bool ForceRewrite { get; init; }

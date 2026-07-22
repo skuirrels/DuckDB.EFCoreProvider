@@ -154,6 +154,29 @@ public sealed class TieredStorageSharedBindingTests : IDisposable
     }
 
     [Fact]
+    public async Task Retention_trim_refreshes_a_shared_child_view_without_changing_peer_generation()
+    {
+        using var context = CreateContext("retention-shared.duckdb", "retention-shared");
+        context.Database.EnsureCreated();
+        SeedIndependentRoots(context);
+        await context.Database.ArchiveTierAsync<RootA>(new DateTime(2024, 2, 1));
+        await context.Database.ArchiveTierAsync<RootB>(new DateTime(2024, 2, 1));
+        var rootBBefore = await context.Database.GetArchiveGenerationInventoryAsync<RootB>();
+
+        var plan = await context.Database.PlanArchiveRetentionAsync<RootA>(
+            new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 2, 1) });
+        var result = await context.Database.PublishArchiveRetentionAsync<RootA>(plan);
+
+        Assert.Equal(TierArchiveOperation.RetentionTrim, result.Operation);
+        Assert.Empty(context.RootAHistory);
+        Assert.Single(context.RootBHistory);
+        Assert.Equal([202], context.SharedHistory.Select(child => child.Id).ToArray());
+        var rootBAfter = await context.Database.GetArchiveGenerationInventoryAsync<RootB>();
+        Assert.Equal(rootBBefore.ActiveGenerationId, rootBAfter.ActiveGenerationId);
+        Assert.Equal(InventorySnapshot(rootBBefore), InventorySnapshot(rootBAfter));
+    }
+
+    [Fact]
     public async Task Shared_child_archived_key_conflict_identifies_the_selected_root_binding()
     {
         using var context = CreateContext("binding-conflict.duckdb", "binding-conflict");

@@ -1,3 +1,5 @@
+using DuckDB.EFCoreProvider.Diagnostics.Internal;
+using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -82,27 +84,44 @@ public static class DuckDBParquetExportExtensions
         ArgumentNullException.ThrowIfNull(query);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var options = CreateOptions(configure);
-        using var command = query.CreateDbCommand();
-        EnsureSameConnection(database, command.Connection);
-        command.CommandText = BuildCopySql(database, command.CommandText, path, options);
-
-        var openedHere = command.Connection!.State != ConnectionState.Open;
-        if (openedHere)
-        {
-            database.OpenConnection();
-        }
+        var context = database.GetService<ICurrentDbContext>().Context;
+        var operation = DuckDBOperationDiagnostics.StartCommand(
+            context,
+            DuckDBProviderOperation.ParquetExport,
+            "ParquetExport",
+            DuckDBTierArchiveManifest.RedactCredentials(path));
 
         try
         {
-            command.ExecuteNonQuery();
-        }
-        finally
-        {
+            var options = CreateOptions(configure);
+            using var command = query.CreateDbCommand();
+            EnsureSameConnection(database, command.Connection);
+            command.CommandText = BuildCopySql(database, command.CommandText, path, options);
+
+            var openedHere = command.Connection!.State != ConnectionState.Open;
             if (openedHere)
             {
-                database.CloseConnection();
+                database.OpenConnection();
             }
+
+            try
+            {
+                command.ExecuteNonQuery();
+            }
+            finally
+            {
+                if (openedHere)
+                {
+                    database.CloseConnection();
+                }
+            }
+
+            operation.Complete();
+        }
+        catch (Exception exception)
+        {
+            operation.Fail(exception);
+            throw;
         }
     }
 
@@ -118,27 +137,44 @@ public static class DuckDBParquetExportExtensions
         ArgumentNullException.ThrowIfNull(query);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var options = CreateOptions(configure);
-        await using var command = query.CreateDbCommand();
-        EnsureSameConnection(database, command.Connection);
-        command.CommandText = BuildCopySql(database, command.CommandText, path, options);
-
-        var openedHere = command.Connection!.State != ConnectionState.Open;
-        if (openedHere)
-        {
-            await database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        }
+        var context = database.GetService<ICurrentDbContext>().Context;
+        var operation = DuckDBOperationDiagnostics.StartCommand(
+            context,
+            DuckDBProviderOperation.ParquetExport,
+            "ParquetExport",
+            DuckDBTierArchiveManifest.RedactCredentials(path));
 
         try
         {
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
+            var options = CreateOptions(configure);
+            await using var command = query.CreateDbCommand();
+            EnsureSameConnection(database, command.Connection);
+            command.CommandText = BuildCopySql(database, command.CommandText, path, options);
+
+            var openedHere = command.Connection!.State != ConnectionState.Open;
             if (openedHere)
             {
-                await database.CloseConnectionAsync().ConfigureAwait(false);
+                await database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             }
+
+            try
+            {
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (openedHere)
+                {
+                    await database.CloseConnectionAsync().ConfigureAwait(false);
+                }
+            }
+
+            operation.Complete();
+        }
+        catch (Exception exception)
+        {
+            operation.Fail(exception);
+            throw;
         }
     }
 

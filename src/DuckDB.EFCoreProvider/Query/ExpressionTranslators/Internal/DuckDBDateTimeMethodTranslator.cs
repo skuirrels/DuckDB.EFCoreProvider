@@ -17,7 +17,7 @@ public class DuckDBDateTimeMethodTranslator : IMethodCallTranslator
 {
     private static readonly MethodInfo AddYears = typeof(DateTime).GetRuntimeMethod(nameof(DateTime.AddYears), [typeof(int)])!;
     private static readonly MethodInfo AddMonths = typeof(DateTime).GetRuntimeMethod(nameof(DateTime.AddMonths), [typeof(int)])!;
-    private static readonly MethodInfo AddDays = typeof(DateTime).GetRuntimeMethod(nameof(DateTime.AddDays), [typeof(int)])!;
+    private static readonly MethodInfo AddDays = typeof(DateTime).GetRuntimeMethod(nameof(DateTime.AddDays), [typeof(double)])!;
 
     private readonly DuckDBSqlExpressionFactory _sqlExpressionFactory;
 
@@ -46,7 +46,7 @@ public class DuckDBDateTimeMethodTranslator : IMethodCallTranslator
         {
             return _sqlExpressionFactory.AddDays(instance!, arguments[0], typeof(DateTime));
         }
-        
+
         return null;
     }
 }

@@ -1,12 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.0.6</PackageVersion>
-    <FileVersion>1.0.6</FileVersion>
-    <Version>1.0.6</Version>
+    <PackageVersion>1.0.7</PackageVersion>
+    <FileVersion>1.0.7</FileVersion>
+    <Version>1.0.7</Version>
     <Authors>skuirrels</Authors>
     <Description>NetTopologySuite (spatial) support for the DuckDB provider for Entity Framework Core.</Description>
-    <PackageTags>DuckDB; Entity Framework Core; EF Core; NetTopologySuite; Spatial; GIS</PackageTags>
+    <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
+         "Entity Framework Core" would index as three separate tokens. -->
+    <PackageTags>duckdb;ducklake;efcore;ef-core;entity-framework-core;orm;provider;nettopologysuite;nts;spatial;gis;geospatial;geometry;analytics;dotnet</PackageTags>
     <PackageIcon>DuckDB_icon-lightmode.png</PackageIcon>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -19,8 +21,11 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.0.5</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.0.6</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.0.7
+- Refresh NuGet discovery tags and track DuckDB.EFCoreProvider 1.14.0. No behavioural or public API changes.
+
 1.0.6
 - Build/packaging: ship SourceLink metadata, deterministic (CI) builds, and a .snupkg symbol package; enable NuGet package validation against the previous release. Documentation: correct the geometry storage description in the shipped IntelliSense — geometry is stored in DuckDB's native GEOMETRY column type (WKT is only the driver wire format), not WKT-in-VARCHAR. No behavioural or public API changes. Tracks core DuckDB.EFCoreProvider 1.0.22.
 

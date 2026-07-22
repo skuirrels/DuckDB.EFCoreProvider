@@ -430,6 +430,10 @@ public sealed class TierControlTests
         Assert.Contains("ADD COLUMN IF NOT EXISTS active_archive_path TEXT", sql);
         Assert.Contains("archive_revision TEXT", sql);
         Assert.Contains("ADD COLUMN IF NOT EXISTS archive_revision TEXT", sql);
+        Assert.Contains("bootstrap_from TIMESTAMP", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS bootstrap_from TIMESTAMP", sql);
+        Assert.Contains("bootstrap_to TIMESTAMP", sql);
+        Assert.Contains("ADD COLUMN IF NOT EXISTS bootstrap_to TIMESTAMP", sql);
     }
 
     [Fact]

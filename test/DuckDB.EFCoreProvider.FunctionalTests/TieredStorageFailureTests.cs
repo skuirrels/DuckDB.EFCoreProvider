@@ -130,6 +130,70 @@ public sealed class TieredStorageFailureTests : IDisposable
         Assert.Equal(TierArchiveStage.Completed, retry.Stage);
     }
 
+    [Theory]
+    [InlineData((int)DuckDBTierFailurePoint.BeforeCopy, (int)TierArchiveStage.Copy, false)]
+    [InlineData((int)DuckDBTierFailurePoint.AfterCopy, (int)TierArchiveStage.Copy, false)]
+    [InlineData((int)DuckDBTierFailurePoint.BeforeVerify, (int)TierArchiveStage.Verify, false)]
+    [InlineData((int)DuckDBTierFailurePoint.AfterVerify, (int)TierArchiveStage.Verify, false)]
+    [InlineData((int)DuckDBTierFailurePoint.BeforePublication, (int)TierArchiveStage.Publish, false)]
+    [InlineData((int)DuckDBTierFailurePoint.AfterPublication, (int)TierArchiveStage.Publish, true)]
+    public async Task Retention_trim_is_restart_safe_at_every_publication_stage(
+        int failurePointValue,
+        int expectedStageValue,
+        bool publishedBeforeFailure)
+    {
+        var failurePoint = (DuckDBTierFailurePoint)failurePointValue;
+        var expectedStage = (TierArchiveStage)expectedStageValue;
+        var dbPath = Path.Combine(_root, "retention-" + failurePoint + ".duckdb");
+        var archivePath = Path.Combine(_root, "retention-" + failurePoint);
+        TierArchiveRetentionPlan plan;
+        using (var context = new FailureContext(dbPath, archivePath))
+        {
+            context.Database.EnsureCreated();
+            context.Records.Add(new FailureRecord
+            {
+                ExternalId = "record-1",
+                EffectiveAt = new DateTime(2024, 1, 15),
+                Status = "complete",
+                Parts =
+                [
+                    new FailureRecordPart
+                    {
+                        RecordExternalKey = "record-1",
+                        PartCode = "A",
+                        Value = 12m,
+                    },
+                ],
+            });
+            await context.SaveChangesAsync();
+            await context.Database.ArchiveTierAsync<FailureRecord>(new DateTime(2024, 2, 1));
+            plan = await context.Database.PlanArchiveRetentionAsync<FailureRecord>(
+                new TierArchiveRetentionOptions { RetainFrom = new DateTime(2024, 2, 1) });
+            TestTierFailureInjector.FailOnce(failurePoint);
+
+            var exception = await Assert.ThrowsAsync<TierArchiveOperationException>(
+                () => context.Database.PublishArchiveRetentionAsync<FailureRecord>(plan));
+
+            Assert.Equal(expectedStage, exception.Stage);
+            var inventory = await context.Database.GetArchiveGenerationInventoryAsync<FailureRecord>();
+            Assert.Equal(
+                publishedBeforeFailure ? plan.ExpectedOutputGenerationId : plan.InputGenerationId,
+                inventory.ActiveGenerationId);
+            Assert.Equal(publishedBeforeFailure ? 0 : 1, context.RecordHistory.Count());
+        }
+
+        using var restarted = new FailureContext(dbPath, archivePath);
+        restarted.Database.EnsureTieredStoresCreated();
+        Assert.Equal(publishedBeforeFailure ? 0 : 1, restarted.RecordHistory.Count());
+
+        var retry = await restarted.Database.PublishArchiveRetentionAsync<FailureRecord>(plan);
+
+        Assert.Equal(TierArchiveStage.Completed, retry.Stage);
+        Assert.Equal(plan.ExpectedOutputGenerationId, retry.Revision);
+        Assert.Empty(restarted.RecordHistory);
+        Assert.Empty(restarted.PartHistory);
+    }
+
     [Fact]
     public async Task Restore_rolls_back_hot_rows_when_generation_publication_fails()
     {

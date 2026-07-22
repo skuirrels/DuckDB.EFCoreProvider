@@ -685,8 +685,9 @@ public sealed class DuckLakeCompatibilityTests
     {
         Assert.Throws<ArgumentException>(() =>
             new DbContextOptionsBuilder().UseDuckLake("catalog.ducklake", lake => lake.CatalogName("bad-name")));
-        Assert.Throws<ArgumentException>(() =>
+        var remoteMetadataException = Assert.Throws<ArgumentException>(() =>
             new DbContextOptionsBuilder().UseDuckLake("postgres:host=metadata;password=secret"));
+        Assert.Contains("UseNamedSecret", remoteMetadataException.Message);
 
         var root = CreateDirectories(out var metadataPath, out var dataPath);
         try

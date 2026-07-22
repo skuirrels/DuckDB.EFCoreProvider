@@ -2,6 +2,87 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.14.0
+
+- Add `Threads(...)` for configuring DuckDB's global parallel-query thread count when connections open, with the
+  same provider-owned connection propagation as other DuckDB settings.
+- Add `AlsoAttachNamedSecret(...)` for additional DuckLake catalogs whose metadata and storage configuration remain
+  in caller-created `TYPE ducklake` secrets.
+- Add transaction-scoped DuckLake snapshot metadata through `SetCommitMessageAsync(...)`, requiring an explicit
+  writable transaction and caller-supplied author, message, and optional extra information.
+- Improve packaged README and IntelliSense guidance for DuckLake read scaling and named-secret construction, and
+  direct known DML that requires an affected-row count to `ExecuteSqlRawAsync` while DuckDB.NET readers report `-1`.
+- Release `DuckDB.EFCoreProvider.NTS` 1.0.7 with refreshed NuGet discovery tags; it has no runtime or public API
+  changes and tracks the core 1.14.0 package.
+
+## 1.13.0
+
+- Add `SqlQueryDynamicRawAsync(...)` and `SqlQueryDynamicAsync(...)` for streaming SQL whose result shape is
+  unknown until execution. Results expose runtime DuckDB/CLR column metadata, preserve nested values, normalize
+  database nulls, and clone reader-backed streams so every yielded row remains stable after the reader advances.
+- Add typed DuckLake snapshot, expiry, cleanup, orphan-file deletion, inline-data flush, adjacent-file merge, and
+  deleted-row rewrite operations. Destructive lifecycle functions default to DuckLake dry-run mode.
+- Add table-scoped and catalog-wide historical LINQ through snapshot identifiers and timestamps. Catalog-wide
+  profiles are read-only and keep multi-table queries on one coherent historical attachment.
+- Add verified local DuckLake attachments through `AlsoAttach(...)`. Existing aliases are reused only when their
+  metadata source and access mode match the configured profile.
+- Add local-metadata DuckLake database-first scaffolding with exact catalog filtering, schema/table filters, and
+  keyless entity generation. Remote and named-secret metadata remain on caller-initialized connections so
+  credentials do not enter command-line arguments.
+- Document the separate EF entity-property and raw DuckDB.NET reader type-mapping contracts.
+
+- Add stable `DuckDBEventId` lifecycle events and structured `DuckDBOperationEventData` payloads through EF Core's
+  existing `ILogger`, `LogTo`, and `DiagnosticSource` pipeline. Raw bulk insert, upsert, Parquet export, tiered
+  maintenance, extension loading, and DuckLake attachment now expose bounded start/completion/failure diagnostics
+  without introducing a provider-specific consumer logger interface or per-command overhead.
+- Preserve decimal result typing for division, including correlated `CASE` projections, so DuckDB results retain
+  their CLR decimal materialization shape without prematurely rounding narrow decimal operands.
+- Translate fractional `DateTime` and `DateTimeOffset` day additions with interval multiplication, and keep
+  `DateOnly` additions typed as `DATE`, avoiding calls to DuckDB's integer-only `to_days` function with `DOUBLE`
+  values.
+
+## 1.12.0
+
+- Fail cleanup planning closed whenever archive generations exist without authoritative active-generation control
+  evidence; catalogued generations are now `Unknown` rather than implicitly non-active after control-row loss.
+- Add exportable recovery checkpoints plus read-only plan and atomic apply APIs. Recovery re-derives Provider paths,
+  validates binding, contract, watermark, row counts, and exact file evidence, then rebuilds the selected active
+  control/catalogue/view state without changing remote objects or requiring application path interpretation.
+
+## 1.11.1
+
+- Persist a provider-owned marker before copying a remote replacement generation. Generation inventory can now
+  recover failed retention, reconciliation, compaction, restoration, and contract-rewrite candidates after restart
+  without callers reproducing the provider's revision layout. A compatible marker plus intact provider control
+  evidence is classified as an unpublished candidate; missing or incompatible evidence is conservatively `Unknown`
+  and cannot enter a cleanup plan.
+- Fingerprint the provider-enumerated exact Parquet catalogue in cleanup plans and add explicit revalidation so a
+  reviewed plan fails if its active generation, binding, classification, path, or file catalogue changes. Cleanup
+  remains read-only and never deletes remote objects automatically.
+- Complete the disposable MinIO retention matrix across candidate registration, copy, verification, exact-catalogue
+  validation, publication, cancellation, restart, exact retry, and deliberate abandonment. Expand the neutral scale
+  fixture across configurable graph depth, file fan-out, retained technical scopes, and a shared-descendant preset.
+- Add a bounded read-only detached-descendant diagnostic. It identifies a hot descendant whose configured parent
+  chain exists only in the active cold generation and whose stable key is not already cold; it does not quarantine,
+  reconcile, approve, or assign business meaning to the row.
+
+## 1.11.0
+
+- Add provider-neutral immutable cold-tier retention. `PlanArchiveRetentionAsync<TRoot>` fingerprints the active
+  generation, exact provider/physical file catalogue, aggregate and partition contracts, aligned lifecycle boundary,
+  exact retained partition scopes, and per-node counts. `PublishArchiveRetentionAsync<TRoot>` copies and verifies the
+  retained root/descendant graph, then atomically publishes a new generation while leaving the input generation
+  available for rollback and separately authorised cleanup. Publication is stale-plan safe, caller-transaction
+  rejecting, deterministic on retry, and covered before/after copy, verify, publication, and restart.
+- Add bounded first publication with `BootstrapArchiveTierAsync<TRoot>(fromInclusive, cutoffExclusive)`. The lower
+  bound must align with the configured month/day granularity and is accepted only for the first archive or its exact
+  idempotent retry; older rows remain in the hot table and therefore remain visible.
+- Add local, shared-descendant, day/month, complete/no-op/partial-scope, failure-injection, exact-catalogue, and MinIO
+  acceptance coverage. The catalogue-scale BenchmarkDotNet fixture supports local and remote S3-compatible archives;
+  its disposable MinIO lane records generated exact-catalogue SQL, query/restart measurements, memory, and concrete
+  LIST/HEAD/GET request counts. The provider assigns no meaning to retention boundaries or exact partition values and
+  never automatically deletes an obsolete remote generation.
+
 ## 1.10.2
 
 - Replace application-specific tiered-storage entities, identifiers, lifecycle fields, release evidence, and the

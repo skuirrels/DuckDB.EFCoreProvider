@@ -24,6 +24,7 @@ public static partial class DuckDBArchiveExtensions
         var result = await database.ReconcileArchiveTierAsync<TRoot>(
                 new TierReconciliationOptions
                 {
+                    Operation = TierArchiveOperation.Compact,
                     ForceRewrite = true,
                     Writer = options.Writer,
                     Manifest = options.Manifest,
@@ -44,10 +45,21 @@ public static partial class DuckDBArchiveExtensions
     ///     Restores an exact root-key or declared-partition selection into mapped hot tables and publishes a
     ///     replacement cold generation that omits the same aggregate scope.
     /// </summary>
-    public static async Task<TierRestoreResult> RestoreArchiveTierAsync<TRoot>(
+    public static Task<TierRestoreResult> RestoreArchiveTierAsync<TRoot>(
         this DatabaseFacade database,
         TierRestoreOptions options,
         CancellationToken cancellationToken = default)
+        where TRoot : class
+        => ExecuteTieredOperationAsync<TRoot, TierRestoreResult>(
+            database,
+            "RestoreArchiveTier",
+            () => RestoreArchiveTierImplementationAsync<TRoot>(database, options, cancellationToken),
+            result => result.RowsInserted);
+
+    private static async Task<TierRestoreResult> RestoreArchiveTierImplementationAsync<TRoot>(
+        DatabaseFacade database,
+        TierRestoreOptions options,
+        CancellationToken cancellationToken)
         where TRoot : class
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -221,6 +233,7 @@ public static partial class DuckDBArchiveExtensions
                 var publication = await database.ReconcileArchiveTierAsync<TRoot>(
                         new TierReconciliationOptions
                         {
+                            Operation = TierArchiveOperation.Restore,
                             Scope = options.Scope,
                             OmitScopeFromCold = true,
                             UseExistingTransaction = true,

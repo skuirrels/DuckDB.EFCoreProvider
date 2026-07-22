@@ -1,4 +1,6 @@
-﻿using DuckDB.NET.Data;
+﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Storage.Internal;
+using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -31,19 +33,38 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
     /// <inheritdoc />
     public override DatabaseModel Create(string connectionString, DatabaseModelFactoryOptions options)
     {
+        if (connectionString.StartsWith("ducklake:", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateDuckLake(connectionString["ducklake:".Length..], options);
+        }
+
         using var connection = new DuckDBConnection(connectionString);
+        return Create(connection, options);
+    }
+
+    private DatabaseModel CreateDuckLake(string metadataPath, DatabaseModelFactoryOptions options)
+    {
+        DuckLakeMetadataSourceValidator.ValidateLocalPath(metadataPath, nameof(metadataPath));
+        using var connection = new DuckDBConnection("Data Source=:memory:");
+        connection.Open();
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "INSTALL ducklake; LOAD ducklake; "
+                + DuckLakeAttachCommandBuilder.Build(new DuckLakeOptions
+                {
+                    MetadataSource = metadataPath,
+                    IsReadOnly = true,
+                    CreateIfNotExists = false
+                });
+            command.ExecuteNonQuery();
+        }
+
         return Create(connection, options);
     }
 
     /// <inheritdoc />
     public override DatabaseModel Create(DbConnection connection, DatabaseModelFactoryOptions options)
     {
-        var databaseModel = new DatabaseModel
-        {
-            DatabaseName = connection.Database,
-            DefaultSchema = "main"
-        };
-
         var connectionStartedOpen = connection.State == ConnectionState.Open;
 
         if (!connectionStartedOpen)
@@ -53,7 +74,13 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
 
         try
         {
-            FillTables((DuckDBConnection)connection, databaseModel, options.Tables);
+            var databaseModel = new DatabaseModel
+            {
+                DatabaseName = GetCurrentDatabase((DuckDBConnection)connection),
+                DefaultSchema = "main"
+            };
+
+            FillTables((DuckDBConnection)connection, databaseModel, options.Tables, options.Schemas);
             FillColumns((DuckDBConnection)connection, databaseModel);
             FillPrimaryKeys((DuckDBConnection)connection, databaseModel);
             FillIndexes((DuckDBConnection)connection, databaseModel);
@@ -81,6 +108,8 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
 
                 column.IsNullable = false;
             }
+
+            return databaseModel;
         }
         finally
         {
@@ -89,19 +118,34 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
                 connection.Close();
             }
         }
-
-        return databaseModel;
     }
 
-    private void FillTables(DuckDBConnection connection, DatabaseModel databaseModel, IEnumerable<string> tables)
+    private static string GetCurrentDatabase(DuckDBConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT current_database();";
+        return (string)command.ExecuteScalar()!;
+    }
+
+    private void FillTables(
+        DuckDBConnection connection,
+        DatabaseModel databaseModel,
+        IEnumerable<string> tables,
+        IEnumerable<string> schemas)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
                               SELECT *
                                 FROM information_schema.tables
-                               WHERE table_name != $default_table_name
-                                 AND (array_length(CAST($tables AS VARCHAR[])) = 0 OR table_name = ANY(CAST($tables AS VARCHAR[])));
+                               WHERE table_catalog = $database_name
+                                 AND table_name != $default_table_name
+                                 AND (array_length(CAST($schemas AS VARCHAR[])) = 0 OR table_schema = ANY(CAST($schemas AS VARCHAR[])))
+                                 AND (array_length(CAST($tables AS VARCHAR[])) = 0
+                                      OR table_name = ANY(CAST($tables AS VARCHAR[]))
+                                      OR concat(table_schema, '.', table_name) = ANY(CAST($tables AS VARCHAR[])));
                               """;
+
+        command.Parameters.Add(new DuckDBParameter("database_name", databaseModel.DatabaseName));
 
         var defaultTableNameParameter = (DuckDBParameter)command.CreateParameter();
         defaultTableNameParameter.ParameterName = "default_table_name";
@@ -115,6 +159,7 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
 
         command.Parameters.Add(defaultTableNameParameter);
         command.Parameters.Add(tablesParameter);
+        command.Parameters.Add(new DuckDBParameter("schemas", schemas.ToList()) { DbType = DbType.Object });
 
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -140,9 +185,12 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
             command.CommandText = """
                                   SELECT *
                                     FROM duckdb_columns
-                                   WHERE table_name = $table_name AND schema_name = $table_schema
+                                   WHERE database_name = $database_name
+                                     AND table_name = $table_name
+                                     AND schema_name = $table_schema
                                   """;
 
+            command.Parameters.Add(new DuckDBParameter("database_name", database.DatabaseName));
             command.Parameters.Add(new DuckDBParameter("table_name", table.Name));
             command.Parameters.Add(new DuckDBParameter("table_schema", table.Schema));
 
@@ -206,16 +254,21 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
             command.CommandText = """
                                   SELECT constraint_name
                                     FROM information_schema.table_constraints
-                                   WHERE table_name = $table_name AND constraint_type = 'PRIMARY KEY';
+                                   WHERE table_catalog = $database_name
+                                     AND table_name = $table_name
+                                     AND table_schema = $table_schema
+                                     AND constraint_type = 'PRIMARY KEY';
                                   """;
 
+            command.Parameters.Add(new DuckDBParameter("database_name", database.DatabaseName));
             command.Parameters.Add(new DuckDBParameter("table_name", table.Name));
+            command.Parameters.Add(new DuckDBParameter("table_schema", table.Schema));
 
             var name = (string?)command.ExecuteScalar();
 
             if (name == null)
             {
-                return;
+                continue;
             }
 
             var primaryKey = new DatabasePrimaryKey
@@ -229,16 +282,19 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
                 SELECT k.column_name
                   FROM information_schema.table_constraints t
                   JOIN information_schema.key_column_usage k
-                    ON t.constraint_name = k.constraint_name
+                    ON t.constraint_catalog = k.constraint_catalog
+                   AND t.constraint_name = k.constraint_name
                    AND t.table_name = k.table_name
                    AND t.table_schema = k.table_schema
                  WHERE t.constraint_type = 'PRIMARY KEY'
+                   AND t.table_catalog = $database_name
                    AND t.table_name = $table_name
                    AND t.table_schema = $schema
                  ORDER BY k.ordinal_position;
                 """;
 
             command.Parameters.Clear();
+            command.Parameters.Add(new DuckDBParameter("database_name", database.DatabaseName));
             command.Parameters.Add(new DuckDBParameter("table_name", table.Name));
             command.Parameters.Add(new DuckDBParameter("schema", table.Schema));
 
@@ -259,6 +315,8 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
 
     private void GetForeignKeys(DbConnection connection, DatabaseTable table, IList<DatabaseTable> tables)
     {
+        var databaseName = table.Database?.DatabaseName
+            ?? throw new InvalidOperationException("The scaffolded table is not associated with a database model.");
         using var command1 = connection.CreateCommand();
         command1.CommandText = """
                                SELECT tc.constraint_name as foreign_key_name,
@@ -267,16 +325,20 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
                                      pc.table_schema AS referenced_table_schema,
                                 FROM information_schema.table_constraints AS tc
                                 JOIN information_schema.referential_constraints AS rc
-                                  ON tc.constraint_name = rc.constraint_name
+                                  ON tc.constraint_catalog = rc.constraint_catalog
+                                 AND tc.constraint_name = rc.constraint_name
                                  AND tc.table_schema = rc.constraint_schema
                                 JOIN information_schema.table_constraints pc
-                                  ON pc.constraint_name = rc.unique_constraint_name
+                                  ON pc.constraint_catalog = rc.unique_constraint_catalog
+                                 AND pc.constraint_name = rc.unique_constraint_name
                                  AND pc.table_schema = rc.unique_constraint_schema
                                WHERE tc.constraint_type = 'FOREIGN KEY'
+                                 AND tc.table_catalog = ?
                                  AND tc.table_name = ?
                                  AND tc.table_schema = ?;
                                """;
 
+        command1.Parameters.Add(new DuckDBParameter(databaseName));
         command1.Parameters.Add(new DuckDBParameter(table.Name));
         command1.Parameters.Add(new DuckDBParameter(table.Schema ?? string.Empty));
 
@@ -320,19 +382,23 @@ SELECT child.column_name  AS child_column,
        child.ordinal_position
   FROM information_schema.referential_constraints AS rc
   JOIN information_schema.key_column_usage AS child
-    ON rc.constraint_name = child.constraint_name
+    ON rc.constraint_catalog = child.constraint_catalog
+   AND rc.constraint_name = child.constraint_name
    AND rc.constraint_schema = child.table_schema
   JOIN information_schema.key_column_usage AS parent
-    ON rc.unique_constraint_name = parent.constraint_name
+    ON rc.unique_constraint_catalog = parent.constraint_catalog
+   AND rc.unique_constraint_name = parent.constraint_name
    AND rc.unique_constraint_schema = parent.table_schema
    AND child.ordinal_position = parent.ordinal_position
- WHERE rc.constraint_name = ?
+ WHERE rc.constraint_catalog = ?
+   AND rc.constraint_name = ?
    AND rc.constraint_schema = ?
  ORDER BY child.ordinal_position;
 """;
 
+            command2.Parameters.Add(new DuckDBParameter(databaseName));
             command2.Parameters.Add(new DuckDBParameter(foreignKey.Name));
-            command2.Parameters.Add(new DuckDBParameter(foreignKey.PrincipalTable.Schema ?? string.Empty));
+            command2.Parameters.Add(new DuckDBParameter(table.Schema ?? string.Empty));
 
             var invalid = false;
 
@@ -390,9 +456,13 @@ SELECT child.column_name  AS child_column,
             command.CommandText = """
                                   SELECT *
                                     FROM duckdb_indexes
-                                    WHERE table_name = $table_name
+                                    WHERE database_name = $database_name
+                                      AND schema_name = $table_schema
+                                      AND table_name = $table_name
                                   """;
 
+            command.Parameters.Add(new DuckDBParameter("database_name", database.DatabaseName));
+            command.Parameters.Add(new DuckDBParameter("table_schema", table.Schema));
             command.Parameters.Add(new DuckDBParameter("table_name", table.Name));
 
             using var reader = command.ExecuteReader();
@@ -429,7 +499,8 @@ SELECT child.column_name  AS child_column,
     private void FillSequences(DuckDBConnection connection, DatabaseModel database)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT * FROM duckdb_sequences()";
+        command.CommandText = "SELECT * FROM duckdb_sequences() WHERE database_name = $database_name";
+        command.Parameters.Add(new DuckDBParameter("database_name", database.DatabaseName));
         using var reader = command.ExecuteReader();
 
         while (reader.Read())

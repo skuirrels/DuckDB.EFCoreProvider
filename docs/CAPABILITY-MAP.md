@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-16.
+**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-22.
 
 ---
 
@@ -34,11 +34,13 @@ This document is the published capability matrix for the provider. It serves two
 | LINQ query translation | joins, grouping, ordering, paging, aggregates, string/math/temporal, row values, arrays, JSON traversal, set operations |
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
+| Type-mapping contract | EF model mappings and raw DuckDB.NET reader mappings are documented separately in [TYPE-MAPPINGS.md](TYPE-MAPPINGS.md) |
 | File sources | `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (and fluent `FromParquet`/`FromCsv`/`FromJsonFile`) → `read_parquet`/`read_csv`/`read_json` |
-| Tiered storage (hot + cold) | `ToTieredStore(...)` + root-only ordered `.PartitionBy(p => p.By(..., "alias").ByMonth(..., "alias"))` + `.WithTieredView()` or `.WithReadModel<T>()` + `ArchiveTierAsync(...)`: provider-managed union views with optional EF projection types, `ToTieredView(...)` mapping with equivalent read-only-context pruning, application-defined Hive names/order/transforms, inherited child layout, and root-scoped bindings when one child table participates in multiple independent archives. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) and the [tiered compatibility matrix](TIERED-STORAGE-COMPATIBILITY.md) |
+| Tiered storage (hot + cold) | `ToTieredStore(...)` + root-only ordered `.PartitionBy(p => p.By(..., "alias").ByMonth(..., "alias"))` + `.WithTieredView()` or `.WithReadModel<T>()` + `ArchiveTierAsync(...)`: provider-managed union views with optional EF projection types, `ToTieredView(...)` mapping with equivalent read-only-context pruning, bounded first publication via `BootstrapArchiveTierAsync(...)`, immutable active-cold trimming via `PlanArchiveRetentionAsync(...)` / `PublishArchiveRetentionAsync(...)`, fail-closed generation cleanup planning, and external-checkpoint recovery via `CaptureArchiveRecoveryCheckpointAsync(...)` / `PlanArchiveRecoveryAsync(...)` / `ApplyArchiveRecoveryAsync(...)`. Supports application-defined Hive names/order/transforms, inherited child layout, and root-scoped bindings when one child table participates in multiple independent archives. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) and the [tiered compatibility matrix](TIERED-STORAGE-COMPATIBILITY.md) |
 | Bulk insert | `DbContext.BulkInsert(...)` / `BulkInsertAsync(...)` via the DuckDB `Appender` (raw fast path — see §4) |
 | Spatial (NetTopologySuite) | `UseNetTopologySuite()`; native DuckDB `GEOMETRY` columns (WKT is only the driver wire format) |
 | Raw SQL | EF Core relational raw-SQL APIs |
+| Resource settings | `MemoryLimit(...)` and `Threads(...)` apply DuckDB's global instance settings when a connection opens |
 | Database-first scaffolding | `dotnet ef dbcontext scaffold` (tables, columns, keys, indexes, sequences, FKs) |
 
 ### DuckLake backend profile
@@ -51,16 +53,20 @@ The profile is covered by real-extension functional tests, not inferred from nat
 | Connection lifecycle | ✅ extension load, secret callback, safe `ATTACH`, and `USE` before EF uses provider-owned or caller-owned connections, including already-open connections |
 | Queries / raw SQL | ✅ normal EF LINQ and relational raw SQL against the selected catalog |
 | Tracked writes | ✅ insert/update/delete without `RETURNING`; affected-row optimistic-concurrency checks |
-| Transactions | ✅ commit/rollback through DuckDB/DuckLake |
+| Transactions | ✅ commit/rollback through DuckDB/DuckLake; explicit transactions can set snapshot author/message/extra information through `SetCommitMessageAsync(...)` |
 | Initial schema | ✅ `EnsureCreated`; unsupported physical constraints and indexes are omitted |
 | Bulk insert | ✅ DuckDB appender after provider-controlled connection initialization |
 | Upsert | ✅ staged appender batch plus `MERGE INTO` |
 | Read-only / named secret | ✅ dedicated profile options; credentials remain in the connection initializer |
+| Dynamic unknown-shape SQL | ✅ `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync` stream raw DuckDB.NET values with runtime column metadata; known DML that needs an affected-row count uses `ExecuteSqlRawAsync` because DuckDB.NET readers currently report `RecordsAffected == -1` |
+| Maintenance | ✅ typed snapshot, expiry, cleanup, orphan deletion, flush, merge, and rewrite operations; destructive lifecycle calls default to dry-run where DuckLake supports it |
+| Historical LINQ | ✅ `DbSet.AsOfSnapshot(long)` / `DbSet.AsOfTimestamp(DateTimeOffset)` for an explicit table root, plus catalog-wide read-only context profiles for coherent joins |
+| Additional catalogs | ✅ local catalogs through `AlsoAttach(...)` and secret-backed catalogs through `AlsoAttachNamedSecret(...)`; catalog-qualified dynamic/raw SQL is supported, while non-primary EF entity mapping remains roadmap |
 | Physical PK/FK/unique/check/index | ⛔ not supported by DuckLake; EF metadata remains logical only |
 | Sequences/store-generated values/SQL defaults | ⛔ store generation rejected; client-assigned or client-generated values required (literal defaults may exist in DDL but cannot be read back) |
 | EF migrations | ⛔ explicitly rejected; no safe EF history/locking contract without enforced uniqueness and `RETURNING` |
 | `EnsureDeleted` | ⛔ explicitly rejected to avoid deleting shared/remote backing stores implicitly |
-| Database-first scaffolding | 🛠️ profile-aware `dotnet ef dbcontext scaffold` entry point not implemented |
+| Database-first scaffolding | ✅ local metadata through the `ducklake:/path/metadata.ducklake` design-time source; catalog-scoped, read-only, and keyless-first |
 | SaveChanges batching | ⛔ profile rejects current batching; use `BulkInsert` or `Upsert` |
 | Provider tiered storage | ⛔ incompatible; DuckLake owns Parquet layout and file lifecycle |
 
@@ -73,7 +79,7 @@ See [DUCKLAKE.md](DUCKLAKE.md) for configuration, security, model rules, and ope
 ### Concurrency & transactions
 | Limitation | Evidence |
 |---|---|
-| Single-writer, embedded — no concurrent multi-process/multi-instance writers | `access_mode=READ_ONLY` connection model |
+| Native DuckDB file is single-writer and embedded | `access_mode=READ_ONLY` permits multiple native-file readers; DuckLake concurrency instead depends on its metadata catalog, as documented in [DUCKLAKE.md](DUCKLAKE.md#concurrency-and-read-scaling) |
 | No savepoints (no nested-transaction partial rollback) | `DuckDBRelationalTransaction.SupportsSavepoints => false` |
 | No retrying execution strategy / `EnableRetryOnFailure` | not provided (embedded model) |
 
@@ -131,6 +137,10 @@ investigated. Known clusters:
   (Descending / filtered / rename indexes are confirmed engine limitations — see §2 Indexes.)
 - **Query/spec backlog:** assorted ad-hoc query scenarios, some grouping / set-operation edge cases,
   precompiled-query pregeneration, and other inherited relational-spec coverage.
+- **Next-major API ergonomics:** move `UseAutoIncrement()` into the conventional
+  `Microsoft.EntityFrameworkCore` namespace. It remains in `DuckDB.EFCoreProvider.Extensions` for the current
+  major to avoid creating ambiguous extension resolution or a misleading binary-compatibility shim in a minor
+  release.
 
 > **Triage status.** The "can't" bucket above (§2) is evidence-backed and stable. Reclassifying every
 > individual `"TBD"` skip into roadmap-vs-limitation is an ongoing effort; until a skip is moved to a
@@ -163,7 +173,8 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | `COPY` export to Parquet | ✅ exposed | `ExportToParquet` / `ExportToParquetAsync` over translated queries |
 | Other `COPY` import/export formats | ❌ not exposed | raw SQL only |
 | `httpfs` / S3 / GCS / remote URLs | ✅ configurable | `LoadExtension("httpfs")` plus `ConfigureConnection(...)` for secrets |
-| `ATTACH` (multi-database / cross-DB queries) | ❌ not exposed | one connection/database per context |
+| DuckLake `ATTACH` (additional catalogs) | ✅ partially exposed | `AlsoAttach(...)` adds local catalogs and `AlsoAttachNamedSecret(...)` adds catalogs configured by caller-created `TYPE ducklake` secrets; catalog-qualified dynamic/raw SQL works, non-primary EF entity mapping is roadmap |
+| Other DuckDB `ATTACH` targets | ❌ not exposed | raw SQL only |
 
 ### Analytical SQL constructs
 | DuckDB feature | Provider |
@@ -188,6 +199,10 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | native `ENUM` | ❌ CLR enums map to the underlying numeric/string, not a DuckDB `ENUM` |
 | `BIT` | ❌ no mapping |
 | `INTERVAL` | ➖ partial (via `TimeSpan` converters), no dedicated mapping |
+
+Raw ADO.NET and dynamic-result reads use DuckDB.NET's broader value surface, including `BigInteger` for
+`HUGEINT` and recursively nested lists/dictionaries for supported composite types. That raw-reader support does
+not make those types persistable EF entity properties. See [TYPE-MAPPINGS.md](TYPE-MAPPINGS.md).
 
 ### Extensions
 | Extension | Provider |

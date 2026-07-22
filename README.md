@@ -117,12 +117,34 @@ options.UseDuckLake(
     }));
 ```
 
+For example, the connection initializer can create a PostgreSQL-backed DuckLake profile without copying credentials
+into EF options:
+
+```sql
+CREATE SECRET application_lake (
+    TYPE ducklake,
+    METADATA_PATH '',
+    DATA_PATH 's3://bucket/lake/',
+    METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'application_postgres'});
+```
+
+Create the referenced PostgreSQL and object-storage secrets on the same connection. The profile stored in EF options
+contains only `application_lake`.
+
 Supported workflows include LINQ, tracked `SaveChanges`, transactions, optimistic concurrency, initial
-`EnsureCreated`, appender-backed `BulkInsert`, `MERGE`-backed `Upsert`, and read-only profiles. DuckLake does
+`EnsureCreated`, appender-backed `BulkInsert`, `MERGE`-backed `Upsert`, read-only profiles, historical LINQ
+profiles, typed maintenance, additional local or named-secret catalogs, streaming dynamic SQL, and local-metadata
+database-first scaffolding. DuckLake does
 not physically enforce keys, foreign keys, unique/check constraints, or indexes, and it does not support
-sequences, store-generated values, or `RETURNING`. EF migrations, `EnsureDeleted`, scaffolding, provider tiered
-storage, and `SaveChanges` batching are therefore deliberately unavailable in this profile. See the complete
+sequences, store-generated values, or `RETURNING`. EF migrations, `EnsureDeleted`, provider tiered storage,
+`SaveChanges` batching, and EF entity mappings to non-primary attached catalogs are therefore deliberately
+unavailable in this profile. See the complete
 [DuckLake configuration, security, and limitations guide](docs/DUCKLAKE.md).
+
+DuckLake reads can scale across separate read-only contexts and connections attached to the same catalog when the
+metadata backend supports the required client concurrency. Use one `DbContext` per concurrent operation; a context
+is not thread-safe. PostgreSQL metadata supports multiple local or remote clients, while a DuckDB metadata file is a
+single-client profile. `ReadOnly()` controls one attachment and does not create a replica or add application locking.
 
 ## Configuration and connection strings
 
@@ -144,6 +166,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~8× faster). | off |
 | `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~14× faster). | off |
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
+| `.Threads(4)` | Set the global thread count used by DuckDB query execution when the connection opens. | DuckDB default |
 | `.FileSearchPath("/data")` | Base directory (or comma-separated directories) for resolving relative file paths. | DuckDB default |
 | `.MigrationLockTimeout(TimeSpan.FromMinutes(10))` | Maximum wait for the migrations lock before failing with guidance (use `Timeout.InfiniteTimeSpan` to wait forever). | 5 minutes |
 | `.EnableMigrationTableRebuilds()` | Opt in to rebuilding tables for constraint changes DuckDB cannot apply in place. | off |
@@ -159,14 +182,43 @@ options.UseDuckDB(
     duckdb => duckdb
         .EnableBulkInsertBatching()
         .MemoryLimit("4GB")
+        .Threads(4)
         .FileSearchPath("/data,/data/archive"));
 ```
 
-The batching, memory, and file-search options are explained in detail under [Performance](#performance) and [Memory limit and file search path](#memory-limit-and-file-search-path).
+The batching, memory, thread, and file-search options are explained in detail under [Performance](#performance) and [Memory limit, threads, and file search path](#memory-limit-threads-and-file-search-path).
 
 ## Data workflows
 
 The provider supports standard EF Core persistence together with DuckDB-specific ingestion, file-query, and archival workflows. See the [capability map](docs/CAPABILITY-MAP.md) for the detailed support matrix and documented engine limitations.
+
+### Stream an unknown result shape
+
+Use the dynamic result API for user-authored analytical SQL whose columns are not known at compile time:
+
+```csharp
+await using var result = await context.Database.SqlQueryDynamicRawAsync(sql, cancellationToken);
+
+foreach (var column in result.Columns)
+{
+    Console.WriteLine($"{column.Name}: {column.DuckDBTypeName} ({column.ClrType.Name})");
+}
+
+await foreach (var row in result.ReadRowsAsync(cancellationToken))
+{
+    // ReadOnlyMemory<object?> aligned with result.Columns by ordinal.
+}
+```
+
+Rows stream without result-set buffering and own their backing arrays. Values remain the lossless CLR objects
+returned by DuckDB.NET; database nulls become `null`. Use `SqlQueryDynamicAsync($"... {value} ...")` or the raw
+overload with `{0}` placeholders and a parameter list for values. Raw SQL text is trusted SQL and is not sanitized.
+The provider does not impose UI row limits or choose a JSON serialization policy. See the
+[type-mapping contract](docs/TYPE-MAPPINGS.md).
+
+This API is a streaming result-set path. DuckDB.NET currently reports `DbDataReader.RecordsAffected` as `-1`, so the
+provider does not infer DML counts by parsing SQL or inspecting result columns. Use `ExecuteSqlRawAsync` for known
+`INSERT`, `UPDATE`, or `DELETE` commands when the affected-row count is required.
 
 ### Export a query to Parquet
 
@@ -481,8 +533,21 @@ var restored = await db.Database.RestoreArchiveTierAsync<Record>(
 
 // Operational diagnostics stay bounded.
 var conflicts = await db.Database.GetArchiveConflictsAsync<Record>(offset: 0, limit: 100);
+var detached = await db.Database.GetArchiveDetachedDescendantsAsync<Record>(offset: 0, limit: 100);
 var inventory = await db.Database.GetArchiveGenerationInventoryAsync<Record>();
+var cleanup = await db.Database.PlanArchiveGenerationCleanupAsync<Record>(selectedGenerationIds);
+cleanup = await db.Database.RevalidateArchiveGenerationCleanupPlanAsync<Record>(cleanup);
 var preflight = await db.Database.PreflightTieredStorageAsync<Record>();
+
+// Persist this serializable checkpoint outside the DuckDB database after each successful publication.
+var recoveryCheckpoint =
+    await db.Database.CaptureArchiveRecoveryCheckpointAsync<Record>();
+
+// After verified local Provider-metadata loss, the Provider re-derives every path and revalidates exact evidence.
+var recoveryPlan =
+    await db.Database.PlanArchiveRecoveryAsync<Record>(persistedRecoveryCheckpoint);
+var recoveredInventory =
+    await db.Database.ApplyArchiveRecoveryAsync<Record>(recoveryPlan);
 
 // Records: hot only, with their RecordParts. Parquet is not queried.
 var hotRecords = await db.Records
@@ -546,13 +611,41 @@ transaction. Their Parquet writes are external side effects and cannot be rolled
 Restore nevertheless commits its hot-table inserts and active-generation metadata/view switch in one internal
 DuckDB transaction; a failed publication leaves the previous generation active and rolls the hot inserts back.
 
-#### Archiving versus purging
+#### Archiving, bounded bootstrap, and retention
 
-`PurgeArchiveOlderThan<Record>` serves a different, optional retention phase: it permanently deletes cold Parquet
-partitions older than its cutoff. It does not delete hot rows, move rows to Parquet, or change the archive watermark.
-Call it only after `ArchiveTierAsync` completes successfully, and normally give it an older cutoff.
+For an initial archive that must not publish rows older than an explicit lower bound, use the half-open
+`BootstrapArchiveTierAsync<Record>(fromInclusive, cutoffExclusive)` operation. Its lower bound must align with the
+configured month/day granularity and it is accepted only for the first publication or its exact idempotent retry.
+The provider persists both bounds atomically with publication; a retry is exact only while the active watermark still
+equals the original cutoff. Older rows stay hot and visible.
 
-For example, to keep records hot for 12 months and then cold for another 24 months:
+For logical cold-tier retention, plan and publish an immutable replacement generation:
+
+```csharp
+var plan = await db.Database.PlanArchiveRetentionAsync<Record>(
+    new TierArchiveRetentionOptions
+    {
+        RetainFrom = retainFromUtc,
+        RetainedPartitionScopes =
+        [
+            TierMaintenanceScope.ForPartitionValues(
+                new Dictionary<string, object?> { [nameof(Record.GroupId)] = retainedGroupId }),
+        ],
+    });
+
+var result = await db.Database.PublishArchiveRetentionAsync<Record>(plan);
+```
+
+The plan fingerprints the active generation, exact physical/provider catalogue, contracts, aligned lifecycle
+boundary, exact declared-partition scopes, and root/descendant counts. Publication copies and verifies retained rows,
+atomically switches provider metadata and views, and leaves the previous generation intact for rollback and
+separately authorised cleanup. It never changes hot rows or assigns business meaning to the boundary/scopes.
+
+`PurgeArchiveOlderThan<Record>` is the older local-filesystem-only in-place physical purge. It permanently deletes
+cold Parquet partitions older than its cutoff, does not delete hot rows or change the archive watermark, and is not
+supported for remote archives.
+
+For example, a consumer may decide to keep records hot for 12 months and then cold for another 24 months:
 
 ```csharp
 var now = DateTime.UtcNow;
@@ -562,15 +655,15 @@ var now = DateTime.UtcNow;
 var archiveCutoff = now.AddMonths(-12);
 await db.Database.ArchiveTierAsync<Record>(archiveCutoff);
 
-// 12-36 months old: remain in cold Parquet.
-// More than 36 months old: permanently delete from cold Parquet.
-var purgeCutoff = now.AddMonths(-36); // equivalently: archiveCutoff.AddMonths(-24)
-db.Database.PurgeArchiveOlderThan<Record>(purgeCutoff);
+// The application resolves policy/holds/approvals, then supplies technical inputs.
+var plan = await db.Database.PlanArchiveRetentionAsync<Record>(
+    new TierArchiveRetentionOptions { RetainFrom = now.AddMonths(-36) });
+await db.Database.PublishArchiveRetentionAsync<Record>(plan);
 ```
 
-Do not use the same cutoff for both operations or calculate the purge boundary with
-`archiveCutoff.AddMonths(24)`: that moves the boundary forward and can immediately delete the history just archived.
-For remote S3, GCS, or Azure archives, enforce the purge boundary with an object-storage lifecycle rule instead.
+Do not use the same cutoff for archive and retention or calculate the retention boundary with
+`archiveCutoff.AddMonths(24)`: that moves the boundary forward and can immediately remove the history just archived
+from the active representation.
 
 > **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app demonstrates archiving
 > and reporting across hot + cold:
@@ -626,10 +719,10 @@ Azure-typed secret.
   MinIO. Setting `DUCKDB_AWS_S3_TEST_BUCKET` (plus optional prefix/region or paired explicit credentials) runs the
   same first-archive, no-op, restart, failure/retry, reconciliation, and schema-evolution scenarios against a
   unique disposable AWS prefix.
-- **`PurgeArchiveOlderThan` throws `NotSupportedException` for a remote archive** — DuckDB can't delete objects
-  from an object store. Enforce upload-age retention with an **S3 lifecycle rule**, **GCS Object Lifecycle
-  Management**, or an **Azure Blob lifecycle-management policy**. If retention must follow the partition's
-  business date (including backfills), use a prefix-aware external cleanup job instead of upload age.
+- **Immutable retention publication works on local and remote archives.** It creates and verifies a replacement
+  generation, atomically switches the exact active catalogue/views, and leaves the obsolete generation untouched.
+  `PurgeArchiveOlderThan` still throws for remote archives. Delete old objects only after generation cleanup inventory
+  and separate application authorisation; do not apply blind upload-age expiry to an active archive prefix.
 
 Full guide: [Cold storage on S3 and GCS](docs/TIERED-STORAGE.md#6-cold-storage-on-s3-google-cloud-storage-and-other-object-stores);
 the sample above runs the GCS path with `-- gcs`.
@@ -649,7 +742,7 @@ modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "/var/data/archive/record
 
 ### Bulk insert
 
-For high-throughput loading, `BulkInsert` / `BulkInsertAsync` append rows directly through DuckDB's columnar `Appender` — much faster than `SaveChanges` for large batches. It is a deliberate raw fast path: it bypasses the change tracker, concurrency checks, interceptors, and store-generated values (provide a value for every mapped column), and the target table must already exist.
+For high-throughput loading, `BulkInsert` / `BulkInsertAsync` append rows directly through DuckDB's columnar `Appender` — much faster than `SaveChanges` for large batches. It is a deliberate raw fast path: it bypasses the change tracker, concurrency checks, EF command interceptors, and store-generated values (provide a value for every mapped column), and the target table must already exist. The provider still emits one structured start/completion/failure diagnostic for the overall operation.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
@@ -691,9 +784,9 @@ var processed = context.Upsert(rows);
 // batch size is configurable: context.Upsert(rows, batchSize: 200);
 ```
 
-Like `BulkInsert`, this is a raw fast path: it bypasses the change tracker, concurrency checks, and
-interceptors, requires primary-key values (store-generated keys are not supported), and does not support
-shadow or database-computed columns.
+Like `BulkInsert`, this is a raw fast path: it bypasses the change tracker, concurrency checks, and EF command
+interceptors, requires primary-key values (store-generated keys are not supported), and does not support shadow or
+database-computed columns. Structured provider diagnostics cover the complete upsert rather than every staging command.
 
 ### JSON, owned JSON, and arrays
 
@@ -791,12 +884,13 @@ public class Site
 }
 ```
 
-### Memory limit and file search path
+### Memory limit, threads, and file search path
 
 By default DuckDB sizes its buffer manager to **80% of physical RAM**. To cap that — useful when DuckDB shares
-a host with other services — set `MemoryLimit`. To resolve relative file paths (for example in `[FromParquet]`)
-against a base directory rather than the process working directory, set `FileSearchPath`. Both are applied as
-DuckDB settings when each connection opens:
+a host with other services — set `MemoryLimit`. Use `Threads` to bound the threads DuckDB makes available for
+parallel query execution. To resolve relative file paths (for example in `[FromParquet]`) against a base directory
+rather than the process working directory, set `FileSearchPath`. All are applied as DuckDB settings when each
+connection opens:
 
 ```csharp
 builder.Services.AddDbContext<ReportingContext>(options =>
@@ -804,10 +898,13 @@ builder.Services.AddDbContext<ReportingContext>(options =>
         "Data Source=app.duckdb",
         duckdb => duckdb
             .MemoryLimit("4GB")                  // also accepts e.g. "512MB", "75%"
+            .Threads(4)                          // positive global DuckDB thread count
             .FileSearchPath("/data,/data/archive")));  // one or more comma-separated directories
 ```
 
-When not configured, DuckDB's defaults are left untouched. DuckDB spills larger-than-memory intermediates to
+When not configured, DuckDB's defaults are left untouched. Both `memory_limit` and `threads` are global settings
+for a DuckDB database instance: contexts sharing one instance cannot maintain independent values, and a later
+connection can change the setting for that instance. DuckDB spills larger-than-memory intermediates to
 its temp directory, so a lower memory limit trades memory for more disk spilling on big analytical queries
 rather than failing. (For an in-memory database — `Data Source=:memory:` — spilling requires a
 `temp_directory`, which DuckDB does not set automatically.)
@@ -821,6 +918,8 @@ For the full feature support matrix, the DuckDB engine limitations, and the road
 DuckDB-specific details, see the [migrations guide](docs/MIGRATIONS.md). See also
 [CHANGELOG.md](CHANGELOG.md) for release history, [VERSIONING.md](VERSIONING.md) for the
 versioning / breaking-change policy, and [SECURITY.md](SECURITY.md) for vulnerability reporting.
+The [type-mapping guide](docs/TYPE-MAPPINGS.md) distinguishes EF entity-property mappings from the broader raw
+DuckDB.NET reader value surface.
 
 ## Performance
 
@@ -883,6 +982,39 @@ small fixed per-call cost (~200 µs once warm) and substantially lower increment
 Rough throughput: `BulkInsert` ≈ 1M rows/s; `SaveChanges` ≈ 6–8k rows/s. Use a single `BulkInsert` call rather
 than repeated `SaveChanges` calls for bulk loads. A BenchmarkDotNet project lives in `test/DuckDB.EFCoreProvider.Benchmarks`; see
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for full results, the crossover table, methodology, and guidance.
+
+## Diagnostics and logging
+
+Normal queries, `SaveChanges`, connections, transactions, and migrations use EF Core's standard logging,
+`DiagnosticSource`, and interceptor pipeline. Provider-owned raw operations additionally publish stable
+`DuckDBEventId` start/completion/failure events for:
+
+- `BulkInsert` and `Upsert`;
+- Parquet export;
+- tiered archive, bootstrap, reconciliation, restore, retention, recovery, and purge operations;
+- configured DuckDB extension loading and DuckLake catalogue attachment.
+
+No DuckDB-specific logger interface is required. Use the normal EF Core configuration:
+
+```csharp
+using DuckDB.EFCoreProvider.Diagnostics;
+using Microsoft.Extensions.Logging;
+
+options.UseDuckDB("Data Source=analytics.duckdb")
+    .LogTo(
+        Console.WriteLine,
+        new[]
+        {
+            DuckDBEventId.BulkInsertCompleted,
+            DuckDBEventId.TieredStorageOperationFailed,
+        },
+        LogLevel.Information);
+```
+
+For structured consumption, use the `LogTo` overload receiving `EventData` or subscribe to EF Core's
+`DiagnosticListener`, then cast provider events to `DuckDBOperationEventData`. Its payload exposes the operation,
+non-secret target, duration, optional affected-row count, exception, and `DbContext`. Raw paths intentionally remain
+outside `DbCommandInterceptor`; the provider emits bounded lifecycle events instead of every internal SQL statement.
 
 ## Testing
 

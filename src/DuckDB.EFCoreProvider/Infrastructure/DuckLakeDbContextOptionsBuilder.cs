@@ -19,18 +19,15 @@ public sealed class DuckLakeDbContextOptionsBuilder
         => _optionsBuilder = optionsBuilder;
 
     /// <summary>Uses a local DuckDB file as the DuckLake metadata catalog.</summary>
+    /// <remarks>
+    ///     Remote metadata sources must be configured through <see cref="UseNamedSecret" /> or
+    ///     <see cref="UseDefaultSecret" /> so credentials remain on the initialized connection.
+    /// </remarks>
     /// <param name="metadataPath">The local metadata file path.</param>
     /// <returns>This builder so that further configuration can be chained.</returns>
     public DuckLakeDbContextOptionsBuilder UseLocalMetadata(string metadataPath)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
-        if (HasUriScheme(metadataPath))
-        {
-            throw new ArgumentException(
-                "UseLocalMetadata accepts only a local file path. Configure remote metadata and credentials "
-                + "through UseNamedSecret(...) or UseDefaultSecret() instead.",
-                nameof(metadataPath));
-        }
+        DuckLakeMetadataSourceValidator.ValidateLocalPath(metadataPath, nameof(metadataPath));
 
         return WithOption(options => options with { MetadataSource = metadataPath, UsesSecret = false });
     }
@@ -41,6 +38,24 @@ public sealed class DuckLakeDbContextOptionsBuilder
         => WithOption(options => options with { MetadataSource = string.Empty, UsesSecret = true });
 
     /// <summary>Reads the metadata and data-storage configuration from a named DuckDB secret.</summary>
+    /// <remarks>
+    ///     <para>
+    ///         Create a <c>TYPE ducklake</c> secret in
+    ///         <see cref="DuckDBDbContextOptionsBuilder.ConfigureConnection" />. The secret shape depends on the
+    ///         metadata backend. For example, a PostgreSQL-backed catalog may use:
+    ///     </para>
+    ///     <code>
+    /// CREATE SECRET my_profile (
+    ///     TYPE ducklake,
+    ///     METADATA_PATH '',
+    ///     DATA_PATH 's3://bucket/lake/',
+    ///     METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'my_pg_credentials'});
+    ///     </code>
+    ///     <para>
+    ///         Create the referenced PostgreSQL and object-storage secrets on the same connection. The EF options
+    ///         store only <c>my_profile</c>, never its credentials.
+    ///     </para>
+    /// </remarks>
     /// <param name="secretName">The secret name. Credentials are not copied into this profile.</param>
     /// <returns>This builder so that further configuration can be chained.</returns>
     public DuckLakeDbContextOptionsBuilder UseNamedSecret(string secretName)
@@ -78,6 +93,11 @@ public sealed class DuckLakeDbContextOptionsBuilder
     }
 
     /// <summary>Attaches the DuckLake in read-only mode.</summary>
+    /// <remarks>
+    ///     Scale reads with a separate read-only <see cref="DbContext" /> and connection per concurrent operation,
+    ///     attached to a metadata catalog that supports the required client concurrency. A <see cref="DbContext" />
+    ///     is not thread-safe, and this option does not create or manage replicas.
+    /// </remarks>
     /// <param name="readOnly">Whether the catalog should be attached read-only.</param>
     /// <returns>This builder so that further configuration can be chained.</returns>
     public DuckLakeDbContextOptionsBuilder ReadOnly(bool readOnly = true)
@@ -100,6 +120,117 @@ public sealed class DuckLakeDbContextOptionsBuilder
     public DuckLakeDbContextOptionsBuilder AutomaticMigration(bool automaticMigration = true)
         => WithOption(options => options with { AutomaticMigration = automaticMigration });
 
+    /// <summary>
+    ///     Attaches the catalog at one committed snapshot. Queries through the resulting context use normal EF LINQ
+    ///     against a catalog-wide, read-only historical view.
+    /// </summary>
+    /// <param name="snapshotId">The non-negative DuckLake snapshot identifier.</param>
+    /// <returns>This builder so that further configuration can be chained.</returns>
+    public DuckLakeDbContextOptionsBuilder AsOfSnapshot(long snapshotId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(snapshotId);
+        return WithOption(options => options with
+        {
+            SnapshotVersion = snapshotId,
+            SnapshotTime = null,
+            IsReadOnly = true,
+            CreateIfNotExists = false,
+            AutomaticMigration = false
+        });
+    }
+
+    /// <summary>
+    ///     Attaches the catalog at the latest snapshot committed at or before a timestamp. Queries through the
+    ///     resulting context use normal EF LINQ against a catalog-wide, read-only historical view.
+    /// </summary>
+    /// <param name="timestamp">The point in time used to select the historical snapshot.</param>
+    /// <returns>This builder so that further configuration can be chained.</returns>
+    public DuckLakeDbContextOptionsBuilder AsOfTimestamp(DateTimeOffset timestamp)
+        => WithOption(options => options with
+        {
+            SnapshotVersion = null,
+            SnapshotTime = timestamp,
+            IsReadOnly = true,
+            CreateIfNotExists = false,
+            AutomaticMigration = false
+        });
+
+    /// <summary>Adds another local DuckLake catalog to every connection created by this profile.</summary>
+    /// <remarks>
+    ///     Additional catalogs are read-only by default. They can be queried with catalog-qualified raw SQL. EF
+    ///     entity mappings continue to target the primary catalog selected by <see cref="CatalogName" />.
+    /// </remarks>
+    /// <param name="catalogName">The safe DuckDB alias for the additional catalog.</param>
+    /// <param name="metadataPath">The local DuckLake metadata file path.</param>
+    /// <param name="readOnly">Whether the additional catalog is attached read-only.</param>
+    /// <returns>This builder so that further configuration can be chained.</returns>
+    public DuckLakeDbContextOptionsBuilder AlsoAttach(
+        string catalogName,
+        string metadataPath,
+        bool readOnly = true)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(catalogName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
+        ValidateIdentifier(catalogName, nameof(catalogName), "DuckLake catalog");
+        DuckLakeMetadataSourceValidator.ValidateLocalPath(metadataPath, nameof(metadataPath));
+
+        return AddCatalog(
+            new DuckLakeOptions
+            {
+                MetadataSource = metadataPath,
+                CatalogName = catalogName,
+                IsReadOnly = readOnly,
+                CreateIfNotExists = !readOnly
+            });
+    }
+
+    /// <summary>Adds another secret-backed DuckLake catalog to every connection created by this profile.</summary>
+    /// <remarks>
+    ///     <para>
+    ///         Create the named <c>TYPE ducklake</c> secret in
+    ///         <see cref="DuckDBDbContextOptionsBuilder.ConfigureConnection" />. Only the secret name is stored in
+    ///         the EF options; metadata and data-storage credentials remain on the initialized connection.
+    ///     </para>
+    ///     <para>
+    ///         Additional catalogs are read-only by default and are available to catalog-qualified raw or dynamic
+    ///         SQL. EF entity mappings continue to target the primary catalog selected by <see cref="CatalogName" />.
+    ///     </para>
+    /// </remarks>
+    /// <param name="catalogName">The safe DuckDB alias for the additional catalog.</param>
+    /// <param name="secretName">The named DuckDB <c>TYPE ducklake</c> secret.</param>
+    /// <param name="readOnly">Whether the additional catalog is attached read-only.</param>
+    /// <returns>This builder so that further configuration can be chained.</returns>
+    public DuckLakeDbContextOptionsBuilder AlsoAttachNamedSecret(
+        string catalogName,
+        string secretName,
+        bool readOnly = true)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(catalogName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(secretName);
+        ValidateIdentifier(catalogName, nameof(catalogName), "DuckLake catalog");
+        ValidateIdentifier(secretName, nameof(secretName), "DuckLake secret");
+
+        return AddCatalog(
+            new DuckLakeOptions
+            {
+                MetadataSource = secretName,
+                UsesSecret = true,
+                CatalogName = catalogName,
+                IsReadOnly = readOnly,
+                CreateIfNotExists = !readOnly
+            });
+    }
+
+    private DuckLakeDbContextOptionsBuilder AddCatalog(DuckLakeOptions catalog)
+        => WithOption(options => options with
+        {
+            AdditionalCatalogs =
+            [
+                .. options.AdditionalCatalogs,
+                catalog
+            ]
+        });
+
     private DuckLakeDbContextOptionsBuilder WithOption(Func<DuckLakeOptions, DuckLakeOptions> setAction)
     {
         var infrastructure = (IDbContextOptionsBuilderInfrastructure)_optionsBuilder;
@@ -120,36 +251,4 @@ public sealed class DuckLakeDbContextOptionsBuilder
         }
     }
 
-    private static bool HasUriScheme(string value)
-    {
-        var separator = value.IndexOf(':');
-        if (separator <= 0)
-        {
-            return false;
-        }
-
-        if (separator == 1
-            && char.IsAsciiLetter(value[0])
-            && value.Length > 2
-            && value[2] is '/' or '\\')
-        {
-            return false;
-        }
-
-        if (!char.IsAsciiLetter(value[0]))
-        {
-            return false;
-        }
-
-        for (var index = 1; index < separator; index++)
-        {
-            var character = value[index];
-            if (!char.IsAsciiLetterOrDigit(character) && character is not '+' and not '-' and not '.')
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
 }

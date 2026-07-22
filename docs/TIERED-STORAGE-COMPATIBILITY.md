@@ -1,9 +1,10 @@
 # Tiered-storage compatibility and release acceptance
 
 This is the compatibility contract for the provider-managed hot DuckDB/cold Parquet tier. It describes generic
-technical behaviour only. Archive eligibility, retention, authorisation, legal holds, scheduling, distributed writer
-coordination, deletion/restoration decisions, credentials, and production object-store policy remain the host
-application's responsibility.
+technical behaviour only. Archive eligibility and retention policy, authorisation, legal holds, scheduling,
+distributed writer coordination, deletion/restoration decisions, credentials, and production object-store policy
+remain the host application's responsibility. The provider can apply an already-approved lifecycle boundary and
+exact declared-partition scopes; it never assigns business meaning to either input.
 
 ## Registration modes
 
@@ -71,9 +72,21 @@ navigations.
 
 The generic tiered suites cover hot-only creation, first archive, no-op archive, restart, new hot and late rows,
 stable-match-key correction suppression, caller-supplied tombstones, reconciliation, restoration, compaction,
-contract rewrite, failure before and during publication, retry/restart recovery, schema evolution with nullable
-columns, generation inventory, and partition-contract drift. Archive, reconciliation, restore, compaction and
-contract-rewrite operations refresh the same physical views.
+contract rewrite, bounded first publication, immutable retention-trimmed publication, failure before and during
+publication, retry/restart recovery, schema evolution with nullable columns, generation inventory, and
+partition-contract drift. Archive, reconciliation, restore, compaction, contract-rewrite, and retention publication
+refresh the same physical views.
+
+Retention acceptance covers month/day boundaries, root/nested/shared descendants, exact partition-scope retention,
+empty/no-op/complete/partial trim, persisted-versus-physical exact catalogue validation, stale plans,
+caller-owned transactions, failure before/after copy/verify/publication, retry, and restart. The previous generation
+is inventory-visible and is never automatically deleted.
+
+Recovery acceptance covers JSON-round-trippable external checkpoints with no archive paths, global cleanup refusal
+after active-control loss, exact active-generation reconstruction after control/catalogue loss, rejection of a
+checkpoint when a different authoritative generation is active, and stale-plan rejection after file evidence changes.
+The disposable MinIO lane also proves that a remote `Unknown` candidate becomes cleanup-plannable only after the
+checkpoint restores authoritative active-generation evidence.
 
 The query-composition suite also covers reader-before-owner creation order, simultaneous owner and read context,
 multiple independent reader contexts, concurrent asynchronous reads, and model-cache keys containing dynamic archive
@@ -102,9 +115,14 @@ with these environment variables:
 - GCS: `DUCKDB_GCS_TEST_BUCKET`, `DUCKDB_GCS_TEST_KEY`, `DUCKDB_GCS_TEST_SECRET`, optional `_PREFIX`;
 - Azure: `DUCKDB_AZURE_TEST_CONNECTION_STRING`, `DUCKDB_AZURE_TEST_CONTAINER`, optional `_PREFIX`.
 
-The caller must provide a disposable existing bucket/container and arrange lifecycle cleanup. Remote archive purge is
-deliberately unsupported: the provider proves read/write/list/catalogue primitives but does not infer business
-retention or delete remote objects.
+The caller must provide a disposable existing bucket/container and arrange lifecycle cleanup. Remote in-place purge
+is deliberately unsupported. Immutable retention publication is supported because it writes a replacement generation
+and atomically changes provider metadata/views; it does not infer business retention or delete the obsolete objects.
+
+Catalogue-scale measurements use the neutral local/remote BenchmarkDotNet fixture described in
+[TIERED-STORAGE-SCALE.md](TIERED-STORAGE-SCALE.md). Its disposable MinIO lane routes S3 traffic through a counting
+proxy and reports LIST/HEAD/GET observations. Runs against other endpoints use their equivalent endpoint or cloud
+telemetry because request counts are backend/client-version observations rather than a provider contract.
 
 ## Stable-release gate
 

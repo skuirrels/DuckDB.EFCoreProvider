@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using System.Globalization;
 using System.Text;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
@@ -6,6 +7,17 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 internal static class DuckLakeAttachCommandBuilder
 {
     public static string Build(DuckLakeOptions profile)
+    {
+        var builder = new StringBuilder(BuildAttachment(profile));
+        foreach (var additionalCatalog in profile.AdditionalCatalogs)
+        {
+            builder.Append(' ').Append(BuildAttachment(additionalCatalog));
+        }
+
+        return builder.Append(' ').Append(BuildUse(profile)).ToString();
+    }
+
+    public static string BuildAttachment(DuckLakeOptions profile)
     {
         if (profile.MetadataSource is null
             || !profile.UsesSecret && string.IsNullOrWhiteSpace(profile.MetadataSource))
@@ -45,13 +57,22 @@ internal static class DuckLakeAttachCommandBuilder
             parameters.Add("READ_ONLY");
         }
 
+        if (profile.SnapshotVersion is not null)
+        {
+            parameters.Add($"SNAPSHOT_VERSION {profile.SnapshotVersion.Value.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (profile.SnapshotTime is not null)
+        {
+            parameters.Add($"SNAPSHOT_TIME '{EscapeLiteral(profile.SnapshotTime.Value.ToString("O", CultureInfo.InvariantCulture))}'");
+        }
+
         if (parameters.Count > 0)
         {
             builder.Append(" (").AppendJoin(", ", parameters).Append(')');
         }
 
-        builder.Append("; ").Append(BuildUse(profile));
-        return builder.ToString();
+        return builder.Append(';').ToString();
     }
 
     public static string BuildUse(DuckLakeOptions profile)

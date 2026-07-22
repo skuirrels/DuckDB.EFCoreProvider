@@ -1,12 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.10.2</PackageVersion>
-    <FileVersion>1.10.2.0</FileVersion>
-    <Version>1.10.2</Version>
+    <PackageVersion>1.14.0</PackageVersion>
+    <FileVersion>1.14.0.0</FileVersion>
+    <Version>1.14.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
-    <PackageTags>DuckDB; DuckLake; Entity Framework Core; EF Core</PackageTags>
+    <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
+         "Entity Framework Core" would index as three separate tokens. -->
+    <PackageTags>duckdb;ducklake;efcore;ef-core;entity-framework-core;orm;provider;database;analytics;olap;parquet;lakehouse;tiered-storage;data-lake;object-storage;bulk-insert;upsert;dotnet</PackageTags>
     <PackageIcon>DuckDB_icon-lightmode.png</PackageIcon>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -19,8 +21,34 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.10.1</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.13.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.14.0
+- Add configurable global DuckDB thread limits, including provider-owned connection propagation.
+- Add named-secret additional DuckLake catalog attachments and transaction-scoped snapshot commit metadata.
+- Improve DuckLake read-scaling, secret-profile, and dynamic affected-row-count guidance.
+
+1.13.0
+- Add streaming unknown-shape SQL with runtime column metadata and stable row-owned values, including nested BLOB streams.
+- Add typed DuckLake maintenance, table-scoped and catalog-wide historical LINQ, verified additional local catalog attachments, and local-metadata database-first scaffolding.
+- Document the distinct EF model and raw DuckDB.NET reader type-mapping contracts.
+- Add stable provider-operation lifecycle events and structured payloads through EF Core logging and diagnostics for bulk insert, upsert, Parquet export, tiered maintenance, extension loading, and DuckLake attachment.
+- Preserve decimal result typing for division, including correlated CASE projections, and translate fractional date additions without passing DOUBLE values to DuckDB's integer-only to_days function.
+
+1.12.0
+- Add exportable, path-free recovery checkpoints plus read-only planning and atomic apply APIs for rebuilding provider-owned tiered-storage control, catalogue, and view state after local evidence loss.
+- Fail archive-generation cleanup planning closed whenever authoritative active-generation control is missing, classifying local and remote candidates as Unknown until control state is recovered.
+
+1.11.1
+- Persist provider-owned markers for failed remote replacement generations and discover them after restart without requiring applications to reproduce revision paths. Unknown or contract-incompatible evidence remains ineligible for cleanup planning.
+- Add exact-catalogue cleanup fingerprints and stale-plan revalidation, plus disposable MinIO coverage across candidate registration, copy, verification, catalogue validation, publication, cancellation, restart, exact retry, and deliberate abandonment.
+- Expand the neutral catalogue-scale fixture across configurable graph depth, file fan-out, retained technical scopes, and shared descendants. Add a bounded read-only diagnostic for late hot descendants whose configured parent chain exists only in the active cold generation.
+
+1.11.0
+- Add provider-neutral immutable cold-tier retention through fingerprinted planning and verified, atomic generation publication, preserving the previous generation for rollback and separately authorised cleanup.
+- Add bounded first archive publication over an aligned [from, cutoff) lifecycle range, with exact idempotent retry semantics.
+- Add generic local, shared-descendant, month/day, failure-injection, exact-catalogue, MinIO, and catalogue-scale acceptance coverage. The provider does not interpret business retention or automatically delete obsolete remote generations.
+
 1.10.2
 - Replace application-specific tiered-storage entities, identifiers, lifecycle fields, release evidence, and the partition diagram with provider-neutral record examples across the README, guide, sample, validation text, and tests. No public API changes.
 
