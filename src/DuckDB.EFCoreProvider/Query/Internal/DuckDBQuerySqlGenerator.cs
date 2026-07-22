@@ -25,6 +25,7 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
 {
     private readonly bool _reverseNullOrderingEnabled;
+    private readonly IStructFieldInfoCache _structFieldInfoCache;
 
     /// <summary>
     ///     Stack of direct-table alias-to-entity maps for the SELECT expressions currently being generated.
@@ -37,6 +38,7 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         : base(dependencies)
     {
         _reverseNullOrderingEnabled = reverseNullOrderingEnabled;
+        _structFieldInfoCache = new StructFieldInfoCache();
     }
 
     /// <summary>
@@ -91,16 +93,34 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             return false;
         }
 
-        // Prefer the already-resolved column annotation. If the column was synthesized
-        // without a model IColumn (e.g. in nested collection subqueries), look up the
-        // field info from the entity's struct column map using the table alias.
+        // Layer 1: Prefer the already-resolved column annotation (set at model finalization).
+        // This is the primary path for normal EF LINQ queries where columns have full model backing.
         var info = GetStructFieldInfo(columnExpression);
+        
+        // Layer 2: For synthesized columns without a model IColumn (e.g. nested collection subqueries),
+        // check property mappings on the column expression. This is uncommon but needed for edge cases.
+        if (info is null && columnExpression.Column is { PropertyMappings: { Count: > 0 } propertyMappings })
+        {
+            for (var i = 0; i < propertyMappings.Count; i++)
+            {
+                if (propertyMappings[i].Property.GetStructFieldInfo() is { } propInfo)
+                {
+                    info = propInfo;
+                    break;
+                }
+            }
+        }
+
+        // Layer 3: Cache-based fallback lookup by entity struct column map.
+        // When Layer 1 and Layer 2 both fail, query the cache for O(1) struct field lookup
+        // instead of iterating entity types. The cache is populated lazily at first access
+        // from the entity's struct column map (built at model finalization by the convention).
         if (info is null && entityTypes is not null)
         {
             foreach (var entityType in entityTypes)
             {
-                var columnMap = entityType.GetStructColumnMap();
-                if (columnMap?.TryGetValue(columnExpression.Name, out info) == true)
+                info = _structFieldInfoCache.GetStructFieldInfo(entityType, columnExpression.Name);
+                if (info is not null)
                 {
                     break;
                 }
