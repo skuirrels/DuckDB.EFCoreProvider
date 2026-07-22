@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Reflection;
+using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
@@ -26,6 +27,12 @@ namespace DuckDB.EFCoreProvider.Metadata.Conventions;
 ///     <para>
 ///         Explicit <c>HasColumnName</c> or <c>HasStructField</c> calls always take precedence.
 ///     </para>
+///     <para>
+///         Entities mapped to database views (via <c>ToView</c>) with struct-mapped complex
+///         properties are unsupported in Phase 1: EF Core's query projection pipeline cannot
+///         build a complex property shaper against a view source when the struct-column metadata
+///         is applied. The convention throws during model finalization with a clear message.
+///     </para>
 /// </remarks>
 public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
 {
@@ -36,6 +43,8 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
     {
         foreach (var entityType in modelBuilder.Metadata.GetEntityTypes())
         {
+            var columnMap = new Dictionary<string, DuckDBStructFieldInfo>();
+
             foreach (var complexProperty in entityType.GetComplexProperties())
             {
                 if (!IsStructMappingEnabled(complexProperty))
@@ -43,10 +52,26 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                     continue;
                 }
 
-                ProcessComplexType(
-                    (IReadOnlyTypeBase)complexProperty.ComplexType,
+                if (entityType.GetViewName() is not null)
+                {
+                    throw new NotSupportedException(
+                        $"Entity '{entityType.DisplayName()}' is mapped to view '{entityType.GetViewName()}' "
+                        + $"and contains struct-mapped complex property '{complexProperty.Name}'. "
+                        + "DuckDB STRUCT support for view-mapped entities is not implemented in this phase. "
+                        + "Query the view via FromSqlRaw instead, or map the entity to a table.");
+                }
+
+                ProcessStructComplexProperty(
+                    complexProperty,
                     complexProperty.Name,
-                    nestedPath: []);
+                    fieldName: null,
+                    nestedPath: [],
+                    columnMap);
+            }
+
+            if (columnMap.Count > 0)
+            {
+                entityType.SetStructColumnMap(columnMap, fromDataAnnotation: false);
             }
         }
     }
@@ -72,11 +97,16 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
         return false;
     }
 
-    private static void ProcessComplexType(
-        IReadOnlyTypeBase complexType,
+    private static DuckDBStructMapping ProcessStructComplexProperty(
+        IConventionComplexProperty complexProperty,
         string structColumnName,
-        string[] nestedPath)
+        string? fieldName,
+        string[] nestedPath,
+        Dictionary<string, DuckDBStructFieldInfo> columnMap)
     {
+        var childMappings = new Dictionary<string, DuckDBStructChildMapping>();
+        var complexType = complexProperty.ComplexType;
+
         // Scalar properties → leaf struct fields.
         foreach (var property in complexType.GetProperties())
         {
@@ -85,7 +115,9 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                 ProcessScalarProperty(
                     conventionProperty,
                     structColumnName,
-                    nestedPath);
+                    nestedPath,
+                    columnMap,
+                    childMappings);
             }
         }
 
@@ -95,59 +127,98 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
             var nestedFieldName = ToCamelCase(nestedComplexProperty.Name);
             var extendedPath = AppendPath(nestedPath, nestedFieldName);
 
-            ProcessComplexType(
-                nestedComplexProperty.ComplexType,
+            var nestedMapping = ProcessStructComplexProperty(
+                nestedComplexProperty,
                 structColumnName,
-                extendedPath);
+                nestedFieldName,
+                extendedPath,
+                columnMap);
+
+            childMappings[nestedComplexProperty.Name] = new DuckDBStructChildMapping(
+                nestedFieldName,
+                nestedMapping);
         }
+
+        var mapping = new DuckDBStructMapping(structColumnName, fieldName, childMappings);
+        complexProperty.SetStructMapping(mapping, fromDataAnnotation: false);
+        return mapping;
     }
 
     private static void ProcessScalarProperty(
         IConventionProperty property,
         string structColumnName,
-        string[] nestedPath)
+        string[] nestedPath,
+        Dictionary<string, DuckDBStructFieldInfo> columnMap,
+        Dictionary<string, DuckDBStructChildMapping> parentChildMappings)
     {
-        var leafFieldName = ToCamelCase(property.Name);
+        // Determine the DuckDB struct leaf field name. This DEFENSIVELY decouples the
+        // physical STRUCT leaf name from the EF column identity (alias) used in
+        // projections/joins (#2):
+        //   1. If the user set HasColumnName explicitly, treat that as the physical
+        //      DuckDB leaf name (since HasColumnName IS the physical column name on a
+        //      regular column, and the struct leaf IS the physical column for a sub-field).
+        //   2. Otherwise, infer from the CLR property name (camelCased).
+        var explicitColumnNameConfigurationSource = property.GetColumnNameConfigurationSource();
+        var explicitColumnName = explicitColumnNameConfigurationSource is null
+            ? null
+            : property.GetColumnName();
+        var inferredLeafFromClr = ToCamelCase(property.Name);
 
-        // Build a unique EF column name that includes the struct path so that
-        // properties with the same leaf name under different struct columns
-        // (e.g. Billing.City vs Shipping.City) don't collide in EF's column
-        // namespace. The actual DuckDB struct field name is stored separately
-        // in DuckDBStructFieldInfo.LeafFieldName.
-        if (property.GetColumnNameConfigurationSource() is null)
+        var leafFieldName = explicitColumnName ?? inferredLeafFromClr;
+
+        // EF column identity (alias in SELECT/JOIN). When the user did NOT explicitly
+        // set HasColumnName, derive a unique name from the struct path so properties
+        // sharing the same leaf under different struct columns (e.g. Billing.City vs
+        // Shipping.City) don't collide in EF's column namespace. The actual DuckDB
+        // struct leaf name is stored separately in DuckDBStructFieldInfo.LeafFieldName.
+        string efColumnName;
+        if (explicitColumnNameConfigurationSource is null)
         {
-            property.SetColumnName(
-                FormatUniqueColumnName(structColumnName, nestedPath, leafFieldName),
-                fromDataAnnotation: false);
+            efColumnName = FormatUniqueColumnName(structColumnName, nestedPath, inferredLeafFromClr);
+            property.SetColumnName(efColumnName, fromDataAnnotation: false);
+        }
+        else
+        {
+            efColumnName = explicitColumnName ?? property.Name;
         }
 
-        // Infer struct field annotation, if not already set explicitly.
+        var conventionFieldInfo = new DuckDBStructFieldInfo(structColumnName, nestedPath, leafFieldName);
+
+        // Honor explicit HasStructField configuration if present. This matters when the
+        // user overrides the struct column name or nested path on a sub-property inside a
+        // struct-mapped complex property.
         var existing = property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value as DuckDBStructFieldInfo;
+        var effectiveFieldInfo = existing switch
+        {
+            null => conventionFieldInfo,
+            { LeafFieldName: null } => new DuckDBStructFieldInfo(
+                existing.StructColumnName,
+                [..existing.NestedFieldNames],
+                leafFieldName),
+            _ => existing
+        };
+
+        columnMap[efColumnName] = effectiveFieldInfo;
+        parentChildMappings[property.Name] = new DuckDBStructChildMapping(leafFieldName);
+
+        // Also maintain the legacy leaf-property annotation for consumers that still look
+        // there (e.g. explicit HasStructField, some tests). For shared complex types this
+        // annotation cannot represent multiple usages, so runtime code paths use the
+        // per-complex-property mapping and the entity column map instead.
         if (existing is null)
         {
             property.SetOrRemoveAnnotation(
                 DuckDBAnnotationNames.StructField,
-                new DuckDBStructFieldInfo(structColumnName, nestedPath, leafFieldName),
+                conventionFieldInfo,
                 fromDataAnnotation: false);
-            return;
         }
-
-        // Struct field was already set explicitly (e.g. via HasStructField) — don't
-        // overwrite it, but if the explicit annotation doesn't carry a LeafFieldName,
-        // set it so the SQL generator uses the correct DuckDB field name instead of
-        // the unique-ified EF column name.
-        if (existing.LeafFieldName is null)
+        else if (existing.LeafFieldName is null)
         {
             property.SetOrRemoveAnnotation(
                 DuckDBAnnotationNames.StructField,
-                new DuckDBStructFieldInfo(existing.StructColumnName, existing.NestedFieldNames.ToArray(), leafFieldName),
+                effectiveFieldInfo,
                 fromDataAnnotation: false);
         }
-
-        // If the annotation was already set by a previous entity (shared complex type
-        // used under a different struct column), do not overwrite — the first entity
-        // processed wins. Users must use explicit HasStructField per-entity to
-        // disambiguate shared complex types mapped to different struct columns.
     }
 
     /// <summary>
