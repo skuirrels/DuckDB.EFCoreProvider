@@ -19,16 +19,28 @@ public class DuckDBAnnotationProvider : RelationalAnnotationProvider
 
     public override IEnumerable<IAnnotation> For(IColumn column, bool designTime)
         {
-            // Surface the DuckDB:StructField annotation (set by DuckDBStructFieldConvention on
-            // scalar sub-properties of struct-mapped complex properties) so the DDL and write
-            // pipelines can group sub-property columns into single STRUCT columns.
-            // Available at both runtime and design time — DDL consolidation (EnsureCreated, migrations)
-            // and the write pipeline (SaveChanges) need this annotation at runtime.
-            var structFieldAnnotation = column.PropertyMappings
-                .Select(m => m.Property.FindAnnotation(DuckDBAnnotationNames.StructField))
-                .FirstOrDefault(a => a is not null);
+            // Prefer the entity-level column map when available: it holds the correct
+            // DuckDBStructFieldInfo for shared complex types used in multiple struct
+            // columns (e.g. Billing.City vs Shipping.City). Fall back to the legacy leaf
+            // property annotation for explicit HasStructField or older conventions.
+            DuckDBStructFieldInfo? ResolveStructFieldInfo()
+            {
+                var columnMap = column.Table?.EntityTypeMappings
+                        .Select(e => e.TypeBase is IEntityType entityType ? entityType.GetStructColumnMap() : null)
+                    .FirstOrDefault(m => m is not null && m.ContainsKey(column.Name));
 
-            if (structFieldAnnotation?.Value is DuckDBStructFieldInfo structFieldInfo)
+                if (columnMap?.TryGetValue(column.Name, out var info) == true)
+                {
+                    return info;
+                }
+
+                return column.PropertyMappings
+                    .Select(m => m.Property.FindAnnotation(DuckDBAnnotationNames.StructField))
+                    .FirstOrDefault(a => a is not null)?.Value as DuckDBStructFieldInfo;
+            }
+
+            var structFieldInfo = ResolveStructFieldInfo();
+            if (structFieldInfo is not null)
             {
                 yield return new Annotation(DuckDBAnnotationNames.StructField, structFieldInfo);
             }

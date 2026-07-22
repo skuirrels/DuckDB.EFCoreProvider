@@ -441,7 +441,7 @@ public class DuckDBStructFieldConventionTest
             """;
         cmd.ExecuteNonQuery();
 
-        var results = context.Customers
+        var query = context.Customers
             .OrderBy(c => c.Id)
             .Select(c => new
             {
@@ -461,8 +461,9 @@ public class DuckDBStructFieldConventionTest
                         CustomerCity = o2.Customer!.Location.City
                     }).ToList()
                 }).ToList()
-            })
-            .ToList();
+            });
+
+        var results = query.ToList();
 
         Assert.Equal(2, results.Count);
         Assert.Equal("NYC", results[0].City);

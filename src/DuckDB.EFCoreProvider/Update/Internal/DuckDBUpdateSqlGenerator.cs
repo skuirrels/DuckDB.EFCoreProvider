@@ -1,6 +1,8 @@
+using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
@@ -243,7 +245,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         var writeOperations = GetColumnModifications(firstCommand, writeIndexes);
         var keyOperations = GetColumnModifications(firstCommand, keyIndexes);
 
-            var structEntries = GroupStructuredEntries(writeOperations);
+            var structEntries = GroupStructuredEntries(writeOperations, table, schema);
 
             if (structEntries is null)
             {
@@ -489,7 +491,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 
             // Written values: group struct sub-fields into struct literals
             var writeMods = GetColumnModifications(command, writeIndexes);
-            var entries = GroupStructuredEntries(writeMods);
+            var entries = GroupStructuredEntries(writeMods, command.TableName, command.Schema);
             if (entries is null)
             {
                 // No struct columns — emit individual parameters
@@ -774,15 +776,20 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         /// Groups <see cref="IColumnModification" />s by struct column, consolidating sub-property columns
         /// into single entries. Returns <see langword="null" /> when no struct columns are present (fast path).
         /// </summary>
-        private List<StructAwareEntry>? GroupStructuredEntries(IReadOnlyList<IColumnModification> modifications)
+        private List<StructAwareEntry>? GroupStructuredEntries(
+            IReadOnlyList<IColumnModification> modifications,
+            string tableName,
+            string? schema)
         {
+            var columnMap = ResolveStructColumnMap(modifications, tableName, schema);
+
             List<StructAwareEntry>? result = null;
             Dictionary<string, List<(DuckDBStructFieldInfo, IColumnModification)>>? structGroups = null;
             var seenStructColumns = new HashSet<string>();
 
             foreach (var mod in modifications)
             {
-                var sfi = mod.Property?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value as DuckDBStructFieldInfo;
+                var sfi = TryGetStructFieldInfo(mod, columnMap);
                 if (sfi is null)
                 {
                     continue;
@@ -809,7 +816,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             seenStructColumns.Clear();
             foreach (var mod in modifications)
             {
-                var sfi = mod.Property?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value as DuckDBStructFieldInfo;
+                var sfi = TryGetStructFieldInfo(mod, columnMap);
                 if (sfi is null)
                 {
                     result.Add(new StandaloneEntry(mod));
@@ -823,6 +830,63 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             return result;
         }
 
+        /// <summary>
+        ///     Resolves the per-entity struct column map for the table referenced by these
+        ///     modifications. Shared complex types (e.g. Billing and Shipping both mapped to a
+        ///     shared Address type) cannot be resolved from the property annotation alone, so we
+        ///     look up the correct <see cref="DuckDBStructFieldInfo" /> by the column name.
+        /// </summary>
+        private static IReadOnlyDictionary<string, DuckDBStructFieldInfo>? ResolveStructColumnMap(
+            IReadOnlyList<IColumnModification> modifications,
+            string tableName,
+            string? schema)
+        {
+            var representative = modifications.FirstOrDefault(m => m.Property?.DeclaringType?.Model is not null);
+            if (representative?.Property?.DeclaringType?.Model is not IModel model)
+            {
+                return null;
+            }
+
+            IReadOnlyDictionary<string, DuckDBStructFieldInfo>? firstMatch = null;
+            foreach (var entityType in model.GetEntityTypes())
+            {
+                if (entityType.GetTableName() != tableName)
+                {
+                    continue;
+                }
+
+                if (entityType.GetSchema() != schema)
+                {
+                    continue;
+                }
+
+                var map = entityType.GetStructColumnMap();
+                if (map is { Count: > 0 })
+                {
+                    firstMatch ??= map;
+                }
+            }
+
+            return firstMatch;
+        }
+
+        /// <summary>
+        ///     Returns the struct field info for a single column modification, preferring the
+        ///     per-entity column map and falling back to the legacy leaf-property annotation.
+        /// </summary>
+        private static DuckDBStructFieldInfo? TryGetStructFieldInfo(
+            IColumnModification modification,
+            IReadOnlyDictionary<string, DuckDBStructFieldInfo>? columnMap)
+        {
+            if (columnMap?.TryGetValue(modification.ColumnName, out var info) == true)
+            {
+                return info;
+            }
+
+            return modification.Property?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+                as DuckDBStructFieldInfo;
+        }
+
         /// <inheritdoc />
         protected override void AppendInsertCommandHeader(
             StringBuilder commandStringBuilder,
@@ -830,7 +894,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             string? schema,
             IReadOnlyList<IColumnModification> operations)
         {
-            var entries = GroupStructuredEntries(operations);
+            var entries = GroupStructuredEntries(operations, name, schema);
             if (entries is null)
             {
                 base.AppendInsertCommandHeader(commandStringBuilder, name, schema, operations);
@@ -863,7 +927,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             string? schema,
             IReadOnlyList<IColumnModification> operations)
         {
-            var entries = GroupStructuredEntries(operations);
+            var entries = GroupStructuredEntries(operations, name, schema);
             if (entries is null)
             {
                 base.AppendValues(commandStringBuilder, name, schema, operations);
@@ -901,7 +965,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             string? schema,
             IReadOnlyList<IColumnModification> operations)
         {
-            var entries = GroupStructuredEntries(operations);
+            var entries = GroupStructuredEntries(operations, name, schema);
             if (entries is null)
             {
                 base.AppendUpdateCommandHeader(commandStringBuilder, name, schema, operations);

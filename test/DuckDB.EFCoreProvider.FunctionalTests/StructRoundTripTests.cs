@@ -166,45 +166,45 @@ public class StructRoundTripTests : DuckDBTestBase
     }
 
     [ConditionalFact]
-        public void Nested_struct_sub_field_update_works()
+    public void Nested_struct_sub_field_update_works()
+    {
+        using (var context = CreateContext())
         {
-            using (var context = CreateContext())
+            context.Database.EnsureCreated();
+            context.Add(new Order
             {
-                context.Database.EnsureCreated();
-                context.Add(new Order
+                Id = 1,
+                Shipping = new Shipping
                 {
-                    Id = 1,
-                    Shipping = new Shipping
+                    Method = "Express",
+                    Address = new ShippingAddress
                     {
-                        Method = "Express",
-                        Address = new ShippingAddress
-                        {
-                            Street = "123 Main St",
-                            Zip = "98001"
-                        }
+                        Street = "123 Main St",
+                        Zip = "98001"
                     }
-                });
-                context.SaveChanges();
-            }
-
-            using (var context = CreateContext())
-            {
-                var order = context.Set<Order>().Single(x => x.Id == 1);
-                order.Shipping.Address.Street = "456 Oak Ave";
-                context.SaveChanges();
-            }
-
-            using (var context = CreateContext())
-            {
-                var order = context.Set<Order>().Single(x => x.Id == 1);
-                Assert.Equal("Express", order.Shipping.Method);
-                Assert.Equal("456 Oak Ave", order.Shipping.Address.Street);
-                Assert.Equal("98001", order.Shipping.Address.Zip);
-            }
+                }
+            });
+            context.SaveChanges();
         }
 
-        [ConditionalFact]
-        public void Non_struct_complex_property_still_round_trips()
+        using (var context = CreateContext())
+        {
+            var order = context.Set<Order>().Single(x => x.Id == 1);
+            order.Shipping.Address.Street = "456 Oak Ave";
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var order = context.Set<Order>().Single(x => x.Id == 1);
+            Assert.Equal("Express", order.Shipping.Method);
+            Assert.Equal("456 Oak Ave", order.Shipping.Address.Street);
+            Assert.Equal("98001", order.Shipping.Address.Zip);
+        }
+    }
+
+    [ConditionalFact]
+    public void Non_struct_complex_property_still_round_trips()
     {
         using (var context = CreateContext())
         {
@@ -222,7 +222,7 @@ public class StructRoundTripTests : DuckDBTestBase
         {
             var customer = context.Set<Customer>().Single(x => x.Id == 1);
             Assert.Equal("test@example.com", customer.Contact!.Email);
-                        Assert.Equal("555-1234", customer.Contact!.Phone);
+            Assert.Equal("555-1234", customer.Contact!.Phone);
         }
     }
 
@@ -455,17 +455,17 @@ public class StructRoundTripTests : DuckDBTestBase
                 e.ComplexProperty(c => c.Shipping);
             });
 
-                modelBuilder.Entity<LabeledItem>(e =>
-                {
-                    e.Property(p => p.Id).ValueGeneratedNever();
-                    e.ComplexProperty(c => c.Tags, b =>
-                    {
-                        b.Property(t => t.Category).HasColumnName("cat").HasStructField("category");
-                        b.Property(t => t.Label).HasColumnName("lbl").HasStructField("label");
-                    });
-                });
-            }
+            modelBuilder.Entity<LabeledItem>(e =>
+            {
+        e.Property(p => p.Id).ValueGeneratedNever();
+        e.ComplexProperty(c => c.Tags, b =>
+        {
+            b.Property(t => t.Category).HasColumnName("cat").HasStructField("category");
+            b.Property(t => t.Label).HasColumnName("lbl").HasStructField("label");
+        });
+            });
         }
+    }
 
     private sealed class Customer
     {
@@ -499,34 +499,34 @@ public class StructRoundTripTests : DuckDBTestBase
     private sealed class Order
     {
         public int Id { get; set; }
-            public int CustomerId { get; set; }
-            [UseStructMapping]
-            public required Shipping Shipping { get; set; }
-        }
-
-        private sealed class Shipping
-        {
-            public required string Method { get; set; }
-            [UseStructMapping]
-            public required ShippingAddress Address { get; set; }
-        }
-
-        private sealed class ShippingAddress
-        {
-            public required string Street { get; set; }
-            public required string Zip { get; set; }
-        }
-
-        private sealed class LabeledItem
-        {
-            public int Id { get; set; }
-            [UseStructMapping]
-            public required Tag Tags { get; set; }
-        }
-
-        private sealed class Tag
-        {
-            public required string Category { get; set; }
-            public required string Label { get; set; }
-        }
+        public int CustomerId { get; set; }
+        [UseStructMapping]
+        public required Shipping Shipping { get; set; }
     }
+
+    private sealed class Shipping
+    {
+        public required string Method { get; set; }
+        [UseStructMapping]
+        public required ShippingAddress Address { get; set; }
+    }
+
+    private sealed class ShippingAddress
+    {
+        public required string Street { get; set; }
+        public required string Zip { get; set; }
+    }
+
+    private sealed class LabeledItem
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public required Tag Tags { get; set; }
+    }
+
+    private sealed class Tag
+    {
+        public required string Category { get; set; }
+        public required string Label { get; set; }
+    }
+}
