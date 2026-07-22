@@ -17,6 +17,7 @@ public class AllocationBenchmarks
     private DerivedIntList _idList = [];
 
     private string _saveChangesDbPath = "";
+    private string _saveChangesUpdateDbPath = "";
     private string _bulkInsertDbPath = "";
     private string _upsertDbPath = "";
     private string _arrayParameterDbPath = "";
@@ -77,6 +78,22 @@ public class AllocationBenchmarks
     public void CleanupSaveChanges()
         => DeleteDb(_saveChangesDbPath);
 
+    [IterationSetup(Target = nameof(SaveChangesUpdateBatching))]
+    public void SetupSaveChangesUpdate()
+    {
+        _saveChangesUpdateDbPath = NewDbPath("alloc_savechanges_update");
+        using var context = new AllocationContext(
+            _saveChangesUpdateDbPath,
+            enableSaveChangesBatching: false,
+            enableUpdateBatching: true);
+        context.Database.EnsureCreated();
+        context.BulkInsert(_rows);
+    }
+
+    [IterationCleanup(Target = nameof(SaveChangesUpdateBatching))]
+    public void CleanupSaveChangesUpdate()
+        => DeleteDb(_saveChangesUpdateDbPath);
+
     [IterationSetup(Target = nameof(BulkInsertAppender))]
     public void SetupBulkInsert()
     {
@@ -107,6 +124,21 @@ public class AllocationBenchmarks
     {
         using var context = new AllocationContext(_saveChangesDbPath, enableSaveChangesBatching: true);
         context.AddRange(_rows);
+        return context.SaveChanges();
+    }
+
+    [Benchmark]
+    public int SaveChangesUpdateBatching()
+    {
+        using var context = new AllocationContext(
+            _saveChangesUpdateDbPath,
+            enableSaveChangesBatching: false,
+            enableUpdateBatching: true);
+        foreach (var row in context.Rows)
+        {
+            row.Quantity += 1;
+        }
+
         return context.SaveChanges();
     }
 
@@ -147,7 +179,10 @@ public class AllocationBenchmarks
         }
     }
 
-    private sealed class AllocationContext(string dbPath, bool enableSaveChangesBatching) : DbContext
+    private sealed class AllocationContext(
+        string dbPath,
+        bool enableSaveChangesBatching,
+        bool enableUpdateBatching = false) : DbContext
     {
         public DbSet<AllocationRow> Rows => Set<AllocationRow>();
 
@@ -159,6 +194,11 @@ public class AllocationBenchmarks
                     if (enableSaveChangesBatching)
                     {
                         duckdb.EnableBulkInsertBatching();
+                    }
+
+                    if (enableUpdateBatching)
+                    {
+                        duckdb.EnableBulkUpdateBatching();
                     }
                 });
 

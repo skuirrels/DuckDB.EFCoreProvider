@@ -79,7 +79,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         }
 
         if (_pendingBulkUpdateCommands.Count > 0
-            && !CanBeUpdatedInSameStatement(_pendingBulkUpdateCommands[0], modificationCommand))
+            && !DuckDBBulkUpdatePlanner.CanAppend(_pendingBulkUpdateCommands[0], modificationCommand))
         {
             ApplyPendingBulkUpdateCommands();
             _pendingBulkUpdateCommands.Clear();
@@ -105,7 +105,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
             _pendingBulkInsertCommands.Add(modificationCommand);
             AddParameters(modificationCommand);
         }
-        else if (CanBulkUpdate(modificationCommand))
+        else if (_updateBatching && DuckDBBulkUpdatePlanner.CanPlan(modificationCommand))
         {
             _pendingBulkUpdateCommands.Add(modificationCommand);
             AddParameters(modificationCommand);
@@ -196,18 +196,6 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
            && command.StoreStoredProcedure is null
            && HasWrite(command);
 
-    private bool CanBulkUpdate(IReadOnlyModificationCommand command)
-        => _updateBatching
-           && command.EntityState == EntityState.Modified
-           && command.StoreStoredProcedure is null
-           && HasWrite(command)
-           // No values read back (no computed/store-generated columns to propagate).
-           && HasNoReadValues(command)
-           // The WHERE clause is the primary key only (no concurrency tokens). This keeps the merged
-           // statement a simple key join and avoids changing concurrency-detection semantics.
-           && AllConditionsAreKey(command)
-           && HasCondition(command);
-
     private bool CanBulkDelete(IReadOnlyModificationCommand command)
         => _deleteBatching
            && command.EntityState == EntityState.Deleted
@@ -225,15 +213,6 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
            && first.Schema == second.Schema
            && ColumnNamesEqual(first, second, ColumnRole.Write)
            && ColumnNamesEqual(first, second, ColumnRole.Read);
-
-    private bool CanBeUpdatedInSameStatement(
-        IReadOnlyModificationCommand first,
-        IReadOnlyModificationCommand second)
-        => CanBulkUpdate(second)
-           && first.TableName == second.TableName
-           && first.Schema == second.Schema
-           && ColumnNamesEqual(first, second, ColumnRole.Write)
-           && ColumnNamesEqual(first, second, ColumnRole.Condition);
 
     private bool CanBeDeletedInSameStatement(
         IReadOnlyModificationCommand first,
@@ -302,21 +281,6 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         }
 
         return count;
-    }
-
-    // command.ColumnModifications.All(o => !o.IsRead)
-    private static bool HasNoReadValues(IReadOnlyModificationCommand command)
-    {
-        var modifications = command.ColumnModifications;
-        for (var i = 0; i < modifications.Count; i++)
-        {
-            if (modifications[i].IsRead)
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     // command.ColumnModifications.Where(o => o.IsCondition).All(o => o.IsKey)

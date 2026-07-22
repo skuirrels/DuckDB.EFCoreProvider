@@ -1,4 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
@@ -14,19 +15,28 @@ namespace DuckDB.EFCoreProvider.Update.Internal;
 /// </summary>
 public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 {
-    private readonly bool _isDuckLake;
+    private readonly IDuckDBEngineCapabilities _capabilities;
 
     public DuckDBUpdateSqlGenerator(UpdateSqlGeneratorDependencies dependencies)
-        : this(dependencies, null)
+        : this(dependencies, null, null)
     {
     }
 
     public DuckDBUpdateSqlGenerator(
         UpdateSqlGeneratorDependencies dependencies,
         IDuckLakeSingletonOptions? singletonOptions)
+        : this(dependencies, singletonOptions, null)
+    {
+    }
+
+    public DuckDBUpdateSqlGenerator(
+        UpdateSqlGeneratorDependencies dependencies,
+        IDuckLakeSingletonOptions? singletonOptions,
+        IDuckDBEngineCapabilities? capabilities)
         : base(dependencies)
     {
-        _isDuckLake = singletonOptions?.IsDuckLake == true;
+        _capabilities = capabilities
+            ?? new DuckDBEngineCapabilities(singletonOptions?.IsDuckLake == true);
     }
 
     /// <inheritdoc />
@@ -36,7 +46,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         int commandPosition,
         out bool requiresTransaction)
     {
-        if (!_isDuckLake)
+        if (_capabilities.SupportsReturning)
         {
             return base.AppendInsertOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
         }
@@ -58,7 +68,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         int commandPosition,
         out bool requiresTransaction)
     {
-        if (!_isDuckLake)
+        if (_capabilities.SupportsReturning)
         {
             return base.AppendUpdateOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
         }
@@ -88,7 +98,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         int commandPosition,
         out bool requiresTransaction)
     {
-        if (!_isDuckLake)
+        if (_capabilities.SupportsReturning)
         {
             return base.AppendDeleteOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
         }
@@ -232,64 +242,57 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         out bool requiresTransaction)
     {
         var helper = SqlGenerationHelper;
-        var firstCommand = modificationCommands[0];
-        var table = firstCommand.TableName;
-        var schema = firstCommand.Schema;
-
-        var writeIndexes = GetColumnModificationIndexes(firstCommand, o => o.IsWrite);
-        var keyIndexes = GetColumnModificationIndexes(firstCommand, o => o.IsCondition);
-        var writeOperations = GetColumnModifications(firstCommand, writeIndexes);
-        var keyOperations = GetColumnModifications(firstCommand, keyIndexes);
+        var plan = DuckDBBulkUpdatePlanner.Create(modificationCommands);
 
         // UPDATE <table> SET <col> = v.<col>, ...
         commandStringBuilder.Append("UPDATE ");
-        commandStringBuilder.Append(helper.DelimitIdentifier(table, schema));
+        commandStringBuilder.Append(helper.DelimitIdentifier(plan.TableName, plan.Schema));
         commandStringBuilder.Append(" SET ");
-        for (var i = 0; i < writeOperations.Count; i++)
+        for (var i = 0; i < plan.WriteColumnCount; i++)
         {
             if (i > 0)
             {
                 commandStringBuilder.Append(", ");
             }
 
-            var column = helper.DelimitIdentifier(writeOperations[i].ColumnName);
+            var column = helper.DelimitIdentifier(plan.GetWriteColumnName(i));
             commandStringBuilder.Append(column).Append(" = v.").Append(column);
         }
 
         // FROM (VALUES (key.., write..), ...) AS v(keyCols.., writeCols..)
         commandStringBuilder.AppendLine();
         commandStringBuilder.Append("FROM (VALUES ");
-        for (var c = 0; c < modificationCommands.Count; c++)
+        for (var rowIndex = 0; rowIndex < plan.RowCount; rowIndex++)
         {
-            if (c > 0)
+            if (rowIndex > 0)
             {
                 commandStringBuilder.Append(", ");
             }
 
-            AppendBulkUpdateValuesTuple(commandStringBuilder, modificationCommands[c], keyIndexes, writeIndexes, helper);
+            AppendBulkUpdateValuesTuple(commandStringBuilder, plan, rowIndex, helper);
         }
 
         commandStringBuilder.Append(") AS v(");
         var firstColumn = true;
-        for (var i = 0; i < keyOperations.Count; i++)
+        for (var i = 0; i < plan.KeyColumnCount; i++)
         {
             if (!firstColumn)
             {
                 commandStringBuilder.Append(", ");
             }
 
-            commandStringBuilder.Append(helper.DelimitIdentifier(keyOperations[i].ColumnName));
+            commandStringBuilder.Append(helper.DelimitIdentifier(plan.GetKeyColumnName(i)));
             firstColumn = false;
         }
 
-        for (var i = 0; i < writeOperations.Count; i++)
+        for (var i = 0; i < plan.WriteColumnCount; i++)
         {
             if (!firstColumn)
             {
                 commandStringBuilder.Append(", ");
             }
 
-            commandStringBuilder.Append(helper.DelimitIdentifier(writeOperations[i].ColumnName));
+            commandStringBuilder.Append(helper.DelimitIdentifier(plan.GetWriteColumnName(i)));
             firstColumn = false;
         }
 
@@ -298,7 +301,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         // WHERE <table>.<key> = v.<key> AND ...
         commandStringBuilder.AppendLine();
         commandStringBuilder.Append("WHERE ");
-        for (var i = 0; i < keyOperations.Count; i++)
+        for (var i = 0; i < plan.KeyColumnCount; i++)
         {
             if (i > 0)
             {
@@ -306,9 +309,9 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             }
 
             // Qualify with the (unschemed) table name so the reference resolves to the UPDATE target.
-            var column = helper.DelimitIdentifier(keyOperations[i].ColumnName);
+            var column = helper.DelimitIdentifier(plan.GetKeyColumnName(i));
             commandStringBuilder
-                .Append(helper.DelimitIdentifier(table))
+                .Append(helper.DelimitIdentifier(plan.TableName))
                 .Append('.')
                 .Append(column)
                 .Append(" = v.")
@@ -324,9 +327,8 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 
     private void AppendBulkUpdateValuesTuple(
         StringBuilder commandStringBuilder,
-        IReadOnlyModificationCommand command,
-        IReadOnlyList<int> keyIndexes,
-        IReadOnlyList<int> writeIndexes,
+        DuckDBBulkUpdatePlan plan,
+        int rowIndex,
         ISqlGenerationHelper helper)
     {
         commandStringBuilder.Append('(');
@@ -334,27 +336,25 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         var first = true;
 
         // Key columns first (original values, matching the alias column order), then written values.
-        for (var i = 0; i < keyIndexes.Count; i++)
+        for (var i = 0; i < plan.KeyColumnCount; i++)
         {
             if (!first)
             {
                 commandStringBuilder.Append(", ");
             }
 
-            var operation = command.ColumnModifications[keyIndexes[i]];
-            commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(operation.OriginalParameterName!));
+            commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(plan.GetOriginalKeyParameterName(rowIndex, i)));
             first = false;
         }
 
-        for (var i = 0; i < writeIndexes.Count; i++)
+        for (var i = 0; i < plan.WriteColumnCount; i++)
         {
             if (!first)
             {
                 commandStringBuilder.Append(", ");
             }
 
-            var operation = command.ColumnModifications[writeIndexes[i]];
-            commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(operation.ParameterName!));
+            commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(plan.GetWriteParameterName(rowIndex, i)));
             first = false;
         }
 

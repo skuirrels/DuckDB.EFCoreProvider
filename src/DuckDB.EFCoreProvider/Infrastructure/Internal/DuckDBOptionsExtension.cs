@@ -416,9 +416,6 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         public override bool ShouldUseSameServiceProvider(DbContextOptionsExtensionInfo other)
             => other is ExtensionInfo otherInfo
                && Extension.ReverseNullOrdering == otherInfo.Extension.ReverseNullOrdering
-               && Extension.BulkInsertBatching == otherInfo.Extension.BulkInsertBatching
-               && Extension.BulkUpdateBatching == otherInfo.Extension.BulkUpdateBatching
-               && Extension.BulkDeleteBatching == otherInfo.Extension.BulkDeleteBatching
                && (Extension.DuckLakeOptions is null) == (otherInfo.Extension.DuckLakeOptions is null);
 
         public override string LogFragment
@@ -455,9 +452,6 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                 var hashCode = new HashCode();
 
                 hashCode.Add(Extension.ReverseNullOrdering);
-                hashCode.Add(Extension.BulkInsertBatching);
-                hashCode.Add(Extension.BulkUpdateBatching);
-                hashCode.Add(Extension.BulkDeleteBatching);
                 hashCode.Add(Extension.DuckLakeOptions is not null);
 
                 _serviceProviderHash = hashCode.ToHashCode();
@@ -470,12 +464,6 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         {
             debugInfo["DuckDB"] = "1";
             debugInfo["DuckDB.EFCoreProvider:" + nameof(ReverseNullOrdering)] = Extension.ReverseNullOrdering.GetHashCode()
-                .ToString(CultureInfo.InvariantCulture);
-            debugInfo["DuckDB.EFCoreProvider:" + nameof(BulkInsertBatching)] = Extension.BulkInsertBatching.GetHashCode()
-                .ToString(CultureInfo.InvariantCulture);
-            debugInfo["DuckDB.EFCoreProvider:" + nameof(BulkUpdateBatching)] = Extension.BulkUpdateBatching.GetHashCode()
-                .ToString(CultureInfo.InvariantCulture);
-            debugInfo["DuckDB.EFCoreProvider:" + nameof(BulkDeleteBatching)] = Extension.BulkDeleteBatching.GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:DuckLake"] = (Extension.DuckLakeOptions is not null).GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);

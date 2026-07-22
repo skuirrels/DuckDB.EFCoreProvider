@@ -38,16 +38,12 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
     {
         switch (table)
         {
-            case TableValuedFunctionExpression { Name: "json_each", Schema: null, IsBuiltIn: true, Arguments: [var jsonArgument] }:
-                collection = jsonArgument;
+            case DuckDBJsonEachExpression jsonEach:
+                collection = jsonEach.JsonExpression;
                 return true;
 
             case DuckDBUnnestExpression unnest:
                 collection = unnest.Array;
-                return true;
-
-            case TableValuedFunctionExpression { Name: "unnest", Schema: null, IsBuiltIn: true, Arguments: [var arrayArgument] }:
-                collection = arrayArgument;
                 return true;
         }
 
@@ -60,12 +56,10 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
         SqlParameterExpression newCollectionParameter)
         => table switch
         {
-            TableValuedFunctionExpression { Name: "json_each", Schema: null, IsBuiltIn: true, Arguments: [SqlParameterExpression] } jsonEach
-                => jsonEach.Update([newCollectionParameter]),
+            DuckDBJsonEachExpression { JsonExpression: SqlParameterExpression } jsonEach
+                => jsonEach.Update(newCollectionParameter, jsonEach.Path),
             DuckDBUnnestExpression { Arguments: [SqlParameterExpression] } unnest
                 => unnest.Update(newCollectionParameter),
-            TableValuedFunctionExpression { Name: "unnest", Schema: null, IsBuiltIn: true, Arguments: [SqlParameterExpression] } unnest
-                => unnest.Update([newCollectionParameter]),
             _ => base.UpdateParameterCollection(table, newCollectionParameter)
         };
 

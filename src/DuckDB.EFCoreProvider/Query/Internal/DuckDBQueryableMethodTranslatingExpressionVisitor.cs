@@ -449,7 +449,7 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
 
             if (source.QueryExpression is SelectExpression
                 {
-                    Tables: [TableValuedFunctionExpression { Name: "json_each", Schema: null, IsBuiltIn: true, Arguments: [var jsonArray] }],
+                    Tables: [DuckDBJsonEachExpression { JsonExpression: var jsonArray }],
                     Predicate: null,
                     GroupBy: [],
                     Having: null,
