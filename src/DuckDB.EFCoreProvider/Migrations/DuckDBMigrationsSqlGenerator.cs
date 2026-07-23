@@ -605,7 +605,7 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
             }
 
             var child = node.Children[i];
-            sb.Append(child.FieldName).Append(' ');
+            sb.Append(DelimitStructFieldName(child.FieldName!)).Append(' ');
             if (child.StoreType is not null)
             {
                 sb.Append(child.StoreType);
@@ -619,6 +619,9 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         sb.Append(')');
         return sb.ToString();
     }
+
+    private static string DelimitStructFieldName(string fieldName)
+        => "\"" + fieldName.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
 
     private sealed class StructFieldNode
     {

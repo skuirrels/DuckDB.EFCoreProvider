@@ -27,7 +27,7 @@ public interface IStructFieldInfoCache
 /// </summary>
 internal sealed class StructFieldInfoCache : IStructFieldInfoCache
 {
-    private readonly ConcurrentDictionary<(Type ClrType, string ColumnName), DuckDBStructFieldInfo?> _cache = new();
+    private readonly ConcurrentDictionary<(IEntityType EntityType, string ColumnName), DuckDBStructFieldInfo?> _cache = new();
 
     /// <inheritdoc />
     public DuckDBStructFieldInfo? GetStructFieldInfo(IEntityType entityType, string columnName)
@@ -35,7 +35,7 @@ internal sealed class StructFieldInfoCache : IStructFieldInfoCache
         ArgumentNullException.ThrowIfNull(entityType);
         ArgumentException.ThrowIfNullOrEmpty(columnName);
 
-        var key = (entityType.ClrType, columnName);
+        var key = (entityType, columnName);
         if (!_cache.TryGetValue(key, out var cachedResult))
         {
             // Lazy-load on first access: query the entity's struct column map.

@@ -1,8 +1,10 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using System.Linq.Expressions;
 using System.Data;
 using Xunit;
 
@@ -173,6 +175,27 @@ public class DuckDBStructFieldConventionTest
         Assert.Null(GetStructFieldInfo(cityProp));
         // EF Core defaults column name to property name — the convention didn't override it.
         Assert.Equal("City", cityProp.GetColumnName());
+    }
+
+    [Fact]
+    public void Struct_field_expression_quote_recreates_expression()
+    {
+        var info = new DuckDBStructFieldInfo("Location", ["address"], "city");
+        var expression = new DuckDBStructFieldExpression(
+            "c",
+            "Location",
+            info,
+            typeof(string));
+
+        var quoted = expression.Quote();
+        var recreated = Expression.Lambda<Func<DuckDBStructFieldExpression>>(quoted).Compile()();
+
+        Assert.Equal(expression.TableAlias, recreated.TableAlias);
+        Assert.Equal(expression.StructColumnName, recreated.StructColumnName);
+        Assert.Equal(expression.StructFieldInfo.StructColumnName, recreated.StructFieldInfo.StructColumnName);
+        Assert.Equal(expression.StructFieldInfo.NestedFieldNames, recreated.StructFieldInfo.NestedFieldNames);
+        Assert.Equal(expression.StructFieldInfo.LeafFieldName, recreated.StructFieldInfo.LeafFieldName);
+        Assert.Equal(expression.Type, recreated.Type);
     }
 
     [Fact]

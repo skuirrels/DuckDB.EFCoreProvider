@@ -93,20 +93,16 @@ public sealed class DuckDBStructFieldExpression : SqlExpression, IEquatable<Duck
                 [typeof(string), typeof(string), typeof(DuckDBStructFieldInfo), typeof(Type), typeof(RelationalTypeMapping)])!,
             Constant(TableAlias),
             Constant(StructColumnName),
-                MemberInit(
-                    New(typeof(DuckDBStructFieldInfo).GetConstructor(
-                        [typeof(string), typeof(string[]), typeof(string)])!),
-                    Bind(typeof(DuckDBStructFieldInfo).GetProperty(nameof(DuckDBStructFieldInfo.StructColumnName))!,
-                         Constant(StructFieldInfo.StructColumnName)),
-                    Bind(typeof(DuckDBStructFieldInfo).GetProperty(nameof(DuckDBStructFieldInfo.NestedFieldNames))!,
-                         NewArrayInit(typeof(string),
-                             StructFieldInfo.NestedFieldNames.Select(f => (Expression)Constant(f)).ToArray())),
-                    Bind(typeof(DuckDBStructFieldInfo).GetProperty(nameof(DuckDBStructFieldInfo.LeafFieldName))!,
-                         StructFieldInfo.LeafFieldName is null
-                             ? (Expression)Constant(null, typeof(string))
-                             : Constant(StructFieldInfo.LeafFieldName))),
-                Constant(Type),
-                RelationalExpressionQuotingUtilities.QuoteTypeMapping(TypeMapping));
+            New(
+                typeof(DuckDBStructFieldInfo).GetConstructor(
+                    [typeof(string), typeof(string[]), typeof(string)])!,
+                Constant(StructFieldInfo.StructColumnName),
+                NewArrayInit(
+                    typeof(string),
+                    StructFieldInfo.NestedFieldNames.Select(field => (Expression)Constant(field)).ToArray()),
+                Constant(StructFieldInfo.LeafFieldName, typeof(string))),
+            Constant(Type),
+            RelationalExpressionQuotingUtilities.QuoteTypeMapping(TypeMapping));
 
     /// <inheritdoc />
     protected override void Print(ExpressionPrinter expressionPrinter)
