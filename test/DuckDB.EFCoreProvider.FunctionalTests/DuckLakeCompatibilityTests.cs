@@ -645,6 +645,7 @@ public sealed class DuckLakeCompatibilityTests
             using var invalidContext = new AutoIncrementContext(invalidOptions);
             var exception = Assert.Throws<InvalidOperationException>(() => _ = invalidContext.Model);
             Assert.Contains("does not support auto-increment", exception.Message);
+            Assert.DoesNotContain("DuckLake", exception.Message);
         }
         finally
         {
@@ -670,6 +671,7 @@ public sealed class DuckLakeCompatibilityTests
             var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
             Assert.Contains("cannot read store-generated values", exception.Message);
             Assert.Contains("OnUpdateGeneratedItem.Revision", exception.Message);
+            Assert.DoesNotContain("DuckLake", exception.Message);
         }
         finally
         {
@@ -704,6 +706,7 @@ public sealed class DuckLakeCompatibilityTests
 
             var exception = Assert.Throws<NotSupportedException>(() => context.SaveChanges());
             Assert.Contains("SaveChanges batching is not supported", exception.Message);
+            Assert.DoesNotContain("DuckLake", exception.Message);
         }
         finally
         {

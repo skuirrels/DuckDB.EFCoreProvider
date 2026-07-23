@@ -46,7 +46,7 @@ public class DuckDBValueGenerationConvention :
         ProviderConventionSetBuilderDependencies dependencies,
         RelationalConventionSetBuilderDependencies relationalDependencies,
         bool isDuckLake)
-        : this(dependencies, relationalDependencies, new DuckDBEngineCapabilities(isDuckLake))
+        : this(dependencies, relationalDependencies, DuckDBEngineCapabilities.FromDuckLakeProfile(isDuckLake))
     {
     }
 
@@ -60,7 +60,7 @@ public class DuckDBValueGenerationConvention :
         IDuckDBEngineCapabilities capabilities)
         : base(dependencies, relationalDependencies)
     {
-        _capabilities = capabilities;
+        _capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
     }
 
     /// <summary>

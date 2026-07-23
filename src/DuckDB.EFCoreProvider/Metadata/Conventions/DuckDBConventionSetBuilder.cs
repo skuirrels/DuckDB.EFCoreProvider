@@ -20,7 +20,7 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
     public DuckDBConventionSetBuilder(
         ProviderConventionSetBuilderDependencies dependencies,
         RelationalConventionSetBuilderDependencies relationalDependencies)
-        : this(dependencies, relationalDependencies, null, null)
+        : this(dependencies, relationalDependencies, null, DuckDBEngineCapabilities.Native)
     {
     }
 
@@ -32,14 +32,18 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
         ProviderConventionSetBuilderDependencies dependencies,
         RelationalConventionSetBuilderDependencies relationalDependencies,
         IDuckLakeSingletonOptions? duckLakeSingletonOptions)
-        : this(dependencies, relationalDependencies, duckLakeSingletonOptions, null)
+        : this(
+            dependencies,
+            relationalDependencies,
+            duckLakeSingletonOptions,
+            DuckDBEngineCapabilities.FromDuckLakeOptions(duckLakeSingletonOptions))
     {
     }
 
     /// <summary>Creates a convention-set builder with the configured engine capabilities.</summary>
     /// <param name="dependencies">The core dependencies for this service.</param>
     /// <param name="relationalDependencies">The relational dependencies for this service.</param>
-    /// <param name="duckLakeSingletonOptions">Backend options used only when capabilities are not supplied.</param>
+    /// <param name="duckLakeSingletonOptions">Legacy backend options retained for constructor compatibility.</param>
     /// <param name="capabilities">Capabilities that drive provider conventions.</param>
     public DuckDBConventionSetBuilder(
         ProviderConventionSetBuilderDependencies dependencies,
@@ -48,8 +52,8 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
         IDuckDBEngineCapabilities? capabilities)
         : base(dependencies, relationalDependencies)
     {
-        _capabilities = capabilities
-            ?? new DuckDBEngineCapabilities(duckLakeSingletonOptions?.IsDuckLake == true);
+        _ = duckLakeSingletonOptions;
+        _capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
     }
 
     /// <summary>

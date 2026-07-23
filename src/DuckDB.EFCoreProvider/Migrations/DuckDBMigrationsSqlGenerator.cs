@@ -36,7 +36,10 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
     /// </summary>
     /// <param name="dependencies">Parameter object containing dependencies for this service.</param>
     public DuckDBMigrationsSqlGenerator(MigrationsSqlGeneratorDependencies dependencies)
-        : this(dependencies, null)
+        : this(
+            dependencies,
+            DuckDBEngineCapabilities.FromOptions(
+                dependencies.CurrentContext.Context.GetService<IDbContextOptions>()))
     {
     }
 
@@ -48,8 +51,7 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         var options = dependencies.CurrentContext.Context.GetService<IDbContextOptions>()
             .FindExtension<DuckDBOptionsExtension>();
         _migrationTableRebuilds = options?.MigrationTableRebuilds == true;
-        _capabilities = capabilities
-            ?? new DuckDBEngineCapabilities(options?.DuckLakeOptions is not null);
+        _capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
     }
 
     /// <inheritdoc />
@@ -144,7 +146,7 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
                 || columnOperations.Any(IsAutoIncrement)))
         {
             throw new NotSupportedException(
-                "DuckLake does not support sequences. Use client-assigned values or a client-side value generator.");
+                DuckDBCapabilityErrorMessages.SequencesNotSupported);
         }
 
         if (_capabilities.SupportsGeneratedColumns && _capabilities.SupportsSqlDefaultExpressions)
@@ -158,8 +160,9 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         if (unsupportedColumn is not null)
         {
             throw new NotSupportedException(
-                $"DuckLake does not support generated columns or SQL default expressions. Column "
-                + $"'{unsupportedColumn.Table}.{unsupportedColumn.Name}' must use an application-assigned value or a literal default.");
+                DuckDBCapabilityErrorMessages.MigrationColumnNotSupported(
+                    unsupportedColumn.Table,
+                    unsupportedColumn.Name));
         }
     }
 

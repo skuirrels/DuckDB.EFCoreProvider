@@ -18,14 +18,17 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
     private readonly IDuckDBEngineCapabilities _capabilities;
 
     public DuckDBUpdateSqlGenerator(UpdateSqlGeneratorDependencies dependencies)
-        : this(dependencies, null, null)
+        : this(dependencies, null, DuckDBEngineCapabilities.Native)
     {
     }
 
     public DuckDBUpdateSqlGenerator(
         UpdateSqlGeneratorDependencies dependencies,
         IDuckLakeSingletonOptions? singletonOptions)
-        : this(dependencies, singletonOptions, null)
+        : this(
+            dependencies,
+            singletonOptions,
+            DuckDBEngineCapabilities.FromDuckLakeOptions(singletonOptions))
     {
     }
 
@@ -35,8 +38,8 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         IDuckDBEngineCapabilities? capabilities)
         : base(dependencies)
     {
-        _capabilities = capabilities
-            ?? new DuckDBEngineCapabilities(singletonOptions?.IsDuckLake == true);
+        _ = singletonOptions;
+        _capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
     }
 
     /// <inheritdoc />
@@ -84,9 +87,9 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             operations.Where(operation => operation.IsWrite).ToList(),
             [],
             operations.Where(operation => operation.IsCondition).ToList());
-        // DuckLake does not physically enforce EF's logical keys. If duplicate key rows exist, an update can
-        // affect more than one row and the modification batch detects that only after execution. Require a
-        // transaction so EF can roll the statement back before surfacing DbUpdateConcurrencyException.
+        // A capability-limited backend may not physically enforce EF's logical keys. If duplicate key rows exist,
+        // an update can affect more than one row and the modification batch detects that only after execution.
+        // Require a transaction so EF can roll the statement back before surfacing DbUpdateConcurrencyException.
         requiresTransaction = true;
         return ResultSetMapping.NoResults;
     }
@@ -122,9 +125,9 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         if (readOperations.Count > 0)
         {
             throw new NotSupportedException(
-                $"DuckLake does not support INSERT/UPDATE RETURNING. Table '{command.TableName}' has "
-                + $"store-generated column(s): {string.Join(", ", readOperations.Select(operation => operation.ColumnName))}. "
-                + "Configure client-assigned values or literal defaults that do not need to be read back.");
+                DuckDBCapabilityErrorMessages.StoreGeneratedColumnsCannotBeRead(
+                    command.TableName,
+                    readOperations.Select(operation => operation.ColumnName)));
         }
     }
 

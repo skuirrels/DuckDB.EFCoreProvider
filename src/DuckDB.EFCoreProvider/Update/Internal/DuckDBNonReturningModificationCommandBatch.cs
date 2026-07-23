@@ -6,9 +6,10 @@ using Microsoft.EntityFrameworkCore.Update;
 namespace DuckDB.EFCoreProvider.Update.Internal;
 
 /// <summary>
-///     Executes one DuckLake modification without a reader and validates DuckDB.NET's affected-row count.
+///     Executes one modification without a result-set reader and validates DuckDB.NET's affected-row count.
 /// </summary>
-internal sealed class DuckLakeModificationCommandBatch(ModificationCommandBatchFactoryDependencies dependencies)
+internal sealed class DuckDBNonReturningModificationCommandBatch(
+    ModificationCommandBatchFactoryDependencies dependencies)
     : SingularModificationCommandBatch(dependencies)
 {
     public override void Execute(IRelationalConnection connection)
@@ -136,8 +137,8 @@ internal sealed class DuckLakeModificationCommandBatch(ModificationCommandBatchF
             exception);
 
     protected override void Consume(RelationalDataReader reader)
-        => throw new NotSupportedException("DuckLake modification batches do not consume result sets.");
+        => throw new NotSupportedException("Non-returning modification batches do not consume result sets.");
 
     protected override Task ConsumeAsync(RelationalDataReader reader, CancellationToken cancellationToken = default)
-        => throw new NotSupportedException("DuckLake modification batches do not consume result sets.");
+        => throw new NotSupportedException("Non-returning modification batches do not consume result sets.");
 }

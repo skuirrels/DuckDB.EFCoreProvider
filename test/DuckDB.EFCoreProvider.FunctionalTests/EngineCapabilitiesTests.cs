@@ -129,6 +129,101 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Injected_migration_generator_uses_capability_service()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<NoSequenceCapabilities>();
+        using var context = new CapabilityContext(
+            FileOptionsWithCapabilities<CapabilityContext>(serviceProvider));
+        var generator = Assert.IsType<DuckDBMigrationsSqlGenerator>(
+            context.GetService<IMigrationsSqlGenerator>());
+
+        var exception = Assert.Throws<NotSupportedException>(() => generator.Generate(
+            [new CreateSequenceOperation { Name = "unsupported_sequence" }]));
+
+        Assert.Contains("configured DuckDB engine", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Model_validation_uses_capability_service()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<NoSequenceCapabilities>();
+        using var context = new AutoIncrementCapabilityContext(
+            FileOptionsWithCapabilities<AutoIncrementCapabilityContext>(serviceProvider));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
+
+        Assert.Contains("does not support auto-increment", exception.Message);
+        Assert.Contains("AutoIncrementCapabilityItem.Id", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Tiered_storage_validation_uses_capability_service()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<NoTieredStorageCapabilities>();
+        using var context = new TieredCapabilityContext(
+            FileOptionsWithCapabilities<TieredCapabilityContext>(serviceProvider));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
+
+        Assert.Contains("provider tiered storage", exception.Message);
+        Assert.Contains("configured DuckDB engine capabilities", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void SaveChanges_batching_uses_capability_service()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<NoBatchingCapabilities>();
+        var options = new DbContextOptionsBuilder<CapabilityContext>(
+                FileOptions<CapabilityContext>(duckDB => duckDB.EnableBulkInsertBatching()))
+            .UseInternalServiceProvider(serviceProvider)
+            .Options;
+        using var context = new CapabilityContext(options);
+        context.Database.EnsureCreated();
+        context.CapabilityItems.Add(new CapabilityItem { Id = 1, Name = "unsupported" });
+
+        var exception = Assert.Throws<NotSupportedException>(() => context.SaveChanges());
+
+        Assert.Contains("configured DuckDB engine capabilities", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void SaveChanges_uses_returning_capability_independently_of_batching_capability()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<NoBatchingCapabilities>();
+        using var context = new DefaultKeyContext(
+            FileOptionsWithCapabilities<DefaultKeyContext>(serviceProvider));
+        context.Database.EnsureCreated();
+        var item = new DefaultKeyItem();
+
+        context.Add(item);
+
+        Assert.Equal(1, context.SaveChanges());
+        Assert.NotEqual(0, item.Id);
+        Assert.Equal(item.Id, context.DefaultKeyItems.AsNoTracking().Single().Id);
+    }
+
+    [ConditionalFact]
+    public void Non_returning_update_path_uses_capability_service()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<NoReturningCapabilities>();
+        using var context = new CapabilityContext(
+            FileOptionsWithCapabilities<CapabilityContext>(serviceProvider));
+        context.Database.EnsureCreated();
+        var item = new CapabilityItem { Id = 1, Name = "first" };
+
+        context.Add(item);
+        Assert.Equal(1, context.SaveChanges());
+        item.Name = "updated";
+        Assert.Equal(1, context.SaveChanges());
+
+        Assert.Equal("updated", context.CapabilityItems.AsNoTracking().Single().Name);
+    }
+
+    [ConditionalFact]
     public void Migration_capabilities_validate_sequence_renames_independently()
     {
         using var context = new CapabilityContext(FileOptions<CapabilityContext>());
@@ -168,6 +263,50 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         var exception = Assert.Throws<NotSupportedException>(() => generator.Generate([table]));
 
         Assert.Contains("does not support sequences", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Migration_capabilities_validate_generated_columns_independently()
+    {
+        using var context = new CapabilityContext(FileOptions<CapabilityContext>());
+        var generator = CreateMigrationsGenerator(
+            context,
+            new TestCapabilities(SupportsGeneratedColumns: false));
+        var column = new AddColumnOperation
+        {
+            Table = "Items",
+            Name = "Computed",
+            ClrType = typeof(int),
+            IsNullable = false,
+            ComputedColumnSql = "\"Id\" + 1"
+        };
+
+        var exception = Assert.Throws<NotSupportedException>(() => generator.Generate([column]));
+
+        Assert.Contains("does not support generated columns", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Migration_capabilities_validate_sql_defaults_independently()
+    {
+        using var context = new CapabilityContext(FileOptions<CapabilityContext>());
+        var generator = CreateMigrationsGenerator(
+            context,
+            new TestCapabilities(SupportsSqlDefaultExpressions: false));
+        var column = new AddColumnOperation
+        {
+            Table = "Items",
+            Name = "CreatedAt",
+            ClrType = typeof(DateTime),
+            IsNullable = false,
+            DefaultValueSql = "CURRENT_TIMESTAMP"
+        };
+
+        var exception = Assert.Throws<NotSupportedException>(() => generator.Generate([column]));
+
+        Assert.Contains("does not support generated columns or SQL default expressions", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
     }
 
     [ConditionalFact]
@@ -335,6 +474,36 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     private sealed class CapabilityItem
     {
         public int Id { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    private sealed class AutoIncrementCapabilityContext(
+        DbContextOptions<AutoIncrementCapabilityContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<AutoIncrementCapabilityItem>()
+                .Property(item => item.Id)
+                .UseAutoIncrement();
+    }
+
+    private sealed class AutoIncrementCapabilityItem
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class TieredCapabilityContext(
+        DbContextOptions<TieredCapabilityContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.ToTieredStore<TieredCapabilityItem>(
+                item => item.EffectiveAt,
+                Path.Combine(Path.GetTempPath(), "capability-tiered-archive"));
+    }
+
+    private sealed class TieredCapabilityItem
+    {
+        public int Id { get; set; }
+        public DateTime EffectiveAt { get; set; }
     }
 
     private sealed class DefaultKeyContext(DbContextOptions<DefaultKeyContext> options) : DbContext(options)
@@ -389,6 +558,22 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     private sealed class NoMigrationsCapabilities : NativeCapabilities
     {
         public override bool SupportsEfMigrations => false;
+    }
+
+    private sealed class NoBatchingCapabilities : NativeCapabilities
+    {
+        public override bool SupportsSaveChangesBatching => false;
+    }
+
+    private sealed class NoReturningCapabilities : NativeCapabilities
+    {
+        public override bool SupportsReturning => false;
+        public override bool SupportsSaveChangesBatching => false;
+    }
+
+    private sealed class NoTieredStorageCapabilities : NativeCapabilities
+    {
+        public override bool SupportsTieredStorage => false;
     }
 
     private sealed class MergeUpsertCapabilities : NativeCapabilities
