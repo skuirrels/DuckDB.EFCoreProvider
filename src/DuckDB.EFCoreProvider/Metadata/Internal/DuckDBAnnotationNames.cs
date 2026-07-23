@@ -97,4 +97,34 @@ public static class DuckDBAnnotationNames
 
     /// <summary>How uniqueness of the configured tiered-store match key is guaranteed. Internal API.</summary>
     public const string TieredStoreMatchKeyUniqueness = Prefix + "TieredStore:MatchKeyUniqueness";
+
+    /// <summary>
+    ///     A <see cref="DuckDBStructFieldInfo" /> describing which DuckDB STRUCT column a
+    ///     property maps to and the nested field path within it. Set via
+    ///     <c>HasStructField</c> or inferred by <c>DuckDBStructFieldConvention</c>.
+    /// </summary>
+    public const string StructField = Prefix + "StructField";
+
+    /// <summary>
+    ///     A <see cref="DuckDBStructMapping" /> attached to a complex property (or nested
+    ///     complex property) describing the DuckDB STRUCT column and child field names for
+    ///     that specific usage. This disambiguates shared complex types used under multiple
+    ///     struct columns (e.g. <c>Billing</c> vs <c>Shipping</c>).
+    /// </summary>
+    public const string StructMapping = Prefix + "StructMapping";
+
+    /// <summary>
+    ///     A <see cref="IReadOnlyDictionary{TKey,TValue}" /> mapping the unique EF column
+    ///     name of each struct sub-field to its <see cref="DuckDBStructFieldInfo" />. Stored
+    ///     on an entity type so the DDL and write pipelines can resolve struct paths from
+    ///     a concrete column identity.
+    /// </summary>
+    public const string StructColumnMap = Prefix + "StructColumnMap";
+
+    /// <summary>
+    ///     Set to <see langword="true" /> on a complex property when struct field inference
+    ///     should process its scalar sub-properties. Applied via <c>[UseStructMapping]</c> on
+    ///     the CLR property or the <c>ComplexProperty(...).UseStructMapping()</c> fluent API.
+    /// </summary>
+    public const string UseStructMapping = Prefix + "UseStructMapping";
 }

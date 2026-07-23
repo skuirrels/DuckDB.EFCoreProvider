@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Metadata;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -80,6 +81,63 @@ public sealed class ParquetExportTests : DuckDBTestBase
     }
 
     private static string Escape(string path) => path.Replace("'", "''");
+
+    [ConditionalFact]
+    public async Task ExportToParquetAsync_rejects_partitioning_by_struct_property()
+    {
+        var path = DbPath + "_struct_partition";
+        try
+        {
+            await using var context = new StructExportContext(FileOptions<StructExportContext>());
+            await context.Database.EnsureCreatedAsync();
+            context.Items.Add(new StructExportItem
+            {
+                Id = 1,
+                Location = new StructExportAddress { City = "NYC", Country = "US" }
+            });
+            await context.SaveChangesAsync();
+
+            var exception = await Assert.ThrowsAsync<NotSupportedException>(() =>
+                context.Database.ExportToParquetAsync(
+                    context.Items,
+                    path,
+                    options => options.PartitionBy(item => item.Location)));
+
+            Assert.Contains("struct-mapped", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("STRUCT", exception.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+    }
+
+    private sealed class StructExportContext(DbContextOptions<StructExportContext> options) : DbContext(options)
+    {
+        public DbSet<StructExportItem> Items => Set<StructExportItem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<StructExportItem>(e =>
+            {
+                e.Property(i => i.Id).ValueGeneratedNever();
+                e.ComplexProperty(i => i.Location).UseStructMapping();
+            });
+        }
+    }
+
+    private sealed class StructExportItem
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public required StructExportAddress Location { get; set; }
+    }
+
+    private sealed class StructExportAddress
+    {
+        public required string City { get; set; }
+        public required string Country { get; set; }
+    }
 
     private sealed class ExportContext(DbContextOptions<ExportContext> options) : DbContext(options)
     {

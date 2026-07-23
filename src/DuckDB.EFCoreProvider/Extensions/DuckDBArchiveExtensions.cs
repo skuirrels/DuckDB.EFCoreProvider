@@ -247,6 +247,18 @@ public static partial class DuckDBArchiveExtensions
         var (context, sql, archiveFileProbe, failureInjector) = Services(database);
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
+
+        foreach (var node in aggregate.Nodes)
+        {
+            if (StructMappingHelper.HasStructMappedComplexProperties(node.Entity))
+            {
+                throw new NotSupportedException(
+                    $"ArchiveTierAsync does not support entity '{node.Entity.ClrType.Name}' because it contains "
+                    + "struct-mapped complex properties. STRUCT columns would be flattened in the cold Parquet "
+                    + "archive, breaking tiered read queries.");
+            }
+        }
+
         var aligned = DuckDBTierControl.AlignCutoff(cutoff, aggregate.Granularity);
         // Parquet writes are external side effects and cannot be rolled back with a caller-owned database
         // transaction. Multi-table aggregates also require leaf-to-root autocommit deletes because DuckDB

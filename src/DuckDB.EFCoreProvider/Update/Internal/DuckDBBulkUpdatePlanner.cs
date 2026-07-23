@@ -132,6 +132,16 @@ internal sealed class DuckDBBulkUpdatePlan
     public string GetWriteColumnName(int index)
         => _commands[0].ColumnModifications[_writeIndexes[index]].ColumnName;
 
+    public void CollectWriteColumns(int rowIndex, List<IColumnModification> target)
+    {
+        target.Clear();
+        var start = rowIndex * _writeColumnCount;
+        for (var i = 0; i < _writeColumnCount; i++)
+        {
+            target.Add(_commands[rowIndex].ColumnModifications[_writeIndexes[start + i]]);
+        }
+    }
+
     public string GetOriginalKeyParameterName(int rowIndex, int keyIndex)
         => _commands[rowIndex].ColumnModifications[_keyIndexes[(rowIndex * _keyColumnCount) + keyIndex]].OriginalParameterName!;
 

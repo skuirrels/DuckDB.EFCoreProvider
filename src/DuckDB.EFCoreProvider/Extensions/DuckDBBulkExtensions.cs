@@ -220,7 +220,16 @@ public static class DuckDBBulkExtensions
     {
         var clrType = entityType.ClrType;
         var storeObject = StoreObjectIdentifier.Table(table, entityType.GetSchema());
-        var columns = new Dictionary<string, Action<IDuckDBAppenderRow, object>>(StringComparer.OrdinalIgnoreCase);
+
+            if (StructMappingHelper.HasStructMappedComplexProperties(entityType))
+            {
+                throw new NotSupportedException(
+                    $"Bulk insert does not support entity '{clrType.Name}' because it contains struct-mapped complex properties. "
+                    + "STRUCT columns are consolidated at the physical layer and cannot be appended via the DuckDB Appender API. "
+                    + "Use SaveChanges instead.");
+            }
+
+            var columns = new Dictionary<string, Action<IDuckDBAppenderRow, object>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var property in entityType.GetProperties())
         {

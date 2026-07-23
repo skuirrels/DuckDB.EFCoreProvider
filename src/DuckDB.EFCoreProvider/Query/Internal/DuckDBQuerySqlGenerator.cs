@@ -1,11 +1,18 @@
-﻿using DuckDB.EFCoreProvider.Query.Expressions.Internal;
+using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.EFCoreProvider.Metadata.Internal;
+using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using Microsoft.EntityFrameworkCore.Storage;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq.Expressions;
+using System.Reflection;
 
 namespace DuckDB.EFCoreProvider.Query.Internal;
 
@@ -18,11 +25,270 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
 {
     private readonly bool _reverseNullOrderingEnabled;
+    private readonly IStructFieldInfoCache _structFieldInfoCache;
+
+    /// <summary>
+    ///     Stack of direct-table alias-to-entity maps for the SELECT expressions currently being generated.
+    ///     Only columns whose alias maps to a direct table in the current SELECT are eligible for
+    ///     DuckDB struct field access syntax; subquery projections are rendered as ordinary aliases.
+    /// </summary>
+    private readonly Stack<Dictionary<string, IReadOnlyList<IEntityType>>> _currentSelectTables = new();
 
     public DuckDBQuerySqlGenerator(QuerySqlGeneratorDependencies dependencies, bool reverseNullOrderingEnabled)
         : base(dependencies)
     {
         _reverseNullOrderingEnabled = reverseNullOrderingEnabled;
+        _structFieldInfoCache = new StructFieldInfoCache();
+    }
+
+    /// <summary>
+    ///     Generates SQL for a projection, forcing the <c>AS "alias"</c> clause for
+    ///     columns that map to DuckDB STRUCT sub-fields. The base implementation skips
+    ///     the alias when <c>column.Name == projection.Alias</c>, but for struct fields
+    ///     the emitted SQL (e.g. <c>o."Shipping"."cost"</c>) is named <c>cost</c> by
+    ///     DuckDB while the EF column name remains <c>shipping_cost</c> — the names
+    ///     don't match the DuckDB output, so omitting the alias causes "column not
+    ///     found" errors in outer subquery references.
+    /// </summary>
+    protected override Expression VisitProjection(ProjectionExpression projectionExpression)
+    {
+        if (projectionExpression.Expression is ColumnExpression column
+            && TryGetDirectStructFieldInfo(column, out var structInfo)
+            && structInfo is not null)
+        {
+            // Render the struct field access SQL (e.g. o."Shipping"."cost").
+            EmitStructFieldAccess(column, structInfo);
+
+            // Always emit the alias since the DuckDB output column name (e.g. "cost")
+            // differs from the EF projection alias (e.g. "shipping_cost").
+            if (projectionExpression.Alias != string.Empty)
+            {
+                Sql.Append(AliasSeparator)
+                    .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(projectionExpression.Alias));
+            }
+
+            return projectionExpression;
+        }
+
+        return base.VisitProjection(projectionExpression);
+    }
+
+    /// <summary>
+    ///     Returns <see langword="true" /> when the given column expression both originates
+    ///     from a direct table reference in the current <see cref="SelectExpression" /> and
+    ///     maps to a DuckDB STRUCT sub-field.
+    /// </summary>
+    private bool TryGetDirectStructFieldInfo(
+        ColumnExpression columnExpression,
+        out DuckDBStructFieldInfo? structFieldInfo)
+    {
+        structFieldInfo = null;
+
+        // Only emit struct access syntax for columns whose table alias belongs to a direct
+        // table in the current SELECT. Subqueries already project struct sub-fields as flat
+        // columns, so outer references to those projections must render as ordinary aliases.
+        if (_currentSelectTables.Count == 0
+            || !_currentSelectTables.Peek().TryGetValue(columnExpression.TableAlias, out var entityTypes))
+        {
+            return false;
+        }
+
+        // Layer 1: Prefer the already-resolved column annotation (set at model finalization).
+        // This is the primary path for normal EF LINQ queries where columns have full model backing.
+        var info = GetStructFieldInfo(columnExpression);
+        
+        // Layer 2: For synthesized columns without a model IColumn (e.g. nested collection subqueries),
+        // check property mappings on the column expression. This is uncommon but needed for edge cases.
+        if (info is null && columnExpression.Column is { PropertyMappings: { Count: > 0 } propertyMappings })
+        {
+            for (var i = 0; i < propertyMappings.Count; i++)
+            {
+                if (propertyMappings[i].Property.GetStructFieldInfo() is { } propInfo)
+                {
+                    info = propInfo;
+                    break;
+                }
+            }
+        }
+
+        // Layer 3: Cache-based fallback lookup by entity struct column map.
+        // When Layer 1 and Layer 2 both fail, query the cache for O(1) struct field lookup
+        // instead of iterating entity types. The cache is populated lazily at first access
+        // from the entity's struct column map (built at model finalization by the convention).
+        if (info is null && entityTypes is not null)
+        {
+            foreach (var entityType in entityTypes)
+            {
+                info = _structFieldInfoCache.GetStructFieldInfo(entityType, columnExpression.Name);
+                if (info is not null)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (info is null)
+        {
+            return false;
+        }
+
+        structFieldInfo = info;
+        return true;
+    }
+
+    /// <summary>
+    ///     Generates SQL for a column, translating DuckDB STRUCT sub-field mappings to
+    ///     struct field access syntax. When a column's underlying property carries a
+    ///     <c>DuckDB:StructField</c> annotation (set via <c>HasStructField</c>), the SQL
+    ///     output becomes <c>t."StructColumn".field.nestedField</c> instead of
+    ///     <c>t."ColumnName"</c>. This enables SQL-level projection of individual struct
+    ///     sub-fields without encoding the struct path in the column name string.
+    /// </summary>
+    protected override Expression VisitColumn(ColumnExpression columnExpression)
+    {
+        if (TryGetDirectStructFieldInfo(columnExpression, out var structInfo)
+            && structInfo is not null)
+        {
+            EmitStructFieldAccess(columnExpression, structInfo);
+            return columnExpression;
+        }
+
+        return base.VisitColumn(columnExpression);
+    }
+
+    /// <inheritdoc />
+    protected override Expression VisitSelect(SelectExpression selectExpression)
+    {
+        var tableMap = new Dictionary<string, IReadOnlyList<IEntityType>>();
+        CollectDirectTables(selectExpression.Tables, tableMap);
+        _currentSelectTables.Push(tableMap);
+        try
+        {
+            return base.VisitSelect(selectExpression);
+        }
+        finally
+        {
+            _currentSelectTables.Pop();
+        }
+    }
+
+    private static void CollectDirectTables(
+        IEnumerable<TableExpressionBase> tables,
+        Dictionary<string, IReadOnlyList<IEntityType>> tableMap)
+    {
+        foreach (var table in tables)
+        {
+            if (table is JoinExpressionBase join)
+            {
+                CollectDirectTables(new[] { join.Table }, tableMap);
+            }
+            else if (table is ITableBasedExpression { Table: not null } tableBased
+                     && table.Alias is not null)
+            {
+                tableMap[table.Alias] = tableBased.Table.EntityTypeMappings
+                    .Select(m => m.TypeBase)
+                    .OfType<IEntityType>()
+                    .ToList();
+            }
+            else if (table is DuckDBFileSourceExpression fileSource
+                     && fileSource.EntityTypes.Count > 0)
+            {
+                tableMap[fileSource.Alias] = fileSource.EntityTypes;
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Emits <c>alias."StructColumn".nestedField.leafFieldName</c> for a DuckDB struct
+        ///     sub-field access by delegating to <see cref="VisitStructField" />.
+        /// </summary>
+        private void EmitStructFieldAccess(ColumnExpression columnExpression, DuckDBStructFieldInfo structInfo)
+        {
+            // Delegate rendering to the dedicated DuckDBStructFieldExpression so struct access
+            // SQL has a single authoring/regeneration point (#3). Constructing the expression
+            // here rather than emitting directly lets future phases produce these earlier in
+            // the query pipeline (e.g. from the SQL translating visitor) for cleaner flattening.
+            if (structInfo.LeafFieldName is null)
+            {
+                // Manual HasStructField configuration may omit the leaf name. Preserve the
+                // documented fallback to the EF column name at the rendering boundary.
+                structInfo = new DuckDBStructFieldInfo(
+                    structInfo.StructColumnName,
+                    [..structInfo.NestedFieldNames],
+                    columnExpression.Name);
+            }
+
+            Visit(new DuckDBStructFieldExpression(
+                columnExpression.TableAlias,
+                structInfo.StructColumnName,
+                structInfo,
+                columnExpression.Type,
+                columnExpression.TypeMapping));
+        }
+
+        /// <summary>
+        ///     Renders a DuckDB struct field access expression:
+        ///     <c>alias."StructColumn".nested1.nested2.leaf</c>. The alias and struct column
+        ///     name and every field path segment are delimited so explicitly configured
+        ///     names containing spaces, quotes, or reserved words remain valid.
+        /// </summary>
+        /// <remarks>
+        ///     This is the single rendering path for <see cref="DuckDBStructFieldExpression" />.
+        ///     Resolving STRUCT paths earlier in the query pipeline (per the plan in #3) lets
+        ///     subqueries naturally flatten — outer references become plain column projections
+        ///     and never reach this renderer.
+        /// </remarks>
+        protected virtual Expression VisitStructField(DuckDBStructFieldExpression structFieldExpression)
+        {
+            Sql.Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structFieldExpression.TableAlias))
+               .Append(".")
+               .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structFieldExpression.StructColumnName));
+
+            // Delimit each configured path segment; DuckDB accepts quoted identifiers for
+            // STRUCT dot access and requires them for non-ordinary identifiers.
+            foreach (var field in structFieldExpression.StructFieldInfo.NestedFieldNames)
+            {
+                Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(field));
+            }
+
+            // Leaf field name: use the DuckDB-specific name if set. The convention and
+            // provider always fill this; a null leaf indicates a metadata problem.
+            var leafFieldName = structFieldExpression.StructFieldInfo.LeafFieldName
+                ?? throw new InvalidOperationException(
+                    $"DuckDB struct field metadata for column '{structFieldExpression.StructColumnName}' is missing a leaf field name.");
+
+            Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(leafFieldName));
+
+            return structFieldExpression;
+        }
+
+    /// <summary>
+    ///     Scans a column for a <c>DuckDB:StructField</c> annotation. Prefer the
+    ///     annotation on the <see cref="IColumn" /> because it has already been resolved
+    ///     from the entity's column map and is correct for shared complex types used in
+    ///     multiple struct columns.
+    /// </summary>
+    private static DuckDBStructFieldInfo? GetStructFieldInfo(ColumnExpression columnExpression)
+    {
+        if (columnExpression.Column?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+            is DuckDBStructFieldInfo columnInfo)
+        {
+            return columnInfo;
+        }
+
+        if (columnExpression.Column is not { PropertyMappings: { Count: > 0 } propertyMappings })
+        {
+            return null;
+        }
+
+        for (var i = 0; i < propertyMappings.Count; i++)
+        {
+            if (propertyMappings[i].Property.GetStructFieldInfo() is { } info)
+            {
+                return info;
+            }
+        }
+        return null;
     }
 
     /// <inheritdoc />
@@ -87,7 +353,8 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             DuckDBNewArrayExpression e => VisitNewArray(e),
             DuckDBJsonEachExpression e => VisitJsonEach(e),
             DuckDBRowValueExpression e => VisitRowValue(e),
-            _ => base.VisitExtension(extensionExpression)
+                        DuckDBStructFieldExpression e => VisitStructField(e),
+                        _ => base.VisitExtension(extensionExpression)
         };
     }
 
