@@ -40,6 +40,8 @@ public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPos
                 RelationalDependencies.TypeMappingSource)
             .Visit(result);
         result = new DuckDBUnnestPostprocessor().Visit(result);
+        result = new DuckDBFileSourceQueryRootRewritingExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
+            .Visit(result);
 
         return result;
     }

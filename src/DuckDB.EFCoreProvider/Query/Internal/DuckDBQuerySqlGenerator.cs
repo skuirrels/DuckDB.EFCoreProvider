@@ -190,6 +190,11 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
                     .OfType<IEntityType>()
                     .ToList();
             }
+            else if (table is DuckDBFileSourceExpression fileSource
+                     && fileSource.EntityTypes.Count > 0)
+            {
+                tableMap[fileSource.Alias] = fileSource.EntityTypes;
+            }
         }
     }
 
@@ -346,6 +351,7 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             DuckDBBinaryExpression e => VisitBinary(e),
             DuckDBArrayIndexExpression e => VisitArrayIndex(e),
             DuckDBArraySliceExpression e => VisitArraySlice(e),
+            DuckDBNewArrayExpression e => VisitNewArray(e),
             DuckDBJsonEachExpression e => VisitJsonEach(e),
             DuckDBRowValueExpression e => VisitRowValue(e),
                         DuckDBStructFieldExpression e => VisitStructField(e),
@@ -372,47 +378,6 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         }
 
         return base.VisitTableValuedFunction(tableValuedFunctionExpression);
-    }
-
-    /// <inheritdoc />
-    protected override Expression VisitTable(TableExpression tableExpression)
-    {
-        (string Function, string Path)? fileSource = null;
-        foreach (var mapping in tableExpression.Table.EntityTypeMappings)
-        {
-            if (mapping.TypeBase is IEntityType entityType && GetFileSource(entityType) is { } source)
-            {
-                fileSource = source;
-                break;
-            }
-        }
-
-        if (fileSource is null)
-        {
-            return base.VisitTable(tableExpression);
-        }
-
-        var (function, path) = fileSource.Value;
-        var quotedPath = $"'{path.Replace("'", "''")}'";
-
-        Sql.Append(function)
-            .Append("(")
-            .Append(quotedPath)
-            .Append(")")
-            .Append(AliasSeparator)
-            .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(tableExpression.Alias));
-
-        return tableExpression;
-    }
-
-    private static (string Function, string Path)? GetFileSource(IEntityType entityType)
-    {
-        var function = entityType.GetDuckDBFileSourceFunction();
-        var path = entityType.GetDuckDBFileSourcePath();
-
-        return !string.IsNullOrEmpty(function) && !string.IsNullOrEmpty(path)
-            ? (function, path)
-            : null;
     }
 
     /// <summary>
@@ -497,7 +462,7 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
     protected virtual Expression VisitArrayAny(DuckDBAnyExpression expression)
     {
         Visit(expression.Item);
-        
+
         Sql.Append(" = ANY(");
         Visit(expression.Array);
         Sql.Append(")");
@@ -532,6 +497,24 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         Sql.Append("[");
         Visit(expression.Index);
         Sql.Append("]");
+        return expression;
+    }
+
+    protected virtual Expression VisitNewArray(DuckDBNewArrayExpression expression)
+    {
+        Sql.Append("list_value(");
+
+        for (var i = 0; i < expression.Expressions.Count; i++)
+        {
+            if (i > 0)
+            {
+                Sql.Append(", ");
+            }
+
+            Visit(expression.Expressions[i]);
+        }
+
+        Sql.Append(")");
         return expression;
     }
 
@@ -631,63 +614,6 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         Sql.Append(AliasSeparator).Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(expression.Alias));
 
         return expression;
-    }
-
-    /// <inheritdoc />
-    protected override Expression VisitScalarSubquery(ScalarSubqueryExpression scalarSubqueryExpression)
-    {
-        if (TryVisitInlineCollectionIndexAccess(scalarSubqueryExpression.Subquery))
-        {
-            return scalarSubqueryExpression;
-        }
-
-        return base.VisitScalarSubquery(scalarSubqueryExpression);
-    }
-
-    /// <summary>
-    ///     Tries to translate an inline-collection-indexed-by-column pattern into a native DuckDB array access.
-    ///     DuckDB does not support correlated columns in LIMIT/OFFSET.
-    ///     <para>
-    ///         Matches: <c>SELECT v."Value" FROM (VALUES (0, v1), (1, v2), ...) ORDER BY _ord LIMIT 1 OFFSET &lt;expr&gt;</c>
-    ///     </para>
-    ///     <para>
-    ///         Emits: <c>list_value(v1, v2, ...)[&lt;expr&gt; + 1]</c>
-    ///     </para>
-    /// </summary>
-    private bool TryVisitInlineCollectionIndexAccess(SelectExpression selectExpression)
-    {
-        if (selectExpression.Projection.Count != 1
-            || selectExpression.Tables.Count != 1
-            || selectExpression.Tables[0] is not ValuesExpression { RowValues: { Count: > 0 } rowValues, ColumnNames.Count: 2 }
-            || selectExpression.Limit is not SqlConstantExpression { Value: 1 }
-            || selectExpression.Offset is null or SqlConstantExpression
-            || selectExpression.Predicate != null
-            || selectExpression.GroupBy.Count != 0
-            || selectExpression.Having != null
-            || selectExpression.IsDistinct)
-        {
-            return false;
-        }
-
-        // Generate: list_value(v1, v2, ...)[offset + 1]
-        // DuckDB uses 1-based array indexing; EF Core uses 0-based.
-        Sql.Append("list_value(");
-        for (var i = 0; i < rowValues.Count; i++)
-        {
-            if (i > 0)
-            {
-                Sql.Append(", ");
-            }
-
-            // Each row value is (_ord, actual_value); we want the second element.
-            Visit(rowValues[i].Values[1]);
-        }
-
-        Sql.Append(")[");
-        Visit(selectExpression.Offset);
-        Sql.Append(" + 1]");
-
-        return true;
     }
 
     /// <inheritdoc />

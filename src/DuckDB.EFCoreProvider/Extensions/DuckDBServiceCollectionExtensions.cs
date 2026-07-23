@@ -134,6 +134,7 @@ public static class DuckDBServiceCollectionExtensions
             .TryAddProviderSpecificServices(b => b
                 .TryAddSingleton<IDuckDBSingletonOptions, DuckDBSingletonOptions>()
                 .TryAddSingleton<IDuckLakeSingletonOptions, DuckLakeSingletonOptions>()
+                .TryAddSingleton<IDuckDBEngineCapabilities, DuckDBEngineCapabilities>()
                 .TryAddScoped<IDuckDBArchiveFileProbe, DuckDBArchiveFileProbe>()
                 .TryAddScoped<IDuckDBTierFailureInjector, DuckDBTierFailureInjector>()
                 .TryAddScoped<IDuckDBRelationalConnection, DuckDBRelationalConnection>());

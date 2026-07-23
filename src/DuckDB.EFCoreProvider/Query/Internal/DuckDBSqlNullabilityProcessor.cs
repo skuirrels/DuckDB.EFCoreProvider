@@ -38,16 +38,12 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
     {
         switch (table)
         {
-            case TableValuedFunctionExpression { Name: "json_each", Schema: null, IsBuiltIn: true, Arguments: [var jsonArgument] }:
-                collection = jsonArgument;
+            case DuckDBJsonEachExpression jsonEach:
+                collection = jsonEach.JsonExpression;
                 return true;
 
             case DuckDBUnnestExpression unnest:
                 collection = unnest.Array;
-                return true;
-
-            case TableValuedFunctionExpression { Name: "unnest", Schema: null, IsBuiltIn: true, Arguments: [var arrayArgument] }:
-                collection = arrayArgument;
                 return true;
         }
 
@@ -60,12 +56,10 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
         SqlParameterExpression newCollectionParameter)
         => table switch
         {
-            TableValuedFunctionExpression { Name: "json_each", Schema: null, IsBuiltIn: true, Arguments: [SqlParameterExpression] } jsonEach
-                => jsonEach.Update([newCollectionParameter]),
+            DuckDBJsonEachExpression { JsonExpression: SqlParameterExpression } jsonEach
+                => jsonEach.Update(newCollectionParameter, jsonEach.Path),
             DuckDBUnnestExpression { Arguments: [SqlParameterExpression] } unnest
                 => unnest.Update(newCollectionParameter),
-            TableValuedFunctionExpression { Name: "unnest", Schema: null, IsBuiltIn: true, Arguments: [SqlParameterExpression] } unnest
-                => unnest.Update([newCollectionParameter]),
             _ => base.UpdateParameterCollection(table, newCollectionParameter)
         };
 
@@ -75,15 +69,15 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
         return sqlBinaryExpression switch
         {
             {
-                    OperatorType: ExpressionType.Equal or ExpressionType.NotEqual,
-                    Left: DuckDBRowValueExpression leftRowValue,
-                    Right: DuckDBRowValueExpression rightRowValue
-                }
+                OperatorType: ExpressionType.Equal or ExpressionType.NotEqual,
+                Left: DuckDBRowValueExpression leftRowValue,
+                Right: DuckDBRowValueExpression rightRowValue
+            }
                 => VisitRowValueComparison(sqlBinaryExpression.OperatorType, leftRowValue, rightRowValue, out nullable),
 
             _ => base.VisitSqlBinary(sqlBinaryExpression, allowOptimizedExpansion, out nullable)
         };
-        
+
         SqlExpression VisitRowValueComparison(
             ExpressionType operatorType,
             DuckDBRowValueExpression leftRowValue,
@@ -219,9 +213,25 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
             DuckDBBinaryExpression e => VisitBinary(e, allowOptimizedExpansion, out nullable),
             DuckDBArrayIndexExpression e => VisitArrayIndex(e, allowOptimizedExpansion, out nullable),
             DuckDBArraySliceExpression e => VisitArraySlice(e, allowOptimizedExpansion, out nullable),
+            DuckDBNewArrayExpression e => VisitNewArray(e, allowOptimizedExpansion, out nullable),
             DuckDBRowValueExpression e => VisitRowValueExpression(e, allowOptimizedExpansion, out nullable),
             _ => base.VisitCustomSqlExpression(sqlExpression, allowOptimizedExpansion, out nullable)
         };
+    }
+
+    protected virtual SqlExpression VisitNewArray(
+        DuckDBNewArrayExpression newArrayExpression,
+        bool allowOptimizedExpansion,
+        out bool nullable)
+    {
+        var expressions = new SqlExpression[newArrayExpression.Expressions.Count];
+        for (var i = 0; i < expressions.Length; i++)
+        {
+            expressions[i] = Visit(newArrayExpression.Expressions[i], allowOptimizedExpansion, out _);
+        }
+
+        nullable = false;
+        return newArrayExpression.Update(expressions);
     }
 
     private DuckDBUnnestExpression VisitUnnest(DuckDBUnnestExpression unnestExpression)

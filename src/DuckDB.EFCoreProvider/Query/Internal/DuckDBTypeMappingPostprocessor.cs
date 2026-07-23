@@ -39,6 +39,9 @@ public class DuckDBTypeMappingPostprocessor : RelationalTypeMappingPostprocessor
     {
         switch (expression)
         {
+            case DuckDBNewArrayExpression newArrayExpression:
+                return ApplyTypeMappingsOnNewArray(newArrayExpression);
+
             case DuckDBJsonEachExpression jsonEachExpression
                 when TryGetInferredTypeMapping(
                     jsonEachExpression.Alias,
@@ -63,6 +66,30 @@ public class DuckDBTypeMappingPostprocessor : RelationalTypeMappingPostprocessor
             default:
                 return base.VisitExtension(expression);
         }
+    }
+
+    private DuckDBNewArrayExpression ApplyTypeMappingsOnNewArray(DuckDBNewArrayExpression expression)
+    {
+        var elementType = expression.Type.GetElementType()
+            ?? expression.Type.TryGetElementType(typeof(IEnumerable<>));
+        if (elementType is null)
+        {
+            throw new InvalidOperationException($"DuckDB array expression '{expression}' has no element type.");
+        }
+
+        var elementTypeMapping = expression.Expressions
+            .Select(element => element.TypeMapping)
+            .FirstOrDefault(mapping => mapping is not null)
+            ?? _typeMappingSource.FindMapping(elementType, _model)
+            ?? throw new InvalidOperationException($"No DuckDB type mapping exists for array element type '{elementType}'.");
+        var arrayTypeMapping = _typeMappingSource.FindMapping(expression.Type, _model, elementTypeMapping)
+            ?? throw new InvalidOperationException($"No DuckDB array type mapping exists for '{expression.Type}'.");
+
+        var elements = expression.Expressions
+            .Select(element => (SqlExpression)Visit(_sqlExpressionFactory.ApplyTypeMapping(element, elementTypeMapping)))
+            .ToArray();
+
+        return new DuckDBNewArrayExpression(elements, expression.Type, arrayTypeMapping);
     }
 
     protected virtual DuckDBJsonEachExpression ApplyTypeMappingsOnJsonEachExpression(

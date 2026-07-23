@@ -146,8 +146,8 @@ public static class DuckDBShapedQueryExpressionExtensions
     }
 
     /// <summary>
-    ///     If the given <paramref name="source" /> wraps a <see cref="ValuesExpression" /> without any additional clauses (e.g. filter,
-    ///     ordering...), converts that to a <see cref="NewArrayExpression" /> and returns that.
+    ///     If the given <paramref name="source" /> wraps a <see cref="ValuesExpression" /> without any additional clauses, other than
+    ///     its canonical ascending <c>_ord</c> ordering, converts that to a <see cref="DuckDBNewArrayExpression" /> and returns that.
     /// </summary>
     /// <remarks>
     ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
@@ -171,7 +171,11 @@ public static class DuckDBShapedQueryExpressionExtensions
                 Offset: null
             } select
             && (ignorePredicate || select.Predicate is null)
-            && (ignoreOrderings || select.Orderings is []))
+            && (ignoreOrderings
+                || select.Orderings is []
+                || (select.Orderings is
+                    [{ IsAscending: true, Expression: ColumnExpression { Name: "_ord", TableAlias: var orderingTableAlias } }]
+                    && orderingTableAlias == valuesExpression.Alias)))
         {
             var elements = new SqlExpression[valuesExpression.RowValues.Count];
 

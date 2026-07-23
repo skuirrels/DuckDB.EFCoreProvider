@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
@@ -29,18 +30,27 @@ namespace DuckDB.EFCoreProvider.Migrations;
 public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
 {
     private readonly bool _migrationTableRebuilds;
-    private readonly bool _isDuckLake;
+    private readonly IDuckDBEngineCapabilities _capabilities;
 
     /// <summary>
     ///     Creates a new instance of <see cref="DuckDBMigrationsSqlGenerator" />.
     /// </summary>
     /// <param name="dependencies">Parameter object containing dependencies for this service.</param>
-    public DuckDBMigrationsSqlGenerator(MigrationsSqlGeneratorDependencies dependencies) : base(dependencies)
+    public DuckDBMigrationsSqlGenerator(MigrationsSqlGeneratorDependencies dependencies)
+        : this(dependencies, null)
+    {
+    }
+
+    public DuckDBMigrationsSqlGenerator(
+        MigrationsSqlGeneratorDependencies dependencies,
+        IDuckDBEngineCapabilities? capabilities)
+        : base(dependencies)
     {
         var options = dependencies.CurrentContext.Context.GetService<IDbContextOptions>()
             .FindExtension<DuckDBOptionsExtension>();
         _migrationTableRebuilds = options?.MigrationTableRebuilds == true;
-        _isDuckLake = options?.DuckLakeOptions is not null;
+        _capabilities = capabilities
+            ?? new DuckDBEngineCapabilities(options?.DuckLakeOptions is not null);
     }
 
     /// <inheritdoc />
@@ -49,7 +59,9 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         IModel? model = null,
         MigrationsSqlGenerationOptions options = MigrationsSqlGenerationOptions.Default)
     {
-        if (!_isDuckLake)
+        ValidateUnsupportedOperations(operations);
+
+        if (_capabilities.SupportsIndexes && _capabilities.SupportsSchemaConstraints)
         {
             return base.Generate(
                 _migrationTableRebuilds ? RewriteConstraintOperations(operations, model) : operations,
@@ -57,16 +69,16 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
                 options);
         }
 
-        ValidateDuckLakeOperations(operations);
-
-        var tableBackups = operations.OfType<CreateTableOperation>()
-            .Select(operation => new DuckLakeCreateTableBackup(
-                operation,
-                operation.PrimaryKey,
-                operation.UniqueConstraints.ToArray(),
-                operation.ForeignKeys.ToArray(),
-                operation.CheckConstraints.ToArray()))
-            .ToArray();
+        CreateTableConstraintBackup[] tableBackups = _capabilities.SupportsSchemaConstraints
+            ? []
+            : operations.OfType<CreateTableOperation>()
+                .Select(operation => new CreateTableConstraintBackup(
+                    operation,
+                    operation.PrimaryKey,
+                    operation.UniqueConstraints.ToArray(),
+                    operation.ForeignKeys.ToArray(),
+                    operation.CheckConstraints.ToArray()))
+                .ToArray();
 
         try
         {
@@ -78,8 +90,11 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
                 backup.Operation.CheckConstraints.Clear();
             }
 
-            var supportedOperations = operations.Where(IsSupportedDuckLakeOperation).ToArray();
-            return base.Generate(supportedOperations, model, options);
+            var supportedOperations = operations.Where(IsSupportedOperation).ToArray();
+            return base.Generate(
+                _migrationTableRebuilds ? RewriteConstraintOperations(supportedOperations, model) : supportedOperations,
+                model,
+                options);
         }
         finally
         {
@@ -93,32 +108,54 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         }
     }
 
-    private static bool IsSupportedDuckLakeOperation(MigrationOperation operation)
-        => operation is not (CreateIndexOperation
-            or DropIndexOperation
-            or AddPrimaryKeyOperation
-            or DropPrimaryKeyOperation
-            or AddForeignKeyOperation
-            or DropForeignKeyOperation
-            or AddUniqueConstraintOperation
-            or DropUniqueConstraintOperation
-            or AddCheckConstraintOperation
-            or DropCheckConstraintOperation);
-
-    private static void ValidateDuckLakeOperations(IReadOnlyList<MigrationOperation> operations)
+    private bool IsSupportedOperation(MigrationOperation operation)
     {
-        if (operations.Any(operation => operation is CreateSequenceOperation or AlterSequenceOperation or DropSequenceOperation or RestartSequenceOperation))
+        if (!_capabilities.SupportsIndexes
+            && operation is CreateIndexOperation or DropIndexOperation or RenameIndexOperation)
+        {
+            return false;
+        }
+
+        return _capabilities.SupportsSchemaConstraints
+            || operation is not (AddPrimaryKeyOperation
+                or DropPrimaryKeyOperation
+                or AddForeignKeyOperation
+                or DropForeignKeyOperation
+                or AddUniqueConstraintOperation
+                or DropUniqueConstraintOperation
+                or AddCheckConstraintOperation
+                or DropCheckConstraintOperation);
+    }
+
+    private void ValidateUnsupportedOperations(IReadOnlyList<MigrationOperation> operations)
+    {
+        var columnOperations = operations
+            .SelectMany(operation => operation is CreateTableOperation table
+                ? table.Columns.Cast<MigrationOperation>()
+                : [operation])
+            .OfType<ColumnOperation>()
+            .ToArray();
+
+        if (!_capabilities.SupportsSequences
+            && (operations.Any(operation => operation is CreateSequenceOperation
+                    or AlterSequenceOperation
+                    or DropSequenceOperation
+                    or RestartSequenceOperation
+                    or RenameSequenceOperation)
+                || columnOperations.Any(IsAutoIncrement)))
         {
             throw new NotSupportedException(
                 "DuckLake does not support sequences. Use client-assigned values or a client-side value generator.");
         }
 
-        var unsupportedColumn = operations
-            .SelectMany(operation => operation is CreateTableOperation table
-                ? table.Columns.Cast<MigrationOperation>()
-                : [operation])
-            .OfType<ColumnOperation>()
-            .FirstOrDefault(column => column.ComputedColumnSql is not null || column.DefaultValueSql is not null);
+        if (_capabilities.SupportsGeneratedColumns && _capabilities.SupportsSqlDefaultExpressions)
+        {
+            return;
+        }
+
+        var unsupportedColumn = columnOperations
+            .FirstOrDefault(column => (!_capabilities.SupportsGeneratedColumns && column.ComputedColumnSql is not null)
+                || (!_capabilities.SupportsSqlDefaultExpressions && column.DefaultValueSql is not null));
         if (unsupportedColumn is not null)
         {
             throw new NotSupportedException(
@@ -127,7 +164,10 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         }
     }
 
-    private sealed record DuckLakeCreateTableBackup(
+    private static bool IsAutoIncrement(ColumnOperation column)
+        => column[DuckDBAnnotationNames.ValueGenerationStrategy] is DuckDBValueGenerationStrategy.AutoIncrement;
+
+    private sealed record CreateTableConstraintBackup(
         CreateTableOperation Operation,
         AddPrimaryKeyOperation? PrimaryKey,
         AddUniqueConstraintOperation[] UniqueConstraints,

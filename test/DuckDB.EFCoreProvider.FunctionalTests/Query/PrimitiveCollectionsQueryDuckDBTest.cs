@@ -585,7 +585,7 @@ public class PrimitiveCollectionsQueryDuckDBTest : PrimitiveCollectionsQueryRela
             """
             SELECT p."Id", p."Bool", p."Bools", p."DateTime", p."DateTimes", p."Enum", p."Enums", p."Int", p."Ints", p."NullableInt", p."NullableInts", p."NullableString", p."NullableStrings", p."NullableWrappedId", p."NullableWrappedIdWithNullableComparer", p."String", p."Strings", p."WrappedId"
             FROM "PrimitiveCollectionsEntity" AS p
-            WHERE list_value(CAST(1 AS INTEGER), 2, 3)[p."Int" + 1] = 1
+            WHERE list_value(1, 2, 3)[p."Int" + 1] = 1
             """);
     }
 
@@ -616,7 +616,7 @@ public class PrimitiveCollectionsQueryDuckDBTest : PrimitiveCollectionsQueryRela
     public override async Task Nullable_reference_column_collection_index_equals_nullable_column()
     {
         await base.Nullable_reference_column_collection_index_equals_nullable_column();
-        
+
         AssertSql(
             """
             SELECT p."Id", p."Bool", p."Bools", p."DateTime", p."DateTimes", p."Enum", p."Enums", p."Int", p."Ints", p."NullableInt", p."NullableInts", p."NullableString", p."NullableStrings", p."NullableWrappedId", p."NullableWrappedIdWithNullableComparer", p."String", p."Strings", p."WrappedId"

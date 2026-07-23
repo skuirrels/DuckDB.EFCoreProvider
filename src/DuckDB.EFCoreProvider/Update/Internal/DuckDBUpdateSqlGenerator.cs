@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
@@ -18,19 +19,28 @@ namespace DuckDB.EFCoreProvider.Update.Internal;
 /// </summary>
 public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 {
-    private readonly bool _isDuckLake;
+    private readonly IDuckDBEngineCapabilities _capabilities;
 
     public DuckDBUpdateSqlGenerator(UpdateSqlGeneratorDependencies dependencies)
-        : this(dependencies, null)
+        : this(dependencies, null, null)
     {
     }
 
     public DuckDBUpdateSqlGenerator(
         UpdateSqlGeneratorDependencies dependencies,
         IDuckLakeSingletonOptions? singletonOptions)
+        : this(dependencies, singletonOptions, null)
+    {
+    }
+
+    public DuckDBUpdateSqlGenerator(
+        UpdateSqlGeneratorDependencies dependencies,
+        IDuckLakeSingletonOptions? singletonOptions,
+        IDuckDBEngineCapabilities? capabilities)
         : base(dependencies)
     {
-        _isDuckLake = singletonOptions?.IsDuckLake == true;
+        _capabilities = capabilities
+            ?? new DuckDBEngineCapabilities(singletonOptions?.IsDuckLake == true);
     }
 
     /// <inheritdoc />
@@ -40,7 +50,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         int commandPosition,
         out bool requiresTransaction)
     {
-        if (!_isDuckLake)
+        if (_capabilities.SupportsReturning)
         {
             return base.AppendInsertOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
         }
@@ -62,7 +72,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         int commandPosition,
         out bool requiresTransaction)
     {
-        if (!_isDuckLake)
+        if (_capabilities.SupportsReturning)
         {
             return base.AppendUpdateOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
         }
@@ -92,7 +102,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         int commandPosition,
         out bool requiresTransaction)
     {
-        if (!_isDuckLake)
+        if (_capabilities.SupportsReturning)
         {
             return base.AppendDeleteOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
         }

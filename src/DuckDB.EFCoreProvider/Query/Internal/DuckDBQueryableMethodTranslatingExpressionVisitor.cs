@@ -121,22 +121,22 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
         switch (sqlExpression.TypeMapping)
         {
             case DuckDBArrayTypeMapping or null:
-            {
-                var (ordinalityColumn, ordinalityComparer) = GenerateOrdinalityIdentifier(tableAlias);
-                selectExpression = new SelectExpression(
-                    [new DuckDBUnnestExpression(tableAlias, sqlExpression, "value")],
-                    new ColumnExpression(
-                        "value",
-                        tableAlias,
-                        elementClrType.UnwrapNullableType(),
-                        elementTypeMapping,
-                        isElementNullable),
-                    identifier: [(ordinalityColumn, ordinalityComparer)],
-                    _queryCompilationContext.SqlAliasManager);
+                {
+                    var (ordinalityColumn, ordinalityComparer) = GenerateOrdinalityIdentifier(tableAlias);
+                    selectExpression = new SelectExpression(
+                        [new DuckDBUnnestExpression(tableAlias, sqlExpression, "value")],
+                        new ColumnExpression(
+                            "value",
+                            tableAlias,
+                            elementClrType.UnwrapNullableType(),
+                            elementTypeMapping,
+                            isElementNullable),
+                        identifier: [(ordinalityColumn, ordinalityComparer)],
+                        _queryCompilationContext.SqlAliasManager);
 
-                selectExpression.AppendOrdering(new OrderingExpression(ordinalityColumn, ascending: true));
-                break;
-            }
+                    selectExpression.AppendOrdering(new OrderingExpression(ordinalityColumn, ascending: true));
+                    break;
+                }
 
             case DuckDBJsonTypeMapping:
                 {
@@ -158,7 +158,7 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
                         _sqlAliasManager);
                     break;
                 }
-            
+
             default:
                 throw new UnreachableException();
         }
@@ -244,22 +244,29 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
     {
         if (!returnDefault && TranslateExpression(index) is { } translatedIndex)
         {
-            switch (source)
+            if (source.TryExtractArray(out var array, out var projectedColumn))
             {
-                case var _ when source.TryExtractArray(out var array, out var projectedColumn):
-                {
-                    return source.UpdateQueryExpression(
-                        new SelectExpression(
-                            _sqlExpressionFactory.ArrayIndex(
-                                array,
-                                GenerateOneBasedIndexExpression(translatedIndex), projectedColumn.IsNullable),
-                            ((RelationalQueryCompilationContext)QueryCompilationContext).SqlAliasManager));
-                }
+                return BuildArrayIndexQuery(source, array, translatedIndex, projectedColumn.IsNullable);
+            }
+
+            if (source.TryConvertToArray(out array))
+            {
+                return BuildArrayIndexQuery(source, array, translatedIndex, nullable: true);
             }
         }
 
         return base.TranslateElementAtOrDefault(source, index, returnDefault);
     }
+
+    private ShapedQueryExpression BuildArrayIndexQuery(
+        ShapedQueryExpression source,
+        SqlExpression array,
+        SqlExpression index,
+        bool nullable)
+        => source.UpdateQueryExpression(
+            new SelectExpression(
+                _sqlExpressionFactory.ArrayIndex(array, GenerateOneBasedIndexExpression(index), nullable),
+                ((RelationalQueryCompilationContext)QueryCompilationContext).SqlAliasManager));
 
     /// <inheritdoc />
     protected override ShapedQueryExpression? TranslateSkip(ShapedQueryExpression source, Expression count)
@@ -367,7 +374,7 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
 
             return new ShapedQueryExpression(selectExpression, shaperExpression);
         }
-        
+
         return base.TranslateTake(source, count);
     }
 
@@ -449,7 +456,7 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
 
             if (source.QueryExpression is SelectExpression
                 {
-                    Tables: [TableValuedFunctionExpression { Name: "json_each", Schema: null, IsBuiltIn: true, Arguments: [var jsonArray] }],
+                    Tables: [DuckDBJsonEachExpression { JsonExpression: var jsonArray }],
                     Predicate: null,
                     GroupBy: [],
                     Having: null,
@@ -594,10 +601,10 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
 
     private static bool IsNaturallyOrderedJsonEach(SelectExpression selectExpression)
         => selectExpression is
-           {
-               Tables: [var mainTable, ..],
-               Orderings: [{ Expression: ColumnExpression { Name: JsonEachKeyColumnName } orderingColumn, IsAscending: true }]
-           }
+        {
+            Tables: [var mainTable, ..],
+            Orderings: [{ Expression: ColumnExpression { Name: JsonEachKeyColumnName } orderingColumn, IsAscending: true }]
+        }
            && orderingColumn.TableAlias == mainTable.Alias
            && IsJsonEachOrWrappedJsonEach(selectExpression, orderingColumn);
 
@@ -621,7 +628,7 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
         => expression is SqlConstantExpression constant
             ? _sqlExpressionFactory.Constant(Convert.ToInt32(constant.Value) + 1, constant.TypeMapping)
             : _sqlExpressionFactory.Add(expression, _sqlExpressionFactory.Constant(1));
-    
+
 #pragma warning disable EF1001 // SelectExpression constructors are currently internal
     private ShapedQueryExpression BuildSimplifiedShapedQuery(ShapedQueryExpression source, SqlExpression translation)
         => source.Update(
@@ -629,7 +636,7 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
             Expression.Convert(
                 new ProjectionBindingExpression(translation, new ProjectionMember(), typeof(bool?)), typeof(bool)));
 #pragma warning restore EF1001
-    
+
     private sealed class FakeMemberInfo(string name) : MemberInfo
     {
         public override string Name { get; } = name;
