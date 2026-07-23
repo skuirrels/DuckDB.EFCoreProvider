@@ -53,9 +53,45 @@ public class DuckDBModelValidator : RelationalModelValidator
         base.Validate(model, logger);
 
         ValidateAutoIncrement(model);
+        ValidateFileSources(model);
         ValidateTieredStores(model);
 
         ValidateEngineCapabilities(model, _capabilities);
+    }
+
+    private static void ValidateFileSources(IModel model)
+    {
+        var tableMappings = new Dictionary<StoreObjectIdentifier, HashSet<IEntityType>>();
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            DuckDBFileSourceDefinition.TryCreate(entityType, out _);
+
+            if (StoreObjectIdentifier.Create(entityType, StoreObjectType.Table) is { } primaryTable)
+            {
+                AddMapping(primaryTable, entityType);
+            }
+
+            foreach (var fragment in entityType.GetMappingFragments(StoreObjectType.Table))
+            {
+                AddMapping(fragment.StoreObject, entityType);
+            }
+        }
+
+        foreach (var (table, entityTypes) in tableMappings)
+        {
+            DuckDBFileSourceDefinition.TryCreate(entityTypes, table.Name, out _);
+        }
+
+        void AddMapping(StoreObjectIdentifier table, IEntityType entityType)
+        {
+            if (!tableMappings.TryGetValue(table, out var entityTypes))
+            {
+                entityTypes = [];
+                tableMappings.Add(table, entityTypes);
+            }
+
+            entityTypes.Add(entityType);
+        }
     }
 
     private static void ValidateEngineCapabilities(IModel model, IDuckDBEngineCapabilities capabilities)
