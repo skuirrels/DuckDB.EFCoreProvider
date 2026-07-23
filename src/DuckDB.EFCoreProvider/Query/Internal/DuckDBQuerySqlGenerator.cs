@@ -203,6 +203,16 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             // SQL has a single authoring/regeneration point (#3). Constructing the expression
             // here rather than emitting directly lets future phases produce these earlier in
             // the query pipeline (e.g. from the SQL translating visitor) for cleaner flattening.
+            if (structInfo.LeafFieldName is null)
+            {
+                // Manual HasStructField configuration may omit the leaf name. Preserve the
+                // documented fallback to the EF column name at the rendering boundary.
+                structInfo = new DuckDBStructFieldInfo(
+                    structInfo.StructColumnName,
+                    [..structInfo.NestedFieldNames],
+                    columnExpression.Name);
+            }
+
             Visit(new DuckDBStructFieldExpression(
                 columnExpression.TableAlias,
                 structInfo.StructColumnName,

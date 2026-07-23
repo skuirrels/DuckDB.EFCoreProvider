@@ -510,18 +510,19 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             {
                 for (var i = 0; i < entries.Count; i++)
                 {
-                    if (!first)
-                    {
-                        commandStringBuilder.Append(", ");
-                    }
-
                     switch (entries[i])
                     {
                         case StandaloneEntry standalone:
+                            if (!first)
+                            {
+                                commandStringBuilder.Append(", ");
+                            }
+
                             commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(standalone.Modification.ParameterName!));
+                            first = false;
                             break;
                         case StructGroupEntry structGroup:
-                                                    // Emit individual sub-field parameters (not struct literals);
+                            // Emit individual sub-field parameters (not struct literals);
                             // the SET clause uses struct_update to apply them selectively.
                             foreach (var (_, mod) in structGroup.Fields)
                             {
@@ -535,8 +536,6 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                             }
                             break;
                     }
-
-                    first = false;
                 }
             }
 

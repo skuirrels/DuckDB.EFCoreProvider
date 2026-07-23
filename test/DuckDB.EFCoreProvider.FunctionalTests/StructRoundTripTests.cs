@@ -14,6 +14,9 @@ public class StructRoundTripTests : DuckDBTestBase
     private StructContext CreateContext()
         => new(FileOptions<StructContext>());
 
+    private StructContext CreateBatchingContext()
+        => new(FileOptions<StructContext>(duckdb => duckdb.EnableBulkUpdateBatching()));
+
     [ConditionalFact]
     public void Struct_complex_property_inserts_and_reads_back()
     {
@@ -108,6 +111,44 @@ public class StructRoundTripTests : DuckDBTestBase
             var customer = context.Set<Customer>().Single(x => x.Id == 1);
             Assert.Equal("Boston", customer.Location.City);
             Assert.Equal("US", customer.Location.Country);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_bulk_update_batching_works()
+    {
+        using (var context = CreateBatchingContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                Enumerable.Range(1, 10)
+                    .Select(id => new Customer
+                    {
+                        Id = id,
+                        Location = new Address { City = $"City-{id}", Country = "US" }
+                    }));
+            context.SaveChanges();
+        }
+
+        using (var context = CreateBatchingContext())
+        {
+            foreach (var customer in context.Set<Customer>().OrderBy(customer => customer.Id))
+            {
+                customer.Location.City = $"Updated-{customer.Id}";
+            }
+
+            context.SaveChanges();
+        }
+
+        using (var context = CreateBatchingContext())
+        {
+            var customers = context.Set<Customer>()
+                .OrderBy(customer => customer.Id)
+                .ToList();
+
+            Assert.Equal(10, customers.Count);
+            Assert.All(customers, customer =>
+                Assert.Equal($"Updated-{customer.Id}", customer.Location.City));
         }
     }
 
