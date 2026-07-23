@@ -38,7 +38,7 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
     public DuckDBModificationCommandBatchFactory(
         ModificationCommandBatchFactoryDependencies dependencies,
         IDbContextOptions options)
-        : this(dependencies, options, null)
+        : this(dependencies, options, DuckDBEngineCapabilities.FromOptions(options))
     {
     }
 
@@ -54,8 +54,7 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
         _bulkInsertBatching = optionsExtension?.BulkInsertBatching ?? false;
         _bulkUpdateBatching = optionsExtension?.BulkUpdateBatching ?? false;
         _bulkDeleteBatching = optionsExtension?.BulkDeleteBatching ?? false;
-        _capabilities = capabilities
-            ?? new DuckDBEngineCapabilities(optionsExtension?.DuckLakeOptions is not null);
+        _capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
 
         if (_maxBatchSize <= 0)
         {
@@ -70,22 +69,23 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
 
     public ModificationCommandBatch Create()
     {
-        if (!_capabilities.SupportsSaveChangesBatching)
-        {
-            if (_bulkInsertBatching || _bulkUpdateBatching || _bulkDeleteBatching)
-            {
-                throw new NotSupportedException(
-                    "SaveChanges batching is not supported by the DuckLake profile because DuckLake does not expose "
-                    + "RETURNING result sets. Use the appender-based BulkInsert or the MERGE-based Upsert API instead.");
-            }
+        var batchingEnabled = _bulkInsertBatching || _bulkUpdateBatching || _bulkDeleteBatching;
 
-            return new DuckLakeModificationCommandBatch(Dependencies);
+        if (batchingEnabled && !_capabilities.SupportsSaveChangesBatching)
+        {
+            throw new NotSupportedException(
+                DuckDBCapabilityErrorMessages.SaveChangesBatchingNotSupported);
+        }
+
+        if (!_capabilities.SupportsReturning)
+        {
+            return new DuckDBNonReturningModificationCommandBatch(Dependencies);
         }
 
         // Insert/update/delete batching changes failure semantics to be atomic per merged run, so it is
         // opt-in. When none is enabled, fall back to EF Core's one-command-per-batch behaviour, preserving
         // standard semantics.
-        return _bulkInsertBatching || _bulkUpdateBatching || _bulkDeleteBatching
+        return batchingEnabled
             ? new DuckDBModificationCommandBatch(
                 Dependencies, _maxBatchSize, _bulkInsertBatching, _bulkUpdateBatching, _bulkDeleteBatching)
             : new SingularModificationCommandBatch(Dependencies);

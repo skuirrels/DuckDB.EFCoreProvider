@@ -15,10 +15,10 @@ internal static class DuckDBBulkUpdatePlanner
 
         return command.EntityState == EntityState.Modified
             && command.StoreStoredProcedure is null
-            && HasRole(command, ColumnRole.Write)
-            && !HasRole(command, ColumnRole.Read)
-            && AllConditionsAreKeys(command)
-            && HasRole(command, ColumnRole.Condition);
+            && DuckDBModificationCommandShape.HasColumns(command, DuckDBModificationColumnRole.Write)
+            && !DuckDBModificationCommandShape.HasColumns(command, DuckDBModificationColumnRole.Read)
+            && DuckDBModificationCommandShape.AllConditionsAreKeys(command)
+            && DuckDBModificationCommandShape.HasColumns(command, DuckDBModificationColumnRole.Condition);
     }
 
     public static bool CanAppend(
@@ -32,8 +32,14 @@ internal static class DuckDBBulkUpdatePlanner
             && CanPlan(second)
             && first.TableName == second.TableName
             && first.Schema == second.Schema
-            && ColumnNamesEqual(first, second, ColumnRole.Write)
-            && ColumnNamesEqual(first, second, ColumnRole.Condition);
+            && DuckDBModificationCommandShape.ColumnNamesEqual(
+                first,
+                second,
+                DuckDBModificationColumnRole.Write)
+            && DuckDBModificationCommandShape.ColumnNamesEqual(
+                first,
+                second,
+                DuckDBModificationColumnRole.Condition);
     }
 
     public static bool TryCreate(
@@ -60,8 +66,12 @@ internal static class DuckDBBulkUpdatePlanner
 
         plan = new DuckDBBulkUpdatePlan(
             commands,
-            CountColumns(firstCommand, ColumnRole.Condition),
-            CountColumns(firstCommand, ColumnRole.Write));
+            DuckDBModificationCommandShape.CountColumns(
+                firstCommand,
+                DuckDBModificationColumnRole.Condition),
+            DuckDBModificationCommandShape.CountColumns(
+                firstCommand,
+                DuckDBModificationColumnRole.Write));
         return true;
     }
 
@@ -71,103 +81,6 @@ internal static class DuckDBBulkUpdatePlanner
             : throw new ArgumentException(
                 "Bulk update commands must be eligible updates with matching tables, schemas, condition columns, and write columns.",
                 nameof(commands));
-
-    private static bool HasRole(IReadOnlyModificationCommand command, ColumnRole role)
-    {
-        var modifications = command.ColumnModifications;
-        for (var i = 0; i < modifications.Count; i++)
-        {
-            if (HasRole(modifications[i], role))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool AllConditionsAreKeys(IReadOnlyModificationCommand command)
-    {
-        var modifications = command.ColumnModifications;
-        for (var i = 0; i < modifications.Count; i++)
-        {
-            var modification = modifications[i];
-            if (modification.IsCondition && !modification.IsKey)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool ColumnNamesEqual(
-        IReadOnlyModificationCommand first,
-        IReadOnlyModificationCommand second,
-        ColumnRole role)
-    {
-        var firstModifications = first.ColumnModifications;
-        var secondModifications = second.ColumnModifications;
-        int firstIndex = 0, secondIndex = 0;
-
-        while (true)
-        {
-            while (firstIndex < firstModifications.Count && !HasRole(firstModifications[firstIndex], role))
-            {
-                firstIndex++;
-            }
-
-            while (secondIndex < secondModifications.Count && !HasRole(secondModifications[secondIndex], role))
-            {
-                secondIndex++;
-            }
-
-            var firstDone = firstIndex >= firstModifications.Count;
-            var secondDone = secondIndex >= secondModifications.Count;
-            if (firstDone || secondDone)
-            {
-                return firstDone && secondDone;
-            }
-
-            if (firstModifications[firstIndex].ColumnName != secondModifications[secondIndex].ColumnName)
-            {
-                return false;
-            }
-
-            firstIndex++;
-            secondIndex++;
-        }
-    }
-
-    private static int CountColumns(IReadOnlyModificationCommand command, ColumnRole role)
-    {
-        var modifications = command.ColumnModifications;
-        var count = 0;
-        for (var i = 0; i < modifications.Count; i++)
-        {
-            if (HasRole(modifications[i], role))
-            {
-                count++;
-            }
-        }
-
-        return count;
-    }
-
-    private static bool HasRole(IColumnModification modification, ColumnRole role)
-        => role switch
-        {
-            ColumnRole.Write => modification.IsWrite,
-            ColumnRole.Read => modification.IsRead,
-            _ => modification.IsCondition
-        };
-
-    private enum ColumnRole
-    {
-        Write,
-        Read,
-        Condition
-    }
 }
 
 /// <summary>
@@ -218,6 +131,16 @@ internal sealed class DuckDBBulkUpdatePlan
 
     public string GetWriteColumnName(int index)
         => _commands[0].ColumnModifications[_writeIndexes[index]].ColumnName;
+
+    public void CollectWriteColumns(int rowIndex, List<IColumnModification> target)
+    {
+        target.Clear();
+        var start = rowIndex * _writeColumnCount;
+        for (var i = 0; i < _writeColumnCount; i++)
+        {
+            target.Add(_commands[rowIndex].ColumnModifications[_writeIndexes[start + i]]);
+        }
+    }
 
     public string GetOriginalKeyParameterName(int rowIndex, int keyIndex)
         => _commands[rowIndex].ColumnModifications[_keyIndexes[(rowIndex * _keyColumnCount) + keyIndex]].OriginalParameterName!;
