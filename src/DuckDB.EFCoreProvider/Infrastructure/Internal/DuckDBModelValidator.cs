@@ -24,7 +24,7 @@ public class DuckDBModelValidator : RelationalModelValidator
     public DuckDBModelValidator(
         ModelValidatorDependencies dependencies,
         RelationalModelValidatorDependencies relationalDependencies)
-        : this(dependencies, relationalDependencies, null, null)
+        : this(dependencies, relationalDependencies, null, DuckDBEngineCapabilities.Native)
     {
     }
 
@@ -32,7 +32,11 @@ public class DuckDBModelValidator : RelationalModelValidator
         ModelValidatorDependencies dependencies,
         RelationalModelValidatorDependencies relationalDependencies,
         IDuckLakeSingletonOptions? singletonOptions)
-        : this(dependencies, relationalDependencies, singletonOptions, null)
+        : this(
+            dependencies,
+            relationalDependencies,
+            singletonOptions,
+            DuckDBEngineCapabilities.FromDuckLakeOptions(singletonOptions))
     {
     }
 
@@ -43,8 +47,8 @@ public class DuckDBModelValidator : RelationalModelValidator
         IDuckDBEngineCapabilities? capabilities)
         : base(dependencies, relationalDependencies)
     {
-        _capabilities = capabilities
-            ?? new DuckDBEngineCapabilities(singletonOptions?.IsDuckLake == true);
+        _ = singletonOptions;
+        _capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
     }
 
     /// <inheritdoc />
@@ -99,7 +103,7 @@ public class DuckDBModelValidator : RelationalModelValidator
         if (!capabilities.SupportsSequences && model.GetSequences().Any())
         {
             throw new InvalidOperationException(
-                "DuckLake does not support sequences. Configure client-assigned keys or a client-side value generator.");
+                DuckDBCapabilityErrorMessages.SequencesNotSupported);
         }
 
         foreach (var entityType in model.GetEntityTypes())
@@ -107,8 +111,7 @@ public class DuckDBModelValidator : RelationalModelValidator
             if (!capabilities.SupportsTieredStorage && entityType.GetTieredStoreRole() is not null)
             {
                 throw new InvalidOperationException(
-                    $"Entity '{entityType.DisplayName()}' enables provider tiered storage. DuckLake already owns the data-file "
-                    + "lifecycle, so the DuckDB tiered-storage feature cannot be combined with a DuckLake profile.");
+                    DuckDBCapabilityErrorMessages.TieredStorageNotSupported(entityType.DisplayName()));
             }
 
             foreach (var property in entityType.GetProperties())
@@ -117,23 +120,22 @@ public class DuckDBModelValidator : RelationalModelValidator
                     && property.GetValueGenerationStrategy() == DuckDBValueGenerationStrategy.AutoIncrement)
                 {
                     throw new InvalidOperationException(
-                        $"DuckLake does not support auto-increment or sequence-backed values. Property "
-                        + $"'{entityType.DisplayName()}.{property.Name}' must use a client-assigned value.");
+                        DuckDBCapabilityErrorMessages.AutoIncrementNotSupported(
+                            $"{entityType.DisplayName()}.{property.Name}"));
                 }
 
                 if (!capabilities.SupportsGeneratedColumns && property.GetComputedColumnSql() is not null)
                 {
                     throw new InvalidOperationException(
-                        $"DuckLake does not support generated columns. Property "
-                        + $"'{entityType.DisplayName()}.{property.Name}' must be computed by the application.");
+                        DuckDBCapabilityErrorMessages.GeneratedColumnNotSupported(
+                            $"{entityType.DisplayName()}.{property.Name}"));
                 }
 
                 if (!capabilities.SupportsSqlDefaultExpressions && property.GetDefaultValueSql() is not null)
                 {
                     throw new InvalidOperationException(
-                        $"DuckLake only supports literal defaults. Property '{entityType.DisplayName()}.{property.Name}' "
-                        + "uses a SQL default expression; assign the value in the application instead. A literal "
-                        + "HasDefaultValue(...) may be retained only with ValueGeneratedNever().");
+                        DuckDBCapabilityErrorMessages.SqlDefaultExpressionNotSupported(
+                            $"{entityType.DisplayName()}.{property.Name}"));
                 }
 
                 if (property.FindAnnotation(RelationalAnnotationNames.DefaultValue) is not null
@@ -141,17 +143,16 @@ public class DuckDBModelValidator : RelationalModelValidator
                     && property.ValueGenerated != ValueGenerated.Never)
                 {
                     throw new InvalidOperationException(
-                        $"DuckLake can store a literal default for '{entityType.DisplayName()}.{property.Name}', but EF cannot "
-                        + "read that generated value back because DuckLake does not support RETURNING. Configure "
-                        + "ValueGeneratedNever() and assign the value in tracked writes, or remove the default.");
+                        DuckDBCapabilityErrorMessages.LiteralDefaultCannotBeRead(
+                            $"{entityType.DisplayName()}.{property.Name}"));
                 }
 
                 if (!capabilities.SupportsReturning
                     && property.ValueGenerated is ValueGenerated.OnUpdate or ValueGenerated.OnAddOrUpdate)
                 {
                     throw new InvalidOperationException(
-                        $"DuckLake cannot read store-generated values for '{entityType.DisplayName()}.{property.Name}'. "
-                        + "Compute and assign the value in the application instead.");
+                        DuckDBCapabilityErrorMessages.StoreGeneratedValueCannotBeRead(
+                            $"{entityType.DisplayName()}.{property.Name}"));
                 }
             }
         }

@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace DuckDB.EFCoreProvider.Internal;
 
@@ -7,10 +8,21 @@ namespace DuckDB.EFCoreProvider.Internal;
 /// </summary>
 internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
 {
+    internal static IDuckDBEngineCapabilities Native { get; } = new DuckDBEngineCapabilities(false);
+
     public DuckDBEngineCapabilities(IDuckLakeSingletonOptions duckLakeOptions)
         : this(duckLakeOptions.IsDuckLake)
     {
     }
+
+    internal static IDuckDBEngineCapabilities FromDuckLakeProfile(bool isDuckLake)
+        => isDuckLake ? new DuckDBEngineCapabilities(true) : Native;
+
+    internal static IDuckDBEngineCapabilities FromDuckLakeOptions(IDuckLakeSingletonOptions? options)
+        => FromDuckLakeProfile(options?.IsDuckLake == true);
+
+    internal static IDuckDBEngineCapabilities FromOptions(IDbContextOptions options)
+        => FromDuckLakeProfile(options.FindExtension<DuckDBOptionsExtension>()?.DuckLakeOptions is not null);
 
     internal DuckDBEngineCapabilities(bool isDuckLake)
     {

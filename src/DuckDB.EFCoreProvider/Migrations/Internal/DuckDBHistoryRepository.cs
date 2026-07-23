@@ -16,11 +16,6 @@ public class DuckDBHistoryRepository : HistoryRepository
 {
     private readonly IDuckDBEngineCapabilities _capabilities;
 
-    private const string MigrationsNotSupportedMessage =
-        "EF Core migrations are not supported by the configured DuckDB engine capabilities. The active backend "
-        + "does not provide the schema constraints and/or locking semantics required by EF's migrations history "
-        + "contract. Use Database.EnsureCreated() for a new catalog, and apply reviewed schema-evolution SQL explicitly.";
-
     private const string IdempotentScriptsNotSupportedMessage =
         "Generating idempotent scripts for migrations is not supported by DuckDB, which has no procedural"
         + " IF blocks to guard each migration. Generate a plain script ('dotnet ef migrations script'), or"
@@ -174,7 +169,7 @@ public class DuckDBHistoryRepository : HistoryRepository
     {
         if (!_capabilities.SupportsEfMigrations)
         {
-            throw new NotSupportedException(MigrationsNotSupportedMessage);
+            throw new NotSupportedException(DuckDBCapabilityErrorMessages.MigrationsNotSupported);
         }
     }
 
