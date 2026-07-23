@@ -3,10 +3,12 @@ using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using DuckDB.EFCoreProvider.Migrations;
+using DuckDB.EFCoreProvider.Update.Internal;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.EntityFrameworkCore.Update;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -204,6 +206,65 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.Equal(1, context.SaveChanges());
         Assert.NotEqual(0, item.Id);
         Assert.Equal(item.Id, context.DefaultKeyItems.AsNoTracking().Single().Id);
+    }
+
+    [ConditionalFact]
+    public void SaveChanges_batching_and_returning_capabilities_are_independent()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<BatchingWithoutReturningCapabilities>();
+        var options = new DbContextOptionsBuilder<CapabilityContext>(
+                FileOptions<CapabilityContext>(duckDB => duckDB
+                    .EnableBulkInsertBatching()
+                    .EnableBulkUpdateBatching()
+                    .EnableBulkDeleteBatching()))
+            .UseInternalServiceProvider(serviceProvider)
+            .Options;
+        using var context = new CapabilityContext(options);
+        context.Database.EnsureCreated();
+
+        var batchFactory = context.GetService<IModificationCommandBatchFactory>();
+        Assert.IsType<DuckDBModificationCommandBatch>(batchFactory.Create());
+
+        context.AddRange(
+            new CapabilityItem { Id = 1, Name = "first" },
+            new CapabilityItem { Id = 2, Name = "second" });
+
+        Assert.Equal(2, context.SaveChanges());
+        Assert.Equal(2, context.CapabilityItems.Count());
+
+        foreach (var item in context.CapabilityItems)
+        {
+            item.Name += "-updated";
+        }
+
+        Assert.Equal(2, context.SaveChanges());
+        context.ChangeTracker.Clear();
+        Assert.All(
+            context.CapabilityItems.AsNoTracking(),
+            item => Assert.EndsWith("-updated", item.Name));
+
+        context.RemoveRange(context.CapabilityItems);
+
+        Assert.Equal(2, context.SaveChanges());
+        Assert.Empty(context.CapabilityItems);
+    }
+
+    [ConditionalFact]
+    public void SaveChanges_batching_without_returning_rejects_store_generated_values()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<BatchingWithoutReturningCapabilities>();
+        var options = new DbContextOptionsBuilder<DefaultKeyContext>(
+                FileOptions<DefaultKeyContext>(duckDB => duckDB.EnableBulkInsertBatching()))
+            .UseInternalServiceProvider(serviceProvider)
+            .Options;
+        using var context = new DefaultKeyContext(options);
+        context.Database.EnsureCreated();
+        context.AddRange(new DefaultKeyItem(), new DefaultKeyItem());
+
+        var exception = Assert.Throws<NotSupportedException>(() => context.SaveChanges());
+
+        Assert.Contains("does not support INSERT/UPDATE RETURNING", exception.Message);
+        Assert.Contains("store-generated", exception.Message);
     }
 
     [ConditionalFact]
@@ -569,6 +630,11 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     {
         public override bool SupportsReturning => false;
         public override bool SupportsSaveChangesBatching => false;
+    }
+
+    private sealed class BatchingWithoutReturningCapabilities : NativeCapabilities
+    {
+        public override bool SupportsReturning => false;
     }
 
     private sealed class NoTieredStorageCapabilities : NativeCapabilities
