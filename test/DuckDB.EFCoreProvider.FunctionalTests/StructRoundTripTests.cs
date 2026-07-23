@@ -333,8 +333,8 @@ public class StructRoundTripTests : DuckDBTestBase
             var result = context.Set<Account>()
                             .Select(a => new { BillingCity = a.Billing.City, ShippingCity = a.Shipping.City })
                             .Single();
-                        Assert.Equal("Seattle", result.BillingCity);
-                        Assert.Equal("Portland", result.ShippingCity);
+            Assert.Equal("Seattle", result.BillingCity);
+            Assert.Equal("Portland", result.ShippingCity);
         }
     }
 
@@ -379,6 +379,73 @@ public class StructRoundTripTests : DuckDBTestBase
                 .Select(i => i.Tags.Label)
                 .ToList();
             Assert.Equal(["gadget"], items);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_field_names_with_quotes_round_trip_and_update()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new EscapedNameItem
+            {
+                Id = 1,
+                Details = new EscapedNameDetails { Value = "initial" }
+            });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var item = context.Set<EscapedNameItem>()
+                .Single(item => item.Details.Value == "initial");
+            item.Details.Value = "updated";
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            Assert.Equal(
+                "updated",
+                context.Set<EscapedNameItem>()
+                    .Select(item => item.Details.Value)
+                    .Single());
+        }
+    }
+
+    [ConditionalFact]
+    public void Nested_struct_field_names_with_quotes_round_trip_and_update()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new EscapedNestedItem
+            {
+                Id = 1,
+                Container = new EscapedNestedContainer
+                {
+                    Details = new EscapedNameDetails { Value = "initial" }
+                }
+            });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var item = context.Set<EscapedNestedItem>()
+                .Single(item => item.Container.Details.Value == "initial");
+            item.Container.Details.Value = "updated";
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            Assert.Equal(
+                "updated",
+                context.Set<EscapedNestedItem>()
+                    .Select(item => item.Container.Details.Value)
+                    .Single());
         }
     }
 
@@ -498,12 +565,30 @@ public class StructRoundTripTests : DuckDBTestBase
 
             modelBuilder.Entity<LabeledItem>(e =>
             {
-        e.Property(p => p.Id).ValueGeneratedNever();
-        e.ComplexProperty(c => c.Tags, b =>
-        {
-            b.Property(t => t.Category).HasColumnName("cat").HasStructField("category");
-            b.Property(t => t.Label).HasColumnName("lbl").HasStructField("label");
-        });
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Tags, b =>
+                {
+                    b.Property(t => t.Category).HasColumnName("cat").HasStructField("category");
+                    b.Property(t => t.Label).HasColumnName("lbl").HasStructField("label");
+                });
+            });
+
+            modelBuilder.Entity<EscapedNameItem>(entity =>
+            {
+                entity.Property(item => item.Id).ValueGeneratedNever();
+                entity.ComplexProperty(item => item.Details, details =>
+                    details.Property(detail => detail.Value)
+                        .HasColumnName("customer's \"city\""));
+            });
+
+            modelBuilder.Entity<EscapedNestedItem>(entity =>
+            {
+                entity.Property(item => item.Id).ValueGeneratedNever();
+                entity.ComplexProperty(item => item.Container, container =>
+                    container.ComplexProperty(value => value.Details, details =>
+                        details.Property(detail => detail.Value)
+                            .HasColumnName("select value")
+                            .HasStructField("Container", "customer's \"details\"")));
             });
         }
     }
@@ -569,5 +654,31 @@ public class StructRoundTripTests : DuckDBTestBase
     {
         public required string Category { get; set; }
         public required string Label { get; set; }
+    }
+
+    private sealed class EscapedNameItem
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public required EscapedNameDetails Details { get; set; }
+    }
+
+    private sealed class EscapedNameDetails
+    {
+        public required string Value { get; set; }
+    }
+
+    private sealed class EscapedNestedItem
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public required EscapedNestedContainer Container { get; set; }
+    }
+
+    private sealed class EscapedNestedContainer
+    {
+        public required EscapedNameDetails Details { get; set; }
     }
 }

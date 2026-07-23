@@ -229,9 +229,8 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         /// <summary>
         ///     Renders a DuckDB struct field access expression:
         ///     <c>alias."StructColumn".nested1.nested2.leaf</c>. The alias and struct column
-        ///     name are delimited (per SQL convention); intermediate nested field names and
-        ///     the leaf field name are appended unquoted (DuckDB struct field names are
-        ///     case-sensitive lowercase identifiers).
+        ///     name and every field path segment are delimited so explicitly configured
+        ///     names containing spaces, quotes, or reserved words remain valid.
         /// </summary>
         /// <remarks>
         ///     This is the single rendering path for <see cref="DuckDBStructFieldExpression" />.
@@ -245,11 +244,11 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
                .Append(".")
                .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structFieldExpression.StructColumnName));
 
-            // Intermediate nested field names are appended unquoted: DuckDB struct field names
-            // are case-sensitive lowercase identifiers and don't support quoting.
+            // Delimit each configured path segment; DuckDB accepts quoted identifiers for
+            // STRUCT dot access and requires them for non-ordinary identifiers.
             foreach (var field in structFieldExpression.StructFieldInfo.NestedFieldNames)
             {
-                Sql.Append(".").Append(field);
+                Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(field));
             }
 
             // Leaf field name: use the DuckDB-specific name if set. The convention and
@@ -258,7 +257,7 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
                 ?? throw new InvalidOperationException(
                     $"DuckDB struct field metadata for column '{structFieldExpression.StructColumnName}' is missing a leaf field name.");
 
-            Sql.Append(".").Append(leafFieldName);
+            Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(leafFieldName));
 
             return structFieldExpression;
         }
