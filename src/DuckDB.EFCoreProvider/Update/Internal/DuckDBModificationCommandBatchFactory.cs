@@ -71,10 +71,16 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
     {
         var batchingEnabled = _bulkInsertBatching || _bulkUpdateBatching || _bulkDeleteBatching;
 
-        if (batchingEnabled && !_capabilities.SupportsSaveChangesBatching)
+        if (batchingEnabled)
         {
-            throw new NotSupportedException(
-                DuckDBCapabilityErrorMessages.SaveChangesBatchingNotSupported);
+            if (!_capabilities.SupportsSaveChangesBatching)
+            {
+                throw new NotSupportedException(
+                    DuckDBCapabilityErrorMessages.SaveChangesBatchingNotSupported);
+            }
+
+            return new DuckDBModificationCommandBatch(
+                Dependencies, _maxBatchSize, _bulkInsertBatching, _bulkUpdateBatching, _bulkDeleteBatching);
         }
 
         if (!_capabilities.SupportsReturning)
@@ -85,9 +91,6 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
         // Insert/update/delete batching changes failure semantics to be atomic per merged run, so it is
         // opt-in. When none is enabled, fall back to EF Core's one-command-per-batch behaviour, preserving
         // standard semantics.
-        return batchingEnabled
-            ? new DuckDBModificationCommandBatch(
-                Dependencies, _maxBatchSize, _bulkInsertBatching, _bulkUpdateBatching, _bulkDeleteBatching)
-            : new SingularModificationCommandBatch(Dependencies);
+        return new SingularModificationCommandBatch(Dependencies);
     }
 }
