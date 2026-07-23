@@ -1,4 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions.Infrastructure;
 
@@ -9,7 +10,7 @@ namespace DuckDB.EFCoreProvider.Metadata.Conventions;
 /// </summary>
 public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
 {
-    private readonly IDuckLakeSingletonOptions? _duckLakeSingletonOptions;
+    private readonly IDuckDBEngineCapabilities _capabilities;
 
     /// <summary>
     ///     Creates a new instance of <see cref="DuckDBConventionSetBuilder" />.
@@ -19,7 +20,7 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
     public DuckDBConventionSetBuilder(
         ProviderConventionSetBuilderDependencies dependencies,
         RelationalConventionSetBuilderDependencies relationalDependencies)
-        : this(dependencies, relationalDependencies, null)
+        : this(dependencies, relationalDependencies, null, null)
     {
     }
 
@@ -31,9 +32,24 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
         ProviderConventionSetBuilderDependencies dependencies,
         RelationalConventionSetBuilderDependencies relationalDependencies,
         IDuckLakeSingletonOptions? duckLakeSingletonOptions)
+        : this(dependencies, relationalDependencies, duckLakeSingletonOptions, null)
+    {
+    }
+
+    /// <summary>Creates a convention-set builder with the configured engine capabilities.</summary>
+    /// <param name="dependencies">The core dependencies for this service.</param>
+    /// <param name="relationalDependencies">The relational dependencies for this service.</param>
+    /// <param name="duckLakeSingletonOptions">Backend options used only when capabilities are not supplied.</param>
+    /// <param name="capabilities">Capabilities that drive provider conventions.</param>
+    public DuckDBConventionSetBuilder(
+        ProviderConventionSetBuilderDependencies dependencies,
+        RelationalConventionSetBuilderDependencies relationalDependencies,
+        IDuckLakeSingletonOptions? duckLakeSingletonOptions,
+        IDuckDBEngineCapabilities? capabilities)
         : base(dependencies, relationalDependencies)
     {
-        _duckLakeSingletonOptions = duckLakeSingletonOptions;
+        _capabilities = capabilities
+            ?? new DuckDBEngineCapabilities(duckLakeSingletonOptions?.IsDuckLake == true);
     }
 
     /// <summary>
@@ -60,7 +76,7 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
         var valueGenerationConvention = new DuckDBValueGenerationConvention(
             Dependencies,
             RelationalDependencies,
-            _duckLakeSingletonOptions?.IsDuckLake == true);
+            _capabilities);
         conventionSet.Replace<RelationalValueGenerationConvention>(valueGenerationConvention);
         conventionSet.ModelFinalizingConventions.Add(valueGenerationConvention);
 

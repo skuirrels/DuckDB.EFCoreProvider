@@ -1,6 +1,9 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Update.Internal;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using System.Data.Common;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -11,6 +14,14 @@ public class BulkDeleteBatchingTests : DuckDBTestBase
         => new(FileOptions<DeleteContext>(duckdb => duckdb
             .EnableBulkInsertBatching()
             .EnableBulkDeleteBatching()));
+
+    private DeleteContext CreateContext(DbCommandInterceptor interceptor)
+        => new(new DbContextOptionsBuilder<DeleteContext>(
+                FileOptions<DeleteContext>(duckdb => duckdb
+                    .EnableBulkInsertBatching()
+                    .EnableBulkDeleteBatching()))
+            .AddInterceptors(interceptor)
+            .Options);
 
     [ConditionalFact]
     public void SaveChanges_with_delete_batching_removes_only_targeted_rows()
@@ -156,6 +167,84 @@ public class BulkDeleteBatchingTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void SaveChanges_with_delete_batching_preserves_planned_sql_shapes()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Item { Id = 1, Name = "one" },
+                new Item { Id = 2, Name = "two" },
+                new CompositeItem { KeyA = 1, KeyB = 10, Name = "first" },
+                new CompositeItem { KeyA = 2, KeyB = 20, Name = "second" });
+            context.SaveChanges();
+        }
+
+        var interceptor = new CommandCaptureInterceptor();
+        using (var context = CreateContext(interceptor))
+        {
+            context.Items.RemoveRange(context.Items);
+            context.CompositeItems.RemoveRange(context.CompositeItems);
+            context.SaveChanges();
+        }
+
+        var sql = string.Join(
+            Environment.NewLine,
+            interceptor.CommandTexts.Where(commandText => commandText.Contains("DELETE ", StringComparison.Ordinal)));
+        Assert.Equal(2, sql.Split("DELETE FROM ", StringSplitOptions.None).Length - 1);
+        Assert.Contains("DELETE FROM \"Items\" WHERE \"Id\" IN (", sql);
+        Assert.Contains("DELETE FROM \"CompositeItems\" USING (VALUES ", sql);
+        Assert.Contains("AS v(\"KeyA\", \"KeyB\")", sql);
+        Assert.Contains(
+            "WHERE \"CompositeItems\".\"KeyA\" = v.\"KeyA\" AND \"CompositeItems\".\"KeyB\" = v.\"KeyB\"",
+            sql);
+    }
+
+    [ConditionalFact]
+    public void Bulk_delete_planner_rejects_an_empty_command_run()
+    {
+        Assert.False(DuckDBBulkDeletePlanner.TryCreate([], out var plan));
+        Assert.Null(plan);
+    }
+
+    [ConditionalFact]
+    public void SaveChanges_with_delete_batching_preserves_concurrency_checks()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new ConcurrencyItem { Id = 1, Name = "original", Version = 1 });
+            context.SaveChanges();
+        }
+
+        var interceptor = new CommandCaptureInterceptor();
+        using var staleContext = CreateContext(interceptor);
+        var staleItem = staleContext.ConcurrencyItems.Single(item => item.Id == 1);
+
+        using (var currentContext = CreateContext())
+        {
+            var currentItem = currentContext.ConcurrencyItems.Single(item => item.Id == 1);
+            currentItem.Name = "changed";
+            currentItem.Version = 2;
+            currentContext.SaveChanges();
+        }
+
+        staleContext.Remove(staleItem);
+
+        Assert.Throws<DbUpdateConcurrencyException>(() => staleContext.SaveChanges());
+
+        var deleteSql = Assert.Single(interceptor.CommandTexts.Where(
+            commandText => commandText.Contains("DELETE FROM \"ConcurrencyItems\"", StringComparison.Ordinal)));
+        Assert.Contains("\"Id\"", deleteSql);
+        Assert.Contains("\"Version\"", deleteSql);
+        Assert.DoesNotContain(" IN (", deleteSql);
+        Assert.DoesNotContain(" USING (VALUES ", deleteSql);
+
+        using var verification = CreateContext();
+        Assert.Equal(2, verification.ConcurrencyItems.Single(item => item.Id == 1).Version);
+    }
+
+    [ConditionalFact]
     public void EnableBulkDeleteBatching_sets_the_option_and_is_off_by_default()
     {
         using (var enabled = CreateContext())
@@ -176,12 +265,18 @@ public class BulkDeleteBatchingTests : DuckDBTestBase
         public DbSet<CompositeItem> CompositeItems => Set<CompositeItem>();
         public DbSet<Parent> Parents => Set<Parent>();
         public DbSet<Child> Children => Set<Child>();
+        public DbSet<ConcurrencyItem> ConcurrencyItems => Set<ConcurrencyItem>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<Item>().Property(e => e.Id).ValueGeneratedNever();
             modelBuilder.Entity<CompositeItem>().HasKey(e => new { e.KeyA, e.KeyB });
             modelBuilder.Entity<Parent>().Property(e => e.Id).ValueGeneratedNever();
+            modelBuilder.Entity<ConcurrencyItem>(entity =>
+            {
+                entity.Property(e => e.Id).ValueGeneratedNever();
+                entity.Property(e => e.Version).IsConcurrencyToken();
+            });
             modelBuilder.Entity<Child>(child =>
             {
                 child.Property(e => e.Id).ValueGeneratedNever();
@@ -220,5 +315,35 @@ public class BulkDeleteBatchingTests : DuckDBTestBase
         public int Id { get; set; }
         public int ParentId { get; set; }
         public string Label { get; set; } = "";
+    }
+
+    private sealed class ConcurrencyItem
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public int Version { get; set; }
+    }
+
+    private sealed class CommandCaptureInterceptor : DbCommandInterceptor
+    {
+        public List<string> CommandTexts { get; } = [];
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result)
+        {
+            CommandTexts.Add(command.CommandText);
+            return result;
+        }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            CommandTexts.Add(command.CommandText);
+            return result;
+        }
     }
 }

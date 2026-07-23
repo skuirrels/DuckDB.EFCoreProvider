@@ -42,7 +42,7 @@ public static class DuckDBUpsertExtensions
     private const int DefaultBatchSize = 100;
 
     private static readonly ConcurrentDictionary<
-        (IEntityType EntityType, string? Schema, string Table, bool IsDuckLake),
+        (IEntityType EntityType, string? Schema, string Table, DuckDBUpsertStrategy Strategy),
         UpsertPlan> PlanCache = new();
 
     /// <summary>
@@ -304,11 +304,10 @@ public static class DuckDBUpsertExtensions
         var table = entityType.GetTableName()
             ?? throw new InvalidOperationException($"'{clrType.Name}' is not mapped to a table; upsert is not supported.");
         var schema = entityType.GetSchema();
-        var isDuckLake = context.GetService<IDbContextOptions>()
-            .FindExtension<DuckDBOptionsExtension>()?.DuckLakeOptions is not null;
-        var cacheKey = (entityType, schema, table, isDuckLake);
+        var strategy = context.GetService<IDuckDBEngineCapabilities>().UpsertStrategy;
+        var cacheKey = (entityType, schema, table, strategy);
 
-        return PlanCache.GetOrAdd(cacheKey, _ => BuildPlan(context, entityType, table, schema, isDuckLake));
+        return PlanCache.GetOrAdd(cacheKey, _ => BuildPlan(context, entityType, table, schema, strategy));
     }
 
     private static UpsertPlan BuildPlan(
@@ -316,7 +315,7 @@ public static class DuckDBUpsertExtensions
         IEntityType entityType,
         string table,
         string? schema,
-        bool isDuckLake)
+        DuckDBUpsertStrategy strategy)
     {
         var helper = context.GetService<ISqlGenerationHelper>();
         var storeObject = StoreObjectIdentifier.Table(table, schema);
@@ -381,7 +380,7 @@ public static class DuckDBUpsertExtensions
         var insertColumnList = string.Join(", ", delimitedInsertColumns);
         var targetTable = helper.DelimitIdentifier(table, schema);
 
-        if (isDuckLake)
+        if (strategy == DuckDBUpsertStrategy.Merge)
         {
             var keyPredicates = primaryKey.Properties.Select(property =>
             {
@@ -411,6 +410,11 @@ public static class DuckDBUpsertExtensions
                 .Append(')');
 
             return new UpsertPlan(targetTable, insertColumnList, null, mergeSuffix.ToString(), accessors);
+        }
+
+        if (strategy != DuckDBUpsertStrategy.InsertOnConflict)
+        {
+            throw new NotSupportedException($"DuckDB upsert strategy '{strategy}' is not supported.");
         }
 
         // On a key conflict, overwrite the non-key columns from the proposed row; if the entity is all-key,

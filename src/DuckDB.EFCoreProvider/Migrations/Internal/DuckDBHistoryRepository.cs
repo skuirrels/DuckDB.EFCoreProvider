@@ -14,10 +14,12 @@ namespace DuckDB.EFCoreProvider.Migrations.Internal;
 /// </summary>
 public class DuckDBHistoryRepository : HistoryRepository
 {
-    private const string DuckLakeMigrationsNotSupportedMessage =
-        "EF Core migrations are not supported by the DuckLake profile. DuckLake has no enforced primary keys, "
-        + "unique constraints, or portable database lock primitive for EF's migrations history contract. Use "
-        + "Database.EnsureCreated() for a new catalog, and apply reviewed DuckLake schema-evolution SQL explicitly.";
+    private readonly IDuckDBEngineCapabilities _capabilities;
+
+    private const string MigrationsNotSupportedMessage =
+        "EF Core migrations are not supported by the configured DuckDB engine capabilities. The active backend "
+        + "does not provide the schema constraints and/or locking semantics required by EF's migrations history "
+        + "contract. Use Database.EnsureCreated() for a new catalog, and apply reviewed schema-evolution SQL explicitly.";
 
     private const string IdempotentScriptsNotSupportedMessage =
         "Generating idempotent scripts for migrations is not supported by DuckDB, which has no procedural"
@@ -35,8 +37,19 @@ public class DuckDBHistoryRepository : HistoryRepository
     /// </summary>
     public static readonly TimeSpan DefaultLockTimeout = TimeSpan.FromMinutes(5);
 
-    public DuckDBHistoryRepository(HistoryRepositoryDependencies dependencies) : base(dependencies)
+    public DuckDBHistoryRepository(HistoryRepositoryDependencies dependencies)
+        : this(
+            dependencies,
+            dependencies.CurrentContext.Context.GetService<IDuckDBEngineCapabilities>())
     {
+    }
+
+    public DuckDBHistoryRepository(
+        HistoryRepositoryDependencies dependencies,
+        IDuckDBEngineCapabilities capabilities)
+        : base(dependencies)
+    {
+        _capabilities = capabilities;
     }
 
     protected override bool InterpretExistsResult(object? value)
@@ -159,11 +172,9 @@ public class DuckDBHistoryRepository : HistoryRepository
 
     private void EnsureMigrationsSupported()
     {
-        if (Dependencies.CurrentContext.Context
-                .GetService<IDbContextOptions>()
-                .FindExtension<DuckDBOptionsExtension>()?.DuckLakeOptions is not null)
+        if (!_capabilities.SupportsEfMigrations)
         {
-            throw new NotSupportedException(DuckLakeMigrationsNotSupportedMessage);
+            throw new NotSupportedException(MigrationsNotSupportedMessage);
         }
     }
 
