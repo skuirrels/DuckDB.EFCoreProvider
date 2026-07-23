@@ -22,6 +22,10 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
         SupportsIndexes = !isDuckLake;
         SupportsSchemaConstraints = !isDuckLake;
         SupportsTieredStorage = !isDuckLake;
+        SupportsEfMigrations = !isDuckLake;
+        UpsertStrategy = isDuckLake
+            ? DuckDBUpsertStrategy.Merge
+            : DuckDBUpsertStrategy.InsertOnConflict;
     }
 
     public bool SupportsReturning { get; }
@@ -39,4 +43,8 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
     public bool SupportsSchemaConstraints { get; }
 
     public bool SupportsTieredStorage { get; }
+
+    public bool SupportsEfMigrations { get; }
+
+    public DuckDBUpsertStrategy UpsertStrategy { get; }
 }

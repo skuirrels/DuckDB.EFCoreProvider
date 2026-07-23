@@ -1,6 +1,11 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Update.Internal;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Update;
+using System.Data.Common;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -15,6 +20,12 @@ public class BulkInsertBatchingTests : DuckDBTestBase
                 duckdb.EnableBulkInsertBatching();
             }
         }));
+
+    private BatchingContext CreateContext(DbCommandInterceptor interceptor)
+        => new(new DbContextOptionsBuilder<BatchingContext>(
+                FileOptions<BatchingContext>(duckdb => duckdb.EnableBulkInsertBatching()))
+            .AddInterceptors(interceptor)
+            .Options);
 
     [ConditionalFact]
     public void SaveChanges_with_batching_persists_all_rows_with_correct_values()
@@ -83,6 +94,94 @@ public class BulkInsertBatchingTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void SaveChanges_with_batching_preserves_planned_sql_shape()
+    {
+        using (var context = CreateContext(enableBatching: true))
+        {
+            context.Database.EnsureCreated();
+        }
+
+        var interceptor = new CommandCaptureInterceptor();
+        using (var context = CreateContext(interceptor))
+        {
+            context.AddRange(
+                new ExplicitKeyRow { Id = 1, Name = "one", Value = 1.5, Active = true },
+                new ExplicitKeyRow { Id = 2, Name = "two", Value = 2.5, Active = false });
+            context.SaveChanges();
+        }
+
+        var sql = Assert.Single(interceptor.CommandTexts.Where(
+            commandText => commandText.StartsWith("INSERT ", StringComparison.Ordinal)));
+        Assert.StartsWith("INSERT INTO \"ExplicitKeyRows\"", sql);
+        Assert.Contains("VALUES (", sql);
+        Assert.Contains($"),{Environment.NewLine}(", sql);
+        Assert.DoesNotContain("RETURNING", sql);
+    }
+
+    [ConditionalFact]
+    public void Bulk_insert_planner_rejects_an_empty_command_run()
+    {
+        Assert.False(DuckDBBulkInsertPlanner.TryCreate([], out var plan));
+        Assert.Null(plan);
+    }
+
+    [ConditionalFact]
+    public void SaveChanges_with_batching_splits_inserts_with_different_write_shapes()
+    {
+        using (var context = CreateContext(enableBatching: true))
+        {
+            context.Database.EnsureCreated();
+        }
+
+        var interceptor = new CommandCaptureInterceptor();
+        using (var context = CreateContext(interceptor))
+        {
+            context.AddRange(
+                new DefaultedValueRow { Id = 1 },
+                new DefaultedValueRow { Id = 2, Value = 42 });
+            context.SaveChanges();
+        }
+
+        var sql = string.Join(
+            Environment.NewLine,
+            interceptor.CommandTexts.Where(
+                commandText => commandText.Contains("INSERT INTO \"DefaultedValueRows\"", StringComparison.Ordinal)));
+        Assert.Equal(2, sql.Split("INSERT INTO \"DefaultedValueRows\"", StringSplitOptions.None).Length - 1);
+
+        using var verification = CreateContext(enableBatching: true);
+        Assert.Equal(7, verification.DefaultedValueRows.Single(row => row.Id == 1).Value);
+        Assert.Equal(42, verification.DefaultedValueRows.Single(row => row.Id == 2).Value);
+    }
+
+    [ConditionalFact]
+    public void Bulk_insert_column_snapshot_does_not_follow_source_mutations()
+    {
+        using var context = CreateContext(enableBatching: true);
+        var typeMapping = context.GetService<IRelationalTypeMappingSource>().FindMapping(typeof(string))!;
+        var source = new ColumnModification(
+            new ColumnModificationParameters(
+                columnName: "Name",
+                originalValue: null,
+                value: "before",
+                property: null,
+                columnType: "VARCHAR",
+                typeMapping,
+                read: false,
+                write: true,
+                key: false,
+                condition: false,
+                sensitiveLoggingEnabled: false,
+                isNullable: false));
+        var snapshot = new DuckDBColumnModificationSnapshot(source);
+
+        source.Value = "after";
+
+        Assert.Equal("before", snapshot.Value);
+        var immutableSnapshot = (IColumnModification)snapshot;
+        Assert.Throws<NotSupportedException>(() => immutableSnapshot.Value = "replacement");
+    }
+
+    [ConditionalFact]
     public void Batching_is_disabled_by_default()
     {
         using var context = CreateContext(enableBatching: false);
@@ -108,9 +207,17 @@ public class BulkInsertBatchingTests : DuckDBTestBase
     {
         public DbSet<ExplicitKeyRow> ExplicitKeyRows => Set<ExplicitKeyRow>();
         public DbSet<GeneratedKeyRow> GeneratedKeyRows => Set<GeneratedKeyRow>();
+        public DbSet<DefaultedValueRow> DefaultedValueRows => Set<DefaultedValueRow>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => modelBuilder.Entity<ExplicitKeyRow>().Property(e => e.Id).ValueGeneratedNever();
+        {
+            modelBuilder.Entity<ExplicitKeyRow>().Property(e => e.Id).ValueGeneratedNever();
+            modelBuilder.Entity<DefaultedValueRow>(entity =>
+            {
+                entity.Property(e => e.Id).ValueGeneratedNever();
+                entity.Property(e => e.Value).HasDefaultValue(7);
+            });
+        }
     }
 
     private sealed class ExplicitKeyRow
@@ -125,5 +232,34 @@ public class BulkInsertBatchingTests : DuckDBTestBase
     {
         public int Id { get; set; }
         public string Name { get; set; } = "";
+    }
+
+    private sealed class DefaultedValueRow
+    {
+        public int Id { get; set; }
+        public int Value { get; set; }
+    }
+
+    private sealed class CommandCaptureInterceptor : DbCommandInterceptor
+    {
+        public List<string> CommandTexts { get; } = [];
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result)
+        {
+            CommandTexts.Add(command.CommandText);
+            return result;
+        }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            CommandTexts.Add(command.CommandText);
+            return result;
+        }
     }
 }

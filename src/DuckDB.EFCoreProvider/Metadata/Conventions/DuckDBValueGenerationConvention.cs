@@ -1,4 +1,6 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -22,7 +24,7 @@ public class DuckDBValueGenerationConvention :
     RelationalValueGenerationConvention,
     IModelFinalizingConvention
 {
-    private readonly bool _isDuckLake;
+    private readonly IDuckDBEngineCapabilities _capabilities;
 
     /// <summary>
     ///     Creates a new instance of <see cref="DuckDBValueGenerationConvention" />.
@@ -44,9 +46,21 @@ public class DuckDBValueGenerationConvention :
         ProviderConventionSetBuilderDependencies dependencies,
         RelationalConventionSetBuilderDependencies relationalDependencies,
         bool isDuckLake)
+        : this(dependencies, relationalDependencies, new DuckDBEngineCapabilities(isDuckLake))
+    {
+    }
+
+    /// <summary>Creates a value-generation convention for the selected engine capabilities.</summary>
+    /// <param name="dependencies">Parameter object containing dependencies for this convention.</param>
+    /// <param name="relationalDependencies">Parameter object containing relational dependencies for this convention.</param>
+    /// <param name="capabilities">Capabilities that determine supported store-generated values.</param>
+    public DuckDBValueGenerationConvention(
+        ProviderConventionSetBuilderDependencies dependencies,
+        RelationalConventionSetBuilderDependencies relationalDependencies,
+        IDuckDBEngineCapabilities capabilities)
         : base(dependencies, relationalDependencies)
     {
-        _isDuckLake = isDuckLake;
+        _capabilities = capabilities;
     }
 
     /// <summary>
@@ -105,7 +119,7 @@ public class DuckDBValueGenerationConvention :
                     continue;
                 }
 
-                if (_isDuckLake)
+                if (!_capabilities.SupportsSequences)
                 {
                     if (property.ValueGenerated == ValueGenerated.OnAdd
                         && DuckDBValueGenerationStrategyCompatibility.IsAutoIncrementCompatible(property.ClrType)

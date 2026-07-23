@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -53,6 +54,64 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.True(batchingOptions.BulkInsertBatching);
         Assert.True(batchingOptions.BulkUpdateBatching);
         Assert.True(batchingOptions.BulkDeleteBatching);
+    }
+
+    [ConditionalFact]
+    public void Value_generation_convention_uses_sequence_capability_for_strategy()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<NoSequenceCapabilities>();
+        using var context = new DefaultKeyContext(
+            FileOptionsWithCapabilities<DefaultKeyContext>(serviceProvider));
+
+        var id = context.Model.FindEntityType(typeof(DefaultKeyItem))!.FindProperty(nameof(DefaultKeyItem.Id))!;
+
+        Assert.Equal(ValueGenerated.OnAdd, id.ValueGenerated);
+        Assert.Equal(DuckDBValueGenerationStrategy.None, id.GetValueGenerationStrategy());
+    }
+
+    [ConditionalFact]
+    public void Migration_history_uses_migrations_capability()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<NoMigrationsCapabilities>();
+        using var context = new CapabilityContext(
+            FileOptionsWithCapabilities<CapabilityContext>(serviceProvider));
+        var repository = context.GetService<IHistoryRepository>();
+
+        var exception = Assert.Throws<NotSupportedException>(() => repository.GetCreateIfNotExistsScript());
+
+        Assert.Contains("migrations are not supported", exception.Message);
+        Assert.Contains("configured DuckDB engine capabilities", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Upsert_uses_configured_strategy_capability()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<MergeUpsertCapabilities>();
+        using var context = new CapabilityUpsertContext(
+            FileOptionsWithCapabilities<CapabilityUpsertContext>(serviceProvider));
+        context.Database.ExecuteSqlRaw(
+            """
+            CREATE TABLE "CapabilityUpsertItems" (
+                "Id" INTEGER NOT NULL,
+                "Name" VARCHAR NOT NULL
+            );
+            """);
+
+        Assert.Equal(2, context.Upsert(
+        [
+            new CapabilityUpsertItem { Id = 1, Name = "first" },
+            new CapabilityUpsertItem { Id = 2, Name = "second" }
+        ]));
+        Assert.Equal(2, context.Upsert(
+        [
+            new CapabilityUpsertItem { Id = 1, Name = "updated" },
+            new CapabilityUpsertItem { Id = 3, Name = "third" }
+        ]));
+
+        var rows = context.CapabilityUpsertItems.AsNoTracking().OrderBy(item => item.Id).ToArray();
+        Assert.Equal([1, 2, 3], rows.Select(item => item.Id));
+        Assert.Equal("updated", rows[0].Name);
     }
 
     [ConditionalFact]
@@ -246,7 +305,24 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.Equal(supported, capabilities.SupportsIndexes);
         Assert.Equal(supported, capabilities.SupportsSchemaConstraints);
         Assert.Equal(supported, capabilities.SupportsTieredStorage);
+        Assert.Equal(supported, capabilities.SupportsEfMigrations);
+        Assert.Equal(
+            supported ? DuckDBUpsertStrategy.InsertOnConflict : DuckDBUpsertStrategy.Merge,
+            capabilities.UpsertStrategy);
     }
+
+    private static ServiceProvider CreateCapabilityServiceProvider<TCapabilities>()
+        where TCapabilities : class, IDuckDBEngineCapabilities
+        => new ServiceCollection()
+            .AddEntityFrameworkDuckDB()
+            .AddSingleton<IDuckDBEngineCapabilities, TCapabilities>()
+            .BuildServiceProvider(validateScopes: true);
+
+    private DbContextOptions<TContext> FileOptionsWithCapabilities<TContext>(IServiceProvider serviceProvider)
+        where TContext : DbContext
+        => new DbContextOptionsBuilder<TContext>(FileOptions<TContext>())
+            .UseInternalServiceProvider(serviceProvider)
+            .Options;
 
     private sealed class CapabilityContext(DbContextOptions<CapabilityContext> options) : DbContext(options)
     {
@@ -261,6 +337,65 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         public int Id { get; set; }
     }
 
+    private sealed class DefaultKeyContext(DbContextOptions<DefaultKeyContext> options) : DbContext(options)
+    {
+        public DbSet<DefaultKeyItem> DefaultKeyItems => Set<DefaultKeyItem>();
+    }
+
+    private sealed class DefaultKeyItem
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class CapabilityUpsertContext(DbContextOptions<CapabilityUpsertContext> options) : DbContext(options)
+    {
+        public DbSet<CapabilityUpsertItem> CapabilityUpsertItems => Set<CapabilityUpsertItem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<CapabilityUpsertItem>(entity =>
+            {
+                entity.ToTable("CapabilityUpsertItems");
+                entity.Property(item => item.Id).ValueGeneratedNever();
+            });
+        }
+    }
+
+    private sealed class CapabilityUpsertItem
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    private abstract class NativeCapabilities : IDuckDBEngineCapabilities
+    {
+        public virtual bool SupportsReturning => true;
+        public virtual bool SupportsSaveChangesBatching => true;
+        public virtual bool SupportsSequences => true;
+        public virtual bool SupportsGeneratedColumns => true;
+        public virtual bool SupportsSqlDefaultExpressions => true;
+        public virtual bool SupportsIndexes => true;
+        public virtual bool SupportsSchemaConstraints => true;
+        public virtual bool SupportsTieredStorage => true;
+        public virtual bool SupportsEfMigrations => true;
+        public virtual DuckDBUpsertStrategy UpsertStrategy => DuckDBUpsertStrategy.InsertOnConflict;
+    }
+
+    private sealed class NoSequenceCapabilities : NativeCapabilities
+    {
+        public override bool SupportsSequences => false;
+    }
+
+    private sealed class NoMigrationsCapabilities : NativeCapabilities
+    {
+        public override bool SupportsEfMigrations => false;
+    }
+
+    private sealed class MergeUpsertCapabilities : NativeCapabilities
+    {
+        public override DuckDBUpsertStrategy UpsertStrategy => DuckDBUpsertStrategy.Merge;
+    }
+
     private sealed record TestCapabilities(
         bool SupportsReturning = true,
         bool SupportsSaveChangesBatching = true,
@@ -269,5 +404,7 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         bool SupportsSqlDefaultExpressions = true,
         bool SupportsIndexes = true,
         bool SupportsSchemaConstraints = true,
-        bool SupportsTieredStorage = true) : IDuckDBEngineCapabilities;
+        bool SupportsTieredStorage = true,
+        bool SupportsEfMigrations = true,
+        DuckDBUpsertStrategy UpsertStrategy = DuckDBUpsertStrategy.InsertOnConflict) : IDuckDBEngineCapabilities;
 }

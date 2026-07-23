@@ -1,6 +1,15 @@
 namespace DuckDB.EFCoreProvider.Infrastructure.Internal;
 
 /// <summary>
+///     Selects the set-based SQL strategy used by the provider's upsert fast path.
+/// </summary>
+public enum DuckDBUpsertStrategy
+{
+    InsertOnConflict,
+    Merge
+}
+
+/// <summary>
 ///     Describes the SQL and schema capabilities of the configured DuckDB engine profile.
 /// </summary>
 /// <remarks>
@@ -26,4 +35,8 @@ public interface IDuckDBEngineCapabilities
     bool SupportsSchemaConstraints { get; }
 
     bool SupportsTieredStorage { get; }
+
+    bool SupportsEfMigrations { get; }
+
+    DuckDBUpsertStrategy UpsertStrategy { get; }
 }
