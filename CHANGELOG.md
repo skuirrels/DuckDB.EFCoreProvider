@@ -2,6 +2,38 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.14.1
+
+- Replace the official DuckDB.NET 1.5.3 runtime dependency with the stable
+  `Skuirrels.DuckDB.NET.Data.Full` 1.5.5 performance fork. The fork retains the DuckDB.NET assemblies and
+  namespaces and must not be installed alongside the official packages.
+- Compile each bulk-insert entity/table mapping into one cached row callback
+  and use Skuirrels' allocation-free reusable appender path. The warmed
+  provider and direct reusable appender now benchmark in the same performance
+  range with no measured per-row managed allocation.
+- Add the reproducible cross-driver benchmark suite, including the new
+  one-million-row `ListAppenderBenchmark`.
+
+### Corrected cross-driver benchmark
+
+Apple M4 Pro, one verified DuckDB thread, identical three-`BIGINT` workloads,
+five 500 ms warmups and ten 500 ms measurements. Lower is better; values show
+the mean and 99.9% confidence-interval half-width.
+
+| Scenario | Java JDBC 1.5.4 | Go 1.5.4 | Optimized provider / Skuirrels 1.5.5 | Stock DuckDB.NET 1.5.3 | Winner |
+|---|---:|---:|---:|---:|---|
+| Prepared command execution | 13.658 ± 0.156 µs | 17.815 ± 0.288 µs | **9.261 ± 0.136 µs*** | 45.388 ± 1.349 µs | **Skuirrels 1.5.5** |
+| Prepared bulk insert, per row | 26.981 ± 0.142 µs | 29.238 ± 0.218 µs | **19.374 ± 0.144 µs*** | 53.776 ± 0.492 µs | **Skuirrels 1.5.5** |
+| Public `BulkInsert` / idiomatic appender, per row | 171.99 ± 6.49 ns | 177.90 ± 2.56 ns | **79.14 ± 1.10 ns** | 247.80 ± 2.90 ns | **Optimized EFCoreProvider** |
+
+`*` Prepared-command rows exercise the provider's Skuirrels 1.5.5 dependency
+directly. The public bulk row exercises `DbContext.BulkInsert`.
+
+![DuckDB 1.14.1 cross-driver benchmark](docs/images/duckdb-cross-driver-benchmark-chart.svg)
+
+Full methodology and all nine scenarios:
+[`docs/DUCKDB-CROSS-DRIVER-BENCHMARK.md`](docs/DUCKDB-CROSS-DRIVER-BENCHMARK.md).
+
 ## 1.14.0
 
 - Add `Threads(...)` for configuring DuckDB's global parallel-query thread count when connections open, with the

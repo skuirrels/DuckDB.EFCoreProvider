@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1720" viewBox="0 0 1600 1720" role="img" aria-labelledby="title description">
+  <title id="title">DuckDB cross-driver benchmark with timing and workload parity</title>
+  <desc id="description">Nine benchmark scenarios comparing Java JDBC 1.5.4, Go 1.5.4, the optimized DuckDB EFCoreProvider source build, and stock DuckDB.NET 1.5.3. All drivers use the same workload and sustained 500 millisecond iterations. Bars show relative performance normalized to the fastest raw mean in each scenario.</desc>
+  <rect width="1600" height="1720" fill="#ffffff"/>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+    .title { font-size: 46px; font-weight: 750; }
+    .subtitle { font-size: 24px; fill: #596579; }
+    .legend { font-size: 20px; font-weight: 600; }
+    .section { font-size: 20px; font-weight: 750; letter-spacing: 1.8px; fill: #0057b8; }
+    .scenario { font-size: 23px; font-weight: 700; }
+    .value { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .axis { font-size: 17px; fill: #687386; }
+    .foot { font-size: 18px; fill: #596579; }
+    .bar-bg { fill: #eef2f7; }
+  </style>
+
+  <text class="title" x="50" y="70">Cross-driver benchmark · timing parity</text>
+  <text class="subtitle" x="50" y="112">Same workload and sustained timing · fastest raw mean = 100 · higher is better</text>
+
+  <rect x="50" y="143" width="20" height="20" rx="4" fill="#d97706"/>
+  <text class="legend" x="80" y="160">Java JDBC 1.5.4</text>
+  <rect x="310" y="143" width="20" height="20" rx="4" fill="#14804a"/>
+  <text class="legend" x="340" y="160">Go 1.5.4</text>
+  <rect x="500" y="143" width="20" height="20" rx="4" fill="#0066cc"/>
+  <text class="legend" x="530" y="160">Optimized EFCoreProvider</text>
+  <rect x="850" y="143" width="20" height="20" rx="4" fill="#667085"/>
+  <text class="legend" x="880" y="160">Stock DuckDB.NET 1.5.3</text>
+
+  <text class="axis" x="500" y="193">0</text>
+  <text class="axis" x="808" y="193">50</text>
+  <text class="axis" x="1126" y="193">100</text>
+  <line x1="500" y1="199" x2="1150" y2="199" stroke="#cbd3df" stroke-width="2"/>
+  <line x1="825" y1="195" x2="825" y2="1600" stroke="#e3e8ef" stroke-width="1"/>
+  <line x1="1150" y1="195" x2="1150" y2="1600" stroke="#d5dce6" stroke-width="1"/>
+  <text class="axis" x="1175" y="193">Measured mean</text>
+
+  <text class="section" x="50" y="230">DRIVER OVERHEAD &amp; INGESTION</text>
+
+  <text class="scenario" x="50" y="270">Prepared command execution</text>
+  <rect class="bar-bg" x="500" y="283" width="650" height="18" rx="5"/><rect x="500" y="283" width="441" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="299">13.658 µs</text>
+  <rect class="bar-bg" x="500" y="307" width="650" height="18" rx="5"/><rect x="500" y="307" width="338" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="323">17.815 µs</text>
+  <rect class="bar-bg" x="500" y="331" width="650" height="18" rx="5"/><rect x="500" y="331" width="650" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="347">9.261 µs</text>
+  <rect class="bar-bg" x="500" y="355" width="650" height="18" rx="5"/><rect x="500" y="355" width="133" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="371">45.388 µs</text>
+
+  <text class="scenario" x="50" y="410">Prepared bulk insert · per row</text>
+  <rect class="bar-bg" x="500" y="423" width="650" height="18" rx="5"/><rect x="500" y="423" width="467" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="439">26.981 µs</text>
+  <rect class="bar-bg" x="500" y="447" width="650" height="18" rx="5"/><rect x="500" y="447" width="431" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="463">29.238 µs</text>
+  <rect class="bar-bg" x="500" y="471" width="650" height="18" rx="5"/><rect x="500" y="471" width="650" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="487">19.374 µs</text>
+  <rect class="bar-bg" x="500" y="495" width="650" height="18" rx="5"/><rect x="500" y="495" width="234" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="511">53.776 µs</text>
+
+  <text class="scenario" x="50" y="550">Public BulkInsert / appender · per row</text>
+  <rect class="bar-bg" x="500" y="563" width="650" height="18" rx="5"/><rect x="500" y="563" width="299" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="579">171.99 ns</text>
+  <rect class="bar-bg" x="500" y="587" width="650" height="18" rx="5"/><rect x="500" y="587" width="289" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="603">177.90 ns</text>
+  <rect class="bar-bg" x="500" y="611" width="650" height="18" rx="5"/><rect x="500" y="611" width="650" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="627">79.14 ns</text>
+  <rect class="bar-bg" x="500" y="635" width="650" height="18" rx="5"/><rect x="500" y="635" width="208" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="651">247.80 ns</text>
+
+  <text class="section" x="50" y="700">QUERY &amp; MATERIALISATION</text>
+
+  <text class="scenario" x="50" y="740">Prepared analytical query</text>
+  <rect class="bar-bg" x="500" y="753" width="650" height="18" rx="5"/><rect x="500" y="753" width="650" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="769">2.449 ms</text>
+  <rect class="bar-bg" x="500" y="777" width="650" height="18" rx="5"/><rect x="500" y="777" width="610" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="793">2.611 ms</text>
+  <rect class="bar-bg" x="500" y="801" width="650" height="18" rx="5"/><rect x="500" y="801" width="639" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="817">2.493 ms</text>
+  <rect class="bar-bg" x="500" y="825" width="650" height="18" rx="5"/><rect x="500" y="825" width="620" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="841">2.569 ms</text>
+
+  <text class="scenario" x="50" y="880">Materialise 100,000 mixed rows</text>
+  <rect class="bar-bg" x="500" y="893" width="650" height="18" rx="5"/><rect x="500" y="893" width="116" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="909">53.496 ms</text>
+  <rect class="bar-bg" x="500" y="917" width="650" height="18" rx="5"/><rect x="500" y="917" width="225" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="933">27.601 ms</text>
+  <rect class="bar-bg" x="500" y="941" width="650" height="18" rx="5"/><rect x="500" y="941" width="650" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="957">9.559 ms</text>
+  <rect class="bar-bg" x="500" y="965" width="650" height="18" rx="5"/><rect x="500" y="965" width="613" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="981">10.140 ms</text>
+
+  <text class="section" x="50" y="1030">TPC-H · SCALE FACTOR 0.1</text>
+
+  <text class="scenario" x="50" y="1070">Query 1</text>
+  <rect class="bar-bg" x="500" y="1083" width="650" height="18" rx="5"/><rect x="500" y="1083" width="650" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="1099">13.459 ms</text>
+  <rect class="bar-bg" x="500" y="1107" width="650" height="18" rx="5"/><rect x="500" y="1107" width="636" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="1123">13.764 ms</text>
+  <rect class="bar-bg" x="500" y="1131" width="650" height="18" rx="5"/><rect x="500" y="1131" width="641" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="1147">13.654 ms</text>
+  <rect class="bar-bg" x="500" y="1155" width="650" height="18" rx="5"/><rect x="500" y="1155" width="633" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="1171">13.819 ms</text>
+
+  <text class="scenario" x="50" y="1210">Query 6</text>
+  <rect class="bar-bg" x="500" y="1223" width="650" height="18" rx="5"/><rect x="500" y="1223" width="630" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="1239">0.951 ms</text>
+  <rect class="bar-bg" x="500" y="1247" width="650" height="18" rx="5"/><rect x="500" y="1247" width="628" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="1263">0.954 ms</text>
+  <rect class="bar-bg" x="500" y="1271" width="650" height="18" rx="5"/><rect x="500" y="1271" width="650" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="1287">0.921 ms</text>
+  <rect class="bar-bg" x="500" y="1295" width="650" height="18" rx="5"/><rect x="500" y="1295" width="638" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="1311">0.939 ms</text>
+
+  <text class="scenario" x="50" y="1350">Query 12</text>
+  <rect class="bar-bg" x="500" y="1363" width="650" height="18" rx="5"/><rect x="500" y="1363" width="650" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="1379">7.421 ms</text>
+  <rect class="bar-bg" x="500" y="1387" width="650" height="18" rx="5"/><rect x="500" y="1387" width="619" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="1403">7.796 ms</text>
+  <rect class="bar-bg" x="500" y="1411" width="650" height="18" rx="5"/><rect x="500" y="1411" width="630" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="1427">7.662 ms</text>
+  <rect class="bar-bg" x="500" y="1435" width="650" height="18" rx="5"/><rect x="500" y="1435" width="626" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="1451">7.711 ms</text>
+
+  <text class="scenario" x="50" y="1490">Query 14</text>
+  <rect class="bar-bg" x="500" y="1503" width="650" height="18" rx="5"/><rect x="500" y="1503" width="625" height="18" rx="5" fill="#d97706"/><text class="value" x="1175" y="1519">1.580 ms</text>
+  <rect class="bar-bg" x="500" y="1527" width="650" height="18" rx="5"/><rect x="500" y="1527" width="642" height="18" rx="5" fill="#14804a"/><text class="value" x="1175" y="1543">1.538 ms</text>
+  <rect class="bar-bg" x="500" y="1551" width="650" height="18" rx="5"/><rect x="500" y="1551" width="650" height="18" rx="5" fill="#0066cc"/><text class="value" x="1175" y="1567">1.518 ms</text>
+  <rect class="bar-bg" x="500" y="1575" width="650" height="18" rx="5"/><rect x="500" y="1575" width="596" height="18" rx="5" fill="#667085"/><text class="value" x="1175" y="1591">1.656 ms</text>
+
+  <line x1="50" y1="1625" x2="1550" y2="1625" stroke="#d8dee8" stroke-width="2"/>
+  <text class="foot" x="50" y="1662">Bars show raw means; the report’s winner column accounts for 99.9% confidence intervals.</text>
+  <text class="foot" x="50" y="1692">Apple M4 Pro · same BIGINT workload · 5 + 10 sustained 500 ms iterations · one DuckDB thread.</text>
+</svg>
