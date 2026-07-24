@@ -14,7 +14,7 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 - Add the reproducible cross-driver benchmark suite, including the new
   one-million-row `ListAppenderBenchmark`.
 
-### Corrected cross-driver benchmark
+### Cross-driver benchmark
 
 Apple M4 Pro, one verified DuckDB thread, identical three-`BIGINT` workloads,
 five 500 ms warmups and ten 500 ms measurements. Lower is better; values show
