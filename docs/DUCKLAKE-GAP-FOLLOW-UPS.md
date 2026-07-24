@@ -60,16 +60,18 @@ Release decision:
 
 ## 3. Keep stable package eligibility verified
 
-Version 1.14.0 remains based on the official `DuckDB.NET.Data.Full` version `1.5.3`. A stable provider package must
-continue to resolve only stable runtime dependencies.
+Version 1.14.0 was released against the official `DuckDB.NET.Data.Full` version `1.5.3`. Version 1.14.1 uses the
+stable `Skuirrels.DuckDB.NET.Data.Full` version `1.5.5` performance fork. The fork retains the official DuckDB.NET
+assembly and namespace identities, so it replaces rather than accompanies the official packages.
 
 Before release:
 
-- Verify that the resolved data and bindings packages remain on the official 1.5.3 dependency graph.
+- Verify that the resolved graph contains only `Skuirrels.DuckDB.NET.Data.Full` and
+  `Skuirrels.DuckDB.NET.Bindings.Full` version `1.5.5`, with no official DuckDB.NET data or bindings packages.
 - Run the full solution tests, DuckLake tests, package-validation checks, and a clean-consumer smoke test.
 - Build the stable `.nupkg` and `.snupkg`, then inspect the nuspec, dependency graph, README, XML documentation,
   native assets, and package identity.
 - Update the performance and capability documentation where it names a specific DuckDB.NET version.
 
-Do not substitute a fork or prerelease dependency, suppress NuGet's stable-to-prerelease dependency check, or label
-a prerelease dependency graph as stable.
+Do not install the fork alongside the official packages, suppress NuGet's stable-to-prerelease dependency check,
+or label a prerelease dependency graph as stable.

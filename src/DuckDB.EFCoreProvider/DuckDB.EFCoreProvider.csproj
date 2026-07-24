@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.14.0</PackageVersion>
-    <FileVersion>1.14.0.0</FileVersion>
-    <Version>1.14.0</Version>
+    <PackageVersion>1.14.1</PackageVersion>
+    <FileVersion>1.14.1.0</FileVersion>
+    <Version>1.14.1</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,14 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.13.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.14.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.14.1
+- Replace the official DuckDB.NET 1.5.3 runtime dependency with the stable Skuirrels.DuckDB.NET 1.5.5 performance fork. The fork retains the DuckDB.NET assemblies and namespaces and must not be installed alongside the official packages.
+- Compile each bulk-insert entity/table mapping into one cached row callback and use Skuirrels' allocation-free reusable appender path. The warmed provider and direct reusable appender now benchmark in the same performance range with no measured per-row managed allocation.
+- Add the corrected cross-driver benchmark suite and one-million-row ListAppenderBenchmark. On the common Apple M4 Pro workload, Skuirrels prepared execution measured 9.261 ± 0.136 µs versus Java at 13.658 ± 0.156 µs and Go at 17.815 ± 0.288 µs; the public provider BulkInsert measured 79.14 ± 1.10 ns/row versus Java at 171.99 ± 6.49 ns and Go at 177.90 ± 2.56 ns.
+- Full methodology: https://github.com/skuirrels/DuckDB.EFCoreProvider/blob/v1.14.1/docs/DUCKDB-CROSS-DRIVER-BENCHMARK.md
+
 1.14.0
 - Add configurable global DuckDB thread limits, including provider-owned connection propagation.
 - Add named-secret additional DuckLake catalog attachments and transaction-scoped snapshot commit metadata.
@@ -217,7 +223,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="DuckDB.NET.Data.Full" />
+    <PackageReference Include="Skuirrels.DuckDB.NET.Data.Full" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Abstractions" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />

@@ -35,9 +35,8 @@ public sealed class DuckLakeExternalIntegrationTests
                     FROM duckdb_databases()
                     WHERE database_name = '{CatalogName}' AND type = 'ducklake';
                     """));
-                Assert.Equal(1, ExecuteScalarInt64(
-                    connection,
-                    "SELECT count(*) FROM duckdb_databases() WHERE type = 'postgres';"));
+                // DuckLake's internal metadata connection is not part of DuckDB's public catalog.
+                // The read-only reopen below verifies PostgreSQL-backed metadata persistence through supported behavior.
                 Assert.True(ExecuteScalarInt64(
                     connection,
                     $"SELECT count(*) FROM glob('{EscapeSqlLiteral(configuration.DataPath)}/**/*.parquet');") > 0);

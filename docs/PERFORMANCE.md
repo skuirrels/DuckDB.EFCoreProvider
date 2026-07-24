@@ -17,13 +17,23 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 ```
 
 - `WriteBenchmarks` — `SaveChanges` (per-statement `INSERT … RETURNING`) vs `BulkInsert` (Appender).
+- `BulkInsertHotPathBenchmarks` — warmed provider `BulkInsert` vs direct
+  `CreateRow`, scoped, and reusable Skuirrels appender paths.
 - `ReadBenchmarks` — no-tracking read / filter materialisation.
 
-## Indicative results
+For the current package-level and cross-language comparison, including the
+one-million-row `ListAppenderBenchmark`, see
+[`DUCKDB-NET-1.5.5-BENCHMARK.md`](DUCKDB-NET-1.5.5-BENCHMARK.md).
+For the publication-ready Java, Go, optimized EFCoreProvider, and stock
+DuckDB.NET 1.5.3 comparison, see
+[`DUCKDB-CROSS-DRIVER-BENCHMARK.md`](DUCKDB-CROSS-DRIVER-BENCHMARK.md).
+
+## Historical DuckDB.NET 1.5.3 indicative results
 
 Measured on a developer laptop (.NET 10, DuckDB.NET 1.5.3, file-backed database, explicit keys so both
 write paths insert identical data). These are **indicative** wall-clock numbers from a quick harness, not a
-rigorous BenchmarkDotNet report — run the project above for statistically robust figures on your hardware.
+rigorous BenchmarkDotNet report. They are retained as the pre-1.14.1 baseline;
+use the current cross-driver report above for the 1.14.1 release result.
 
 ### Writes
 
@@ -88,7 +98,7 @@ where the fixed cost is amortised. Per-call cost by batch size (best-of-N, pre-o
 (1 µs = one microsecond = 1/1000 ms.)
 
 **Fixed cost.** The first `BulkInsert` for a given entity type resolves the physical column order and
-builds the column accessors (~600 µs, one DuckDB catalog query). That work is **cached per entity type +
+compiles the row writer (~600 µs in this historical run, including one DuckDB catalog query). That work is **cached per entity type +
 table**, so subsequent calls drop to ~200 µs of fixed cost (appender setup). The rows themselves are nearly
 free up to several hundred.
 
