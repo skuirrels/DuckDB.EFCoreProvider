@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.14.1</PackageVersion>
-    <FileVersion>1.14.1.0</FileVersion>
-    <Version>1.14.1</Version>
+    <PackageVersion>1.14.2</PackageVersion>
+    <FileVersion>1.14.2.0</FileVersion>
+    <Version>1.14.2</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,12 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.14.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.14.1</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.14.2
+- Update Skuirrels.DuckDB.NET.Data.Full from 1.5.5 to 1.5.5.2, moving the bundled native DuckDB runtime from 1.5.4 to 1.5.5. Provider APIs are unchanged.
+- The 1.14.1 benchmark results remain historical measurements of Skuirrels 1.5.5 with native DuckDB 1.5.4 and do not characterize the updated 1.5.5.2 package.
+
 1.14.1
 - Replace the official DuckDB.NET 1.5.3 runtime dependency with the stable Skuirrels.DuckDB.NET 1.5.5 performance fork. The fork retains the DuckDB.NET assemblies and namespaces and must not be installed alongside the official packages.
 - Compile each bulk-insert entity/table mapping into one cached row callback and use Skuirrels' allocation-free reusable appender path. The warmed provider and direct reusable appender now benchmark in the same performance range with no measured per-row managed allocation.

@@ -2,6 +2,15 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.14.2
+
+- Update `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5 to 1.5.5.2, moving the
+  bundled native DuckDB runtime from 1.5.4 to 1.5.5. Provider APIs are
+  unchanged.
+- Preserve the 1.14.1 benchmark results below as historical measurements of
+  Skuirrels 1.5.5 with native DuckDB 1.5.4; they do not characterize the
+  updated 1.5.5.2 package.
+
 ## 1.14.1
 
 - Replace the official DuckDB.NET 1.5.3 runtime dependency with the stable
