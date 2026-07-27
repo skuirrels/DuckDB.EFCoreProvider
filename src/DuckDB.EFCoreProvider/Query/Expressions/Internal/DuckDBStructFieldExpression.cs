@@ -2,152 +2,159 @@ using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using Microsoft.EntityFrameworkCore.Storage;
+using System.Collections.Immutable;
 using System.Linq.Expressions;
 using System.Reflection;
 
 namespace DuckDB.EFCoreProvider.Query.Expressions.Internal;
 
 /// <summary>
-///     A SQL expression that renders as DuckDB STRUCT field access syntax:
-///     <c>alias."StructColumn".nested1.nested2.leaf</c>.
+///     A typed DuckDB STRUCT field access whose source and physical path were resolved
+///     before SQL generation.
 /// </summary>
-/// <remarks>
-///     Internally this carries the table alias, the physical STRUCT column name, the
-///     intermediate nested field names, and the leaf field name. Rendering is handled by
-///     <see cref="Query.Internal.DuckDBQuerySqlGenerator.VisitStructField" />. The expression
-///     is shaped from a <c>DuckDB:StructField</c> annotation
-///     (<seealso cref="DuckDBStructFieldInfo" />) carried by the underlying property's
-///     column mapping.
-/// </remarks>
 public sealed class DuckDBStructFieldExpression : SqlExpression, IEquatable<DuckDBStructFieldExpression>
 {
     private static ConstructorInfo? _quotingConstructor;
+    private readonly ImmutableArray<string> _fieldPath;
+
+    public DuckDBStructFieldExpression(
+        SqlExpression source,
+        IReadOnlyList<string> fieldPath,
+        Type type,
+        RelationalTypeMapping? typeMapping = null)
+        : this(source, fieldPath.ToArray(), type, typeMapping)
+    {
+    }
+
+    private DuckDBStructFieldExpression(
+        SqlExpression source,
+        string[] fieldPath,
+        Type type,
+        RelationalTypeMapping? typeMapping)
+        : base(type, typeMapping)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (fieldPath.Length == 0 || fieldPath.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("A STRUCT field path must contain non-empty names.", nameof(fieldPath));
+        }
+
+        Source = source;
+        _fieldPath = fieldPath.ToImmutableArray();
+    }
 
     /// <summary>
-    ///     Creates a STRUCT field access expression.
+    ///     Compatibility constructor for callers that create a resolved node directly.
     /// </summary>
-    /// <param name="tableAlias">The SQL table alias the STRUCT column lives on (e.g. <c>t</c>, <c>Customers</c>).</param>
-    /// <param name="structColumnName">The physical DuckDB STRUCT column name (e.g. <c>Location</c>).</param>
-    /// <param name="structFieldInfo">
-    ///     The struct field metadata carrying nested and leaf field names. The caller's
-    ///     arrays are NOT defensively copied here — <see cref="DuckDBStructFieldInfo" /> is
-    ///     an immutable <c>record</c> with a defensive copy taken in its constructor.
-    /// </param>
-    /// <param name="type">The CLR type of the leaf field's projected value.</param>
-    /// <param name="typeMapping">Optional type mapping for the leaf value.</param>
     public DuckDBStructFieldExpression(
         string tableAlias,
         string structColumnName,
         DuckDBStructFieldInfo structFieldInfo,
         Type type,
         RelationalTypeMapping? typeMapping = null)
-        : base(type, typeMapping)
+        : this(
+            new ColumnExpression(
+                structColumnName,
+                tableAlias,
+                typeof(object),
+                typeMapping: null,
+                nullable: true),
+            structFieldInfo.FieldPath,
+            type,
+            typeMapping)
     {
+        ArgumentException.ThrowIfNullOrEmpty(tableAlias);
+        ArgumentException.ThrowIfNullOrEmpty(structColumnName);
         ArgumentNullException.ThrowIfNull(structFieldInfo);
-        if (string.IsNullOrEmpty(tableAlias))
-        {
-            throw new ArgumentException("tableAlias must be non-empty", nameof(tableAlias));
-        }
-
-        if (string.IsNullOrEmpty(structColumnName))
-        {
-            throw new ArgumentException("structColumnName must be non-empty", nameof(structColumnName));
-        }
-
-        TableAlias = tableAlias;
-        StructColumnName = structColumnName;
-        StructFieldInfo = structFieldInfo;
     }
 
-    /// <summary>The SQL table alias the STRUCT column lives on (e.g. <c>t</c>).</summary>
-    public string TableAlias { get; }
+    /// <summary>The resolved STRUCT source expression, normally a physical root column.</summary>
+    public SqlExpression Source { get; }
 
-    /// <summary>The physical DuckDB STRUCT column name (e.g. <c>Location</c>).</summary>
-    public string StructColumnName { get; }
+    /// <summary>The immutable physical path from the source STRUCT to the leaf.</summary>
+    public IReadOnlyList<string> FieldPath => _fieldPath;
 
-    /// <summary>The struct field metadata carrying nested and leaf field names.</summary>
-    public DuckDBStructFieldInfo StructFieldInfo { get; }
+    /// <summary>Compatibility view of the source table alias.</summary>
+    public string TableAlias => (Source as ColumnExpression)?.TableAlias ?? string.Empty;
 
-    /// <inheritdoc />
-    protected override Expression VisitChildren(ExpressionVisitor visitor)
-        => this;
+    /// <summary>Compatibility view of the physical root column name.</summary>
+    public string StructColumnName => (Source as ColumnExpression)?.Name ?? string.Empty;
 
-    /// <summary>
-    ///     Creates a new expression that is like this one, but using the supplied children.
-    ///     If all of the children are the same, returns this instance.
-    /// </summary>
+    /// <summary>Compatibility view of the resolved physical field metadata.</summary>
+    public DuckDBStructFieldInfo StructFieldInfo
+        => new(
+            StructColumnName,
+            _fieldPath.Length == 1 ? [] : _fieldPath[..^1].ToArray(),
+            _fieldPath[^1]);
+
+    public DuckDBStructFieldExpression Update(
+        SqlExpression source,
+        IReadOnlyList<string> fieldPath)
+    {
+        var immutablePath = fieldPath.ToImmutableArray();
+        return ReferenceEquals(source, Source)
+                && immutablePath.SequenceEqual(_fieldPath, StringComparer.Ordinal)
+            ? this
+            : new DuckDBStructFieldExpression(source, immutablePath, Type, TypeMapping);
+    }
+
+    /// <summary>Compatibility overload for the former alias-based expression shape.</summary>
     public DuckDBStructFieldExpression Update(
         string tableAlias,
         string structColumnName,
         DuckDBStructFieldInfo structFieldInfo)
-        => tableAlias == TableAlias
-           && structColumnName == StructColumnName
-           && structFieldInfo == StructFieldInfo
-            ? this
-            : new DuckDBStructFieldExpression(tableAlias, structColumnName, structFieldInfo, Type, TypeMapping);
+        => new(tableAlias, structColumnName, structFieldInfo, Type, TypeMapping);
 
-    /// <inheritdoc />
+    protected override Expression VisitChildren(ExpressionVisitor visitor)
+        => Update((SqlExpression)visitor.Visit(Source)!, _fieldPath);
+
     public override Expression Quote()
         => New(
             _quotingConstructor ??= typeof(DuckDBStructFieldExpression).GetConstructor(
-                [typeof(string), typeof(string), typeof(DuckDBStructFieldInfo), typeof(Type), typeof(RelationalTypeMapping)])!,
-            Constant(TableAlias),
-            Constant(StructColumnName),
-            New(
-                typeof(DuckDBStructFieldInfo).GetConstructor(
-                    [typeof(string), typeof(string[]), typeof(string)])!,
-                Constant(StructFieldInfo.StructColumnName),
-                NewArrayInit(
-                    typeof(string),
-                    StructFieldInfo.NestedFieldNames.Select(field => (Expression)Constant(field)).ToArray()),
-                Constant(StructFieldInfo.LeafFieldName, typeof(string))),
+                [
+                    typeof(SqlExpression),
+                    typeof(string[]),
+                    typeof(Type),
+                    typeof(RelationalTypeMapping)
+                ])!,
+            Source.Quote(),
+            NewArrayInit(
+                typeof(string),
+                _fieldPath.Select(field => (Expression)Constant(field)).ToArray()),
             Constant(Type),
             RelationalExpressionQuotingUtilities.QuoteTypeMapping(TypeMapping));
 
-    /// <inheritdoc />
     protected override void Print(ExpressionPrinter expressionPrinter)
     {
-        expressionPrinter
-                .Append("\"").Append(TableAlias).Append("\"")
-                .Append(".\"").Append(StructColumnName).Append("\"");
-
-        foreach (var field in StructFieldInfo.NestedFieldNames)
+        expressionPrinter.Visit(Source);
+        foreach (var field in _fieldPath)
         {
             expressionPrinter.Append(".").Append(field);
         }
-
-        expressionPrinter
-            .Append(".").Append(StructFieldInfo.LeafFieldName ?? "<column>");
     }
 
-        /// <inheritdoc />
-        public override string ToString()
-            => $"\"{TableAlias}\".\"{StructColumnName}\""
-               + (StructFieldInfo.NestedFieldNames.Count == 0
-                    ? string.Empty
-                    : "." + string.Join(".", StructFieldInfo.NestedFieldNames))
-               + "." + (StructFieldInfo.LeafFieldName ?? "<column>");
+    public override string ToString()
+        => $"{Source}.{string.Join(".", _fieldPath)}";
 
-    /// <inheritdoc />
-    public override bool Equals(object? obj)
-        => obj is DuckDBStructFieldExpression other && Equals(other);
-
-    /// <inheritdoc />
     public bool Equals(DuckDBStructFieldExpression? other)
         => other is not null
-           && base.Equals(other)
-           && other.TableAlias == TableAlias
-           && other.StructColumnName == StructColumnName
-           && other.StructFieldInfo == StructFieldInfo;
+            && base.Equals(other)
+            && Source.Equals(other.Source)
+            && _fieldPath.SequenceEqual(other._fieldPath, StringComparer.Ordinal);
 
-    /// <inheritdoc />
+    public override bool Equals(object? obj)
+        => Equals(obj as DuckDBStructFieldExpression);
+
     public override int GetHashCode()
     {
-        var hashCode = new HashCode();
-        hashCode.Add(base.GetHashCode());
-        hashCode.Add(TableAlias, StringComparer.Ordinal);
-        hashCode.Add(StructColumnName, StringComparer.Ordinal);
-        hashCode.Add(StructFieldInfo);
-        return hashCode.ToHashCode();
+        var hash = new HashCode();
+        hash.Add(base.GetHashCode());
+        hash.Add(Source);
+        foreach (var field in _fieldPath)
+        {
+            hash.Add(field, StringComparer.Ordinal);
+        }
+
+        return hash.ToHashCode();
     }
 }

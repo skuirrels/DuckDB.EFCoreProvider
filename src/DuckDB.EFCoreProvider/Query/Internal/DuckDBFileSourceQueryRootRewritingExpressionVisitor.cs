@@ -1,6 +1,5 @@
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using DuckDB.EFCoreProvider.Query.Expressions.Internal;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using System.Linq.Expressions;
@@ -28,10 +27,6 @@ internal sealed class DuckDBFileSourceQueryRootRewritingExpressionVisitor(ISqlEx
         }
 
         var path = sqlExpressionFactory.ApplyDefaultTypeMapping(sqlExpressionFactory.Constant(fileSource.Path));
-        var entityTypes = tableExpression.Table.EntityTypeMappings
-            .Select(mapping => mapping.TypeBase)
-            .OfType<IEntityType>()
-            .ToArray();
-        return new DuckDBFileSourceExpression(tableExpression.Alias, fileSource.Function, path, entityTypes);
+        return new DuckDBFileSourceExpression(tableExpression.Alias, fileSource.Function, path);
     }
 }
