@@ -1,11 +1,11 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
-using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Metadata.Internal;
+using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
-using System.Linq.Expressions;
 using System.Data;
+using System.Linq.Expressions;
 using Xunit;
 
 namespace DuckDB.EFCoreProvider.FunctionalTests;
@@ -280,7 +280,7 @@ public class DuckDBStructFieldConventionTest
 
         var cityProp = GetComplexScalar(model, typeof(CustomerWithAttribute), "Location", "City");
         Assert.Equal("city_name", cityProp.GetColumnName());
-        Assert.NotNull(GetStructFieldInfo(cityProp));
+        Assert.Equal("city", GetStructFieldInfo(cityProp)?.LeafFieldName);
     }
 
     [Fact]

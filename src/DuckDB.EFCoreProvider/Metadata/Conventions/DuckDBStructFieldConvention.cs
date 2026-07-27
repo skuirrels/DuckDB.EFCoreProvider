@@ -2,8 +2,8 @@ using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
-using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 
 namespace DuckDB.EFCoreProvider.Metadata.Conventions;
 
@@ -44,7 +44,66 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                 fields.AddRange(rootFields);
             }
 
-            if (roots.Count > 0)
+            var table = StoreObjectIdentifier.Create(entityType, StoreObjectType.Table);
+            foreach (var property in GetProperties(entityType))
+            {
+                if (property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+                    is not DuckDBStructFieldInfo configuredInfo)
+                {
+                    continue;
+                }
+
+                var efColumnName = configuredInfo.EfColumnName
+                    ?? (table is { } storeObject ? property.GetColumnName(storeObject) : property.GetColumnName())
+                    ?? property.Name;
+                var normalizedInfo = configuredInfo.EfColumnName is not null
+                    && configuredInfo.LeafFieldName is not null
+                        ? configuredInfo
+                        : new DuckDBStructFieldInfo(
+                            configuredInfo.StructColumnName,
+                            configuredInfo.NestedFieldNames,
+                            configuredInfo.LeafFieldName
+                                ?? property.FindAnnotation(DuckDBAnnotationNames.StructFieldName)?.Value as string
+                                ?? ToCamelCase(property.Name),
+                            efColumnName,
+                            property.GetColumnType(),
+                            property.IsNullable);
+
+                property.SetOrRemoveAnnotation(
+                    DuckDBAnnotationNames.StructField,
+                    normalizedInfo,
+                    fromDataAnnotation: false);
+
+                var existingIndex = fields.FindIndex(field =>
+                    string.Equals(field.EfColumnName, efColumnName, StringComparison.Ordinal));
+                if (existingIndex >= 0)
+                {
+                    fields[existingIndex] = normalizedInfo;
+                }
+                else
+                {
+                    fields.Add(normalizedInfo);
+                }
+            }
+
+            foreach (var group in fields.GroupBy(
+                         field => field.StructColumnName,
+                         StringComparer.OrdinalIgnoreCase))
+            {
+                if (roots.All(root => !string.Equals(
+                        root.StructColumnName,
+                        group.Key,
+                        StringComparison.OrdinalIgnoreCase)))
+                {
+                    roots.Add(new DuckDBStructMapping(
+                        group.Key,
+                        fieldName: null,
+                        new Dictionary<string, DuckDBStructChildMapping>(StringComparer.Ordinal),
+                        group));
+                }
+            }
+
+            if (fields.Count > 0)
             {
                 var metadata = new DuckDBStructEntityMetadata(
                     roots,
@@ -56,6 +115,27 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                                     "A STRUCT field must have an EF relational column identity."),
                             field)));
                 entityType.SetStructMetadata(metadata);
+                entityType.SetOrRemoveAnnotation(
+                    DuckDBAnnotationNames.StructColumnMap,
+                    null,
+                    fromDataAnnotation: false);
+            }
+        }
+
+    }
+
+    private static IEnumerable<IConventionProperty> GetProperties(IConventionTypeBase typeBase)
+    {
+        foreach (var property in typeBase.GetProperties().OfType<IConventionProperty>())
+        {
+            yield return property;
+        }
+
+        foreach (var complexProperty in typeBase.GetComplexProperties())
+        {
+            foreach (var property in GetProperties(complexProperty.ComplexType))
+            {
+                yield return property;
             }
         }
     }
@@ -117,7 +197,6 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
         var leafFieldName =
             configuredInfo?.LeafFieldName
             ?? property.FindAnnotation(DuckDBAnnotationNames.StructFieldName)?.Value as string
-            ?? explicitColumnName
             ?? inferredLeafName;
         var effectiveRootName = configuredInfo?.StructColumnName ?? structColumnName;
         var effectivePath = configuredInfo?.NestedFieldNames ?? nestedPath;

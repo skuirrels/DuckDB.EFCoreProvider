@@ -32,25 +32,17 @@ public sealed class StructTieredStorageTests : IDisposable
     }
 
     [Fact]
-    public async Task ArchiveTierAsync_rejects_struct_mapped_root()
+    public void Model_validation_rejects_struct_mapped_tiered_root()
     {
         var dbPath = Path.Combine(_root, "struct.duckdb");
         var archivePath = Path.Combine(_root, "struct-archive");
         using var context = new StructRootContext(dbPath, archivePath);
 
-        context.Database.EnsureCreated();
-        context.WeatherRecords.Add(new WeatherRecord
-        {
-            Id = 1,
-            EffectiveAt = new DateTime(2024, 1, 10),
-            Location = new Location { City = "NYC", Country = "US" },
-        });
-        context.SaveChanges();
-
-        var ex = await Assert.ThrowsAsync<NotSupportedException>(
-            () => context.Database.ArchiveTierAsync<WeatherRecord>(new DateTime(2024, 2, 1)));
-
-        Assert.Contains("struct-mapped", ex.Message, StringComparison.OrdinalIgnoreCase);
+        var exception = Assert.Throws<NotSupportedException>(() => context.Database.EnsureCreated());
+        Assert.Equal(
+            "Entity 'WeatherRecord' uses tiered storage and contains struct-mapped complex properties. "
+            + "Tiered storage cannot archive DuckDB STRUCT columns.",
+            exception.Message);
     }
 
     private interface IArchivePathContext

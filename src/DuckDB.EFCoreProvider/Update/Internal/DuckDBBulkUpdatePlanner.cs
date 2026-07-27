@@ -32,10 +32,7 @@ internal static class DuckDBBulkUpdatePlanner
             && CanPlan(second)
             && first.TableName == second.TableName
             && first.Schema == second.Schema
-            && DuckDBModificationCommandShape.ColumnNamesEqual(
-                first,
-                second,
-                DuckDBModificationColumnRole.Write)
+            && WriteShapesEqual(first, second)
             && DuckDBModificationCommandShape.ColumnNamesEqual(
                 first,
                 second,
@@ -81,6 +78,28 @@ internal static class DuckDBBulkUpdatePlanner
             : throw new ArgumentException(
                 "Bulk update commands must be eligible updates with matching tables, schemas, condition columns, and write columns.",
                 nameof(commands));
+
+    private static bool WriteShapesEqual(
+        IReadOnlyModificationCommand first,
+        IReadOnlyModificationCommand second)
+    {
+        var firstPlan = CreateMutationPlan(first);
+        var secondPlan = CreateMutationPlan(second);
+        return firstPlan is null
+            ? secondPlan is null
+                && DuckDBModificationCommandShape.ColumnNamesEqual(
+                    first,
+                    second,
+                    DuckDBModificationColumnRole.Write)
+            : secondPlan is not null && firstPlan.HasSamePhysicalShape(secondPlan);
+    }
+
+    private static DuckDBStructMutationPlan? CreateMutationPlan(IReadOnlyModificationCommand command)
+    {
+        var writes = command.ColumnModifications.Where(modification => modification.IsWrite).ToArray();
+        DuckDBStructMutationPlan.TryCreate(writes, DuckDBStructMutationMode.BulkUpdate, out var plan);
+        return plan;
+    }
 }
 
 /// <summary>
@@ -114,6 +133,7 @@ internal sealed class DuckDBBulkUpdatePlan
 
         TableName = _commands[0].TableName;
         Schema = _commands[0].Schema;
+        StructMutationPlan = CreateStructMutationPlan(_commands[0]);
     }
 
     public string TableName { get; }
@@ -125,6 +145,8 @@ internal sealed class DuckDBBulkUpdatePlan
     public int KeyColumnCount => _keyColumnCount;
 
     public int WriteColumnCount => _writeColumnCount;
+
+    public DuckDBStructMutationPlan? StructMutationPlan { get; }
 
     public string GetKeyColumnName(int index)
         => _commands[0].ColumnModifications[_keyIndexes[index]].ColumnName;
@@ -162,5 +184,12 @@ internal sealed class DuckDBBulkUpdatePlan
                 indexes[targetIndex++] = i;
             }
         }
+    }
+
+    private static DuckDBStructMutationPlan? CreateStructMutationPlan(IReadOnlyModificationCommand command)
+    {
+        var writes = command.ColumnModifications.Where(modification => modification.IsWrite).ToArray();
+        DuckDBStructMutationPlan.TryCreate(writes, DuckDBStructMutationMode.BulkUpdate, out var plan);
+        return plan;
     }
 }

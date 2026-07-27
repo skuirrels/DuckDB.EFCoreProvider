@@ -66,17 +66,193 @@ public class DuckDBModelValidator : RelationalModelValidator
 
     private static void ValidateStructMappings(IModel model)
     {
+        var structTables = new Dictionary<
+            StoreObjectIdentifier,
+            List<(IEntityType EntityType, DuckDBStructEntityMetadata Metadata)>>();
+
         foreach (var entityType in model.GetEntityTypes())
         {
-            if (entityType.GetViewName() is not null
-                && StructMappingHelper.HasStructMappedComplexProperties(entityType))
+            if (entityType.GetStructMetadata() is not { } metadata)
+            {
+                continue;
+            }
+
+            if (entityType.GetViewName() is not null)
             {
                 throw new NotSupportedException(
                     $"Entity '{entityType.DisplayName()}' is mapped to a view and contains struct-mapped complex properties. "
                     + "View mappings cannot be used with DuckDB STRUCT columns.");
             }
+
+            if (entityType.GetTieredStoreRole() is not null)
+            {
+                throw new NotSupportedException(
+                    $"Entity '{entityType.DisplayName()}' uses tiered storage and contains struct-mapped complex properties. "
+                    + "Tiered storage cannot archive DuckDB STRUCT columns.");
+            }
+
+            if (StoreObjectIdentifier.Create(entityType, StoreObjectType.Table) is { } table)
+            {
+                if (!structTables.TryGetValue(table, out var mappedTypes))
+                {
+                    mappedTypes = [];
+                    structTables.Add(table, mappedTypes);
+                }
+
+                mappedTypes.Add((entityType, metadata));
+                ValidateStructEntity(entityType, metadata, table);
+            }
+        }
+
+        foreach (var (table, mappedStructTypes) in structTables)
+        {
+            var mappedTypes = model.GetEntityTypes()
+                .Where(entityType =>
+                    StoreObjectIdentifier.Create(entityType, StoreObjectType.Table) == table)
+                .ToArray();
+            if (mappedTypes.Length > 1)
+            {
+                throw new NotSupportedException(
+                    $"Table '{table.Name}' is shared by multiple entity types with DuckDB STRUCT mappings "
+                    + $"({string.Join(", ", mappedTypes.Select(type => type.DisplayName()))}). "
+                    + "STRUCT mappings do not support table splitting or shared-table inheritance.");
+            }
+
+            var structColumns = mappedStructTypes
+                .SelectMany(entry => entry.Metadata.Columns.Values)
+                .Select(field => field.StructColumnName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in mappedTypes.SelectMany(GetProperties))
+            {
+                var columnName = property.GetColumnName(table);
+                if (property.GetStructFieldInfo() is null
+                    && columnName is not null
+                    && structColumns.Contains(columnName))
+                {
+                    throw new InvalidOperationException(
+                        $"Entity '{property.DeclaringType.DisplayName()}' maps scalar property "
+                        + $"'{property.Name}' and a DuckDB STRUCT to the same physical column "
+                        + $"'{columnName}'.");
+                }
+            }
         }
     }
+
+    private static void ValidateStructEntity(
+        IEntityType entityType,
+        DuckDBStructEntityMetadata metadata,
+        StoreObjectIdentifier table)
+    {
+        var fields = GetStructProperties(entityType).ToArray();
+        var duplicatePath = fields
+            .GroupBy(
+                entry => entry.Field.StructColumnName + "\0" + string.Join("\0", entry.Field.FieldPath),
+                StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicatePath is not null)
+        {
+            throw new InvalidOperationException(
+                $"Entity '{entityType.DisplayName()}' maps more than one property to DuckDB STRUCT path "
+                + $"'{FormatStructPath(duplicatePath.First().Field)}'.");
+        }
+
+        foreach (var complexProperty in entityType.GetComplexProperties())
+        {
+            ValidateRequiredStructComplexProperty(complexProperty);
+        }
+
+        foreach (var (property, field) in fields)
+        {
+            var propertyName = $"{entityType.DisplayName()}.{property.Name}";
+            if (property.GetContainingKeys().Any())
+            {
+                throw UnsupportedStructProperty(propertyName, field, "keys");
+            }
+
+            if (property.GetContainingForeignKeys().Any())
+            {
+                throw UnsupportedStructProperty(propertyName, field, "foreign keys");
+            }
+
+            if (property.GetContainingIndexes().Any())
+            {
+                throw UnsupportedStructProperty(propertyName, field, "indexes");
+            }
+
+            if (property.IsConcurrencyToken)
+            {
+                throw UnsupportedStructProperty(propertyName, field, "concurrency tokens");
+            }
+
+            if (property.GetComputedColumnSql() is not null)
+            {
+                throw UnsupportedStructProperty(propertyName, field, "computed columns");
+            }
+
+            if (property.GetDefaultValueSql() is not null
+                || property.FindAnnotation(RelationalAnnotationNames.DefaultValue) is not null)
+            {
+                throw UnsupportedStructProperty(propertyName, field, "default values");
+            }
+
+            if (property.ValueGenerated != ValueGenerated.Never)
+            {
+                throw UnsupportedStructProperty(propertyName, field, "store-generated values");
+            }
+
+            if (property.GetComment() is not null)
+            {
+                throw UnsupportedStructProperty(propertyName, field, "column comments");
+            }
+        }
+    }
+
+    private static IEnumerable<(IReadOnlyProperty Property, DuckDBStructFieldInfo Field)> GetStructProperties(
+        IReadOnlyTypeBase typeBase)
+    {
+        foreach (var property in typeBase.GetProperties())
+        {
+            if (property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+                is DuckDBStructFieldInfo field)
+            {
+                yield return (property, field);
+            }
+        }
+
+        foreach (var complexProperty in typeBase.GetComplexProperties())
+        {
+            foreach (var entry in GetStructProperties(complexProperty.ComplexType))
+            {
+                yield return entry;
+            }
+        }
+    }
+
+    private static void ValidateRequiredStructComplexProperty(IReadOnlyComplexProperty complexProperty)
+    {
+        if (complexProperty.GetStructMapping() is not null && complexProperty.IsNullable)
+        {
+            throw new NotSupportedException(
+                $"DuckDB STRUCT complex property '{complexProperty.DeclaringType.DisplayName()}.{complexProperty.Name}' "
+                + "must be required. Optional STRUCT roots and nested complex properties are not supported.");
+        }
+
+        foreach (var nestedProperty in complexProperty.ComplexType.GetComplexProperties())
+        {
+            ValidateRequiredStructComplexProperty(nestedProperty);
+        }
+    }
+
+    private static NotSupportedException UnsupportedStructProperty(
+        string propertyName,
+        DuckDBStructFieldInfo field,
+        string feature)
+        => new(
+            $"Property '{propertyName}' maps to DuckDB STRUCT path '{FormatStructPath(field)}' and cannot be used for "
+            + $"{feature}.");
+
+    private static string FormatStructPath(DuckDBStructFieldInfo field)
+        => string.Join(".", new[] { field.StructColumnName }.Concat(field.FieldPath));
 
     private static void ValidateFileSources(IModel model)
     {
@@ -129,28 +305,29 @@ public class DuckDBModelValidator : RelationalModelValidator
                     DuckDBCapabilityErrorMessages.TieredStorageNotSupported(entityType.DisplayName()));
             }
 
-            foreach (var property in entityType.GetProperties())
+            foreach (var property in GetProperties(entityType))
             {
+                var propertyName = $"{property.DeclaringType.DisplayName()}.{property.Name}";
                 if (!capabilities.SupportsSequences
                     && property.GetValueGenerationStrategy() == DuckDBValueGenerationStrategy.AutoIncrement)
                 {
                     throw new InvalidOperationException(
                         DuckDBCapabilityErrorMessages.AutoIncrementNotSupported(
-                            $"{entityType.DisplayName()}.{property.Name}"));
+                            propertyName));
                 }
 
                 if (!capabilities.SupportsGeneratedColumns && property.GetComputedColumnSql() is not null)
                 {
                     throw new InvalidOperationException(
                         DuckDBCapabilityErrorMessages.GeneratedColumnNotSupported(
-                            $"{entityType.DisplayName()}.{property.Name}"));
+                            propertyName));
                 }
 
                 if (!capabilities.SupportsSqlDefaultExpressions && property.GetDefaultValueSql() is not null)
                 {
                     throw new InvalidOperationException(
                         DuckDBCapabilityErrorMessages.SqlDefaultExpressionNotSupported(
-                            $"{entityType.DisplayName()}.{property.Name}"));
+                            propertyName));
                 }
 
                 if (property.FindAnnotation(RelationalAnnotationNames.DefaultValue) is not null
@@ -159,7 +336,7 @@ public class DuckDBModelValidator : RelationalModelValidator
                 {
                     throw new InvalidOperationException(
                         DuckDBCapabilityErrorMessages.LiteralDefaultCannotBeRead(
-                            $"{entityType.DisplayName()}.{property.Name}"));
+                            propertyName));
                 }
 
                 if (!capabilities.SupportsReturning
@@ -167,8 +344,24 @@ public class DuckDBModelValidator : RelationalModelValidator
                 {
                     throw new InvalidOperationException(
                         DuckDBCapabilityErrorMessages.StoreGeneratedValueCannotBeRead(
-                            $"{entityType.DisplayName()}.{property.Name}"));
+                            propertyName));
                 }
+            }
+        }
+    }
+
+    private static IEnumerable<IReadOnlyProperty> GetProperties(IReadOnlyTypeBase typeBase)
+    {
+        foreach (var property in typeBase.GetProperties())
+        {
+            yield return property;
+        }
+
+        foreach (var complexProperty in typeBase.GetComplexProperties())
+        {
+            foreach (var property in GetProperties(complexProperty.ComplexType))
+            {
+                yield return property;
             }
         }
     }

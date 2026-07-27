@@ -65,9 +65,21 @@ public static class DuckDBStructPropertyBuilderExtensions
         string fieldName)
     {
         ArgumentNullException.ThrowIfNull(propertyBuilder);
+        fieldName = ValidateName(fieldName, nameof(fieldName));
         propertyBuilder.HasAnnotation(
             DuckDBAnnotationNames.StructFieldName,
-            ValidateName(fieldName, nameof(fieldName)));
+            fieldName);
+        if (propertyBuilder.Metadata.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+            is DuckDBStructFieldInfo field)
+        {
+            propertyBuilder.HasAnnotation(
+                DuckDBAnnotationNames.StructField,
+                new DuckDBStructFieldInfo(
+                    field.StructColumnName,
+                    field.NestedFieldNames.ToArray(),
+                    fieldName));
+        }
+
         return propertyBuilder;
     }
 
@@ -76,9 +88,51 @@ public static class DuckDBStructPropertyBuilderExtensions
         string fieldName)
     {
         ArgumentNullException.ThrowIfNull(propertyBuilder);
+        fieldName = ValidateName(fieldName, nameof(fieldName));
         propertyBuilder.HasAnnotation(
             DuckDBAnnotationNames.StructFieldName,
-            ValidateName(fieldName, nameof(fieldName)));
+            fieldName);
+        if (propertyBuilder.Metadata.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+            is DuckDBStructFieldInfo field)
+        {
+            propertyBuilder.HasAnnotation(
+                DuckDBAnnotationNames.StructField,
+                new DuckDBStructFieldInfo(
+                    field.StructColumnName,
+                    field.NestedFieldNames.ToArray(),
+                    fieldName));
+        }
+
+        return propertyBuilder;
+    }
+
+    public static PropertyBuilder<TProperty> HasStructField<TProperty>(
+        this PropertyBuilder<TProperty> propertyBuilder,
+        string structColumnName,
+        params string[] nestedFieldNames)
+    {
+        ArgumentNullException.ThrowIfNull(propertyBuilder);
+        propertyBuilder.HasAnnotation(
+            DuckDBAnnotationNames.StructField,
+            new DuckDBStructFieldInfo(
+                ValidateName(structColumnName, nameof(structColumnName)),
+                nestedFieldNames,
+                propertyBuilder.Metadata.FindAnnotation(DuckDBAnnotationNames.StructFieldName)?.Value as string));
+        return propertyBuilder;
+    }
+
+    public static ComplexTypePropertyBuilder<TProperty> HasStructField<TProperty>(
+        this ComplexTypePropertyBuilder<TProperty> propertyBuilder,
+        string structColumnName,
+        params string[] nestedFieldNames)
+    {
+        ArgumentNullException.ThrowIfNull(propertyBuilder);
+        propertyBuilder.HasAnnotation(
+            DuckDBAnnotationNames.StructField,
+            new DuckDBStructFieldInfo(
+                ValidateName(structColumnName, nameof(structColumnName)),
+                nestedFieldNames,
+                propertyBuilder.Metadata.FindAnnotation(DuckDBAnnotationNames.StructFieldName)?.Value as string));
         return propertyBuilder;
     }
 

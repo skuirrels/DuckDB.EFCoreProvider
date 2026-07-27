@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.NET.Data;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -37,6 +38,66 @@ public class StructRoundTripTests : DuckDBTestBase
             Assert.Equal("NYC", customer.Location.City);
             Assert.Equal("US", customer.Location.Country);
         }
+    }
+
+    [ConditionalFact]
+    public void EnsureCreated_uses_one_physical_struct_column()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+        context.Database.OpenConnection();
+
+        using var command = context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = """
+            SELECT column_name, data_type
+            FROM duckdb_columns()
+            WHERE database_name = current_database() AND table_name = 'Customer'
+            ORDER BY column_index
+            """;
+        using var reader = command.ExecuteReader();
+        var columns = new List<(string Name, string StoreType)>();
+        while (reader.Read())
+        {
+            columns.Add((reader.GetString(0), reader.GetString(1)));
+        }
+
+        Assert.Contains(
+            columns,
+            column => column.Name == "Location"
+                && column.StoreType.StartsWith("STRUCT", StringComparison.Ordinal));
+        Assert.DoesNotContain(columns, column => column.Name is "location_city" or "location_country");
+    }
+
+    [ConditionalFact]
+    public void Struct_query_has_exact_physical_sql_shape()
+    {
+        using var context = CreateContext();
+        var sql = context.Set<Customer>()
+            .Where(customer => customer.Location.Country == "US")
+            .Select(customer => customer.Location.City)
+            .ToQueryString();
+
+        Assert.Equal(
+            """
+            SELECT c."Location".city AS location_city
+            FROM "Customer" AS c
+            WHERE c."Location".country = 'US'
+            """,
+            sql);
+    }
+
+    [ConditionalFact]
+    public void Correlated_struct_reference_uses_physical_field_path()
+    {
+        using var context = CreateContext();
+        var sql = context.Set<Customer>()
+            .Where(customer => context.Set<Customer>().Any(other =>
+                other.Id != customer.Id
+                && other.Location.City == customer.Location.City))
+            .ToQueryString();
+
+        Assert.DoesNotContain(".location_city", sql, StringComparison.Ordinal);
+        Assert.True(sql.Split("\"Location\".city", StringSplitOptions.None).Length - 1 >= 2);
     }
 
     [ConditionalFact]
@@ -510,6 +571,39 @@ public class StructRoundTripTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_set_operation_and_compiled_query_work()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Customer { Id = 1, Location = new Address { City = "NYC", Country = "US" } },
+                new Customer { Id = 2, Location = new Address { City = "LDN", Country = "UK" } });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var cities = context.Set<Customer>()
+                .Where(customer => customer.Location.Country == "US")
+                .Select(customer => customer.Location.City)
+                .Union(
+                    context.Set<Customer>()
+                        .Where(customer => customer.Location.Country == "UK")
+                        .Select(customer => customer.Location.City))
+                .OrderBy(city => city)
+                .ToList();
+            Assert.Equal(["LDN", "NYC"], cities);
+        }
+
+        var compiled = EF.CompileQuery(
+            (StructContext context, int id) =>
+                context.Set<Customer>().Single(customer => customer.Id == id).Location.City);
+        using var compiledContext = CreateContext();
+        Assert.Equal("NYC", compiled(compiledContext, 1));
+    }
+
+    [ConditionalFact]
     public void Bulk_insert_with_struct_throws()
     {
         using var context = CreateContext();
@@ -521,8 +615,12 @@ public class StructRoundTripTests : DuckDBTestBase
             new Customer { Id = 2, Location = new Address { City = "LDN", Country = "UK" } }
         };
 
-        Assert.Throws<NotSupportedException>(() =>
+        var exception = Assert.Throws<NotSupportedException>(() =>
             context.BulkInsert(customers));
+        Assert.Equal(
+            "Bulk insert into 'Customer' is not supported for entities with DuckDB STRUCT mappings. "
+            + "Use SaveChanges instead.",
+            exception.Message);
     }
 
     [ConditionalFact]
@@ -533,8 +631,13 @@ public class StructRoundTripTests : DuckDBTestBase
 
         var customer = new Customer { Id = 1, Location = new Address { City = "NYC", Country = "US" } };
 
-        Assert.Throws<NotSupportedException>(() =>
+        var exception = Assert.Throws<NotSupportedException>(() =>
             context.Upsert(new[] { customer }));
+        Assert.Equal(
+            "Upsert does not support entity 'Customer' because it contains struct-mapped complex properties. "
+            + "STRUCT columns are consolidated at the physical layer and cannot be staged via the DuckDB Appender API. "
+            + "Use SaveChanges instead.",
+            exception.Message);
     }
 
     // ─── Model ──────────────────────────────────────────────────────
@@ -568,8 +671,14 @@ public class StructRoundTripTests : DuckDBTestBase
                 e.Property(p => p.Id).ValueGeneratedNever();
                 e.ComplexProperty(c => c.Tags, b =>
                 {
-                    b.Property(t => t.Category).HasColumnName("cat").HasStructField("category");
-                    b.Property(t => t.Label).HasColumnName("lbl").HasStructField("label");
+                    b.Property(t => t.Category)
+                        .HasColumnName("cat")
+                        .HasStructField("category")
+                        .HasStructFieldName("cat");
+                    b.Property(t => t.Label)
+                        .HasColumnName("lbl")
+                        .HasStructField("label")
+                        .HasStructFieldName("lbl");
                 });
             });
 
@@ -578,7 +687,8 @@ public class StructRoundTripTests : DuckDBTestBase
                 entity.Property(item => item.Id).ValueGeneratedNever();
                 entity.ComplexProperty(item => item.Details, details =>
                     details.Property(detail => detail.Value)
-                        .HasColumnName("customer's \"city\""));
+                        .HasColumnName("customer's \"city\"")
+                        .HasStructFieldName("customer's \"city\""));
             });
 
             modelBuilder.Entity<EscapedNestedItem>(entity =>
@@ -588,7 +698,8 @@ public class StructRoundTripTests : DuckDBTestBase
                     container.ComplexProperty(value => value.Details, details =>
                         details.Property(detail => detail.Value)
                             .HasColumnName("select value")
-                            .HasStructField("Container", "customer's \"details\"")));
+                            .HasStructField("Container", "customer's \"details\"")
+                            .HasStructFieldName("select value")));
             });
         }
     }

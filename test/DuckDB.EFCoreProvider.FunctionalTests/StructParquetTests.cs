@@ -314,7 +314,9 @@ public sealed class StructParquetTests : DuckDBTestBase
                 e.ComplexProperty(c => c.Location, loc =>
                 {
                     loc.UseStructMapping();
-                    loc.Property(l => l.City).HasColumnName("city_name");
+                    loc.Property(l => l.City)
+                        .HasColumnName("city_name")
+                        .HasStructFieldName("city_name");
                 });
             });
         }

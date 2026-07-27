@@ -11,8 +11,8 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 
 /// <summary>
 ///     Resolves flattened EF STRUCT leaf columns into typed provider expressions before SQL
-///     generation. Only columns from direct physical tables in the current SELECT scope are
-///     rewritten; outer references to subquery projections remain ordinary columns.
+///     generation. Columns from direct physical tables in the current or an enclosing SELECT
+///     scope are rewritten; references to subquery projections remain ordinary columns.
 /// </summary>
 internal sealed class DuckDBStructFieldRewritingExpressionVisitor : ExpressionVisitor
 {
@@ -41,7 +41,11 @@ internal sealed class DuckDBStructFieldRewritingExpressionVisitor : ExpressionVi
 
         var previousTables = _directTables;
         var previousAliases = _directTableAliases;
-        (_directTables, _directTableAliases) = CollectDirectStructTables(selectExpression.Tables);
+        var (currentTables, currentAliases) = CollectDirectStructTables(selectExpression.Tables);
+        _directTables = MergeScopes(previousTables, currentTables);
+        _directTableAliases = previousAliases
+            .Concat(currentAliases)
+            .ToHashSet(StringComparer.Ordinal);
         try
         {
             return base.VisitExtension(selectExpression);
@@ -51,6 +55,19 @@ internal sealed class DuckDBStructFieldRewritingExpressionVisitor : ExpressionVi
             _directTables = previousTables;
             _directTableAliases = previousAliases;
         }
+    }
+
+    private static IReadOnlyDictionary<string, DuckDBStructEntityMetadata> MergeScopes(
+        IReadOnlyDictionary<string, DuckDBStructEntityMetadata> enclosing,
+        IReadOnlyDictionary<string, DuckDBStructEntityMetadata> current)
+    {
+        var result = enclosing.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        foreach (var (alias, metadata) in current)
+        {
+            result[alias] = metadata;
+        }
+
+        return result;
     }
 
     private Expression RewriteColumn(ColumnExpression columnExpression)
@@ -89,7 +106,7 @@ internal sealed class DuckDBStructFieldRewritingExpressionVisitor : ExpressionVi
         var fieldPath = field.FieldPath;
         if (field.LeafFieldName is null)
         {
-            fieldPath = [..field.NestedFieldNames, columnExpression.Name];
+            fieldPath = [.. field.NestedFieldNames, columnExpression.Name];
         }
 
         var source = new ColumnExpression(
