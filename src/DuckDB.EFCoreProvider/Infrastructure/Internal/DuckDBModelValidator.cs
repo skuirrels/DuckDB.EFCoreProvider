@@ -156,6 +156,8 @@ public class DuckDBModelValidator : RelationalModelValidator
                 + $"'{FormatStructPath(duplicatePath.First().Field)}'.");
         }
 
+                ValidateStructPathCollisions(entityType, fields);
+
         foreach (var complexProperty in entityType.GetComplexProperties())
         {
             ValidateRequiredStructComplexProperty(complexProperty);
@@ -254,7 +256,22 @@ public class DuckDBModelValidator : RelationalModelValidator
     private static string FormatStructPath(DuckDBStructFieldInfo field)
         => string.Join(".", new[] { field.StructColumnName }.Concat(field.FieldPath));
 
-    private static void ValidateFileSources(IModel model)
+        private static void ValidateStructPathCollisions(
+            IEntityType entityType,
+            IReadOnlyList<(IReadOnlyProperty Property, DuckDBStructFieldInfo Field)> fields)
+        {
+            var collision = DuckDBStructPathCollision.Find(fields.Select(entry => entry.Field));
+            if (collision is { } conflict)
+            {
+                var (root, leafPath, nestedPath) = conflict;
+                throw new InvalidOperationException(
+                    $"Entity '{entityType.DisplayName()}' maps conflicting DuckDB STRUCT paths in STRUCT root "
+                    + $"'{root}': '{DuckDBStructPathCollision.FormatPath(root, leafPath)}' is used as a scalar leaf "
+                    + $"and as a parent of '{DuckDBStructPathCollision.FormatPath(root, nestedPath)}'.");
+            }
+        }
+
+        private static void ValidateFileSources(IModel model)
     {
         var tableMappings = new Dictionary<StoreObjectIdentifier, HashSet<IEntityType>>();
         foreach (var entityType in model.GetEntityTypes())

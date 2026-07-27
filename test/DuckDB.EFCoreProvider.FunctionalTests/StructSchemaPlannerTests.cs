@@ -98,6 +98,45 @@ public sealed class StructSchemaPlannerTests
         Assert.Contains("Cannot alter column", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Rejects_prefix_collision_in_struct_fields()
+    {
+        var operation = new CreateTableOperation { Name = "items" };
+        operation.Columns.Add(CreateField(
+            "location_address",
+            "VARCHAR",
+            new DuckDBStructFieldInfo("Location", [], "address")));
+        operation.Columns.Add(CreateField(
+            "location_address_country",
+            "VARCHAR",
+            new DuckDBStructFieldInfo("Location", ["address"], "country")));
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => DuckDBStructSchemaPlanner.PlanCreateTable(operation));
+        Assert.Contains("conflicting paths", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Location", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Location.address", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Location.address.country", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Rejects_case_insensitive_prefix_collision_in_struct_fields()
+    {
+        var operation = new CreateTableOperation { Name = "items" };
+        operation.Columns.Add(CreateField(
+            "location_address",
+            "VARCHAR",
+            new DuckDBStructFieldInfo("Location", [], "address")));
+        operation.Columns.Add(CreateField(
+            "location_address_country",
+            "VARCHAR",
+            new DuckDBStructFieldInfo("Location", ["Address"], "country")));
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => DuckDBStructSchemaPlanner.PlanCreateTable(operation));
+        Assert.Contains("conflicting paths", exception.Message, StringComparison.Ordinal);
+    }
+
     private static AddColumnOperation CreateField(
         string name,
         string storeType,
