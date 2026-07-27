@@ -215,8 +215,18 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
             DuckDBArraySliceExpression e => VisitArraySlice(e, allowOptimizedExpansion, out nullable),
             DuckDBNewArrayExpression e => VisitNewArray(e, allowOptimizedExpansion, out nullable),
             DuckDBRowValueExpression e => VisitRowValueExpression(e, allowOptimizedExpansion, out nullable),
+            DuckDBStructFieldExpression e => VisitStructField(e, allowOptimizedExpansion, out nullable),
             _ => base.VisitCustomSqlExpression(sqlExpression, allowOptimizedExpansion, out nullable)
         };
+    }
+
+    protected virtual SqlExpression VisitStructField(
+        DuckDBStructFieldExpression structFieldExpression,
+        bool allowOptimizedExpansion,
+        out bool nullable)
+    {
+        var source = Visit(structFieldExpression.Source, allowOptimizedExpansion, out nullable);
+        return structFieldExpression.Update(source, structFieldExpression.FieldPath);
     }
 
     protected virtual SqlExpression VisitNewArray(

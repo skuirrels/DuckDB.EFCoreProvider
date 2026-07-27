@@ -1,70 +1,99 @@
+using System.Collections.Immutable;
+
 namespace DuckDB.EFCoreProvider.Metadata;
 
 /// <summary>
-///     Describes a property's location inside a DuckDB <c>STRUCT</c> column so that the
-///     EF Core SQL generator can emit DuckDB struct field access syntax
-///     (<c>t."StructColumn".field.nestedField</c>) instead of a plain column reference.
+///     Describes one mapped leaf in a DuckDB <c>STRUCT</c> column.
 /// </summary>
 /// <remarks>
-///     <para>
-///         This type is immutable once constructed. The <c>nestedFieldNames</c> array
-///         passed to the constructor is defensively copied; callers cannot mutate
-///         cached metadata after model finalization.</para>
-///     <para>
-///         Typically set automatically by the <c>DuckDBStructFieldConvention</c> at model
-///         finalization time — no manual configuration is needed. The convention infers the
-///         struct column name from the complex property name and the field names from the
-///         camelCase property names:</para>
-/// <code>
-/// // Convention infers HasStructField("Location") on City/Country/Lat:
-/// modelBuilder.Entity&lt;Customer&gt;().ComplexProperty(c =&gt; c.Location);
-/// // Convention infers HasStructField("Shipping", "address") on Street/City/Zip:
-/// modelBuilder.Entity&lt;Order&gt;().ComplexProperty(o =&gt; o.Shipping);
-///     </code>
-///     <para>
-///         For manual override (e.g. when the struct column name differs from the property
-///         name), use the <c>HasStructField</c> fluent API:</para>
-/// <code>
-/// loc.Property(l =&gt; l.City).HasColumnName("city").HasStructField("Location");
-///     </code>
+///     The physical path and the EF relational column identity are deliberately separate.
+///     EF uses the latter while planning a command; DuckDB uses the former when SQL is rendered.
 /// </remarks>
 public sealed record DuckDBStructFieldInfo
 {
+    private readonly ImmutableArray<string> _nestedFieldNames;
+    private string _structColumnName = null!;
+    private string? _leafFieldName;
+
     /// <summary>
-    ///     Creates struct field metadata.
+    ///     Creates a STRUCT field descriptor.
     /// </summary>
-    /// <param name="structColumnName">The physical DuckDB STRUCT column name (e.g. <c>"Location"</c>).</param>
-    /// <param name="nestedFieldNames">
-    ///     Zero or more intermediate struct field names between the struct column and the leaf field.
-    ///     For a single-level struct this is empty. For <c>t."Shipping".address.street</c> it would be
-    ///     <c>{ "address" }</c> — the leaf field <c>"street"</c> comes from <c>LeafFieldName</c>.
-    ///     A defensive copy is made; the caller's array cannot be mutated through this instance.
-    /// </param>
-    /// <param name="leafFieldName">
-    ///     The DuckDB leaf field name inside the struct (e.g. <c>"city"</c>). When <see langword="null" />,
-    ///     the SQL generator uses the property's column name. The convention sets this to a
-    ///     lowercased version of the CLR property name.
-    /// </param>
-    public DuckDBStructFieldInfo(string structColumnName, string[] nestedFieldNames, string? leafFieldName = null)
+    public DuckDBStructFieldInfo(
+        string structColumnName,
+        string[] nestedFieldNames,
+        string? leafFieldName = null)
     {
         StructColumnName = structColumnName;
-        // Defensive copy — prevents external mutation of cached model metadata (#4).
-        NestedFieldNames = nestedFieldNames is null ? [] : [..nestedFieldNames];
+        NestedFieldNames = nestedFieldNames ?? throw new ArgumentNullException(nameof(nestedFieldNames));
         LeafFieldName = leafFieldName;
     }
 
+    internal DuckDBStructFieldInfo(
+        string structColumnName,
+        IEnumerable<string> nestedFieldNames,
+        string? leafFieldName,
+        string? efColumnName,
+        string? storeType,
+        bool? isNullable)
+        : this(
+            structColumnName,
+            nestedFieldNames.ToArray(),
+            leafFieldName)
+    {
+        if (efColumnName is not null)
+        {
+            ValidateFieldName(efColumnName);
+        }
+
+        EfColumnName = efColumnName;
+        StoreType = storeType;
+        IsNullable = isNullable;
+    }
+
     /// <summary>The physical DuckDB STRUCT column name.</summary>
-    public string StructColumnName { get; init; }
+    public string StructColumnName
+    {
+        get => _structColumnName;
+        init => _structColumnName = string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException("A STRUCT column name is required.", nameof(value))
+            : value;
+    }
 
-    /// <summary>
-    ///     Intermediate struct field names between the struct column and the leaf field (may be empty for
-    ///     single-level structs). Immutable; constructed from a defensive copy of the input array.
-    /// </summary>
-    public IReadOnlyList<string> NestedFieldNames { get; init; }
+    /// <summary>The immutable intermediate physical field path.</summary>
+    public IReadOnlyList<string> NestedFieldNames
+    {
+        get => _nestedFieldNames;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _nestedFieldNames = value.Select(ValidateFieldName).ToImmutableArray();
+        }
+    }
 
-    /// <summary>
-    ///     The DuckDB struct leaf field name (e.g. <c>"city"</c>). When <see langword="null" />, the SQL
-    ///     generator uses the property's column name instead.
-    /// </summary>
-    public string? LeafFieldName { get; init; }
+    /// <summary>The physical leaf field name, or <see langword="null" /> for legacy descriptors.</summary>
+    public string? LeafFieldName
+    {
+        get => _leafFieldName;
+        init => _leafFieldName = value is null ? null : ValidateFieldName(value);
+    }
+
+    /// <summary>The synthetic EF relational column identity used for this leaf.</summary>
+    public string? EfColumnName { get; private init; }
+
+    /// <summary>The leaf store type captured during model finalization.</summary>
+    public string? StoreType { get; private init; }
+
+    /// <summary>The leaf nullability captured during model finalization.</summary>
+    public bool? IsNullable { get; private init; }
+
+    /// <summary>The complete immutable physical field path, including the leaf.</summary>
+    public IReadOnlyList<string> FieldPath
+        => LeafFieldName is null
+            ? _nestedFieldNames
+            : _nestedFieldNames.Add(LeafFieldName);
+
+    private static string ValidateFieldName(string name)
+        => string.IsNullOrWhiteSpace(name)
+            ? throw new ArgumentException("STRUCT field names must be non-empty.", nameof(name))
+            : name;
 }

@@ -59,8 +59,23 @@ public class DuckDBModelValidator : RelationalModelValidator
         ValidateAutoIncrement(model);
         ValidateFileSources(model);
         ValidateTieredStores(model);
+        ValidateStructMappings(model);
 
         ValidateEngineCapabilities(model, _capabilities);
+    }
+
+    private static void ValidateStructMappings(IModel model)
+    {
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            if (entityType.GetViewName() is not null
+                && StructMappingHelper.HasStructMappedComplexProperties(entityType))
+            {
+                throw new NotSupportedException(
+                    $"Entity '{entityType.DisplayName()}' is mapped to a view and contains struct-mapped complex properties. "
+                    + "View mappings cannot be used with DuckDB STRUCT columns.");
+            }
+        }
     }
 
     private static void ValidateFileSources(IModel model)

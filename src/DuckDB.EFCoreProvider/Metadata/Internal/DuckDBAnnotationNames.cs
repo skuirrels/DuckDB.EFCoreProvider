@@ -114,6 +114,17 @@ public static class DuckDBAnnotationNames
     public const string StructMapping = Prefix + "StructMapping";
 
     /// <summary>
+    ///     The immutable canonical STRUCT metadata attached to an entity during model finalization.
+    /// </summary>
+    public const string StructMetadata = Prefix + "StructMetadata";
+
+    /// <summary>The explicit physical root column configured by UseStructMapping.</summary>
+    public const string StructColumnName = Prefix + "StructColumnName";
+
+    /// <summary>The explicit physical leaf field name configured by HasStructFieldName.</summary>
+    public const string StructFieldName = Prefix + "StructFieldName";
+
+    /// <summary>
     ///     A <see cref="IReadOnlyDictionary{TKey,TValue}" /> mapping the unique EF column
     ///     name of each struct sub-field to its <see cref="DuckDBStructFieldInfo" />. Stored
     ///     on an entity type so the DDL and write pipelines can resolve struct paths from

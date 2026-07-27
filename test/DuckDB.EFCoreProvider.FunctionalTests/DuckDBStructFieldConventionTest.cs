@@ -199,6 +199,20 @@ public class DuckDBStructFieldConventionTest
     }
 
     [Fact]
+    public void Struct_field_info_retains_record_copy_semantics()
+    {
+        var nestedFieldNames = new[] { "address" };
+        var info = new DuckDBStructFieldInfo("Location", nestedFieldNames, "city");
+
+        var copy = info with { LeafFieldName = "city_name" };
+
+        Assert.Equal("city", info.LeafFieldName);
+        Assert.Equal("city_name", copy.LeafFieldName);
+        Assert.Equal(["address"], info.NestedFieldNames);
+        Assert.NotSame(nestedFieldNames, info.NestedFieldNames);
+    }
+
+    [Fact]
     public void Nested_struct_gets_correct_field_path()
     {
         var model = BuildModel<OrderWithNestedStruct>(mb =>

@@ -19,3 +19,9 @@
 - Keep end-to-end SaveChanges/query/migration tests for affected paths; unit tests alone are not sufficient for provider behaviour.
 - Run the targeted test class while iterating, then the full solution build and the repository's production test gate before completing the change.
 - Treat formatting, package/API validation, and a final diff review as part of regression prevention.
+
+## Release requirements
+
+- Set every GitHub Release title to exactly the version tag in `v{major}.{minor}.{patch}` form, for example `v1.14.2`.
+- Do not put product names, summaries, generated prose, dependency names, or change descriptions in the release title. Put those details in the release notes.
+- Before completing a release, verify that the repository's Releases sidebar displays the full version without truncation.

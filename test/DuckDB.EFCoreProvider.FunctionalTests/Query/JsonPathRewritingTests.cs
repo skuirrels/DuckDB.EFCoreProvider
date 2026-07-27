@@ -131,6 +131,27 @@ public class JsonPathRewritingTests : DuckDBTestBase
         Assert.Equal(1, childCount);
     }
 
+    [ConditionalFact]
+    public void Configured_json_property_names_are_escaped_in_collection_paths()
+    {
+        using var context = CreateSeededContext();
+
+        var query = context.Owners
+            .Where(owner => owner.Details.Items.Any(
+                item => item.Children.Any(
+                    child => child.Name == "target" && child.Category == "match")))
+            .Select(owner => owner.Id);
+
+        var sql = query.ToQueryString();
+        Assert.Contains("\\\"O''Brien\\\\Root", sql);
+        Assert.Contains("\"Children.With.Dot\"", sql);
+        Assert.Contains("$.\"$Name''s.Value\"", sql);
+        Assert.Contains("$.\"/Category.With.Dot\"", sql);
+
+        var ownerId = query.Single();
+        Assert.Equal(1, ownerId);
+    }
+
     private JsonPathContext CreateSeededContext()
     {
         var context = new JsonPathContext(FileOptions<JsonPathContext>());
@@ -145,7 +166,7 @@ public class JsonPathRewritingTests : DuckDBTestBase
                     [
                         new JsonItem
                         {
-                            Children = [new JsonChild { Name = "target" }]
+                            Children = [new JsonChild { Name = "target", Category = "match" }]
                         }
                     ]
                 }
@@ -197,9 +218,12 @@ public class JsonPathRewritingTests : DuckDBTestBase
                     details =>
                     {
                         details.ToJson();
-                        details.OwnsMany(
-                            value => value.Items,
-                            items => items.OwnsMany(value => value.Children));
+                        var items = details.OwnsMany(value => value.Items);
+                        items.HasJsonPropertyName("Items.\"O'Brien\\Root");
+                        var children = items.OwnsMany(value => value.Children);
+                        children.HasJsonPropertyName("Children.With.Dot");
+                        children.Property(value => value.Name).HasJsonPropertyName("$Name's.Value");
+                        children.Property(value => value.Category).HasJsonPropertyName("/Category.With.Dot");
                     });
             });
         }
@@ -225,5 +249,6 @@ public class JsonPathRewritingTests : DuckDBTestBase
     private sealed class JsonChild
     {
         public string Name { get; set; } = null!;
+        public string Category { get; set; } = null!;
     }
 }
