@@ -69,7 +69,7 @@ internal sealed class DuckDBStructFieldRewritingExpressionVisitor : ExpressionVi
                     .Value;
             }
         }
-        else if (_directTableAliases.Contains(columnExpression.TableAlias))
+        if (field is null && _directTableAliases.Contains(columnExpression.TableAlias))
         {
             field = columnExpression.Column?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
                 as DuckDBStructFieldInfo;
@@ -148,16 +148,47 @@ internal sealed class DuckDBStructFieldRewritingExpressionVisitor : ExpressionVi
             }
 
             aliases.Add(table.Alias);
-            foreach (var entityType in tableBased.Table.EntityTypeMappings
-                         .Select(mapping => mapping.TypeBase)
-                         .OfType<IEntityType>())
+            var metadataByEntity = tableBased.Table.EntityTypeMappings
+                .Select(mapping => mapping.TypeBase)
+                .OfType<IEntityType>()
+                .Select(entityType => entityType.GetStructMetadata())
+                .Where(metadata => metadata is not null)
+                .Cast<DuckDBStructEntityMetadata>()
+                .ToArray();
+            if (metadataByEntity.Length > 0)
             {
-                if (entityType.GetStructMetadata() is { } metadata)
-                {
-                    target[table.Alias] = metadata;
-                    break;
-                }
+                target[table.Alias] = MergeMetadata(metadataByEntity);
             }
         }
     }
+
+    private static DuckDBStructEntityMetadata MergeMetadata(
+        IReadOnlyList<DuckDBStructEntityMetadata> metadataByEntity)
+    {
+        var columns = metadataByEntity
+            .SelectMany(metadata => metadata.Columns)
+            .GroupBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var first = group.First();
+                if (group.Skip(1).Any(pair => !HasSameMapping(pair.Value, first.Value)))
+                {
+                    throw new InvalidOperationException(
+                        $"Conflicting STRUCT mappings were found for EF column '{group.Key}'.");
+                }
+
+                return first;
+            });
+
+        return new DuckDBStructEntityMetadata(
+            metadataByEntity.SelectMany(metadata => metadata.Roots),
+            columns);
+    }
+
+    private static bool HasSameMapping(DuckDBStructFieldInfo left, DuckDBStructFieldInfo right)
+        => string.Equals(left.StructColumnName, right.StructColumnName, StringComparison.Ordinal)
+            && left.FieldPath.SequenceEqual(right.FieldPath, StringComparer.Ordinal)
+            && string.Equals(left.EfColumnName, right.EfColumnName, StringComparison.Ordinal)
+            && string.Equals(left.StoreType, right.StoreType, StringComparison.Ordinal)
+            && left.IsNullable == right.IsNullable;
 }

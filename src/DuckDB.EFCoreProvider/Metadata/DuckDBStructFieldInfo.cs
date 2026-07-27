@@ -9,9 +9,11 @@ namespace DuckDB.EFCoreProvider.Metadata;
 ///     The physical path and the EF relational column identity are deliberately separate.
 ///     EF uses the latter while planning a command; DuckDB uses the former when SQL is rendered.
 /// </remarks>
-public sealed class DuckDBStructFieldInfo : IEquatable<DuckDBStructFieldInfo>
+public sealed record DuckDBStructFieldInfo
 {
     private readonly ImmutableArray<string> _nestedFieldNames;
+    private string _structColumnName = null!;
+    private string? _leafFieldName;
 
     /// <summary>
     ///     Creates a STRUCT field descriptor.
@@ -20,14 +22,10 @@ public sealed class DuckDBStructFieldInfo : IEquatable<DuckDBStructFieldInfo>
         string structColumnName,
         string[] nestedFieldNames,
         string? leafFieldName = null)
-        : this(
-            structColumnName,
-            (nestedFieldNames ?? throw new ArgumentNullException(nameof(nestedFieldNames))).AsReadOnly(),
-            leafFieldName,
-            null,
-            null,
-            null)
     {
+        StructColumnName = structColumnName;
+        NestedFieldNames = nestedFieldNames ?? throw new ArgumentNullException(nameof(nestedFieldNames));
+        LeafFieldName = leafFieldName;
     }
 
     internal DuckDBStructFieldInfo(
@@ -37,85 +35,62 @@ public sealed class DuckDBStructFieldInfo : IEquatable<DuckDBStructFieldInfo>
         string? efColumnName,
         string? storeType,
         bool? isNullable)
+        : this(
+            structColumnName,
+            nestedFieldNames.ToArray(),
+            leafFieldName)
     {
-        if (string.IsNullOrWhiteSpace(structColumnName))
-        {
-            throw new ArgumentException("A STRUCT column name is required.", nameof(structColumnName));
-        }
-
-        ArgumentNullException.ThrowIfNull(nestedFieldNames);
-        _nestedFieldNames = nestedFieldNames
-            .Select(ValidateFieldName)
-            .ToImmutableArray();
-
-        if (leafFieldName is not null)
-        {
-            ValidateFieldName(leafFieldName);
-        }
-
         if (efColumnName is not null)
         {
             ValidateFieldName(efColumnName);
         }
 
-        StructColumnName = structColumnName;
-        LeafFieldName = leafFieldName;
         EfColumnName = efColumnName;
         StoreType = storeType;
         IsNullable = isNullable;
     }
 
     /// <summary>The physical DuckDB STRUCT column name.</summary>
-    public string StructColumnName { get; }
+    public string StructColumnName
+    {
+        get => _structColumnName;
+        init => _structColumnName = string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException("A STRUCT column name is required.", nameof(value))
+            : value;
+    }
 
     /// <summary>The immutable intermediate physical field path.</summary>
-    public IReadOnlyList<string> NestedFieldNames => _nestedFieldNames;
+    public IReadOnlyList<string> NestedFieldNames
+    {
+        get => _nestedFieldNames;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _nestedFieldNames = value.Select(ValidateFieldName).ToImmutableArray();
+        }
+    }
 
     /// <summary>The physical leaf field name, or <see langword="null" /> for legacy descriptors.</summary>
-    public string? LeafFieldName { get; }
+    public string? LeafFieldName
+    {
+        get => _leafFieldName;
+        init => _leafFieldName = value is null ? null : ValidateFieldName(value);
+    }
 
     /// <summary>The synthetic EF relational column identity used for this leaf.</summary>
-    public string? EfColumnName { get; }
+    public string? EfColumnName { get; private init; }
 
     /// <summary>The leaf store type captured during model finalization.</summary>
-    public string? StoreType { get; }
+    public string? StoreType { get; private init; }
 
     /// <summary>The leaf nullability captured during model finalization.</summary>
-    public bool? IsNullable { get; }
+    public bool? IsNullable { get; private init; }
 
     /// <summary>The complete immutable physical field path, including the leaf.</summary>
     public IReadOnlyList<string> FieldPath
         => LeafFieldName is null
             ? _nestedFieldNames
             : _nestedFieldNames.Add(LeafFieldName);
-
-    public bool Equals(DuckDBStructFieldInfo? other)
-        => other is not null
-            && string.Equals(StructColumnName, other.StructColumnName, StringComparison.Ordinal)
-            && string.Equals(LeafFieldName, other.LeafFieldName, StringComparison.Ordinal)
-            && string.Equals(EfColumnName, other.EfColumnName, StringComparison.Ordinal)
-            && string.Equals(StoreType, other.StoreType, StringComparison.Ordinal)
-            && IsNullable == other.IsNullable
-            && _nestedFieldNames.SequenceEqual(other._nestedFieldNames, StringComparer.Ordinal);
-
-    public override bool Equals(object? obj)
-        => Equals(obj as DuckDBStructFieldInfo);
-
-    public override int GetHashCode()
-    {
-        var hash = new HashCode();
-        hash.Add(StructColumnName, StringComparer.Ordinal);
-        hash.Add(LeafFieldName, StringComparer.Ordinal);
-        hash.Add(EfColumnName, StringComparer.Ordinal);
-        hash.Add(StoreType, StringComparer.Ordinal);
-        hash.Add(IsNullable);
-        foreach (var field in _nestedFieldNames)
-        {
-            hash.Add(field, StringComparer.Ordinal);
-        }
-
-        return hash.ToHashCode();
-    }
 
     private static string ValidateFieldName(string name)
         => string.IsNullOrWhiteSpace(name)

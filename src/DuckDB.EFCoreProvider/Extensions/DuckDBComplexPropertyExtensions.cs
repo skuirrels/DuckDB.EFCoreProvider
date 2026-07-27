@@ -30,7 +30,19 @@ public static class DuckDBComplexPropertyExtensions
     }
 
     internal static DuckDBStructEntityMetadata? GetStructMetadata(this IReadOnlyEntityType entityType)
-        => entityType.FindAnnotation(DuckDBAnnotationNames.StructMetadata)?.Value as DuckDBStructEntityMetadata;
+    {
+        var legacyMap = entityType.FindAnnotation(DuckDBAnnotationNames.StructColumnMap)?.Value
+            as IReadOnlyDictionary<string, DuckDBStructFieldInfo>;
+        if (legacyMap is not null)
+        {
+            return legacyMap.Count == 0
+                ? null
+                : new DuckDBStructEntityMetadata([], legacyMap);
+        }
+
+        return entityType.FindAnnotation(DuckDBAnnotationNames.StructMetadata)?.Value
+            as DuckDBStructEntityMetadata;
+    }
 
     internal static DuckDBStructEntityMetadata SetStructMetadata(
         this IConventionEntityType entityType,
@@ -46,7 +58,18 @@ public static class DuckDBComplexPropertyExtensions
     ///     <see langword="null" /> when the entity has no struct-mapped complex properties.
     /// </summary>
     public static IReadOnlyDictionary<string, DuckDBStructFieldInfo>? GetStructColumnMap(this IReadOnlyEntityType entityType)
-        => entityType.GetStructMetadata()?.Columns;
+    {
+        if (entityType.FindAnnotation(DuckDBAnnotationNames.StructColumnMap)?.Value
+            is IReadOnlyDictionary<string, DuckDBStructFieldInfo> legacyMap)
+        {
+            return legacyMap;
+        }
+
+        return entityType.FindAnnotation(DuckDBAnnotationNames.StructMetadata)?.Value
+            is DuckDBStructEntityMetadata metadata
+                ? metadata.Columns
+                : null;
+    }
 
     /// <summary>
     ///     Sets the column-name-to-field-info map on this convention entity type.
