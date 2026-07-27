@@ -49,6 +49,22 @@ public sealed class StructRawSqlAndViewTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Manual_struct_field_is_normalized_for_operation_planners()
+    {
+        using var context = CreateManualStructContext();
+        var entityType = context.Model.FindEntityType(typeof(ManualStructCustomer));
+        Assert.NotNull(entityType?.GetStructColumnMap());
+
+        var customer = new ManualStructCustomer
+        {
+            Id = 1,
+            Location = new ManualStructLocation { City = "NYC" }
+        };
+        Assert.Throws<NotSupportedException>(() => context.BulkInsert([customer]));
+        Assert.Throws<NotSupportedException>(() => context.Upsert([customer]));
+    }
+
+    [ConditionalFact]
     public void Mapped_view_with_struct_complex_property_is_rejected_at_model_build()
     {
         var ex = Assert.Throws<NotSupportedException>(() =>
@@ -131,6 +147,7 @@ public sealed class StructRawSqlAndViewTests : DuckDBTestBase
                 entity.ComplexProperty(customer => customer.Location, location =>
                     location.Property(value => value.City)
                         .HasColumnName("city_name")
+                        .HasStructFieldName("city_name")
                         .HasStructField("Location"));
             });
         }

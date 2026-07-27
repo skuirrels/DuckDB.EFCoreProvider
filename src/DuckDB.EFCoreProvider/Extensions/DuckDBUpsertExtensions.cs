@@ -320,15 +320,15 @@ public static class DuckDBUpsertExtensions
         var helper = context.GetService<ISqlGenerationHelper>();
         var storeObject = StoreObjectIdentifier.Table(table, schema);
 
-                if (StructMappingHelper.HasStructMappedComplexProperties(entityType))
-                {
-                    throw new NotSupportedException(
-                        $"Upsert does not support entity '{entityType.ClrType.Name}' because it contains struct-mapped complex properties. "
-                        + "STRUCT columns are consolidated at the physical layer and cannot be staged via the DuckDB Appender API. "
-                        + "Use SaveChanges instead.");
-                }
+        if (entityType.GetStructMetadata() is not null)
+        {
+            throw new NotSupportedException(
+                $"Upsert does not support entity '{entityType.ClrType.Name}' because it contains struct-mapped complex properties. "
+                + "STRUCT columns are consolidated at the physical layer and cannot be staged via the DuckDB Appender API. "
+                + "Use SaveChanges instead.");
+        }
 
-                var primaryKey = entityType.FindPrimaryKey()
+        var primaryKey = entityType.FindPrimaryKey()
             ?? throw new InvalidOperationException(
                 $"'{entityType.ClrType.Name}' has no primary key; upsert requires a primary key as the conflict target.");
 

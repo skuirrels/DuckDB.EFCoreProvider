@@ -1,119 +1,250 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Update;
 using System.Collections.Immutable;
 
 namespace DuckDB.EFCoreProvider.Update.Internal;
 
+internal enum DuckDBStructMutationMode
+{
+    Insert,
+    Update,
+    BulkUpdate
+}
+
 /// <summary>
-///     Resolves STRUCT leaf modifications into an immutable ordered mutation shape.
+///     Resolves STRUCT leaf modifications into an immutable ordered rendering plan.
 /// </summary>
 internal sealed class DuckDBStructMutationPlan
 {
-    private DuckDBStructMutationPlan(IReadOnlyList<DuckDBStructMutationEntry> entries)
-        => Entries = entries.ToImmutableArray();
+    private DuckDBStructMutationPlan(
+        DuckDBStructMutationMode mode,
+        IEnumerable<DuckDBStructMutationEntry> entries)
+    {
+        Mode = mode;
+        Entries = entries.ToImmutableArray();
+    }
+
+    public DuckDBStructMutationMode Mode { get; }
 
     public IReadOnlyList<DuckDBStructMutationEntry> Entries { get; }
 
     public static bool TryCreate(
         IReadOnlyList<IColumnModification> modifications,
-        string tableName,
-        string? schema,
+        DuckDBStructMutationMode mode,
         out DuckDBStructMutationPlan? plan)
     {
         ArgumentNullException.ThrowIfNull(modifications);
 
-        var columnMap = ResolveStructColumnMap(modifications, tableName, schema);
-        var groups = new Dictionary<string, List<(DuckDBStructFieldInfo FieldInfo, IColumnModification Modification)>>();
-
-        foreach (var modification in modifications)
-        {
-            if (TryGetStructFieldInfo(modification, columnMap) is { } fieldInfo)
+        var candidates = modifications
+            .Select((modification, ordinal) => new
             {
-                if (!groups.TryGetValue(fieldInfo.StructColumnName, out var fields))
-                {
-                    fields = [];
-                    groups.Add(fieldInfo.StructColumnName, fields);
-                }
-
-                fields.Add((fieldInfo, modification));
-            }
-        }
-
-        if (groups.Count == 0)
+                Modification = modification,
+                Ordinal = ordinal,
+                FieldInfo = ResolveFieldInfo(modification)
+            })
+            .ToArray();
+        if (candidates.All(entry => entry.FieldInfo is null))
         {
             plan = null;
             return false;
         }
 
-        var entries = new List<DuckDBStructMutationEntry>(modifications.Count);
-        var emittedStructColumns = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var modification in modifications)
+        var resolved = candidates
+            .Select(entry => new ResolvedModification(
+                entry.Modification.ColumnName,
+                entry.Modification.ParameterName
+                    ?? throw new InvalidOperationException(
+                        $"STRUCT write column '{entry.Modification.ColumnName}' has no parameter name."),
+                entry.Ordinal,
+                entry.FieldInfo))
+            .ToArray();
+
+        var grouped = resolved
+            .Where(entry => entry.FieldInfo is not null)
+            .GroupBy(entry => entry.FieldInfo!.StructColumnName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => BuildTree(group),
+                StringComparer.OrdinalIgnoreCase);
+
+        var entries = new List<DuckDBStructMutationEntry>(resolved.Length);
+        var emittedStructColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in resolved)
         {
-            var fieldInfo = TryGetStructFieldInfo(modification, columnMap);
-            if (fieldInfo is null)
+            if (entry.FieldInfo is null)
             {
-                entries.Add(new DuckDBStructStandaloneEntry(modification));
+                entries.Add(new DuckDBStandaloneMutationEntry(
+                    entry.ColumnName,
+                    entry.ParameterName,
+                    entry.WriteOrdinal));
             }
-            else if (emittedStructColumns.Add(fieldInfo.StructColumnName))
+            else if (emittedStructColumns.Add(entry.FieldInfo.StructColumnName))
             {
-                entries.Add(new DuckDBStructGroupEntry(
-                    fieldInfo.StructColumnName,
-                    groups[fieldInfo.StructColumnName]));
+                entries.Add(new DuckDBStructMutationGroup(
+                    entry.FieldInfo.StructColumnName,
+                    grouped[entry.FieldInfo.StructColumnName]));
             }
         }
 
-        plan = new DuckDBStructMutationPlan(entries);
+        plan = new DuckDBStructMutationPlan(mode, entries);
         return true;
     }
 
-    private static IReadOnlyDictionary<string, DuckDBStructFieldInfo>? ResolveStructColumnMap(
-        IReadOnlyList<IColumnModification> modifications,
-        string tableName,
-        string? schema)
+    public bool HasSamePhysicalShape(DuckDBStructMutationPlan other)
     {
-        var representative = modifications.FirstOrDefault(
-            modification => modification.Property?.DeclaringType?.Model is not null);
-        if (representative?.Property?.DeclaringType?.Model is not IModel model)
-        {
-            return null;
-        }
+        ArgumentNullException.ThrowIfNull(other);
 
-        IReadOnlyDictionary<string, DuckDBStructFieldInfo>? firstMatch = null;
-        foreach (var entityType in model.GetEntityTypes())
-        {
-            if (entityType.GetTableName() != tableName || entityType.GetSchema() != schema)
-            {
-                continue;
-            }
-
-            if (entityType.GetStructColumnMap() is { Count: > 0 } map)
-            {
-                firstMatch ??= map;
-            }
-        }
-
-        return firstMatch;
+        return Mode == other.Mode
+            && Entries.Count == other.Entries.Count
+            && Entries.Zip(other.Entries).All(pair => pair.First.HasSamePhysicalShape(pair.Second));
     }
 
-    private static DuckDBStructFieldInfo? TryGetStructFieldInfo(
-        IColumnModification modification,
-        IReadOnlyDictionary<string, DuckDBStructFieldInfo>? columnMap)
-        => columnMap?.TryGetValue(modification.ColumnName, out var fieldInfo) == true
-            ? fieldInfo
-            : modification.Property?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
-                as DuckDBStructFieldInfo;
+    private static DuckDBStructMutationNode BuildTree(IEnumerable<ResolvedModification> modifications)
+    {
+        var root = new MutableNode(null);
+        foreach (var modification in modifications)
+        {
+            var field = modification.FieldInfo!;
+            var current = root;
+            foreach (var nestedName in field.NestedFieldNames)
+            {
+                current = current.GetOrAdd(nestedName);
+            }
+
+            current.AddLeaf(
+                field.LeafFieldName ?? modification.ColumnName,
+                modification.ParameterName,
+                modification.ColumnName,
+                modification.WriteOrdinal);
+        }
+
+        return root.Freeze();
+    }
+
+    private static DuckDBStructFieldInfo? ResolveFieldInfo(IColumnModification modification)
+        => modification.Column?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+                as DuckDBStructFieldInfo
+            ?? modification.Property?.GetStructFieldInfo();
+
+    private sealed record ResolvedModification(
+        string ColumnName,
+        string ParameterName,
+        int WriteOrdinal,
+        DuckDBStructFieldInfo? FieldInfo);
+
+    private sealed class MutableNode(string? fieldName)
+    {
+        private readonly List<MutableNode> _children = [];
+
+        public string? FieldName { get; } = fieldName;
+
+        public string? ParameterName { get; private init; }
+
+        public string? ColumnName { get; private init; }
+
+        public int? WriteOrdinal { get; private init; }
+
+        public MutableNode GetOrAdd(string name)
+        {
+            var child = _children.FirstOrDefault(
+                candidate => string.Equals(candidate.FieldName, name, StringComparison.OrdinalIgnoreCase));
+            if (child is null)
+            {
+                child = new MutableNode(name);
+                _children.Add(child);
+            }
+
+            return child;
+        }
+
+        public void AddLeaf(string name, string parameterName, string columnName, int writeOrdinal)
+        {
+            if (_children.Any(candidate => string.Equals(
+                    candidate.FieldName,
+                    name,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException($"Duplicate DuckDB STRUCT field '{name}' in one mutation.");
+            }
+
+            _children.Add(new MutableNode(name)
+            {
+                ParameterName = parameterName,
+                ColumnName = columnName,
+                WriteOrdinal = writeOrdinal
+            });
+        }
+
+        public DuckDBStructMutationNode Freeze()
+            => new(
+                FieldName,
+                ParameterName,
+                ColumnName,
+                WriteOrdinal,
+                _children.Select(child => child.Freeze()));
+    }
 }
 
-internal abstract record DuckDBStructMutationEntry(string ColumnName);
+internal abstract record DuckDBStructMutationEntry(string ColumnName)
+{
+    public abstract bool HasSamePhysicalShape(DuckDBStructMutationEntry other);
+}
 
-internal sealed record DuckDBStructStandaloneEntry(IColumnModification Modification)
-    : DuckDBStructMutationEntry(Modification.ColumnName);
+internal sealed record DuckDBStandaloneMutationEntry(
+    string PhysicalColumnName,
+    string ParameterName,
+    int WriteOrdinal)
+    : DuckDBStructMutationEntry(PhysicalColumnName)
+{
+    public override bool HasSamePhysicalShape(DuckDBStructMutationEntry other)
+        => other is DuckDBStandaloneMutationEntry standalone
+            && string.Equals(ColumnName, standalone.ColumnName, StringComparison.Ordinal);
+}
 
-internal sealed record DuckDBStructGroupEntry(
+internal sealed record DuckDBStructMutationGroup(
     string StructColumnName,
-    IReadOnlyList<(DuckDBStructFieldInfo FieldInfo, IColumnModification Modification)> Fields)
-    : DuckDBStructMutationEntry(StructColumnName);
+    DuckDBStructMutationNode Root)
+    : DuckDBStructMutationEntry(StructColumnName)
+{
+    public override bool HasSamePhysicalShape(DuckDBStructMutationEntry other)
+        => other is DuckDBStructMutationGroup group
+            && string.Equals(StructColumnName, group.StructColumnName, StringComparison.OrdinalIgnoreCase)
+            && Root.HasSamePhysicalShape(group.Root);
+}
+
+internal sealed class DuckDBStructMutationNode
+{
+    public DuckDBStructMutationNode(
+        string? fieldName,
+        string? parameterName,
+        string? columnName,
+        int? writeOrdinal,
+        IEnumerable<DuckDBStructMutationNode> children)
+    {
+        FieldName = fieldName;
+        ParameterName = parameterName;
+        ColumnName = columnName;
+        WriteOrdinal = writeOrdinal;
+        Children = children.ToImmutableArray();
+    }
+
+    public string? FieldName { get; }
+
+    public string? ParameterName { get; }
+
+    public string? ColumnName { get; }
+
+    public int? WriteOrdinal { get; }
+
+    public IReadOnlyList<DuckDBStructMutationNode> Children { get; }
+
+    public bool IsLeaf => ParameterName is not null;
+
+    public bool HasSamePhysicalShape(DuckDBStructMutationNode other)
+        => string.Equals(FieldName, other.FieldName, StringComparison.OrdinalIgnoreCase)
+            && IsLeaf == other.IsLeaf
+            && Children.Count == other.Children.Count
+            && Children.Zip(other.Children).All(pair => pair.First.HasSamePhysicalShape(pair.Second));
+}

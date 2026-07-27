@@ -31,6 +31,12 @@ public static class DuckDBComplexPropertyExtensions
 
     internal static DuckDBStructEntityMetadata? GetStructMetadata(this IReadOnlyEntityType entityType)
     {
+        if (entityType.FindAnnotation(DuckDBAnnotationNames.StructMetadata)?.Value
+            is DuckDBStructEntityMetadata metadata)
+        {
+            return metadata.Columns.Count == 0 ? null : metadata;
+        }
+
         var legacyMap = entityType.FindAnnotation(DuckDBAnnotationNames.StructColumnMap)?.Value
             as IReadOnlyDictionary<string, DuckDBStructFieldInfo>;
         if (legacyMap is not null)
@@ -40,8 +46,7 @@ public static class DuckDBComplexPropertyExtensions
                 : new DuckDBStructEntityMetadata([], legacyMap);
         }
 
-        return entityType.FindAnnotation(DuckDBAnnotationNames.StructMetadata)?.Value
-            as DuckDBStructEntityMetadata;
+        return null;
     }
 
     internal static DuckDBStructEntityMetadata SetStructMetadata(
@@ -59,16 +64,18 @@ public static class DuckDBComplexPropertyExtensions
     /// </summary>
     public static IReadOnlyDictionary<string, DuckDBStructFieldInfo>? GetStructColumnMap(this IReadOnlyEntityType entityType)
     {
+        if (entityType.FindAnnotation(DuckDBAnnotationNames.StructMetadata)?.Value
+            is DuckDBStructEntityMetadata metadata)
+        {
+            return metadata.Columns;
+        }
+
         if (entityType.FindAnnotation(DuckDBAnnotationNames.StructColumnMap)?.Value
             is IReadOnlyDictionary<string, DuckDBStructFieldInfo> legacyMap)
         {
             return legacyMap;
         }
-
-        return entityType.FindAnnotation(DuckDBAnnotationNames.StructMetadata)?.Value
-            is DuckDBStructEntityMetadata metadata
-                ? metadata.Columns
-                : null;
+        return null;
     }
 
     /// <summary>
@@ -80,7 +87,8 @@ public static class DuckDBComplexPropertyExtensions
         bool fromDataAnnotation = false)
     {
         var immutableMap = map.ToImmutableDictionary(StringComparer.Ordinal);
-        entityType.SetOrRemoveAnnotation(DuckDBAnnotationNames.StructColumnMap, immutableMap, fromDataAnnotation);
+        entityType.SetStructMetadata(new DuckDBStructEntityMetadata([], immutableMap), fromDataAnnotation);
+        entityType.SetOrRemoveAnnotation(DuckDBAnnotationNames.StructColumnMap, null, fromDataAnnotation);
         return immutableMap;
     }
 }

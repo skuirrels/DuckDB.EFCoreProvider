@@ -34,26 +34,20 @@ public static class DuckDBPropertyBuilderExtensions
         => DuckDBStructPropertyBuilderExtensions.UseStructMapping(propertyBuilder);
 
     public static PropertyBuilder<TProperty> HasStructField<TProperty>(
-        this PropertyBuilder<TProperty> propertyBuilder,
+        PropertyBuilder<TProperty> propertyBuilder,
         string structColumnName,
         params string[] nestedFieldNames)
-    {
-        ArgumentNullException.ThrowIfNull(propertyBuilder);
-        propertyBuilder.HasAnnotation(
-            DuckDBAnnotationNames.StructField,
-            new DuckDBStructFieldInfo(structColumnName, nestedFieldNames));
-        return propertyBuilder;
-    }
+        => DuckDBStructPropertyBuilderExtensions.HasStructField(
+            propertyBuilder,
+            structColumnName,
+            nestedFieldNames);
 
     public static ComplexTypePropertyBuilder<TProperty> HasStructField<TProperty>(
-        this ComplexTypePropertyBuilder<TProperty> propertyBuilder,
+        ComplexTypePropertyBuilder<TProperty> propertyBuilder,
         string structColumnName,
         params string[] nestedFieldNames)
-    {
-        ArgumentNullException.ThrowIfNull(propertyBuilder);
-        propertyBuilder.HasAnnotation(
-            DuckDBAnnotationNames.StructField,
-            new DuckDBStructFieldInfo(structColumnName, nestedFieldNames));
-        return propertyBuilder;
-    }
+        => DuckDBStructPropertyBuilderExtensions.HasStructField(
+            propertyBuilder,
+            structColumnName,
+            nestedFieldNames);
 }

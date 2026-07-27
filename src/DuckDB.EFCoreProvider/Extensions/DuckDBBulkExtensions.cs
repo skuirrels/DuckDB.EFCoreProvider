@@ -51,12 +51,6 @@ public static class DuckDBBulkExtensions
         try
         {
             var (entityType, table, schema) = ResolveTarget(context, typeof(TEntity));
-            if (entityType.GetStructMetadata() is not null)
-            {
-                throw new NotSupportedException(
-                    $"Bulk insert into '{table}' is not supported for entities with DuckDB STRUCT mappings. Use SaveChanges instead.");
-            }
-
             var connection = (DuckDBConnection)context.Database.GetDbConnection();
             var openedHere = connection.State != ConnectionState.Open;
 
@@ -111,12 +105,6 @@ public static class DuckDBBulkExtensions
         try
         {
             var (entityType, table, schema) = ResolveTarget(context, typeof(TEntity));
-            if (entityType.GetStructMetadata() is not null)
-            {
-                throw new NotSupportedException(
-                    $"Bulk insert into '{table}' is not supported for entities with DuckDB STRUCT mappings. Use SaveChanges instead.");
-            }
-
             var connection = (DuckDBConnection)context.Database.GetDbConnection();
             var openedHere = connection.State != ConnectionState.Open;
 
