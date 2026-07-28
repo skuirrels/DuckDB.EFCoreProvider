@@ -2,6 +2,7 @@
 using DuckDB.EFCoreProvider.Scaffolding.Internal;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Design.Internal;
+using Microsoft.EntityFrameworkCore.Migrations.Design;
 using Microsoft.EntityFrameworkCore.Scaffolding;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -23,9 +24,12 @@ public class DuckDBDesignTimeServices : IDesignTimeServices
 #pragma warning disable EF1001 // Internal EF Core API usage.
         new EntityFrameworkRelationalDesignServicesBuilder(serviceCollection)
             .TryAdd<ICSharpRuntimeAnnotationCodeGenerator, DuckDBCSharpRuntimeAnnotationCodeGenerator>()
+            .TryAdd<IAnnotationCodeGenerator, DuckDBAnnotationCodeGenerator>()
 #pragma warning restore EF1001 // Internal EF Core API usage.
             .TryAdd<IDatabaseModelFactory, DuckDBDatabaseModelFactory>()
             .TryAdd<IProviderConfigurationCodeGenerator, DuckDBCodeGenerator>()
             .TryAddCoreServices();
+
+        serviceCollection.AddSingleton<ICSharpMigrationOperationGenerator, DuckDBCSharpMigrationOperationGenerator>();
     }
 }

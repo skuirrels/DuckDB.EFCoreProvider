@@ -55,6 +55,61 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
     }
 
     /// <inheritdoc />
+    protected override void AppendInsertCommand(
+        StringBuilder commandStringBuilder,
+        string name,
+        string? schema,
+        IReadOnlyList<IColumnModification> writeOperations,
+        IReadOnlyList<IColumnModification> readOperations)
+    {
+        var plan = TryGetStructPlan(writeOperations, DuckDBStructMutationMode.Insert);
+        if (plan is null)
+        {
+            base.AppendInsertCommand(commandStringBuilder, name, schema, writeOperations, readOperations);
+            return;
+        }
+
+        AppendStructInsertCommandHeader(commandStringBuilder, name, schema, plan);
+        AppendValuesHeader(commandStringBuilder, writeOperations);
+        AppendStructValues(commandStringBuilder, plan);
+        AppendReturningClause(commandStringBuilder, readOperations);
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
+    }
+
+    /// <inheritdoc />
+    protected override void AppendUpdateCommand(
+        StringBuilder commandStringBuilder,
+        string name,
+        string? schema,
+        IReadOnlyList<IColumnModification> writeOperations,
+        IReadOnlyList<IColumnModification> readOperations,
+        IReadOnlyList<IColumnModification> conditionOperations,
+        bool appendReturningOneClause = false)
+    {
+        var plan = TryGetStructPlan(writeOperations, DuckDBStructMutationMode.Update);
+        if (plan is null)
+        {
+            base.AppendUpdateCommand(
+                commandStringBuilder,
+                name,
+                schema,
+                writeOperations,
+                readOperations,
+                conditionOperations,
+                appendReturningOneClause);
+            return;
+        }
+
+        AppendStructUpdateCommandHeader(commandStringBuilder, name, schema, plan);
+        AppendWhereClause(commandStringBuilder, conditionOperations);
+        AppendReturningClause(
+            commandStringBuilder,
+            readOperations,
+            appendReturningOneClause ? "1" : null);
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
+    }
+
+    /// <inheritdoc />
     public override ResultSetMapping AppendInsertOperation(
         StringBuilder commandStringBuilder,
         IReadOnlyModificationCommand command,
@@ -773,54 +828,12 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         commandStringBuilder.Append(')');
     }
 
-    /// <inheritdoc />
-    protected override void AppendInsertCommandHeader(
+    private void AppendStructUpdateCommandHeader(
         StringBuilder commandStringBuilder,
         string name,
         string? schema,
-        IReadOnlyList<IColumnModification> operations)
+        DuckDBStructMutationPlan plan)
     {
-        var plan = TryGetStructPlan(operations, DuckDBStructMutationMode.Insert);
-        if (plan is null)
-        {
-            base.AppendInsertCommandHeader(commandStringBuilder, name, schema, operations);
-            return;
-        }
-
-        AppendStructInsertCommandHeader(commandStringBuilder, name, schema, plan);
-    }
-
-    /// <inheritdoc />
-    protected override void AppendValues(
-        StringBuilder commandStringBuilder,
-        string name,
-        string? schema,
-        IReadOnlyList<IColumnModification> operations)
-    {
-        var plan = TryGetStructPlan(operations, DuckDBStructMutationMode.Insert);
-        if (plan is null)
-        {
-            base.AppendValues(commandStringBuilder, name, schema, operations);
-            return;
-        }
-
-        AppendStructValues(commandStringBuilder, plan);
-    }
-
-    /// <inheritdoc />
-    protected override void AppendUpdateCommandHeader(
-        StringBuilder commandStringBuilder,
-        string name,
-        string? schema,
-        IReadOnlyList<IColumnModification> operations)
-    {
-        var plan = TryGetStructPlan(operations, DuckDBStructMutationMode.Update);
-        if (plan is null)
-        {
-            base.AppendUpdateCommandHeader(commandStringBuilder, name, schema, operations);
-            return;
-        }
-
         var helper = SqlGenerationHelper;
         commandStringBuilder
             .Append("UPDATE ")

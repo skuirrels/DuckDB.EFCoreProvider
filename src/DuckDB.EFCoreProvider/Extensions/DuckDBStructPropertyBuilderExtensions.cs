@@ -60,6 +60,17 @@ public static class DuckDBStructPropertyBuilderExtensions
         return propertyBuilder;
     }
 
+    public static ComplexPropertyBuilder HasStructFieldName(
+        this ComplexPropertyBuilder propertyBuilder,
+        string fieldName)
+    {
+        ArgumentNullException.ThrowIfNull(propertyBuilder);
+        propertyBuilder.Metadata.SetAnnotation(
+            DuckDBAnnotationNames.StructFieldName,
+            ValidateName(fieldName, nameof(fieldName)));
+        return propertyBuilder;
+    }
+
     public static ComplexTypePropertyBuilder<TProperty> HasStructFieldName<TProperty>(
         this ComplexTypePropertyBuilder<TProperty> propertyBuilder,
         string fieldName)

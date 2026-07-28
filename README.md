@@ -314,13 +314,14 @@ public class SampleContext : DbContext
 }
 ```
 
-STRUCT mapping is automatically inferred from the complex property name and scalar property names. For manual control (e.g., when the struct column name differs from the complex property name), use `HasStructField`:
+STRUCT mapping is automatically inferred from the complex property name and scalar property names. For manual control, use `UseStructMapping` for the physical root column and `HasStructFieldName` for a physical leaf name:
 
 ```csharp
-e.ComplexProperty(c => c.Location).UseStructMapping()
-    .Property(l => l.City).HasStructField("Location");
-    // By default, City → "city" (lowercased); override with HasColumnName if needed.
+e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
+    .Property(l => l.City).HasStructFieldName("city_name");
 ```
+
+`HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
 
 **Limitations & Behavior:**
 - Queries with LINQ projections, filters, sorting, joins, and subqueries are fully supported
@@ -882,32 +883,6 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
     });
 }
 ```
-
-### DuckDB STRUCT support
-
-The provider supports native `STRUCT` mapping end to end for physical table entities. See
-[Complex properties mapped to DuckDB STRUCT columns](#complex-properties-mapped-to-duckdb-struct-columns)
-for configuration examples.
-
-Supported behavior includes:
-
-- `EnsureCreated` and migrations create consolidated `STRUCT(...)` columns.
-- `SaveChanges` writes complete STRUCT literals and uses DuckDB `struct_update(...)` for partial
-  updates, including nested paths.
-- LINQ projection, filtering, sorting, joins, and subqueries translate individual STRUCT fields.
-- Parquet queries and exports preserve STRUCT values when a STRUCT field is not used as a partition key.
-- `FromSqlRaw` and composable raw SQL can query STRUCT-backed data.
-- Non-STRUCT complex properties continue to use their existing scalar mapping.
-
-The following operations reject STRUCT-mapped entities or columns with a clear
-`NotSupportedException` rather than flattening the data or generating an invalid schema:
-
-- `BulkInsert` and `Upsert`;
-- tiered-storage archiving;
-- Parquet export partitioning by a STRUCT-mapped complex property; and
-- mapped database views containing STRUCT-mapped complex properties.
-
-For a mapped view with STRUCT data, use `FromSqlRaw` or map the entity to a physical table.
 
 ### Spatial queries
 

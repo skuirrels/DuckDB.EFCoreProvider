@@ -1,10 +1,18 @@
+using DuckDB.EFCoreProvider.Design.Internal;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using DuckDB.EFCoreProvider.Migrations;
+using Microsoft.EntityFrameworkCore.Design;
+using Microsoft.EntityFrameworkCore.Design.Internal;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Design;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.EntityFrameworkCore.Scaffolding;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -135,6 +143,152 @@ public sealed class StructSchemaPlannerTests
         var exception = Assert.Throws<InvalidOperationException>(
             () => DuckDBStructSchemaPlanner.PlanCreateTable(operation));
         Assert.Contains("conflicting paths", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Snapshot_annotation_generator_renders_struct_fluent_api()
+    {
+        var options = new DbContextOptionsBuilder<AnnotationContext>()
+            .UseDuckDB("DataSource=:memory:")
+            .Options;
+        using var context = new AnnotationContext(options);
+        var generator = new DuckDBAnnotationCodeGenerator(
+            new AnnotationCodeGeneratorDependencies(context.GetService<IRelationalTypeMappingSource>()));
+        var property = context.Model
+            .FindEntityType(typeof(AnnotationEntity))!
+            .FindComplexProperty(nameof(AnnotationEntity.Location))!
+            .ComplexType
+            .FindProperty(nameof(AnnotationAddress.City))!;
+        var annotations = property.GetAnnotations().ToDictionary(annotation => annotation.Name);
+
+        var calls = generator.GenerateFluentApiCalls(property, annotations);
+
+        Assert.Contains(calls, call => call.Method == nameof(DuckDBStructPropertyBuilderExtensions.HasStructField));
+        Assert.DoesNotContain(DuckDBAnnotationNames.StructField, annotations.Keys);
+        Assert.DoesNotContain(
+            DuckDBAnnotationNames.StructMetadata,
+            generator.FilterIgnoredAnnotations(
+                    context.Model.FindEntityType(typeof(AnnotationEntity))!.GetAnnotations())
+                .Select(annotation => annotation.Name));
+    }
+
+    [Fact]
+    public void Migration_operation_generator_renders_struct_field_literal()
+    {
+        var reporter = new OperationReporter(
+            new OperationReportHandler(
+                _ => { },
+                _ => { },
+                _ => { },
+                _ => { }));
+        using var context = new AnnotationContext(
+            new DbContextOptionsBuilder<AnnotationContext>()
+                .UseDuckDB("DataSource=:memory:")
+                .Options);
+        var serviceProvider = new DesignTimeServicesBuilder(
+            typeof(StructSchemaPlannerTests).Assembly,
+            typeof(StructSchemaPlannerTests).Assembly,
+            reporter,
+            [])
+            .Build(context);
+        var generator = serviceProvider.GetRequiredService<ICSharpMigrationOperationGenerator>();
+        var operation = new AlterColumnOperation
+        {
+            Name = "location_city",
+            Table = "customers",
+            ClrType = typeof(string),
+            ColumnType = "VARCHAR",
+            IsNullable = false
+        };
+        operation.AddAnnotation(
+            DuckDBAnnotationNames.StructField,
+            new DuckDBStructFieldInfo("Location", [], "city"));
+        operation.OldColumn.ClrType = typeof(string);
+        operation.OldColumn.ColumnType = "VARCHAR";
+        operation.OldColumn.IsNullable = false;
+        operation.OldColumn.AddAnnotation(
+            DuckDBAnnotationNames.StructField,
+            new DuckDBStructFieldInfo("Location", [], "old_city"));
+        var builder = new IndentedStringBuilder();
+
+        generator.Generate("migrationBuilder", [operation], builder);
+
+        var code = builder.ToString();
+        Assert.Contains(
+            "DuckDB.EFCoreProvider.Metadata.DuckDBStructFieldInfo",
+            code,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "new DuckDB.EFCoreProvider.Metadata.DuckDBStructFieldInfo",
+            code,
+            StringComparison.Ordinal);
+        Assert.Contains(".OldAnnotation(", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Snapshot_generator_renders_struct_mapping_fluent_api()
+    {
+        var reporter = new OperationReporter(
+            new OperationReportHandler(
+                _ => { },
+                _ => { },
+                _ => { },
+                _ => { }));
+        using var context = new AnnotationContext(
+            new DbContextOptionsBuilder<AnnotationContext>()
+                .UseDuckDB("DataSource=:memory:")
+                .Options);
+        var serviceProvider = new DesignTimeServicesBuilder(
+            typeof(StructSchemaPlannerTests).Assembly,
+            typeof(StructSchemaPlannerTests).Assembly,
+            reporter,
+            [])
+            .Build(context);
+        var builder = new IndentedStringBuilder();
+
+        serviceProvider
+            .GetRequiredService<ICSharpSnapshotGenerator>()
+            .Generate("BuildModel", context.GetService<IDesignTimeModel>().Model, builder);
+
+        var code = builder.ToString();
+        Assert.Contains(".UseStructMapping()", code, StringComparison.Ordinal);
+        Assert.Contains(".HasStructField(", code, StringComparison.Ordinal);
+        Assert.DoesNotContain(DuckDBAnnotationNames.StructMapping, code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Compiled_model_generator_omits_opaque_struct_metadata()
+    {
+        var reporter = new OperationReporter(
+            new OperationReportHandler(
+                _ => { },
+                _ => { },
+                _ => { },
+                _ => { }));
+        using var context = new AnnotationContext(
+            new DbContextOptionsBuilder<AnnotationContext>()
+                .UseDuckDB("DataSource=:memory:")
+                .Options);
+        var serviceProvider = new DesignTimeServicesBuilder(
+            typeof(StructSchemaPlannerTests).Assembly,
+            typeof(StructSchemaPlannerTests).Assembly,
+            reporter,
+            [])
+            .Build(context);
+        var files = serviceProvider
+            .GetRequiredService<ICompiledModelCodeGenerator>()
+            .GenerateModel(
+                context.GetService<IDesignTimeModel>().Model,
+                new CompiledModelCodeGenerationOptions
+                {
+                    ModelNamespace = "Generated",
+                    ContextType = typeof(AnnotationContext)
+                });
+        var code = string.Join(Environment.NewLine, files.Select(file => file.Code));
+
+        Assert.DoesNotContain(nameof(DuckDBStructEntityMetadata), code, StringComparison.Ordinal);
+        Assert.DoesNotContain(DuckDBAnnotationNames.StructColumnMap, code, StringComparison.Ordinal);
+        Assert.Contains(nameof(DuckDBStructMapping), code, StringComparison.Ordinal);
     }
 
     private static AddColumnOperation CreateField(

@@ -203,16 +203,16 @@ internal static class DuckDBStructSchemaPlanner
                 $"Multiple relational columns map to DuckDB STRUCT path '{FormatPath(duplicate.First().FieldInfo!)}'.");
         }
 
-                var collision = DuckDBStructPathCollision.Find(fields.Select(field => field.FieldInfo!));
-                if (collision is { } conflict)
-                {
-                    var (root, leafPath, nestedPath) = conflict;
-                    throw new InvalidOperationException(
-                        $"DuckDB STRUCT root '{root}' has conflicting paths: "
-                        + $"'{DuckDBStructPathCollision.FormatPath(root, leafPath)}' is used as a scalar leaf "
-                        + $"and as a parent of '{DuckDBStructPathCollision.FormatPath(root, nestedPath)}'.");
-                }
-            }
+        var collision = DuckDBStructPathCollision.Find(fields.Select(field => field.FieldInfo!));
+        if (collision is { } conflict)
+        {
+            var (root, leafPath, nestedPath) = conflict;
+            throw new InvalidOperationException(
+                $"DuckDB STRUCT root '{root}' has conflicting paths: "
+                + $"'{DuckDBStructPathCollision.FormatPath(root, leafPath)}' is used as a scalar leaf "
+                + $"and as a parent of '{DuckDBStructPathCollision.FormatPath(root, nestedPath)}'.");
+        }
+    }
 
     private static string RequireStoreType(AddColumnOperation column)
         => column.ColumnType

@@ -25,33 +25,33 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         _reverseNullOrderingEnabled = reverseNullOrderingEnabled;
     }
 
-        /// <summary>
-            ///     Renders a DuckDB struct field access expression by visiting its already-resolved
-            ///     <see cref="DuckDBStructFieldExpression.Source" /> and appending the immutable
-            ///     physical field path: <c>{rendered source}."nested1"."nested2"."leaf"</c>.
-            /// </summary>
-            /// <remarks>
-            ///     The source expression is the authoritative root; the renderer never reconstructs it
-            ///     from alias/root compatibility strings and never inspects EF metadata. Every physical
-            ///     path segment is delimited through <see cref="ISqlGenerationHelper" /> so explicitly
-            ///     configured names containing spaces, quotes, or reserved words remain valid. Resolving
-            ///     STRUCT paths earlier in the query pipeline lets subqueries naturally flatten — outer
-            ///     references become plain column projections and never reach this renderer.
-            /// </remarks>
-            protected virtual Expression VisitStructField(DuckDBStructFieldExpression structFieldExpression)
-            {
-                // The source is normally a physical root column (rendered as alias."StructColumn"),
-                // but it is always the visitable, already-resolved root rather than a renderer inference.
-                Visit(structFieldExpression.Source);
+    /// <summary>
+    ///     Renders a DuckDB struct field access expression by visiting its already-resolved
+    ///     <see cref="DuckDBStructFieldExpression.Source" /> and appending the immutable
+    ///     physical field path: <c>{rendered source}."nested1"."nested2"."leaf"</c>.
+    /// </summary>
+    /// <remarks>
+    ///     The source expression is the authoritative root; the renderer never reconstructs it
+    ///     from alias/root compatibility strings and never inspects EF metadata. Every physical
+    ///     path segment is delimited through <see cref="ISqlGenerationHelper" /> so explicitly
+    ///     configured names containing spaces, quotes, or reserved words remain valid. Resolving
+    ///     STRUCT paths earlier in the query pipeline lets subqueries naturally flatten — outer
+    ///     references become plain column projections and never reach this renderer.
+    /// </remarks>
+    protected virtual Expression VisitStructField(DuckDBStructFieldExpression structFieldExpression)
+    {
+        // The source is normally a physical root column (rendered as alias."StructColumn"),
+        // but it is always the visitable, already-resolved root rather than a renderer inference.
+        Visit(structFieldExpression.Source);
 
-                var helper = Dependencies.SqlGenerationHelper;
-                foreach (var field in structFieldExpression.FieldPath)
-                {
-                    Sql.Append(".").Append(helper.DelimitIdentifier(field));
-                }
+        var helper = Dependencies.SqlGenerationHelper;
+        foreach (var field in structFieldExpression.FieldPath)
+        {
+            Sql.Append(".").Append(helper.DelimitIdentifier(field));
+        }
 
-                return structFieldExpression;
-            }
+        return structFieldExpression;
+    }
 
     /// <inheritdoc />
     protected override void GenerateLimitOffset(SelectExpression selectExpression)
@@ -115,8 +115,8 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             DuckDBNewArrayExpression e => VisitNewArray(e),
             DuckDBJsonEachExpression e => VisitJsonEach(e),
             DuckDBRowValueExpression e => VisitRowValue(e),
-                        DuckDBStructFieldExpression e => VisitStructField(e),
-                        _ => base.VisitExtension(extensionExpression)
+            DuckDBStructFieldExpression e => VisitStructField(e),
+            _ => base.VisitExtension(extensionExpression)
         };
     }
 
