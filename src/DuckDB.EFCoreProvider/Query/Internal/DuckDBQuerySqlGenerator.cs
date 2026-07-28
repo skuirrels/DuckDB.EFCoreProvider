@@ -26,40 +26,32 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
     }
 
         /// <summary>
-        ///     Renders a DuckDB struct field access expression:
-        ///     <c>alias."StructColumn".nested1.nested2.leaf</c>. The alias and struct column
-        ///     name and every field path segment are delimited so explicitly configured
-        ///     names containing spaces, quotes, or reserved words remain valid.
-        /// </summary>
-        /// <remarks>
-        ///     This is the single rendering path for <see cref="DuckDBStructFieldExpression" />.
-        ///     Resolving STRUCT paths earlier in the query pipeline (per the plan in #3) lets
-        ///     subqueries naturally flatten — outer references become plain column projections
-        ///     and never reach this renderer.
-        /// </remarks>
-        protected virtual Expression VisitStructField(DuckDBStructFieldExpression structFieldExpression)
-        {
-            Sql.Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structFieldExpression.TableAlias))
-               .Append(".")
-               .Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(structFieldExpression.StructColumnName));
-
-            // Delimit each configured path segment; DuckDB accepts quoted identifiers for
-            // STRUCT dot access and requires them for non-ordinary identifiers.
-            foreach (var field in structFieldExpression.StructFieldInfo.NestedFieldNames)
+            ///     Renders a DuckDB struct field access expression by visiting its already-resolved
+            ///     <see cref="DuckDBStructFieldExpression.Source" /> and appending the immutable
+            ///     physical field path: <c>{rendered source}."nested1"."nested2"."leaf"</c>.
+            /// </summary>
+            /// <remarks>
+            ///     The source expression is the authoritative root; the renderer never reconstructs it
+            ///     from alias/root compatibility strings and never inspects EF metadata. Every physical
+            ///     path segment is delimited through <see cref="ISqlGenerationHelper" /> so explicitly
+            ///     configured names containing spaces, quotes, or reserved words remain valid. Resolving
+            ///     STRUCT paths earlier in the query pipeline lets subqueries naturally flatten — outer
+            ///     references become plain column projections and never reach this renderer.
+            /// </remarks>
+            protected virtual Expression VisitStructField(DuckDBStructFieldExpression structFieldExpression)
             {
-                Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(field));
+                // The source is normally a physical root column (rendered as alias."StructColumn"),
+                // but it is always the visitable, already-resolved root rather than a renderer inference.
+                Visit(structFieldExpression.Source);
+
+                var helper = Dependencies.SqlGenerationHelper;
+                foreach (var field in structFieldExpression.FieldPath)
+                {
+                    Sql.Append(".").Append(helper.DelimitIdentifier(field));
+                }
+
+                return structFieldExpression;
             }
-
-            // Leaf field name: use the DuckDB-specific name if set. The convention and
-            // provider always fill this; a null leaf indicates a metadata problem.
-            var leafFieldName = structFieldExpression.StructFieldInfo.LeafFieldName
-                ?? throw new InvalidOperationException(
-                    $"DuckDB struct field metadata for column '{structFieldExpression.StructColumnName}' is missing a leaf field name.");
-
-            Sql.Append(".").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(leafFieldName));
-
-            return structFieldExpression;
-        }
 
     /// <inheritdoc />
     protected override void GenerateLimitOffset(SelectExpression selectExpression)

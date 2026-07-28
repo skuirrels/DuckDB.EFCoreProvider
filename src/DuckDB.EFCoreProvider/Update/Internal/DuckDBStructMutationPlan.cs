@@ -61,7 +61,20 @@ internal sealed class DuckDBStructMutationPlan
                 entry.FieldInfo))
             .ToArray();
 
-        var grouped = resolved
+                    var collision = DuckDBStructPathCollision.Find(
+                        resolved
+                            .Where(entry => entry.FieldInfo is not null)
+                            .Select(entry => entry.FieldInfo!));
+                    if (collision is { } conflict)
+                    {
+                        var (root, leafPath, nestedPath) = conflict;
+                        throw new InvalidOperationException(
+                            $"DuckDB STRUCT root '{root}' has conflicting write paths: "
+                            + $"'{DuckDBStructPathCollision.FormatPath(root, leafPath)}' is used as a scalar leaf "
+                            + $"and as a parent of '{DuckDBStructPathCollision.FormatPath(root, nestedPath)}'.");
+                    }
+
+                    var grouped = resolved
             .Where(entry => entry.FieldInfo is not null)
             .GroupBy(entry => entry.FieldInfo!.StructColumnName, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
