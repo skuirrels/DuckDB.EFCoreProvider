@@ -20,6 +20,16 @@ namespace Microsoft.EntityFrameworkCore;
 public sealed class StructSchemaPlannerTests
 {
     [Fact]
+    public void Struct_field_info_uses_value_equality_for_nested_paths()
+    {
+        var first = new DuckDBStructFieldInfo("Billing Root", ["detail field"], "code");
+        var second = new DuckDBStructFieldInfo("Billing Root", ["detail field"], "code");
+
+        Assert.Equal(first, second);
+        Assert.Equal(first.GetHashCode(), second.GetHashCode());
+    }
+
+    [Fact]
     public void Plans_ordered_nested_required_struct_column()
     {
         var operation = new CreateTableOperation { Name = "orders" };
@@ -163,7 +173,20 @@ public sealed class StructSchemaPlannerTests
 
         var calls = generator.GenerateFluentApiCalls(property, annotations);
 
-        Assert.Contains(calls, call => call.Method == nameof(DuckDBStructPropertyBuilderExtensions.HasStructField));
+        var structFieldCall = Assert.Single(
+            calls.Where(call => call.Method == nameof(DuckDBStructPropertyBuilderExtensions.HasStructField)));
+        Assert.Equal(
+            typeof(DuckDBStructPropertyBuilderExtensions),
+            structFieldCall.MethodInfo?.DeclaringType);
+        Assert.Equal(
+            "DuckDB.EFCoreProvider.Extensions",
+            structFieldCall.MethodInfo?.DeclaringType?.Namespace);
+
+        var fieldNameCall = Assert.Single(
+            calls.Where(call => call.Method == nameof(DuckDBStructPropertyBuilderExtensions.HasStructFieldName)));
+        Assert.Equal(
+            typeof(DuckDBStructPropertyBuilderExtensions),
+            fieldNameCall.MethodInfo?.DeclaringType);
         Assert.DoesNotContain(DuckDBAnnotationNames.StructField, annotations.Keys);
         Assert.DoesNotContain(
             DuckDBAnnotationNames.StructMetadata,
@@ -251,8 +274,9 @@ public sealed class StructSchemaPlannerTests
             .Generate("BuildModel", context.GetService<IDesignTimeModel>().Model, builder);
 
         var code = builder.ToString();
-        Assert.Contains(".UseStructMapping()", code, StringComparison.Ordinal);
-        Assert.Contains(".HasStructField(", code, StringComparison.Ordinal);
+        Assert.Contains("DuckDBStructPropertyBuilderExtensions.UseStructMapping(", code, StringComparison.Ordinal);
+        Assert.Contains("DuckDBStructPropertyBuilderExtensions.HasStructField(", code, StringComparison.Ordinal);
+        Assert.Contains("DuckDBStructPropertyBuilderExtensions.HasStructFieldName(", code, StringComparison.Ordinal);
         Assert.DoesNotContain(DuckDBAnnotationNames.StructMapping, code, StringComparison.Ordinal);
     }
 
@@ -287,7 +311,8 @@ public sealed class StructSchemaPlannerTests
         var code = string.Join(Environment.NewLine, files.Select(file => file.Code));
 
         Assert.DoesNotContain(nameof(DuckDBStructEntityMetadata), code, StringComparison.Ordinal);
-        Assert.DoesNotContain(DuckDBAnnotationNames.StructColumnMap, code, StringComparison.Ordinal);
+        Assert.Contains(DuckDBAnnotationNames.StructColumnMap, code, StringComparison.Ordinal);
+        Assert.Contains(nameof(DuckDBStructFieldInfo), code, StringComparison.Ordinal);
         Assert.Contains(nameof(DuckDBStructMapping), code, StringComparison.Ordinal);
     }
 
@@ -314,7 +339,11 @@ public sealed class StructSchemaPlannerTests
             => modelBuilder.Entity<AnnotationEntity>(entity =>
             {
                 entity.Property(value => value.Id).ValueGeneratedNever();
-                entity.ComplexProperty(value => value.Location).UseStructMapping();
+                entity.ComplexProperty(value => value.Location, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.City).HasStructFieldName("city_name");
+                });
             });
     }
 

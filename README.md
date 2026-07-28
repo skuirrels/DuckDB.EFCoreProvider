@@ -280,6 +280,7 @@ Map complex properties to DuckDB `STRUCT` columns for efficient nested data repr
 
 ```csharp
 using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.EFCoreProvider.Extensions;
 using Microsoft.EntityFrameworkCore;
 
 public class Customer

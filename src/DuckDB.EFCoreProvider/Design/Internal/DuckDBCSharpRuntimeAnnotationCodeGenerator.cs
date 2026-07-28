@@ -65,6 +65,11 @@ public class DuckDBCSharpRuntimeAnnotationCodeGenerator : RelationalCSharpRuntim
                 AddNamespace(typeof(DuckDBStructChildMapping), parameters.Namespaces);
                 GenerateSimpleAnnotation(name, GenerateMappingLiteral(mapping), parameters);
             }
+            else if (value is IReadOnlyDictionary<string, DuckDBStructFieldInfo> columnMap)
+            {
+                AddNamespace(typeof(DuckDBStructFieldInfo), parameters.Namespaces);
+                GenerateSimpleAnnotation(name, GenerateColumnMapLiteral(columnMap), parameters);
+            }
             else
             {
                 base.GenerateSimpleAnnotations(
@@ -78,8 +83,15 @@ public class DuckDBCSharpRuntimeAnnotationCodeGenerator : RelationalCSharpRuntim
 
     private static void RemoveOpaqueAnnotations(CSharpRuntimeAnnotationCodeGeneratorParameters parameters)
     {
+        if (parameters.Annotations.TryGetValue(
+                DuckDBAnnotationNames.StructMetadata,
+                out var metadataValue)
+            && metadataValue is DuckDBStructEntityMetadata metadata)
+        {
+            parameters.Annotations[DuckDBAnnotationNames.StructColumnMap] = metadata.Columns;
+        }
+
         parameters.Annotations.Remove(DuckDBAnnotationNames.StructMetadata);
-        parameters.Annotations.Remove(DuckDBAnnotationNames.StructColumnMap);
     }
 
     private string GenerateFieldLiteral(DuckDBStructFieldInfo field)
@@ -107,6 +119,20 @@ public class DuckDBCSharpRuntimeAnnotationCodeGenerator : RelationalCSharpRuntim
         return $"new {code.Reference(typeof(DuckDBStructMapping))}("
             + $"{code.Literal(mapping.StructColumnName)}, {code.Literal(mapping.FieldName)}, "
             + $"new Dictionary<string, {code.Reference(typeof(DuckDBStructChildMapping))}> {{ {children} }})";
+    }
+
+    private string GenerateColumnMapLiteral(
+        IReadOnlyDictionary<string, DuckDBStructFieldInfo> columnMap)
+    {
+        var code = Dependencies.CSharpHelper;
+        var entries = string.Join(
+            ", ",
+            columnMap
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair =>
+                    $"[{code.Literal(pair.Key)}] = {GenerateFieldLiteral(pair.Value)}"));
+
+        return $"new Dictionary<string, {code.Reference(typeof(DuckDBStructFieldInfo))}> {{ {entries} }}";
     }
 
     private string GenerateChildLiteral(DuckDBStructChildMapping child)
