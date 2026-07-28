@@ -219,7 +219,15 @@ public sealed class StructDesignTimeWorkflowTests
                             nested.HasStructFieldName("detail field"));
                     });
                     entity.ComplexProperty(value => value.Shipping, complex =>
+                        complex.UseStructMapping("Shipping Root"));
+                });
+            }
+        }
+
+        public sealed class ConsumerContextFactory : IDesignTimeDbContextFactory<ConsumerContext>
+        {
             public ConsumerContext CreateDbContext(string[] args)
+            {
                 var databasePath = Environment.GetEnvironmentVariable("STRUCT_CONSUMER_DATABASE")
                     ?? "consumer.duckdb";
                 var options = new DbContextOptionsBuilder<ConsumerContext>()
