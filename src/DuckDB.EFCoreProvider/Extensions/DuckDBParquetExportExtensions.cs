@@ -197,7 +197,7 @@ public static class DuckDBParquetExportExtensions
         foreach (var partitionMember in options.PartitionMembers)
         {
             var entityType = context.Model.FindEntityType(partitionMember.DeclaringType!);
-            
+
             // Check if the partition member is a complex property
             var complexProperty = entityType?.FindComplexProperty(partitionMember);
             if (complexProperty?.GetStructMapping() is not null)

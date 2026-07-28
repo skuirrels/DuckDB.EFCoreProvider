@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Metadata;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -23,27 +24,38 @@ public sealed class StructDesignTimeWorkflowTests
                 CreateProjectFile(FindProviderProject()));
             File.WriteAllText(Path.Combine(root, "Program.cs"), ConsumerSource);
 
+            var repositoryRoot = FindRepositoryRoot();
             RunDotnet(root, "build");
-            RunDotnet(root, "ef", "migrations", "add", "InitialStruct", "--no-build");
+            var toolVersion = RunDotnet(
+                repositoryRoot,
+                ["tool", "run", "dotnet-ef", "--", "--version"],
+                environment: null,
+                failureHint: "Run 'dotnet tool restore' from the repository root before running this test.");
+            Assert.Contains("10.0.10", toolVersion, StringComparison.Ordinal);
+
+            RunEf(repositoryRoot, root, "migrations", "add", "InitialStruct", "--no-build");
             Assert.NotEmpty(Directory.GetFiles(Path.Combine(root, "Migrations"), "*.cs"));
 
             RunDotnet(root, "build");
-            RunDotnet(
+            RunEf(
+                repositoryRoot,
                 root,
-                ["ef", "database", "update", "--no-build"],
+                ["database", "update", "--no-build"],
                 ("STRUCT_CONSUMER_DATABASE", databasePath));
-            RunDotnet(
+            RunEf(
+                repositoryRoot,
                 root,
-                "ef",
-                "dbcontext",
-                "optimize",
-                "--no-build",
-                "--output-dir",
-                "GeneratedModel",
-                "--namespace",
-                "Consumer.Generated",
-                "--context",
-                "ConsumerContext");
+                [
+                    "dbcontext",
+                    "optimize",
+                    "--no-build",
+                    "--output-dir",
+                    "GeneratedModel",
+                    "--namespace",
+                    "Consumer.Generated",
+                    "--context",
+                    "ConsumerContext"
+                ]);
 
             RunDotnet(root, "build");
             RunDotnet(
@@ -78,12 +90,27 @@ public sealed class StructDesignTimeWorkflowTests
         throw new InvalidOperationException("Could not locate the provider project from the functional-test output directory.");
     }
 
+    private static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, ".config", "dotnet-tools.json")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Could not locate the repository tool manifest from the functional-test output directory.");
+    }
+
     private static string CreateProjectFile(string providerProject)
         => $"""
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
                 <OutputType>Exe</OutputType>
                 <TargetFramework>net10.0</TargetFramework>
+                <RuntimeIdentifier>{RuntimeInformation.RuntimeIdentifier}</RuntimeIdentifier>
                 <Nullable>enable</Nullable>
                 <ImplicitUsings>enable</ImplicitUsings>
               </PropertyGroup>
@@ -96,17 +123,43 @@ public sealed class StructDesignTimeWorkflowTests
             </Project>
             """;
 
-    private static void RunDotnet(
+    private static void RunEf(
+        string repositoryRoot,
+        string project,
+        params string[] arguments)
+        => RunEf(repositoryRoot, project, arguments, environment: null);
+
+    private static void RunEf(
+        string repositoryRoot,
+        string project,
+        string[] arguments,
+        (string Name, string Value)? environment)
+    {
+        var commandArguments = arguments.ToList();
+        commandArguments.Add("--project");
+        commandArguments.Add(project);
+        commandArguments.Add("--startup-project");
+        commandArguments.Add(project);
+
+        RunDotnet(
+            repositoryRoot,
+            ["tool", "run", "dotnet-ef", "--", .. commandArguments],
+            environment,
+            "Run 'dotnet tool restore' from the repository root before running this test.");
+    }
+
+    private static string RunDotnet(
         string workingDirectory,
         params string[] arguments)
     {
-        RunDotnet(workingDirectory, arguments, environment: null);
+        return RunDotnet(workingDirectory, arguments, environment: null);
     }
 
-    private static void RunDotnet(
+    private static string RunDotnet(
         string workingDirectory,
         string[] arguments,
-        (string Name, string Value)? environment)
+        (string Name, string Value)? environment,
+        string? failureHint = null)
     {
         using var process = new Process
         {
@@ -137,7 +190,9 @@ public sealed class StructDesignTimeWorkflowTests
 
         Assert.True(
             process.ExitCode == 0,
-            $"dotnet {string.Join(" ", arguments)} failed with exit code {process.ExitCode}.{Environment.NewLine}{text}");
+            $"dotnet {string.Join(" ", arguments)} failed with exit code {process.ExitCode}.{Environment.NewLine}{text}"
+            + (failureHint is null ? string.Empty : Environment.NewLine + failureHint));
+        return text;
     }
 
     private const string ConsumerSource = """"
@@ -164,15 +219,7 @@ public sealed class StructDesignTimeWorkflowTests
                             nested.HasStructFieldName("detail field"));
                     });
                     entity.ComplexProperty(value => value.Shipping, complex =>
-                        complex.UseStructMapping("Shipping Root"));
-                });
-            }
-        }
-
-        public sealed class ConsumerContextFactory : IDesignTimeDbContextFactory<ConsumerContext>
-        {
             public ConsumerContext CreateDbContext(string[] args)
-            {
                 var databasePath = Environment.GetEnvironmentVariable("STRUCT_CONSUMER_DATABASE")
                     ?? "consumer.duckdb";
                 var options = new DbContextOptionsBuilder<ConsumerContext>()
@@ -318,4 +365,4 @@ public sealed class StructDesignTimeWorkflowTests
             }
         }
         """";
-}
+    }

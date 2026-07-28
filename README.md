@@ -286,7 +286,7 @@ using Microsoft.EntityFrameworkCore;
 public class Customer
 {
     public int Id { get; set; }
-    
+
     [UseStructMapping]
     public required Address Location { get; set; }
 }

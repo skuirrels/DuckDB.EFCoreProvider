@@ -23,6 +23,9 @@ jobs:
       with:
         dotnet-version: 10.0.x
 
+    - name: Restore local .NET tools
+      run: dotnet tool restore --tool-manifest .config/dotnet-tools.json
+
     - name: Run production write test suite
       run: scripts/test-suite.sh all -- --verbosity normal
 

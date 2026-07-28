@@ -10,7 +10,7 @@ namespace DuckDB.EFCoreProvider.Design.Internal;
 /// <summary>
 ///     Renders STRUCT migration annotations as typed C# instead of opaque unknown literals.
 /// </summary>
-public sealed class DuckDBCSharpMigrationOperationGenerator(
+internal sealed class DuckDBCSharpMigrationOperationGenerator(
     CSharpMigrationOperationGeneratorDependencies dependencies)
     : CSharpMigrationOperationGenerator(dependencies)
 {
