@@ -20,7 +20,7 @@
 | Lakehouse persistence | First-class DuckLake profile with tracked writes, transactions, appender ingestion, and `MERGE` upsert |
 | Data lifecycle | Hot DuckDB tables with relational aggregates archived to partitioned Parquet |
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
-| Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings |
+| Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings | 
 
 > **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility).
 
