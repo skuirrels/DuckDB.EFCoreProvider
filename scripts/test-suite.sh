@@ -49,9 +49,10 @@ fi
 
 write_critical_filter='FullyQualifiedName~ProductionWriteDuckDBTest|FullyQualifiedName~DuckDBUpdateSqlGeneratorTest|FullyQualifiedName~DuckDBMigrationsSqlGeneratorTest.AddColumnOperation_with_auto_increment_creates_sequence_and_default|FullyQualifiedName~DuckDBMigrationsSqlGeneratorTest.CreateTableOperation_with_auto_increment_creates_sequence_and_default|FullyQualifiedName~DuckDBGenericNonRelationship'
 write_broad_filter="${write_critical_filter}|FullyQualifiedName~StoreGeneratedDuckDBTest|FullyQualifiedName~TransactionDuckDBTest|FullyQualifiedName~UpdatesDuckDBTest"
-production_gate_filter="${write_broad_filter}|FullyQualifiedName~Migrations"
+production_gate_filter="${write_broad_filter}|FullyQualifiedName~Migrations|FullyQualifiedName~StructDesignTimeWorkflowTests"
 
 run_build() {
+    dotnet tool restore --tool-manifest "$ROOT_DIR/.config/dotnet-tools.json"
     dotnet restore "$SOLUTION"
     dotnet build "$SOLUTION" --no-restore
 }

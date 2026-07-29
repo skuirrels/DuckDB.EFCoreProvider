@@ -1,6 +1,10 @@
-﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Internal;
+using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 using System.Text;
@@ -40,6 +44,69 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
     {
         _ = singletonOptions;
         _capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
+    }
+
+    private static DuckDBStructMutationPlan? TryGetStructPlan(
+        IReadOnlyList<IColumnModification> operations,
+        DuckDBStructMutationMode mode)
+    {
+        DuckDBStructMutationPlan.TryCreate(operations, mode, out var plan);
+        return plan;
+    }
+
+    /// <inheritdoc />
+    protected override void AppendInsertCommand(
+        StringBuilder commandStringBuilder,
+        string name,
+        string? schema,
+        IReadOnlyList<IColumnModification> writeOperations,
+        IReadOnlyList<IColumnModification> readOperations)
+    {
+        var plan = TryGetStructPlan(writeOperations, DuckDBStructMutationMode.Insert);
+        if (plan is null)
+        {
+            base.AppendInsertCommand(commandStringBuilder, name, schema, writeOperations, readOperations);
+            return;
+        }
+
+        AppendStructInsertCommandHeader(commandStringBuilder, name, schema, plan);
+        AppendValuesHeader(commandStringBuilder, writeOperations);
+        AppendStructValues(commandStringBuilder, plan);
+        AppendReturningClause(commandStringBuilder, readOperations);
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
+    }
+
+    /// <inheritdoc />
+    protected override void AppendUpdateCommand(
+        StringBuilder commandStringBuilder,
+        string name,
+        string? schema,
+        IReadOnlyList<IColumnModification> writeOperations,
+        IReadOnlyList<IColumnModification> readOperations,
+        IReadOnlyList<IColumnModification> conditionOperations,
+        bool appendReturningOneClause = false)
+    {
+        var plan = TryGetStructPlan(writeOperations, DuckDBStructMutationMode.Update);
+        if (plan is null)
+        {
+            base.AppendUpdateCommand(
+                commandStringBuilder,
+                name,
+                schema,
+                writeOperations,
+                readOperations,
+                conditionOperations,
+                appendReturningOneClause);
+            return;
+        }
+
+        AppendStructUpdateCommandHeader(commandStringBuilder, name, schema, plan);
+        AppendWhereClause(commandStringBuilder, conditionOperations);
+        AppendReturningClause(
+            commandStringBuilder,
+            readOperations,
+            appendReturningOneClause ? "1" : null);
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
     }
 
     /// <inheritdoc />
@@ -190,19 +257,47 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         plan.CollectWriteColumns(0, writeOperations);
         plan.CollectReadColumns(readOperations);
 
-        AppendInsertCommandHeader(commandStringBuilder, plan.TableName, plan.Schema, writeOperations);
+        var firstMutationPlan = plan.GetStructMutationPlan(0);
+        if (firstMutationPlan is null)
+        {
+            AppendInsertCommandHeader(commandStringBuilder, plan.TableName, plan.Schema, writeOperations);
+        }
+        else
+        {
+            AppendStructInsertCommandHeader(
+                commandStringBuilder,
+                plan.TableName,
+                plan.Schema,
+                firstMutationPlan);
+        }
+
         AppendValuesHeader(commandStringBuilder, writeOperations);
-        AppendValues(commandStringBuilder, plan.TableName, plan.Schema, writeOperations);
+        if (firstMutationPlan is null)
+        {
+            AppendValues(commandStringBuilder, plan.TableName, plan.Schema, writeOperations);
+        }
+        else
+        {
+            AppendStructValues(commandStringBuilder, firstMutationPlan);
+        }
 
         for (var rowIndex = 1; rowIndex < plan.RowCount; rowIndex++)
         {
             commandStringBuilder.AppendLine(",");
             plan.CollectWriteColumns(rowIndex, writeOperations);
-            AppendValues(
-                commandStringBuilder,
-                plan.TableName,
-                plan.Schema,
-                writeOperations);
+            var mutationPlan = plan.GetStructMutationPlan(rowIndex);
+            if (mutationPlan is null)
+            {
+                AppendValues(
+                    commandStringBuilder,
+                    plan.TableName,
+                    plan.Schema,
+                    writeOperations);
+            }
+            else
+            {
+                AppendStructValues(commandStringBuilder, mutationPlan);
+            }
         }
 
         // Inserts run inside the change-tracking transaction; no additional transaction is required here.
@@ -259,11 +354,35 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         out bool requiresTransaction)
     {
         var helper = SqlGenerationHelper;
+        var structMutationPlan = plan.StructMutationPlan;
 
-        // UPDATE <table> SET <col> = v.<col>, ...
-        commandStringBuilder.Append("UPDATE ");
-        commandStringBuilder.Append(helper.DelimitIdentifier(plan.TableName, plan.Schema));
-        commandStringBuilder.Append(" SET ");
+        if (structMutationPlan is null)
+        {
+            AppendBulkUpdateOperationCore(commandStringBuilder, plan, helper);
+        }
+        else
+        {
+            AppendBulkUpdateOperationStructured(
+                commandStringBuilder,
+                plan,
+                structMutationPlan,
+                helper);
+        }
+
+        requiresTransaction = false;
+        return ResultSetMapping.NoResults;
+    }
+
+    private static void AppendBulkUpdateOperationCore(
+        StringBuilder commandStringBuilder,
+        DuckDBBulkUpdatePlan plan,
+        ISqlGenerationHelper helper)
+    {
+        commandStringBuilder
+            .Append("UPDATE ")
+            .Append(helper.DelimitIdentifier(plan.TableName, plan.Schema))
+            .Append(" SET ");
+
         for (var i = 0; i < plan.WriteColumnCount; i++)
         {
             if (i > 0)
@@ -275,9 +394,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             commandStringBuilder.Append(column).Append(" = v.").Append(column);
         }
 
-        // FROM (VALUES (key.., write..), ...) AS v(keyCols.., writeCols..)
-        commandStringBuilder.AppendLine();
-        commandStringBuilder.Append("FROM (VALUES ");
+        commandStringBuilder.AppendLine().Append("FROM (VALUES ");
         for (var rowIndex = 0; rowIndex < plan.RowCount; rowIndex++)
         {
             if (rowIndex > 0)
@@ -286,6 +403,59 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             }
 
             AppendBulkUpdateValuesTuple(commandStringBuilder, plan, rowIndex, helper);
+        }
+
+        AppendBulkUpdateAliasAndPredicate(commandStringBuilder, plan, helper);
+    }
+
+    private void AppendBulkUpdateOperationStructured(
+        StringBuilder commandStringBuilder,
+        DuckDBBulkUpdatePlan plan,
+        DuckDBStructMutationPlan mutationPlan,
+        ISqlGenerationHelper helper)
+    {
+        commandStringBuilder
+            .Append("UPDATE ")
+            .Append(helper.DelimitIdentifier(plan.TableName, plan.Schema))
+            .Append(" SET ");
+
+        for (var i = 0; i < mutationPlan.Entries.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            switch (mutationPlan.Entries[i])
+            {
+                case DuckDBStandaloneMutationEntry standalone:
+                    var column = helper.DelimitIdentifier(standalone.ColumnName);
+                    commandStringBuilder.Append(column).Append(" = v.").Append(column);
+                    break;
+                case DuckDBStructMutationGroup structGroup:
+                    var structColumn = helper.DelimitIdentifier(structGroup.StructColumnName);
+                    commandStringBuilder.Append(structColumn).Append(" = ");
+                    AppendStructUpdateBulk(commandStringBuilder, structColumn, structGroup.Root, helper);
+                    break;
+            }
+        }
+
+        var structuredWriteOrdinals = GetStructuredWriteOrdinals(mutationPlan);
+
+        commandStringBuilder.AppendLine().Append("FROM (VALUES ");
+        for (var rowIndex = 0; rowIndex < plan.RowCount; rowIndex++)
+        {
+            if (rowIndex > 0)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            AppendBulkUpdateValuesTuple(
+                commandStringBuilder,
+                plan,
+                rowIndex,
+                structuredWriteOrdinals,
+                helper);
         }
 
         commandStringBuilder.Append(") AS v(");
@@ -301,22 +471,172 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             firstColumn = false;
         }
 
-        for (var i = 0; i < plan.WriteColumnCount; i++)
+        foreach (var entry in mutationPlan.Entries)
         {
-            if (!firstColumn)
+            switch (entry)
+            {
+                case DuckDBStandaloneMutationEntry standalone:
+                    if (!firstColumn)
+                    {
+                        commandStringBuilder.Append(", ");
+                    }
+
+                    commandStringBuilder.Append(helper.DelimitIdentifier(standalone.ColumnName));
+                    firstColumn = false;
+                    break;
+                case DuckDBStructMutationGroup structGroup:
+                    foreach (var leaf in GetLeaves(structGroup.Root))
+                    {
+                        if (!firstColumn)
+                        {
+                            commandStringBuilder.Append(", ");
+                        }
+
+                        commandStringBuilder.Append(helper.DelimitIdentifier(leaf.ColumnName!));
+                        firstColumn = false;
+                    }
+                    break;
+            }
+        }
+
+        AppendBulkUpdatePredicate(commandStringBuilder.Append(')'), plan, helper);
+    }
+
+    private static int[] GetStructuredWriteOrdinals(DuckDBStructMutationPlan mutationPlan)
+    {
+        var ordinals = new List<int>();
+        foreach (var entry in mutationPlan.Entries)
+        {
+            switch (entry)
+            {
+                case DuckDBStandaloneMutationEntry standalone:
+                    ordinals.Add(standalone.WriteOrdinal);
+                    break;
+                case DuckDBStructMutationGroup structGroup:
+                    foreach (var leaf in GetLeaves(structGroup.Root))
+                    {
+                        ordinals.Add(leaf.WriteOrdinal!.Value);
+                    }
+                    break;
+            }
+        }
+
+        return ordinals.ToArray();
+    }
+
+    private static IEnumerable<DuckDBStructMutationNode> GetLeaves(DuckDBStructMutationNode node)
+    {
+        foreach (var child in node.Children)
+        {
+            if (child.IsLeaf)
+            {
+                yield return child;
+            }
+            else
+            {
+                foreach (var leaf in GetLeaves(child))
+                {
+                    yield return leaf;
+                }
+            }
+        }
+    }
+
+    private static void AppendBulkUpdateValuesTuple(
+        StringBuilder commandStringBuilder,
+        DuckDBBulkUpdatePlan plan,
+        int rowIndex,
+        ISqlGenerationHelper helper)
+        => AppendBulkUpdateValuesTuple(commandStringBuilder, plan, rowIndex, writeOrdinals: null, helper);
+
+    private static void AppendBulkUpdateValuesTuple(
+        StringBuilder commandStringBuilder,
+        DuckDBBulkUpdatePlan plan,
+        int rowIndex,
+        IReadOnlyList<int>? writeOrdinals,
+        ISqlGenerationHelper helper)
+    {
+        commandStringBuilder.Append('(');
+        var first = true;
+
+        for (var i = 0; i < plan.KeyColumnCount; i++)
+        {
+            if (!first)
             {
                 commandStringBuilder.Append(", ");
             }
 
-            commandStringBuilder.Append(helper.DelimitIdentifier(plan.GetWriteColumnName(i)));
-            firstColumn = false;
+            commandStringBuilder.Append(
+                helper.GenerateParameterNamePlaceholder(plan.GetOriginalKeyParameterName(rowIndex, i)));
+            first = false;
+        }
+
+        var writeCount = writeOrdinals?.Count ?? plan.WriteColumnCount;
+        for (var i = 0; i < writeCount; i++)
+        {
+            if (!first)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            var writeOrdinal = writeOrdinals?[i] ?? i;
+            commandStringBuilder.Append(
+                helper.GenerateParameterNamePlaceholder(plan.GetWriteParameterName(rowIndex, writeOrdinal)));
+            first = false;
         }
 
         commandStringBuilder.Append(')');
+    }
 
-        // WHERE <table>.<key> = v.<key> AND ...
-        commandStringBuilder.AppendLine();
-        commandStringBuilder.Append("WHERE ");
+    private static void AppendBulkUpdateAliasAndPredicate(
+        StringBuilder commandStringBuilder,
+        DuckDBBulkUpdatePlan plan,
+        ISqlGenerationHelper helper)
+    {
+        commandStringBuilder.Append(") AS v(");
+        var firstColumn = true;
+        for (var i = 0; i < plan.KeyColumnCount; i++)
+        {
+            AppendBulkUpdateAliasColumn(
+                commandStringBuilder,
+                plan.GetKeyColumnName(i),
+                ref firstColumn,
+                helper);
+        }
+
+        for (var i = 0; i < plan.WriteColumnCount; i++)
+        {
+            AppendBulkUpdateAliasColumn(
+                commandStringBuilder,
+                plan.GetWriteColumnName(i),
+                ref firstColumn,
+                helper);
+        }
+
+        AppendBulkUpdatePredicate(commandStringBuilder.Append(')'), plan, helper);
+    }
+
+    private static void AppendBulkUpdateAliasColumn(
+        StringBuilder commandStringBuilder,
+        string columnName,
+        ref bool firstColumn,
+        ISqlGenerationHelper helper)
+    {
+        if (!firstColumn)
+        {
+            commandStringBuilder.Append(", ");
+        }
+
+        commandStringBuilder.Append(helper.DelimitIdentifier(columnName));
+        firstColumn = false;
+    }
+
+    private static void AppendBulkUpdatePredicate(
+        StringBuilder commandStringBuilder,
+        DuckDBBulkUpdatePlan plan,
+        ISqlGenerationHelper helper)
+    {
+        commandStringBuilder.AppendLine().Append("WHERE ");
         for (var i = 0; i < plan.KeyColumnCount; i++)
         {
             if (i > 0)
@@ -324,7 +644,6 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                 commandStringBuilder.Append(" AND ");
             }
 
-            // Qualify with the (unschemed) table name so the reference resolves to the UPDATE target.
             var column = helper.DelimitIdentifier(plan.GetKeyColumnName(i));
             commandStringBuilder
                 .Append(helper.DelimitIdentifier(plan.TableName))
@@ -335,46 +654,6 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         }
 
         commandStringBuilder.AppendLine(helper.StatementTerminator);
-
-        requiresTransaction = false;
-
-        return ResultSetMapping.NoResults;
-    }
-
-    private void AppendBulkUpdateValuesTuple(
-        StringBuilder commandStringBuilder,
-        DuckDBBulkUpdatePlan plan,
-        int rowIndex,
-        ISqlGenerationHelper helper)
-    {
-        commandStringBuilder.Append('(');
-
-        var first = true;
-
-        // Key columns first (original values, matching the alias column order), then written values.
-        for (var i = 0; i < plan.KeyColumnCount; i++)
-        {
-            if (!first)
-            {
-                commandStringBuilder.Append(", ");
-            }
-
-            commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(plan.GetOriginalKeyParameterName(rowIndex, i)));
-            first = false;
-        }
-
-        for (var i = 0; i < plan.WriteColumnCount; i++)
-        {
-            if (!first)
-            {
-                commandStringBuilder.Append(", ");
-            }
-
-            commandStringBuilder.Append(helper.GenerateParameterNamePlaceholder(plan.GetWriteParameterName(rowIndex, i)));
-            first = false;
-        }
-
-        commandStringBuilder.Append(')');
     }
 
     /// <summary>
@@ -494,4 +773,217 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 
         return ResultSetMapping.NoResults;
     }
+
+    private void AppendStructInsertCommandHeader(
+        StringBuilder commandStringBuilder,
+        string name,
+        string? schema,
+        DuckDBStructMutationPlan plan)
+    {
+        var helper = SqlGenerationHelper;
+        commandStringBuilder
+            .Append("INSERT INTO ")
+            .Append(helper.DelimitIdentifier(name, schema))
+            .Append(" (");
+
+        for (var i = 0; i < plan.Entries.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            commandStringBuilder.Append(helper.DelimitIdentifier(plan.Entries[i].ColumnName));
+        }
+
+        commandStringBuilder.Append(')');
+    }
+
+    private void AppendStructValues(
+        StringBuilder commandStringBuilder,
+        DuckDBStructMutationPlan plan)
+    {
+        var helper = SqlGenerationHelper;
+        commandStringBuilder.Append('(');
+
+        for (var i = 0; i < plan.Entries.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            switch (plan.Entries[i])
+            {
+                case DuckDBStandaloneMutationEntry standalone:
+                    commandStringBuilder.Append(
+                        helper.GenerateParameterNamePlaceholder(standalone.ParameterName));
+                    break;
+                case DuckDBStructMutationGroup structGroup:
+                    AppendStructLiteral(commandStringBuilder, structGroup.Root, helper);
+                    break;
+            }
+        }
+
+        commandStringBuilder.Append(')');
+    }
+
+    private void AppendStructUpdateCommandHeader(
+        StringBuilder commandStringBuilder,
+        string name,
+        string? schema,
+        DuckDBStructMutationPlan plan)
+    {
+        var helper = SqlGenerationHelper;
+        commandStringBuilder
+            .Append("UPDATE ")
+            .Append(helper.DelimitIdentifier(name, schema))
+            .Append(" SET ");
+
+        for (var i = 0; i < plan.Entries.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            var columnName = helper.DelimitIdentifier(plan.Entries[i].ColumnName);
+            switch (plan.Entries[i])
+            {
+                case DuckDBStandaloneMutationEntry standalone:
+                    commandStringBuilder.Append(columnName).Append(" = ").Append(
+                        helper.GenerateParameterNamePlaceholder(standalone.ParameterName));
+                    break;
+                case DuckDBStructMutationGroup structGroup:
+                    commandStringBuilder.Append(columnName).Append(" = ");
+                    AppendStructUpdate(commandStringBuilder, columnName, structGroup.Root, helper);
+                    break;
+            }
+        }
+    }
+
+    private void AppendStructLiteral(
+        StringBuilder sb,
+        DuckDBStructMutationNode root,
+        ISqlGenerationHelper helper)
+        => RenderStructLiteralNode(sb, root, helper);
+
+    private void RenderStructLiteralNode(
+        StringBuilder sb,
+        DuckDBStructMutationNode node,
+        ISqlGenerationHelper helper)
+    {
+        sb.Append('{');
+        for (var i = 0; i < node.Children.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+            var child = node.Children[i];
+            AppendStringLiteral(sb, child.FieldName!);
+            sb.Append(": ");
+            if (child.IsLeaf)
+            {
+                sb.Append(helper.GenerateParameterNamePlaceholder(child.ParameterName!));
+            }
+            else
+            {
+                RenderStructLiteralNode(sb, child, helper);
+            }
+        }
+
+        sb.Append('}');
+    }
+
+    private void AppendStructUpdate(
+        StringBuilder sb,
+        string columnRef,
+        DuckDBStructMutationNode root,
+        ISqlGenerationHelper helper)
+        => RenderStructUpdate(
+            sb,
+            root,
+            columnRef,
+            [],
+            helper,
+            useParameterPlaceholder: true);
+
+    private void AppendStructUpdateBulk(
+        StringBuilder sb,
+        string columnRef,
+        DuckDBStructMutationNode root,
+        ISqlGenerationHelper helper)
+        => RenderStructUpdate(
+            sb,
+            root,
+            columnRef,
+            [],
+            helper,
+            useParameterPlaceholder: false);
+
+    private void RenderStructUpdate(
+        StringBuilder sb,
+        DuckDBStructMutationNode node,
+        string rootColumnRef,
+        IReadOnlyList<string> sourcePath,
+        ISqlGenerationHelper helper,
+        bool useParameterPlaceholder)
+    {
+        sb.Append("struct_update(");
+        AppendStructSource(sb, rootColumnRef, sourcePath);
+
+        foreach (var child in node.Children)
+        {
+            sb.Append(", ")
+                .Append(helper.DelimitIdentifier(child.FieldName!))
+                .Append(" := ");
+
+            if (child.IsLeaf)
+            {
+                if (useParameterPlaceholder)
+                {
+                    sb.Append(helper.GenerateParameterNamePlaceholder(child.ParameterName!));
+                }
+                else
+                {
+                    sb.Append("v.").Append(helper.DelimitIdentifier(child.ColumnName!));
+                }
+            }
+            else
+            {
+                RenderStructUpdate(
+                    sb,
+                    child,
+                    rootColumnRef,
+                    sourcePath.Append(child.FieldName!).ToArray(),
+                    helper,
+                    useParameterPlaceholder);
+            }
+        }
+
+        sb.Append(')');
+    }
+
+    private void AppendStructSource(
+        StringBuilder sb,
+        string rootColumnRef,
+        IReadOnlyList<string> sourcePath)
+    {
+        if (sourcePath.Count == 0)
+        {
+            sb.Append(rootColumnRef);
+            return;
+        }
+
+        sb.Append("struct_extract(");
+        AppendStructSource(sb, rootColumnRef, sourcePath.Take(sourcePath.Count - 1).ToArray());
+        sb.Append(", ");
+        AppendStringLiteral(sb, sourcePath[^1]);
+        sb.Append(')');
+    }
+
+    private void AppendStringLiteral(StringBuilder sb, string value)
+        => sb.Append(Dependencies.TypeMappingSource.FindMapping(typeof(string))!.GenerateSqlLiteral(value));
+
 }

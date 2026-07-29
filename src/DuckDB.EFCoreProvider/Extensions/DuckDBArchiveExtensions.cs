@@ -247,6 +247,7 @@ public static partial class DuckDBArchiveExtensions
         var (context, sql, archiveFileProbe, failureInjector) = Services(database);
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
+
         var aligned = DuckDBTierControl.AlignCutoff(cutoff, aggregate.Granularity);
         // Parquet writes are external side effects and cannot be rolled back with a caller-owned database
         // transaction. Multi-table aggregates also require leaf-to-root autocommit deletes because DuckDB

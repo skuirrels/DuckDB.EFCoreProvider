@@ -31,10 +31,7 @@ internal static class DuckDBBulkInsertPlanner
             && CanPlan(second)
             && first.TableName == second.TableName
             && first.Schema == second.Schema
-            && DuckDBModificationCommandShape.ColumnNamesEqual(
-                first,
-                second,
-                DuckDBModificationColumnRole.Write)
+            && WriteShapesEqual(first, second)
             && DuckDBModificationCommandShape.ColumnNamesEqual(
                 first,
                 second,
@@ -80,6 +77,28 @@ internal static class DuckDBBulkInsertPlanner
             : throw new ArgumentException(
                 "Bulk insert commands must be eligible inserts with matching tables, schemas, write columns, and read columns.",
                 nameof(commands));
+
+    private static bool WriteShapesEqual(
+        IReadOnlyModificationCommand first,
+        IReadOnlyModificationCommand second)
+    {
+        var firstPlan = CreateMutationPlan(first);
+        var secondPlan = CreateMutationPlan(second);
+        return firstPlan is null
+            ? secondPlan is null
+                && DuckDBModificationCommandShape.ColumnNamesEqual(
+                    first,
+                    second,
+                    DuckDBModificationColumnRole.Write)
+            : secondPlan is not null && firstPlan.HasSamePhysicalShape(secondPlan);
+    }
+
+    private static DuckDBStructMutationPlan? CreateMutationPlan(IReadOnlyModificationCommand command)
+    {
+        var writes = command.ColumnModifications.Where(modification => modification.IsWrite).ToArray();
+        DuckDBStructMutationPlan.TryCreate(writes, DuckDBStructMutationMode.Insert, out var plan);
+        return plan;
+    }
 }
 
 /// <summary>
@@ -88,6 +107,7 @@ internal static class DuckDBBulkInsertPlanner
 internal sealed class DuckDBBulkInsertPlan
 {
     private readonly DuckDBColumnModificationSnapshot[] _readColumns;
+    private readonly DuckDBStructMutationPlan?[] _structMutationPlans;
     private readonly DuckDBColumnModificationSnapshot[] _writeColumns;
     private readonly int _writeColumnCount;
 
@@ -99,6 +119,7 @@ internal sealed class DuckDBBulkInsertPlan
         _writeColumnCount = writeColumnCount;
         _writeColumns = new DuckDBColumnModificationSnapshot[commands.Count * writeColumnCount];
         _readColumns = new DuckDBColumnModificationSnapshot[readColumnCount];
+        _structMutationPlans = new DuckDBStructMutationPlan?[commands.Count];
 
         for (var rowIndex = 0; rowIndex < commands.Count; rowIndex++)
         {
@@ -107,6 +128,13 @@ internal sealed class DuckDBBulkInsertPlan
                 DuckDBModificationColumnRole.Write,
                 _writeColumns,
                 rowIndex * writeColumnCount);
+            DuckDBStructMutationPlan.TryCreate(
+                new ArraySegment<DuckDBColumnModificationSnapshot>(
+                    _writeColumns,
+                    rowIndex * writeColumnCount,
+                    writeColumnCount),
+                DuckDBStructMutationMode.Insert,
+                out _structMutationPlans[rowIndex]);
         }
 
         CopyColumns(
@@ -129,6 +157,9 @@ internal sealed class DuckDBBulkInsertPlan
     public int WriteColumnCount => _writeColumnCount;
 
     public int ReadColumnCount => _readColumns.Length;
+
+    public DuckDBStructMutationPlan? GetStructMutationPlan(int rowIndex)
+        => _structMutationPlans[rowIndex];
 
     public void CollectWriteColumns(int rowIndex, List<IColumnModification> target)
     {

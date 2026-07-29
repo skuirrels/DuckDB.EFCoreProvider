@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -50,6 +51,13 @@ internal static class DuckDBBulkInsertPlanner<TEntity>
         string table,
         string schema)
     {
+        if (entityType.GetStructMetadata() is not null)
+        {
+            throw new NotSupportedException(
+                $"Bulk insert into '{table}' is not supported for entities with DuckDB STRUCT mappings. "
+                + "Use SaveChanges instead.");
+        }
+
         var cacheKey = (entityType, schema, table);
         if (PlanCache.TryGetValue(cacheKey, out var cached))
         {

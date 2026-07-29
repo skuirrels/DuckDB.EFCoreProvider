@@ -1,4 +1,4 @@
-﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Text;
 
 namespace DuckDB.EFCoreProvider.Migrations;
 
@@ -323,6 +324,7 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
 
     private void AddTableRebuild(List<MigrationOperation> operations, ITable table)
     {
+        var plan = DuckDBStructSchemaPlanner.PlanTable(table);
         var backupName = $"__ef_rebuild_{table.Name}";
         var delimitedTable = Dependencies.SqlGenerationHelper.DelimitIdentifier(table.Name, table.Schema);
         var delimitedBackup = Dependencies.SqlGenerationHelper.DelimitIdentifier(backupName, table.Schema);
@@ -333,11 +335,12 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         });
         operations.Add(new DropTableOperation { Name = table.Name, Schema = table.Schema });
 
-        var createTable = CreateTableOperationFrom(table);
+        var createTable = CreateTableOperationFrom(table, plan);
         operations.Add(createTable);
 
-        var copiedColumns = table.Columns.Where(column => column.ComputedColumnSql is null).ToList();
-        var columnList = string.Join(", ", copiedColumns.Select(column => Dependencies.SqlGenerationHelper.DelimitIdentifier(column.Name)));
+        var columnList = string.Join(
+            ", ",
+            plan.CopyColumnNames.Select(Dependencies.SqlGenerationHelper.DelimitIdentifier));
         operations.Add(new SqlOperation
         {
             Sql = $"INSERT INTO {delimitedTable} ({columnList}) SELECT {columnList} FROM {delimitedBackup}{Dependencies.SqlGenerationHelper.StatementTerminator}"
@@ -350,36 +353,20 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         }
     }
 
-    private static CreateTableOperation CreateTableOperationFrom(ITable table)
+    private CreateTableOperation CreateTableOperationFrom(
+        ITable table,
+        DuckDBTableRebuildPlan plan)
     {
         var operation = new CreateTableOperation
         {
-            Name = table.Name,
-            Schema = table.Schema,
-            Comment = table.Comment
+            Name = plan.TableName,
+            Schema = plan.Schema,
+            Comment = plan.Comment
         };
 
-        foreach (var column in table.Columns.Where(column => column.Order.HasValue).OrderBy(column => column.Order)
-                     .Concat(table.Columns.Where(column => !column.Order.HasValue)))
+        foreach (var column in plan.Columns)
         {
-            column.TryGetDefaultValue(out var defaultValue);
-            var addColumn = new AddColumnOperation
-            {
-                Name = column.Name,
-                Table = table.Name,
-                Schema = table.Schema,
-                ClrType = column.StoreTypeMapping.ClrType,
-                ColumnType = column.StoreType,
-                IsNullable = column.IsNullable,
-                DefaultValue = defaultValue,
-                DefaultValueSql = column.DefaultValueSql,
-                ComputedColumnSql = column.ComputedColumnSql,
-                IsStored = column.IsStored,
-                Comment = column.Comment,
-                Collation = column.Collation
-            };
-            addColumn.AddAnnotations(column.GetAnnotations());
-            operation.Columns.Add(addColumn);
+            operation.Columns.Add(CreateAddColumnOperation(plan, column));
         }
 
         if (table.PrimaryKey is { } primaryKey)
@@ -403,6 +390,38 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         }
 
         operation.AddAnnotations(table.GetAnnotations());
+        return operation;
+    }
+
+    private AddColumnOperation CreateAddColumnOperation(
+        DuckDBTableRebuildPlan table,
+        DuckDBPhysicalColumnPlan column)
+    {
+        var operation = new AddColumnOperation
+        {
+            Name = column.Name,
+            Table = table.TableName,
+            Schema = table.Schema,
+            ClrType = column.ClrType,
+            ColumnType = column is DuckDBStructColumnPlan structColumn
+                ? RenderStructStoreType(structColumn.Root)
+                : column.StoreType,
+            IsNullable = column.IsNullable,
+            ComputedColumnSql = column.ComputedColumnSql
+        };
+
+        if (column is DuckDBScalarColumnPlan scalar)
+        {
+            operation.DefaultValue = scalar.DefaultValue;
+            operation.DefaultValueSql = scalar.DefaultValueSql;
+            operation.IsStored = scalar.IsStored;
+            operation.Comment = scalar.Comment;
+            operation.Collation = scalar.Collation;
+            operation.AddAnnotations(
+                scalar.Annotations.Select(annotation =>
+                    new Annotation(annotation.Key, annotation.Value)));
+        }
+
         return operation;
     }
 
@@ -516,6 +535,12 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         MigrationCommandListBuilder builder,
         bool terminate = true)
     {
+        var structPlan = DuckDBStructSchemaPlanner.PlanCreateTable(operation);
+        if (structPlan.HasStructColumns)
+        {
+            operation = ApplyCreateTablePlan(operation, structPlan);
+        }
+
         foreach (var column in operation.Columns)
         {
             ConfigureAutoIncrementColumn(operation.Name, operation.Schema, column, model, builder);
@@ -538,6 +563,64 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         }
     }
 
+    private CreateTableOperation ApplyCreateTablePlan(
+        CreateTableOperation source,
+        DuckDBCreateTableStructPlan plan)
+    {
+        var operation = new CreateTableOperation
+        {
+            Name = source.Name,
+            Schema = source.Schema,
+            Comment = source.Comment,
+            PrimaryKey = source.PrimaryKey
+        };
+        operation.AddAnnotations(source.GetAnnotations());
+
+        for (var ordinal = 0; ordinal < source.Columns.Count; ordinal++)
+        {
+            if (plan.TryGetReplacement(ordinal, out var structColumn))
+            {
+                operation.Columns.Add(new AddColumnOperation
+                {
+                    Name = structColumn.Name,
+                    Table = source.Name,
+                    Schema = source.Schema,
+                    ClrType = typeof(object),
+                    ColumnType = RenderStructStoreType(structColumn.Root),
+                    IsNullable = structColumn.IsNullable
+                });
+            }
+            else if (!plan.IsSuppressed(ordinal))
+            {
+                operation.Columns.Add(source.Columns[ordinal]);
+            }
+        }
+
+        operation.ForeignKeys.AddRange(source.ForeignKeys);
+        operation.UniqueConstraints.AddRange(source.UniqueConstraints);
+        operation.CheckConstraints.AddRange(source.CheckConstraints);
+        return operation;
+    }
+
+    private string RenderStructStoreType(DuckDBStructSchemaFieldPlan node)
+    {
+        var builder = new StringBuilder("STRUCT(");
+        for (var i = 0; i < node.Children.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(", ");
+            }
+
+            var child = node.Children[i];
+            builder.Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(child.FieldName!))
+                .Append(' ')
+                .Append(child.IsLeaf ? child.StoreType : RenderStructStoreType(child));
+        }
+
+        return builder.Append(')').ToString();
+    }
+
     /// <inheritdoc />
     protected override void Generate(AlterTableOperation operation, IModel? model, MigrationCommandListBuilder builder)
     {
@@ -556,6 +639,9 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
     /// <inheritdoc />
     protected override void Generate(AlterColumnOperation operation, IModel? model, MigrationCommandListBuilder builder)
     {
+        DuckDBStructSchemaPlanner.ValidateStandaloneColumnOperation(operation, "alter");
+        DuckDBStructSchemaPlanner.ValidateStandaloneColumnOperation(operation.OldColumn, "alter");
+
         if (operation.OldColumn.ColumnType != operation.ColumnType)
         {
             builder.Append("ALTER TABLE ").AppendLine(Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Table, operation.Schema))
@@ -648,6 +734,8 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
     /// <inheritdoc />
     protected override void Generate(AddColumnOperation operation, IModel? model, MigrationCommandListBuilder builder, bool terminate = true)
     {
+        DuckDBStructSchemaPlanner.ValidateStandaloneColumnOperation(operation, "add");
+
         ConfigureAutoIncrementColumn(operation.Table, operation.Schema, operation, model, builder);
 
         base.Generate(operation, model, builder, terminate);
@@ -685,11 +773,31 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
     /// <inheritdoc />
     protected override void Generate(RenameColumnOperation operation, IModel? model, MigrationCommandListBuilder builder)
     {
+        DuckDBStructSchemaPlanner.ValidateAnnotatedOperation(
+            operation,
+            operation.Name,
+            operation.Table,
+            "rename");
         builder.Append("ALTER TABLE ").AppendLine(Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Table, operation.Schema))
             .Append("RENAME ").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name))
             .Append(" TO ").Append(Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.NewName))
             .AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
         EndStatement(builder);
+    }
+
+    /// <inheritdoc />
+    protected override void Generate(
+        DropColumnOperation operation,
+        IModel? model,
+        MigrationCommandListBuilder builder,
+        bool terminate = true)
+    {
+        DuckDBStructSchemaPlanner.ValidateAnnotatedOperation(
+            operation,
+            operation.Name,
+            operation.Table,
+            "drop");
+        base.Generate(operation, model, builder, terminate);
     }
 
     /// <summary>

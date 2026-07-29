@@ -20,7 +20,7 @@
 | Lakehouse persistence | First-class DuckLake profile with tracked writes, transactions, appender ingestion, and `MERGE` upsert |
 | Data lifecycle | Hot DuckDB tables with relational aggregates archived to partitioned Parquet |
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
-| Data types | Decimal, temporal, JSON, arrays, lists, GUID, binary, row-value, and optional spatial mappings |
+| Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings |
 
 > **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility).
 
@@ -274,10 +274,74 @@ public class Record
 }
 ```
 
+### Complex properties mapped to DuckDB STRUCT columns
+
+Map complex properties to DuckDB `STRUCT` columns for efficient nested data representation. This enables SQL-level projections of individual struct sub-fields without scalar flattening, and supports filtering and sorting directly on nested fields.
+
+```csharp
+using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.EFCoreProvider.Extensions;
+using Microsoft.EntityFrameworkCore;
+
+public class Customer
+{
+    public int Id { get; set; }
+
+    [UseStructMapping]
+    public required Address Location { get; set; }
+}
+
+public class Address
+{
+    public required string City { get; set; }
+    public required string Country { get; set; }
+}
+
+public class SampleContext : DbContext
+{
+    public DbSet<Customer> Customers => Set<Customer>();
+
+    protected override void OnConfiguring(DbContextOptionsBuilder options)
+        => options.UseDuckDB("Data Source=sample.duckdb");
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Customer>(e =>
+        {
+            e.HasKey(c => c.Id);
+            e.ComplexProperty(c => c.Location).UseStructMapping();
+        });
+    }
+}
+```
+
+STRUCT mapping is automatically inferred from the complex property name and scalar property names. For manual control, use `UseStructMapping` for the physical root column and `HasStructFieldName` for a physical leaf name:
+
+```csharp
+e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
+    .Property(l => l.City).HasStructFieldName("city_name");
+```
+
+`HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
+
+**Limitations & Behavior:**
+- Queries with LINQ projections, filters, sorting, joins, and subqueries are fully supported
+- `EnsureCreated`, migrations, and `SaveChanges` are supported (struct columns are created and INSERTs use DuckDB struct literals)
+- **Not supported:** `BulkInsert`, `Upsert`, tiered-storage archive/partitions, mapped database views, Parquet export partitioning
+- When reading from Parquet files with struct columns via `FromParquet`, struct-mapped complex properties materialize correctly
+- Raw SQL (`FromSqlRaw`) and composable raw SQL with struct columns work; mapped views with struct properties are rejected at model build time
+- Non-struct complex properties (scalar flattening) continue to work unchanged and are unaffected by this feature
+
+**Convention Inference:**
+The `DuckDBStructFieldConvention` automatically infers struct mapping metadata at model finalization:
+- Complex property name becomes the struct column name (e.g., `Location` → physical column `"Location"`)
+- Scalar property names are lowercased for leaf field names (e.g., `City` → `"city"`)
+
+Override the convention with explicit calls to `UseStructMapping()` and `HasStructField` when your data schema differs from EF property names.
+
 ### Query Parquet, CSV, and JSON files
 
 Map an entity directly to a file (or glob pattern) and DuckDB reads it as a table — no physical table required. Use `[FromParquet]`, `[FromCsv]`, or `[FromJsonFile]`; DuckDB auto-detects the CSV/JSON schema and column types. Query SQL uses `read_parquet(...)`, `read_csv(...)`, or `read_json(...)`.
-
 ```csharp
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;

@@ -111,6 +111,7 @@ public static class DuckDBServiceCollectionExtensions
             .TryAdd<IModificationCommandBatchFactory, DuckDBModificationCommandBatchFactory>()
             .TryAdd<IModificationCommandFactory, DuckDBModificationCommandFactory>()
             .TryAdd<IRelationalConnection>(p => p.GetRequiredService<IDuckDBRelationalConnection>())
+            .TryAdd<IMigrationsAnnotationProvider, DuckDBMigrationsAnnotationProvider>()
             .TryAdd<IMigrationsSqlGenerator, DuckDBMigrationsSqlGenerator>()
             .TryAdd<IRelationalDatabaseCreator, DuckDBDatabaseCreator>()
             .TryAdd<IHistoryRepository, DuckDBHistoryRepository>()

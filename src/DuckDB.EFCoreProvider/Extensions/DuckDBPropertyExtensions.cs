@@ -10,6 +10,13 @@ namespace DuckDB.EFCoreProvider.Extensions;
 public static class DuckDBPropertyExtensions
 {
     /// <summary>
+    ///     Returns the <see cref="DuckDBStructFieldInfo" /> stored on this property via
+    ///     <c>HasStructField</c>, or <see langword="null" /> when the property is not
+    ///     mapped to a DuckDB STRUCT sub-field.
+    /// </summary>
+    public static DuckDBStructFieldInfo? GetStructFieldInfo(this IReadOnlyProperty property)
+        => property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value as DuckDBStructFieldInfo;
+    /// <summary>
     ///     Retrieves the <see cref="DuckDBValueGenerationStrategy"/> associated with the specified property.
     /// </summary>
     /// <param name="property">
