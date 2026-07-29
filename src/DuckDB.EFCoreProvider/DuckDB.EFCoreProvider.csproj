@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.14.2</PackageVersion>
-    <FileVersion>1.14.2.0</FileVersion>
-    <Version>1.14.2</Version>
+    <PackageVersion>1.15.0</PackageVersion>
+    <FileVersion>1.15.0.0</FileVersion>
+    <Version>1.15.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,14 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.14.1</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.14.2</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.15.0
+- Add opt-in mapping of EF Core complex properties to native DuckDB STRUCT columns through UseStructMapping, HasStructField, and HasStructFieldName.
+- Support STRUCT schema creation, migrations, SaveChanges inserts and partial updates, and LINQ projection, filtering, ordering, joins, and subqueries, including nested structures and explicit physical field names.
+- Add design-time migration and compiled-model support, plus native DuckDB, DuckLake, Parquet, raw SQL, and model-validation coverage.
+- Reject unsupported STRUCT operations explicitly: appender-backed bulk insert/upsert, tiered-storage archiving, mapped database views, and Parquet partitioning by a STRUCT-mapped complex property.
+
 1.14.2
 - Update Skuirrels.DuckDB.NET.Data.Full from 1.5.5 to 1.5.5.2, moving the bundled native DuckDB runtime from 1.5.4 to 1.5.5. Provider APIs are unchanged.
 - The 1.14.1 benchmark results remain historical measurements of Skuirrels 1.5.5 with native DuckDB 1.5.4 and do not characterize the updated 1.5.5.2 package.

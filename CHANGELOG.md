@@ -2,6 +2,20 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.15.0
+
+- Add opt-in mapping of EF Core complex properties to native DuckDB `STRUCT`
+  columns through `[UseStructMapping]`, `UseStructMapping()`,
+  `HasStructField(...)`, and `HasStructFieldName(...)`.
+- Support `STRUCT` schema creation, migrations, `SaveChanges` inserts and
+  partial updates, and LINQ projection, filtering, ordering, joins, and
+  subqueries, including nested structures and explicit physical field names.
+- Add design-time migration and compiled-model support, plus native DuckDB,
+  DuckLake, Parquet, raw SQL, and model-validation coverage.
+- Reject unsupported `STRUCT` operations explicitly: appender-backed bulk
+  insert/upsert, tiered-storage archiving, mapped database views, and Parquet
+  partitioning by a `STRUCT`-mapped complex property.
+
 ## 1.14.2
 
 - Update `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5 to 1.5.5.2, moving the
