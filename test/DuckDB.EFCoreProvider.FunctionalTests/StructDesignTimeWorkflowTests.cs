@@ -373,4 +373,4 @@ public sealed class StructDesignTimeWorkflowTests
             }
         }
         """";
-    }
+}

@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Extensions;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -58,6 +59,8 @@ public sealed class StructDuckLakeTests
         var options = new DbContextOptionsBuilder<DuckLakeValidationContext>()
             .UseDuckLake(metadataPath)
             .EnableServiceProviderCaching(false)
+            .ConfigureWarnings(warnings =>
+                warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
             .Options;
         using var context = new DuckLakeValidationContext(options);
 
