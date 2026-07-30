@@ -1,0 +1,160 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 1 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.01 sec)   *****
+// Found 1 benchmarks:
+//   ReferencedPrincipalUpdateBenchmarks.UnreferencedUpdate: ShortRun(Toolchain=InProcessEmitToolchain, InvocationCount=1, IterationCount=15, LaunchCount=1, UnrollFactor=1, WarmupCount=5)
+
+// **************************
+// Benchmark: ReferencedPrincipalUpdateBenchmarks.UnreferencedUpdate: ShortRun(Toolchain=InProcessEmitToolchain, InvocationCount=1, IterationCount=15, LaunchCount=1, UnrollFactor=1, WarmupCount=5)
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (DuckDB.EFCoreProvider.Benchmarks). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.8 (10.0.8, 10.0.826.23019), Arm64 RyuJIT armv8.0-a
+// GC=Concurrent Workstation
+// HardwareIntrinsics=ArmBase+AdvSimd,AES,CRC32,DP,RDM,SHA1,SHA256 VectorSize=128
+// Job: Job-SXSWSE(Toolchain=InProcessEmitToolchain, InvocationCount=1, IterationCount=15, LaunchCount=1, UnrollFactor=1, WarmupCount=5)
+
+OverheadJitting  1: 25 op, 82625.00 ns, 3.3050 us/op
+WorkloadJitting  1: 25 op, 142340417.00 ns, 5.6936 ms/op
+
+OverheadWarmup   1: 25 op, 2084.00 ns, 83.3600 ns/op
+OverheadWarmup   2: 25 op, 125.00 ns, 5.0000 ns/op
+OverheadWarmup   3: 25 op, 41.00 ns, 1.6400 ns/op
+OverheadWarmup   4: 25 op, 166.00 ns, 6.6400 ns/op
+OverheadWarmup   5: 25 op, 166.00 ns, 6.6400 ns/op
+OverheadWarmup   6: 25 op, 125.00 ns, 5.0000 ns/op
+OverheadWarmup   7: 25 op, 625.00 ns, 25.0000 ns/op
+
+OverheadActual   1: 25 op, 167.00 ns, 6.6800 ns/op
+OverheadActual   2: 25 op, 291.00 ns, 11.6400 ns/op
+OverheadActual   3: 25 op, 41.00 ns, 1.6400 ns/op
+OverheadActual   4: 25 op, 84.00 ns, 3.3600 ns/op
+OverheadActual   5: 25 op, 292.00 ns, 11.6800 ns/op
+OverheadActual   6: 25 op, 125.00 ns, 5.0000 ns/op
+OverheadActual   7: 25 op, 125.00 ns, 5.0000 ns/op
+OverheadActual   8: 25 op, 84.00 ns, 3.3600 ns/op
+OverheadActual   9: 25 op, 209.00 ns, 8.3600 ns/op
+OverheadActual  10: 25 op, 0.00 ns, 0.0000 ns/op
+OverheadActual  11: 25 op, 83.00 ns, 3.3200 ns/op
+OverheadActual  12: 25 op, 41.00 ns, 1.6400 ns/op
+OverheadActual  13: 25 op, 750.00 ns, 30.0000 ns/op
+OverheadActual  14: 25 op, 125.00 ns, 5.0000 ns/op
+OverheadActual  15: 25 op, 166.00 ns, 6.6400 ns/op
+OverheadActual  16: 25 op, 83.00 ns, 3.3200 ns/op
+OverheadActual  17: 25 op, 250.00 ns, 10.0000 ns/op
+OverheadActual  18: 25 op, 167.00 ns, 6.6800 ns/op
+OverheadActual  19: 25 op, 250.00 ns, 10.0000 ns/op
+OverheadActual  20: 25 op, 292.00 ns, 11.6800 ns/op
+
+WorkloadWarmup   1: 25 op, 125446125.00 ns, 5.0178 ms/op
+WorkloadWarmup   2: 25 op, 132784875.00 ns, 5.3114 ms/op
+WorkloadWarmup   3: 25 op, 126081625.00 ns, 5.0433 ms/op
+WorkloadWarmup   4: 25 op, 130580792.00 ns, 5.2232 ms/op
+WorkloadWarmup   5: 25 op, 127940334.00 ns, 5.1176 ms/op
+
+WorkloadActual   1: 25 op, 122116459.00 ns, 4.8847 ms/op
+WorkloadActual   2: 25 op, 124220292.00 ns, 4.9688 ms/op
+WorkloadActual   3: 25 op, 134532750.00 ns, 5.3813 ms/op
+WorkloadActual   4: 25 op, 120752125.00 ns, 4.8301 ms/op
+WorkloadActual   5: 25 op, 128154459.00 ns, 5.1262 ms/op
+WorkloadActual   6: 25 op, 136227292.00 ns, 5.4491 ms/op
+WorkloadActual   7: 25 op, 133460042.00 ns, 5.3384 ms/op
+WorkloadActual   8: 25 op, 129364500.00 ns, 5.1746 ms/op
+WorkloadActual   9: 25 op, 151338167.00 ns, 6.0535 ms/op
+WorkloadActual  10: 25 op, 140582500.00 ns, 5.6233 ms/op
+WorkloadActual  11: 25 op, 138405541.00 ns, 5.5362 ms/op
+WorkloadActual  12: 25 op, 139309625.00 ns, 5.5724 ms/op
+WorkloadActual  13: 25 op, 131410125.00 ns, 5.2564 ms/op
+WorkloadActual  14: 25 op, 141976167.00 ns, 5.6790 ms/op
+WorkloadActual  15: 25 op, 133601750.00 ns, 5.3441 ms/op
+
+WorkloadResult   1: 25 op, 122116313.50 ns, 4.8847 ms/op
+WorkloadResult   2: 25 op, 124220146.50 ns, 4.9688 ms/op
+WorkloadResult   3: 25 op, 134532604.50 ns, 5.3813 ms/op
+WorkloadResult   4: 25 op, 120751979.50 ns, 4.8301 ms/op
+WorkloadResult   5: 25 op, 128154313.50 ns, 5.1262 ms/op
+WorkloadResult   6: 25 op, 136227146.50 ns, 5.4491 ms/op
+WorkloadResult   7: 25 op, 133459896.50 ns, 5.3384 ms/op
+WorkloadResult   8: 25 op, 129364354.50 ns, 5.1746 ms/op
+WorkloadResult   9: 25 op, 151338021.50 ns, 6.0535 ms/op
+WorkloadResult  10: 25 op, 140582354.50 ns, 5.6233 ms/op
+WorkloadResult  11: 25 op, 138405395.50 ns, 5.5362 ms/op
+WorkloadResult  12: 25 op, 139309479.50 ns, 5.5724 ms/op
+WorkloadResult  13: 25 op, 131409979.50 ns, 5.2564 ms/op
+WorkloadResult  14: 25 op, 141976021.50 ns, 5.6790 ms/op
+WorkloadResult  15: 25 op, 133601604.50 ns, 5.3441 ms/op
+// GC:  0 0 0 239816 25
+// Threading:  0 0 25
+
+// ! Failed to set up priority Normal for process System.Diagnostics.Process (DuckDB.EFCoreProvider.Benchmarks). Make sure you have the right permissions. Message: Operation not permitted
+
+Mean = 5.348 ms, StdErr = 0.084 ms (1.58%), N = 15, StdDev = 0.327 ms
+Min = 4.830 ms, Q1 = 5.150 ms, Median = 5.344 ms, Q3 = 5.554 ms, Max = 6.054 ms
+IQR = 0.404 ms, LowerFence = 4.544 ms, UpperFence = 6.160 ms
+ConfidenceInterval = [4.999 ms; 5.697 ms] (CI 99.9%), Margin = 0.349 ms (6.53% of Mean)
+Skewness = 0.23, Kurtosis = 2.41, MValue = 3.25
+
+// ** Remained 0 (0.0%) benchmark(s) to run. Estimated finish 2026-07-30 19:35 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  private/tmp/duckdb-referenced-update-benchmarks/before-unreferenced-25/results/DuckDB.EFCoreProvider.Benchmarks.ReferencedPrincipalUpdateBenchmarks-report.csv
+  private/tmp/duckdb-referenced-update-benchmarks/before-unreferenced-25/results/DuckDB.EFCoreProvider.Benchmarks.ReferencedPrincipalUpdateBenchmarks-report-github.md
+  private/tmp/duckdb-referenced-update-benchmarks/before-unreferenced-25/results/DuckDB.EFCoreProvider.Benchmarks.ReferencedPrincipalUpdateBenchmarks-report.html
+
+// * Detailed results *
+ReferencedPrincipalUpdateBenchmarks.UnreferencedUpdate: ShortRun(Toolchain=InProcessEmitToolchain, InvocationCount=1, IterationCount=15, LaunchCount=1, UnrollFactor=1, WarmupCount=5)
+Runtime = ; GC =
+Mean = 5.348 ms, StdErr = 0.084 ms (1.58%), N = 15, StdDev = 0.327 ms
+Min = 4.830 ms, Q1 = 5.150 ms, Median = 5.344 ms, Q3 = 5.554 ms, Max = 6.054 ms
+IQR = 0.404 ms, LowerFence = 4.544 ms, UpperFence = 6.160 ms
+ConfidenceInterval = [4.999 ms; 5.697 ms] (CI 99.9%), Margin = 0.349 ms (6.53% of Mean)
+Skewness = 0.23, Kurtosis = 2.41, MValue = 3.25
+-------------------- Histogram --------------------
+[4.828 ms ; 5.176 ms) | @@@@@
+[5.176 ms ; 5.335 ms) | @
+[5.335 ms ; 5.683 ms) | @@@@@@@@
+[5.683 ms ; 5.880 ms) |
+[5.880 ms ; 6.227 ms) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, macOS Tahoe 26.5.2 (25F84) [Darwin 25.5.0]
+Unknown processor
+.NET SDK 10.0.300
+  [Host] : .NET 10.0.8 (10.0.8, 10.0.826.23019), Arm64 RyuJIT armv8.0-a
+
+Job=ShortRun  Toolchain=InProcessEmitToolchain  InvocationCount=1
+IterationCount=15  LaunchCount=1  UnrollFactor=1
+WarmupCount=5
+
+| Method             | Mean     | Error     | StdDev    | Allocated |
+|------------------- |---------:|----------:|----------:|----------:|
+| UnreferencedUpdate | 5.348 ms | 0.3493 ms | 0.3268 ms |   9.37 KB |
+
+// * Warnings *
+MultimodalDistribution
+  ReferencedPrincipalUpdateBenchmarks.UnreferencedUpdate: ShortRun -> It seems that the distribution is bimodal (mValue = 3.25)
+
+// * Legends *
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  StdDev    : Standard deviation of all measurements
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 ms      : 1 Millisecond (0.001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:04 (4.09 sec), executed benchmarks: 1
+
+Global total time: 00:00:04 (4.52 sec), executed benchmarks: 1
+// * Artifacts cleanup *
+Artifacts cleanup is finished

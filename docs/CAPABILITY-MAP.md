@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-22.
+**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-30.
 
 ---
 
@@ -27,7 +27,7 @@ This document is the published capability matrix for the provider. It serves two
 | Area | Notes |
 |---|---|
 | CRUD via `SaveChanges` | insert / update / delete |
-| Generated keys & store-generated values | DuckDB `RETURNING`; `UseAutoIncrement()` backed by sequences |
+| Generated keys & store-generated values | DuckDB `RETURNING`; referenced-table updates use a transactional `UPDATE` plus keyed `SELECT` because DuckDB 1.5.5 rejects `UPDATE ... RETURNING` while dependent rows exist; `UseAutoIncrement()` is backed by sequences |
 | Optimistic concurrency | concurrency tokens |
 | Transactions | commit / rollback |
 | Migrations — create | tables, columns, indexes, sequences, comments, history table |
@@ -90,7 +90,7 @@ into a target-model table rebuild with `EnableMigrationTableRebuilds()`.
 |---|---|
 | Foreign key in `CREATE TABLE` | ✅ emitted and enforced; unsupported cascade actions become `NO ACTION` with a migration warning |
 | Add / drop foreign key | clear `NotSupportedException`; ✅ opt-in table rebuild |
-| Update / delete a referenced row | DuckDB rejects the operation while dependent rows exist, including non-key updates |
+| Update / delete a referenced row | DuckDB 1.5.5 rejects `UPDATE ... RETURNING` while dependent rows exist, including non-key updates. `SaveChanges` works around this with an affected-row-checked `UPDATE` and transactional keyed read-back when store-generated values are required. Eligible opt-in multi-row updates retain the provider's non-returning `UPDATE ... FROM (VALUES ...)` fast path. Direct SQL must omit `RETURNING` and must not write the referenced key while dependants exist. Deleting a referenced row remains subject to the foreign-key constraint. |
 | Add / drop primary, unique, or check constraint | clear engine error by default; ✅ opt-in table rebuild |
 | Add column with constraint / default / required | `Adding columns with constraints not yet supported` |
 | Add / alter computed (generated) column | `Adding generated columns after table creation is not supported yet` |
