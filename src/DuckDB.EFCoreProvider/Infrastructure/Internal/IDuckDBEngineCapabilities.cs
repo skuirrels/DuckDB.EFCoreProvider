@@ -22,6 +22,12 @@ public interface IDuckDBEngineCapabilities
 {
     bool SupportsReturning { get; }
 
+    /// <summary>
+    ///     Indicates whether tracked updates to tables with inbound foreign keys can safely use
+    ///     <c>UPDATE ... RETURNING</c>.
+    /// </summary>
+    bool SupportsReturningOnReferencedTableUpdates => false;
+
     bool SupportsSaveChangesBatching { get; }
 
     bool SupportsSequences { get; }

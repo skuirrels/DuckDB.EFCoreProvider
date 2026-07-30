@@ -1,0 +1,154 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 1 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// ***** Done, took 00:00:00 (0.01 sec)   *****
+// Found 1 benchmarks:
+//   ReferencedPrincipalUpdateBenchmarks.ReferencedPrincipalWithoutChild: ShortRun(Toolchain=InProcessEmitToolchain, InvocationCount=1, IterationCount=15, LaunchCount=1, UnrollFactor=1, WarmupCount=5)
+
+// **************************
+// Benchmark: ReferencedPrincipalUpdateBenchmarks.ReferencedPrincipalWithoutChild: ShortRun(Toolchain=InProcessEmitToolchain, InvocationCount=1, IterationCount=15, LaunchCount=1, UnrollFactor=1, WarmupCount=5)
+// *** Execute ***
+// Launch: 1 / 1
+// ! Failed to set up priority High for process System.Diagnostics.Process (DuckDB.EFCoreProvider.Benchmarks). Make sure you have the right permissions. Message: Permission denied
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.15.8
+// Runtime=.NET 10.0.8 (10.0.8, 10.0.826.23019), Arm64 RyuJIT armv8.0-a
+// GC=Concurrent Workstation
+// HardwareIntrinsics=ArmBase+AdvSimd,AES,CRC32,DP,RDM,SHA1,SHA256 VectorSize=128
+// Job: Job-SXSWSE(Toolchain=InProcessEmitToolchain, InvocationCount=1, IterationCount=15, LaunchCount=1, UnrollFactor=1, WarmupCount=5)
+
+OverheadJitting  1: 25 op, 89291.00 ns, 3.5716 us/op
+WorkloadJitting  1: 25 op, 152016917.00 ns, 6.0807 ms/op
+
+OverheadWarmup   1: 25 op, 1292.00 ns, 51.6800 ns/op
+OverheadWarmup   2: 25 op, 42.00 ns, 1.6800 ns/op
+OverheadWarmup   3: 25 op, 417.00 ns, 16.6800 ns/op
+OverheadWarmup   4: 25 op, 41.00 ns, 1.6400 ns/op
+OverheadWarmup   5: 25 op, 42.00 ns, 1.6800 ns/op
+OverheadWarmup   6: 25 op, 42.00 ns, 1.6800 ns/op
+
+OverheadActual   1: 25 op, 250.00 ns, 10.0000 ns/op
+OverheadActual   2: 25 op, 167.00 ns, 6.6800 ns/op
+OverheadActual   3: 25 op, 292.00 ns, 11.6800 ns/op
+OverheadActual   4: 25 op, 333.00 ns, 13.3200 ns/op
+OverheadActual   5: 25 op, 166.00 ns, 6.6400 ns/op
+OverheadActual   6: 25 op, 208.00 ns, 8.3200 ns/op
+OverheadActual   7: 25 op, 42.00 ns, 1.6800 ns/op
+OverheadActual   8: 25 op, 84.00 ns, 3.3600 ns/op
+OverheadActual   9: 25 op, 125.00 ns, 5.0000 ns/op
+OverheadActual  10: 25 op, 167.00 ns, 6.6800 ns/op
+OverheadActual  11: 25 op, 41.00 ns, 1.6400 ns/op
+OverheadActual  12: 25 op, 83.00 ns, 3.3200 ns/op
+OverheadActual  13: 25 op, 83.00 ns, 3.3200 ns/op
+OverheadActual  14: 25 op, 167.00 ns, 6.6800 ns/op
+OverheadActual  15: 25 op, 291.00 ns, 11.6400 ns/op
+OverheadActual  16: 25 op, 416.00 ns, 16.6400 ns/op
+OverheadActual  17: 25 op, 292.00 ns, 11.6800 ns/op
+OverheadActual  18: 25 op, 625.00 ns, 25.0000 ns/op
+OverheadActual  19: 25 op, 84.00 ns, 3.3600 ns/op
+OverheadActual  20: 25 op, 250.00 ns, 10.0000 ns/op
+
+WorkloadWarmup   1: 25 op, 148712375.00 ns, 5.9485 ms/op
+WorkloadWarmup   2: 25 op, 158988084.00 ns, 6.3595 ms/op
+WorkloadWarmup   3: 25 op, 148195458.00 ns, 5.9278 ms/op
+WorkloadWarmup   4: 25 op, 131379333.00 ns, 5.2552 ms/op
+WorkloadWarmup   5: 25 op, 149989750.00 ns, 5.9996 ms/op
+
+WorkloadActual   1: 25 op, 147813791.00 ns, 5.9126 ms/op
+WorkloadActual   2: 25 op, 157355917.00 ns, 6.2942 ms/op
+WorkloadActual   3: 25 op, 148372875.00 ns, 5.9349 ms/op
+WorkloadActual   4: 25 op, 153540584.00 ns, 6.1416 ms/op
+WorkloadActual   5: 25 op, 150736166.00 ns, 6.0294 ms/op
+WorkloadActual   6: 25 op, 143207625.00 ns, 5.7283 ms/op
+WorkloadActual   7: 25 op, 142085708.00 ns, 5.6834 ms/op
+WorkloadActual   8: 25 op, 154941958.00 ns, 6.1977 ms/op
+WorkloadActual   9: 25 op, 150225834.00 ns, 6.0090 ms/op
+WorkloadActual  10: 25 op, 150550417.00 ns, 6.0220 ms/op
+WorkloadActual  11: 25 op, 140515916.00 ns, 5.6206 ms/op
+WorkloadActual  12: 25 op, 143093666.00 ns, 5.7237 ms/op
+WorkloadActual  13: 25 op, 143906708.00 ns, 5.7563 ms/op
+WorkloadActual  14: 25 op, 134158917.00 ns, 5.3664 ms/op
+WorkloadActual  15: 25 op, 146524625.00 ns, 5.8610 ms/op
+
+WorkloadResult   1: 25 op, 147813624.00 ns, 5.9125 ms/op
+WorkloadResult   2: 25 op, 157355750.00 ns, 6.2942 ms/op
+WorkloadResult   3: 25 op, 148372708.00 ns, 5.9349 ms/op
+WorkloadResult   4: 25 op, 153540417.00 ns, 6.1416 ms/op
+WorkloadResult   5: 25 op, 150735999.00 ns, 6.0294 ms/op
+WorkloadResult   6: 25 op, 143207458.00 ns, 5.7283 ms/op
+WorkloadResult   7: 25 op, 142085541.00 ns, 5.6834 ms/op
+WorkloadResult   8: 25 op, 154941791.00 ns, 6.1977 ms/op
+WorkloadResult   9: 25 op, 150225667.00 ns, 6.0090 ms/op
+WorkloadResult  10: 25 op, 150550250.00 ns, 6.0220 ms/op
+WorkloadResult  11: 25 op, 140515749.00 ns, 5.6206 ms/op
+WorkloadResult  12: 25 op, 143093499.00 ns, 5.7237 ms/op
+WorkloadResult  13: 25 op, 143906541.00 ns, 5.7563 ms/op
+WorkloadResult  14: 25 op, 134158750.00 ns, 5.3664 ms/op
+WorkloadResult  15: 25 op, 146524458.00 ns, 5.8610 ms/op
+// GC:  0 0 0 262616 25
+// Threading:  0 0 25
+
+// ! Failed to set up priority Normal for process System.Diagnostics.Process (DuckDB.EFCoreProvider.Benchmarks). Make sure you have the right permissions. Message: Operation not permitted
+
+Mean = 5.885 ms, StdErr = 0.063 ms (1.07%), N = 15, StdDev = 0.244 ms
+Min = 5.366 ms, Q1 = 5.726 ms, Median = 5.913 ms, Q3 = 6.026 ms, Max = 6.294 ms
+IQR = 0.300 ms, LowerFence = 5.276 ms, UpperFence = 6.475 ms
+ConfidenceInterval = [5.624 ms; 6.147 ms] (CI 99.9%), Margin = 0.261 ms (4.44% of Mean)
+Skewness = -0.25, Kurtosis = 2.31, MValue = 2
+
+// ** Remained 0 (0.0%) benchmark(s) to run. Estimated finish 2026-07-30 19:35 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  private/tmp/duckdb-referenced-update-benchmarks/before-nochild-25/results/DuckDB.EFCoreProvider.Benchmarks.ReferencedPrincipalUpdateBenchmarks-report.csv
+  private/tmp/duckdb-referenced-update-benchmarks/before-nochild-25/results/DuckDB.EFCoreProvider.Benchmarks.ReferencedPrincipalUpdateBenchmarks-report-github.md
+  private/tmp/duckdb-referenced-update-benchmarks/before-nochild-25/results/DuckDB.EFCoreProvider.Benchmarks.ReferencedPrincipalUpdateBenchmarks-report.html
+
+// * Detailed results *
+ReferencedPrincipalUpdateBenchmarks.ReferencedPrincipalWithoutChild: ShortRun(Toolchain=InProcessEmitToolchain, InvocationCount=1, IterationCount=15, LaunchCount=1, UnrollFactor=1, WarmupCount=5)
+Runtime = ; GC =
+Mean = 5.885 ms, StdErr = 0.063 ms (1.07%), N = 15, StdDev = 0.244 ms
+Min = 5.366 ms, Q1 = 5.726 ms, Median = 5.913 ms, Q3 = 6.026 ms, Max = 6.294 ms
+IQR = 0.300 ms, LowerFence = 5.276 ms, UpperFence = 6.475 ms
+ConfidenceInterval = [5.624 ms; 6.147 ms] (CI 99.9%), Margin = 0.261 ms (4.44% of Mean)
+Skewness = -0.25, Kurtosis = 2.31, MValue = 2
+-------------------- Histogram --------------------
+[5.363 ms ; 5.679 ms) | @@
+[5.679 ms ; 5.939 ms) | @@@@@@@
+[5.939 ms ; 6.233 ms) | @@@@@
+[6.233 ms ; 6.424 ms) | @
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.15.8, macOS Tahoe 26.5.2 (25F84) [Darwin 25.5.0]
+Unknown processor
+.NET SDK 10.0.300
+  [Host] : .NET 10.0.8 (10.0.8, 10.0.826.23019), Arm64 RyuJIT armv8.0-a
+
+Job=ShortRun  Toolchain=InProcessEmitToolchain  InvocationCount=1
+IterationCount=15  LaunchCount=1  UnrollFactor=1
+WarmupCount=5
+
+| Method                          | Mean     | Error     | StdDev    | Allocated |
+|-------------------------------- |---------:|----------:|----------:|----------:|
+| ReferencedPrincipalWithoutChild | 5.885 ms | 0.2613 ms | 0.2445 ms |  10.26 KB |
+
+// * Legends *
+  Mean      : Arithmetic mean of all measurements
+  Error     : Half of 99.9% confidence interval
+  StdDev    : Standard deviation of all measurements
+  Allocated : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 ms      : 1 Millisecond (0.001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:04 (4.57 sec), executed benchmarks: 1
+
+Global total time: 00:00:04 (4.93 sec), executed benchmarks: 1
+// * Artifacts cleanup *
+Artifacts cleanup is finished

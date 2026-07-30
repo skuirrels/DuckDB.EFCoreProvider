@@ -2,6 +2,16 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.15.1
+
+- Fix `SaveChanges` updates to a table referenced by a foreign key. DuckDB
+  1.5.5 rejects `UPDATE ... RETURNING` for such tables while dependent rows
+  exist, even when the update does not modify the referenced key. The provider
+  now executes the update without `RETURNING`, validates the affected-row count,
+  and reads store-generated values back by key in the same transaction.
+  Eligible opt-in multi-row updates remain on the existing
+  `UPDATE ... FROM (VALUES ...)` fast path, which does not use `RETURNING`.
+
 ## 1.15.0
 
 - Add opt-in mapping of EF Core complex properties to native DuckDB `STRUCT`

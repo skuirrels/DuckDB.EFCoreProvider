@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.15.0</PackageVersion>
-    <FileVersion>1.15.0.0</FileVersion>
-    <Version>1.15.0</Version>
+    <PackageVersion>1.15.1</PackageVersion>
+    <FileVersion>1.15.1.0</FileVersion>
+    <Version>1.15.1</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,11 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.14.2</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.15.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.15.1
+- Fix SaveChanges updates to tables referenced by foreign keys when store-generated values must be refreshed. The provider avoids DuckDB 1.5.5's failing UPDATE ... RETURNING path, validates affected rows, and reads generated values back by key in the same transaction.
+
 1.15.0
 - Add opt-in mapping of EF Core complex properties to native DuckDB STRUCT columns through UseStructMapping, HasStructField, and HasStructFieldName.
 - Support STRUCT schema creation, migrations, SaveChanges inserts and partial updates, and LINQ projection, filtering, ordering, joins, and subqueries, including nested structures and explicit physical field names.

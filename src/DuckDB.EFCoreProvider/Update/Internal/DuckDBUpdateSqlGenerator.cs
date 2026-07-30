@@ -140,6 +140,15 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
     {
         if (_capabilities.SupportsReturning)
         {
+            if (!_capabilities.SupportsReturningOnReferencedTableUpdates
+                && DuckDBUpdateFallbackPlanner.TryCreate(command, out var plan))
+            {
+                return AppendUpdateFallbackOperation(
+                    commandStringBuilder,
+                    plan,
+                    out requiresTransaction);
+            }
+
             return base.AppendUpdateOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
         }
 
@@ -159,6 +168,63 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         // Require a transaction so EF can roll the statement back before surfacing DbUpdateConcurrencyException.
         requiresTransaction = true;
         return ResultSetMapping.NoResults;
+    }
+
+    internal ResultSetMapping AppendUpdateFallbackOperation(
+        StringBuilder commandStringBuilder,
+        DuckDBUpdateFallbackPlan plan,
+        out bool requiresTransaction)
+    {
+        AppendUpdateCommand(
+            commandStringBuilder,
+            plan.TableName,
+            plan.Schema,
+            plan.WriteOperations,
+            [],
+            plan.ConditionOperations);
+
+        requiresTransaction = plan.ReadOperations.Count > 0;
+        return ResultSetMapping.NoResults;
+    }
+
+    internal void AppendUpdateFallbackReadbackCommand(
+        StringBuilder commandStringBuilder,
+        DuckDBUpdateFallbackPlan plan)
+    {
+        commandStringBuilder.Append("SELECT ");
+        for (var i = 0; i < plan.ReadOperations.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            commandStringBuilder.Append(
+                SqlGenerationHelper.DelimitIdentifier(plan.ReadOperations[i].ColumnName));
+        }
+
+        commandStringBuilder
+            .AppendLine()
+            .Append("FROM ")
+            .Append(SqlGenerationHelper.DelimitIdentifier(plan.TableName, plan.Schema))
+            .AppendLine()
+            .Append("WHERE ");
+
+        for (var i = 0; i < plan.KeyOperations.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(" AND ");
+            }
+
+            var keyOperation = plan.KeyOperations[i];
+            AppendWhereCondition(
+                commandStringBuilder,
+                keyOperation,
+                keyOperation.UseOriginalValueParameter);
+        }
+
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
     }
 
     /// <inheritdoc />

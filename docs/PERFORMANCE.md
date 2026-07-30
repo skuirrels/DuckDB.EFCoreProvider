@@ -14,12 +14,17 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 
 # just the write comparison
 dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *WriteBenchmarks*
+
+# referenced-principal update regression
+dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *ReferencedPrincipalUpdateBenchmarks*
 ```
 
 - `WriteBenchmarks` — `SaveChanges` (per-statement `INSERT … RETURNING`) vs `BulkInsert` (Appender).
 - `BulkInsertHotPathBenchmarks` — warmed provider `BulkInsert` vs direct
   `CreateRow`, scoped, and reusable Skuirrels appender paths.
 - `ReadBenchmarks` — no-tracking read / filter materialisation.
+- `ReferencedPrincipalUpdateBenchmarks` — referenced-table update correctness and
+  the provider workaround's cost, with an unreferenced update as a regression guard.
 
 For the current package-level and cross-language comparison, including the
 one-million-row `ListAppenderBenchmark`, see
@@ -27,6 +32,42 @@ one-million-row `ListAppenderBenchmark`, see
 For the publication-ready Java, Go, optimized EFCoreProvider, and stock
 DuckDB.NET 1.5.3 comparison, see
 [`DUCKDB-CROSS-DRIVER-BENCHMARK.md`](DUCKDB-CROSS-DRIVER-BENCHMARK.md).
+
+## Referenced-principal update fix
+
+The benchmark compares the published `v1.15.0` source at commit
+`7ee363bd1e9f6181a67eb7dee5c552f7813f8f23` with the final `v1.15.1` Release
+build on the same Apple Silicon machine, .NET 10.0.8, Skuirrels DuckDB.NET
+1.5.5.2/native DuckDB 1.5.5, and file-backed databases. Each measurement
+iteration performs 25 tracked `SaveChanges` updates; the table has a computed
+column so the provider must refresh a store-generated value. Results use five
+warmups and fifteen measurements. Lower is better; `±` is BenchmarkDotNet's
+99.9% confidence-interval half-width.
+
+| Scenario | v1.15.0 | v1.15.1 fix | Change | Winner |
+|---|---:|---:|---:|---|
+| Referenced table, no dependent row | 5.885 ± 0.261 ms; 10.26 KB | 4.543 ± 0.246 ms; 13.50 KB | 22.8% lower mean; 3.24 KB more allocation | **v1.15.1 fix** |
+| Referenced table, dependent row | Fails with a foreign-key constraint error | 4.384 ± 0.089 ms; 13.68 KB | Correctness restored | **v1.15.1 fix** |
+| Unreferenced table regression guard | 5.348 ± 0.349 ms; 9.37 KB | 4.479 ± 0.122 ms; 9.59 KB | 16.2% lower mean in this run; 0.22 KB more allocation | **No meaningful winner** |
+
+The valid before/after referenced-table comparison shows that replacing
+`UPDATE ... RETURNING` with `UPDATE` plus a keyed `SELECT` does not impose a
+latency regression on this DuckDB version; its mean was lower in this run.
+The workaround allocates about 3.2 KB more per update because it executes a
+second command. The unreferenced path remains on `RETURNING`; its 0.22 KB per
+25-update invocation increase is approximately nine bytes per `SaveChanges`
+and reflects the lightweight capability-aware batch state, with no bulk-list
+allocation. Its lower cross-run latency is not attributed to the fix, so the
+regression-guard row has no meaningful winner.
+
+The exact final artifacts are:
+
+- `DuckDB.EFCoreProvider.1.15.1.nupkg` SHA-256:
+  `ae267ed87b54097e3daad6ddd49b4d504528e0d2de08fdd0afaba8eb3b4df570`
+- `DuckDB.EFCoreProvider.dll` SHA-256:
+  `2a4826e6730761fc4fbf55f0efa02611d87309439973903c553e674c5679e4c4`
+- raw BenchmarkDotNet CSV and logs:
+  [`benchmark-data/referenced-principal-update-2026-07-30`](benchmark-data/referenced-principal-update-2026-07-30/README.md)
 
 ## Historical DuckDB.NET 1.5.3 indicative results
 
