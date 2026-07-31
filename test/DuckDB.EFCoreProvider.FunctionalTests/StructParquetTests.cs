@@ -42,6 +42,40 @@ public sealed class StructParquetTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_selective_projection_from_parquet_ignores_missing_fields()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateSparseCustomerContext(path);
+            var query = context.Systems
+                .Select(system => new SparseSystem
+                {
+                    Uid = system.Uid,
+                    Attributes = system.Attributes != null
+                        ? new SparseAttributes { Shorttext = system.Attributes.Shorttext }
+                        : null
+                });
+            var sql = query.ToQueryString();
+            var result = query.Single();
+
+            Assert.Equal(1, result.Uid);
+            Assert.Equal("NYC", result.Attributes!.Shorttext);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
     public void Struct_sub_field_filter_from_parquet()
     {
         var path = ParquetPath();
@@ -249,6 +283,15 @@ public sealed class StructParquetTests : DuckDBTestBase
 
     // Tag types give each test its own DbContext type so EF Core's model cache is not
     // shared across tests with different Parquet paths.
+    private SparseCustomerContext CreateSparseCustomerContext(string parquetPath)
+    {
+        var options = new DbContextOptionsBuilder<SparseCustomerContext>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new SparseCustomerContext(options, parquetPath);
+    }
+
     private sealed class ProjectionTag;
     private sealed class FilterTag;
     private sealed class OrderByTag;
@@ -266,6 +309,22 @@ public sealed class StructParquetTests : DuckDBTestBase
             {
                 e.FromParquet(parquetPath);
                 e.ComplexProperty(c => c.Location).UseStructMapping();
+            });
+        }
+    }
+
+    private sealed class SparseCustomerContext(DbContextOptions<SparseCustomerContext> options, string parquetPath)
+        : DbContext(options)
+    {
+        public DbSet<SparseSystem> Systems => Set<SparseSystem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<SparseSystem>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.HasKey(system => system.Uid);
+                entity.ComplexProperty(system => system.Attributes).UseStructMapping(true);
             });
         }
     }
@@ -343,6 +402,22 @@ public sealed class StructParquetTests : DuckDBTestBase
         public int Id { get; set; }
         [UseStructMapping]
         public required Address Location { get; set; }
+    }
+
+    private sealed class SparseSystem
+    {
+        public int Uid { get; set; }
+        [UseStructMapping]
+        public SparseAttributes? Attributes { get; set; }
+    }
+
+    private sealed class SparseAttributes
+    {
+        public string? Shorttext { get; set; }
+        public string XEdrResponsibility { get; set; } = null!;
+        public string XEdrSoftware { get; set; } = null!;
+        public string XNacZone { get; set; } = null!;
+        public string XSource { get; set; } = null!;
     }
 
     private sealed class Address

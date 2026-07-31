@@ -25,7 +25,21 @@ internal sealed class DuckDBAnnotationCodeGenerator(AnnotationCodeGeneratorDepen
         GetMethod(
             nameof(DuckDBStructPropertyBuilderExtensions.UseStructMapping),
             typeof(ComplexPropertyBuilder),
-            parameterCount: 2);
+            parameterCount: 2,
+            parameterTypes: [typeof(string)]);
+
+    private static readonly MethodInfo ComplexPropertyUseStructMappingSelectiveMethod =
+        GetMethod(
+            nameof(DuckDBStructPropertyBuilderExtensions.UseStructMapping),
+            typeof(ComplexPropertyBuilder),
+            parameterCount: 2,
+            parameterTypes: [typeof(bool)]);
+
+    private static readonly MethodInfo ComplexPropertyUseStructMappingWithColumnNameSelectiveMethod =
+        GetMethod(
+            nameof(DuckDBStructPropertyBuilderExtensions.UseStructMapping),
+            typeof(ComplexPropertyBuilder),
+            parameterCount: 3);
 
     private static readonly MethodInfo ComplexPropertyHasStructFieldNameMethod =
         GetMethod(
@@ -95,17 +109,33 @@ internal sealed class DuckDBAnnotationCodeGenerator(AnnotationCodeGeneratorDepen
         if (annotations.Remove(DuckDBAnnotationNames.UseStructMapping, out var useMapping)
             && useMapping.Value is true)
         {
+            var selectiveProjection = annotations.Remove(
+                DuckDBAnnotationNames.SelectiveStructProjection,
+                out var selective)
+                && selective.Value is true;
+            var hasRootName = annotations.Remove(DuckDBAnnotationNames.StructColumnName, out var root)
+                && root.Value is string rootName;
+
             calls.Add(
-                annotations.Remove(DuckDBAnnotationNames.StructColumnName, out var root)
-                    && root.Value is string rootName
+                selectiveProjection
+                    ? hasRootName
+                        ? new DuckDBMethodCallCodeFragment(
+                            ComplexPropertyUseStructMappingWithColumnNameSelectiveMethod,
+                            root!.Value!,
+                            true)
+                        : new DuckDBMethodCallCodeFragment(
+                            ComplexPropertyUseStructMappingSelectiveMethod,
+                            true)
+                    : hasRootName
                         ? new DuckDBMethodCallCodeFragment(
                             ComplexPropertyUseStructMappingWithColumnNameMethod,
-                            rootName)
+                            root!.Value!)
                         : new DuckDBMethodCallCodeFragment(ComplexPropertyUseStructMappingMethod));
         }
         else
         {
             annotations.Remove(DuckDBAnnotationNames.StructColumnName);
+            annotations.Remove(DuckDBAnnotationNames.SelectiveStructProjection);
         }
 
         AddStructFieldNameCall(calls, annotations, property: null);
@@ -158,14 +188,23 @@ internal sealed class DuckDBAnnotationCodeGenerator(AnnotationCodeGeneratorDepen
                 : PropertyHasStructFieldNameMethod)
             .MakeGenericMethod(property.ClrType);
 
-    private static MethodInfo GetMethod(string name, Type builderType, int parameterCount)
+    private static MethodInfo GetMethod(
+        string name,
+        Type builderType,
+        int parameterCount,
+        Type[]? parameterTypes = null)
         => typeof(DuckDBStructPropertyBuilderExtensions)
             .GetMethods(BindingFlags.Public | BindingFlags.Static)
             .Single(method =>
                 method.Name == name
                 && !method.IsGenericMethodDefinition
                 && method.GetParameters().Length == parameterCount
-                && method.GetParameters()[0].ParameterType == builderType);
+                && method.GetParameters()[0].ParameterType == builderType
+                && (parameterTypes is null
+                    || method.GetParameters()
+                        .Skip(1)
+                        .Select(parameter => parameter.ParameterType)
+                        .SequenceEqual(parameterTypes)));
 
     private static MethodInfo GetGenericMethod(string name, Type builderType, int parameterCount)
         => typeof(DuckDBStructPropertyBuilderExtensions)

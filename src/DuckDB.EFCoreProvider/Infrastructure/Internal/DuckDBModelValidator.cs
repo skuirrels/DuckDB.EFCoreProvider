@@ -232,7 +232,7 @@ public class DuckDBModelValidator : RelationalModelValidator
 
     private static void ValidateRequiredStructComplexProperty(IReadOnlyComplexProperty complexProperty)
     {
-        if (complexProperty.GetStructMapping() is not null && complexProperty.IsNullable)
+        if (complexProperty.GetStructMapping() is { SelectiveProjection: false } && complexProperty.IsNullable)
         {
             throw new NotSupportedException(
                 $"DuckDB STRUCT complex property '{complexProperty.DeclaringType.DisplayName()}.{complexProperty.Name}' "

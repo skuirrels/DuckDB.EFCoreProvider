@@ -31,13 +31,15 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                 var physicalRootName =
                     complexProperty.FindAnnotation(DuckDBAnnotationNames.StructColumnName)?.Value as string
                     ?? complexProperty.Name;
+                var selectiveProjection = IsSelectiveProjectionEnabled(complexProperty);
                 var rootFields = new List<DuckDBStructFieldInfo>();
                 var mapping = BuildMapping(
                     complexProperty,
                     physicalRootName,
                     complexProperty.Name,
                     [],
-                    rootFields);
+                    rootFields,
+                    selectiveProjection);
 
                 complexProperty.SetStructMapping(mapping, fromDataAnnotation: false);
                 roots.Add(mapping);
@@ -145,7 +147,8 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
         string structColumnName,
         string rootPropertyName,
         IReadOnlyList<string> nestedPath,
-        List<DuckDBStructFieldInfo> rootFields)
+        List<DuckDBStructFieldInfo> rootFields,
+        bool selectiveProjection = false)
     {
         var children = new Dictionary<string, DuckDBStructChildMapping>(StringComparer.Ordinal);
         var complexType = complexProperty.ComplexType;
@@ -179,7 +182,12 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
             children[nestedComplexProperty.Name] = new DuckDBStructChildMapping(nestedFieldName, nestedMapping);
         }
 
-        return new DuckDBStructMapping(structColumnName, nestedPath.LastOrDefault(), children, rootFields);
+        return new DuckDBStructMapping(
+            structColumnName,
+            nestedPath.LastOrDefault(),
+            children,
+            rootFields,
+            selectiveProjection);
     }
 
     private static DuckDBStructFieldInfo BuildFieldInfo(
@@ -226,6 +234,13 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
     private static bool IsStructMappingEnabled(IConventionComplexProperty complexProperty)
         => complexProperty.FindAnnotation(DuckDBAnnotationNames.UseStructMapping)?.Value is true
             || complexProperty.PropertyInfo?.IsDefined(typeof(UseStructMappingAttribute), inherit: true) == true;
+
+    private static bool IsSelectiveProjectionEnabled(IConventionComplexProperty complexProperty)
+        => complexProperty.FindAnnotation(DuckDBAnnotationNames.SelectiveStructProjection)?.Value is bool value
+            ? value
+            : complexProperty.PropertyInfo?.GetCustomAttributes(typeof(UseStructMappingAttribute), inherit: true)
+                .OfType<UseStructMappingAttribute>()
+                .Any(attribute => attribute.SelectiveProjection) == true;
 
     private static string FormatUniqueColumnName(
         string rootPropertyName,

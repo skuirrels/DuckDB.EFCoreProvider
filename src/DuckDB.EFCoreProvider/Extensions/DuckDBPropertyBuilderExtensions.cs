@@ -28,10 +28,40 @@ public static class DuckDBPropertyBuilderExtensions
     public static ComplexPropertyBuilder UseStructMapping(ComplexPropertyBuilder propertyBuilder)
         => DuckDBStructPropertyBuilderExtensions.UseStructMapping(propertyBuilder);
 
+    public static ComplexPropertyBuilder UseStructMapping(
+        ComplexPropertyBuilder propertyBuilder,
+        bool selectiveProjection)
+        => DuckDBStructPropertyBuilderExtensions.UseStructMapping(propertyBuilder, selectiveProjection);
+
+    public static ComplexPropertyBuilder UseStructMapping(
+        ComplexPropertyBuilder propertyBuilder,
+        string? structColumnName,
+        bool selectiveProjection)
+        => DuckDBStructPropertyBuilderExtensions.UseStructMapping(
+            propertyBuilder,
+            structColumnName,
+            selectiveProjection);
+
     public static ComplexPropertyBuilder<TComplex> UseStructMapping<TComplex>(
         ComplexPropertyBuilder<TComplex> propertyBuilder)
         where TComplex : class
         => DuckDBStructPropertyBuilderExtensions.UseStructMapping(propertyBuilder);
+
+    public static ComplexPropertyBuilder<TComplex> UseStructMapping<TComplex>(
+        ComplexPropertyBuilder<TComplex> propertyBuilder,
+        bool selectiveProjection)
+        where TComplex : class
+        => DuckDBStructPropertyBuilderExtensions.UseStructMapping(propertyBuilder, selectiveProjection);
+
+    public static ComplexPropertyBuilder<TComplex> UseStructMapping<TComplex>(
+        ComplexPropertyBuilder<TComplex> propertyBuilder,
+        string? structColumnName,
+        bool selectiveProjection)
+        where TComplex : class
+        => DuckDBStructPropertyBuilderExtensions.UseStructMapping(
+            propertyBuilder,
+            structColumnName,
+            selectiveProjection);
 
     public static PropertyBuilder<TProperty> HasStructField<TProperty>(
         PropertyBuilder<TProperty> propertyBuilder,

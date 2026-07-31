@@ -324,6 +324,33 @@ e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
 
 `HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
 
+For sparse STRUCT data, opt in to selective projection so nullable complex-property presence checks reference only fields requested by the LINQ projection:
+
+```csharp
+modelBuilder.Entity<Customer>()
+    .ComplexProperty(customer => customer.Attributes)
+    .UseStructMapping(selectiveProjection: true);
+```
+
+The equivalent attribute form is `[UseStructMapping(true)]`. This is useful when a Parquet STRUCT contains only a subset of the fields declared by the CLR complex type, for example:
+
+```csharp
+var result = context.Customers
+    .Select(customer => new
+    {
+        customer.Id,
+        Attributes = customer.Attributes == null
+            ? null
+            : new CustomerAttributes
+            {
+                Shorttext = customer.Attributes.Shorttext
+            }
+    })
+    .Single();
+```
+
+`UseStructMapping()` remains the default and preserves full mapped-member presence checks. In selective mode, complex-property null detection is based only on projected members; if all projected members are null while an unprojected member has a value, the projected complex property may materialize as `null`.
+
 **Limitations & Behavior:**
 - Queries with LINQ projections, filters, sorting, joins, and subqueries are fully supported
 - `EnsureCreated`, migrations, and `SaveChanges` are supported (struct columns are created and INSERTs use DuckDB struct literals)
