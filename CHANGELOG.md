@@ -2,6 +2,18 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.15.2
+
+- Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.2 to 1.5.5.3,
+  resolving the matching `Skuirrels.DuckDB.NET.Bindings.Full` 1.5.5.3
+  package. Controlled before-and-after runs of all 33 provider benchmark cases
+  found no material performance or allocation regressions.
+- Improve collection read performance through Skuirrels 1.5.5.3's cached typed
+  `List<T>` materializers. Additional element types and nested/fixed-array
+  shapes avoid the previous per-element boxing path. The provider's scalar and
+  BLOB read benchmarks remained stable in a higher-confidence follow-up run.
+  Provider APIs are unchanged.
+
 ## 1.15.1
 
 - Fix `SaveChanges` updates to a table referenced by a foreign key. DuckDB
