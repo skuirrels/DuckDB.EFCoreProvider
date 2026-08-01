@@ -22,7 +22,7 @@
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
 | Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings |
 
-> **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility).
+> **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility) and the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
 ## Getting started
 
@@ -935,6 +935,9 @@ connection can change the setting for that instance. DuckDB spills larger-than-m
 its temp directory, so a lower memory limit trades memory for more disk spilling on big analytical queries
 rather than failing. (For an in-memory database — `Data Source=:memory:` — spilling requires a
 `temp_directory`, which DuckDB does not set automatically.)
+
+For the relationship between concurrent `DbContext` instances, a continuous bulk writer, and the shared thread
+budget, see the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
 ## Compatibility
 

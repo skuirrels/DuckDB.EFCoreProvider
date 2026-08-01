@@ -79,7 +79,7 @@ See [DUCKLAKE.md](DUCKLAKE.md) for configuration, security, model rules, and ope
 ### Concurrency & transactions
 | Limitation | Evidence |
 |---|---|
-| Native DuckDB file is single-writer and embedded | `access_mode=READ_ONLY` permits multiple native-file readers; DuckLake concurrency instead depends on its metadata catalog, as documented in [DUCKLAKE.md](DUCKLAKE.md#concurrency-and-read-scaling) |
+| Native DuckDB file is single-writer and embedded | One process can combine concurrent reader contexts with a writer; see the [native concurrency guide](NATIVE-DUCKDB-CONCURRENCY.md). `access_mode=READ_ONLY` permits multiple native-file readers when no process is writing. DuckLake concurrency instead depends on its metadata catalog, as documented in [DUCKLAKE.md](DUCKLAKE.md#concurrency-and-read-scaling) |
 | No savepoints (no nested-transaction partial rollback) | `DuckDBRelationalTransaction.SupportsSavepoints => false` |
 | No retrying execution strategy / `EnableRetryOnFailure` | not provided (embedded model) |
 
