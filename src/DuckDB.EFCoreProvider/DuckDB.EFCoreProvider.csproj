@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.16.0</PackageVersion>
-    <FileVersion>1.16.0.0</FileVersion>
-    <Version>1.16.0</Version>
+    <PackageVersion>1.17.0</PackageVersion>
+    <FileVersion>1.17.0.0</FileVersion>
+    <Version>1.17.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,13 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.15.2</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.16.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.17.0
+- Extend non-executing command extraction to terminal LongCount, Min, Max, Sum, and Average operations. Numeric aggregates accept projected int, long, float, double, decimal, and nullable equivalents; unsupported projections fail before EF query compilation.
+- Preserve direct generic extraction for fixed-result terminal operations and use cached result-type dispatch only where Average promotes the CLR result type.
+- Document that replayed aggregate command plans expose database values without EF's client-side empty-sequence result shaping, with focused replay and extraction benchmark coverage.
+
 1.16.0
 - Add non-executing command extraction for single-command LINQ queries and terminal Count/Any operations, including exact provider parameter metadata and defensive value snapshots. Split and other multi-command query shapes fail explicitly.
 - Add named dynamic-command execution that preserves SQL text, copies caller-owned ADO.NET parameters, and replays extracted command plans through the dynamic-result API.

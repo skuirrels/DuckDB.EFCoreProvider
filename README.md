@@ -237,7 +237,20 @@ var query = context.Events.Where(e => e.Timestamp < cutoff);
 var queryPlan = context.Database.GetDuckDBCommandPlan(query);
 var countPlan = context.Database.GetDuckDBCountCommandPlan(query);
 var anyPlan = context.Database.GetDuckDBAnyCommandPlan(query);
+var sumPlan = context.Database.GetDuckDBSumCommandPlan(
+    query.Select(e => (decimal?)e.Amount));
+var averagePlan = context.Database.GetDuckDBAverageCommandPlan(
+    query.Select(e => (decimal?)e.Amount));
 ```
+
+Terminal `LongCount`, `Min`, `Max`, `Sum`, and `Average` commands can also be captured. Compose predicates with
+`Where` and selectors with `Select` before extraction; `Sum` and `Average` require a projection to `int`, `long`,
+`float`, `double`, `decimal`, or the corresponding nullable type.
+
+Replay returns the database result without EF's client-side result shaper. On an empty input, a replayed `Min`,
+`Max`, or `Average` plan can therefore yield `null` even where executing the corresponding non-nullable LINQ
+terminal operator would apply EF's empty-sequence behavior. Execute the original LINQ operator when those semantics
+are required.
 
 Only single-command shapes are supported; split queries are rejected explicitly. A captured plan can be handed to
 `SqlQueryDynamicCommandAsync(plan, cancellationToken)` when its runtime result shape is required.

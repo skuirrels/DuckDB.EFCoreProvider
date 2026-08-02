@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Query.Internal;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Collections.ObjectModel;
@@ -9,6 +10,20 @@ namespace Microsoft.EntityFrameworkCore;
 
 public sealed class DuckDBCommandPlanTests : DuckDBTestBase
 {
+    public static TheoryData<Type, Type, Type> NumericTerminalTypes => new()
+    {
+        { typeof(int), typeof(int), typeof(double) },
+        { typeof(int?), typeof(int?), typeof(double?) },
+        { typeof(long), typeof(long), typeof(double) },
+        { typeof(long?), typeof(long?), typeof(double?) },
+        { typeof(float), typeof(float), typeof(float) },
+        { typeof(float?), typeof(float?), typeof(float?) },
+        { typeof(double), typeof(double), typeof(double) },
+        { typeof(double?), typeof(double?), typeof(double?) },
+        { typeof(decimal), typeof(decimal), typeof(decimal) },
+        { typeof(decimal?), typeof(decimal?), typeof(decimal?) }
+    };
+
     [ConditionalFact]
     public void Query_plan_captures_provider_command_without_opening_the_connection()
     {
@@ -120,6 +135,130 @@ public sealed class DuckDBCommandPlanTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Terminal_plans_capture_long_count_and_aggregate_commands_without_execution()
+    {
+        using var context = new PlanContext(FileOptions<PlanContext>());
+        var minimum = 3;
+        var filtered = context.Entities.Where(entity => entity.Id > minimum);
+        var amounts = filtered.Select(entity => (decimal?)entity.Amount);
+
+        var plans = new Dictionary<string, DuckDBCommandPlan>
+        {
+            ["count"] = context.Database.GetDuckDBLongCountCommandPlan(filtered),
+            ["min"] = context.Database.GetDuckDBMinCommandPlan(amounts),
+            ["max"] = context.Database.GetDuckDBMaxCommandPlan(amounts),
+            ["sum"] = context.Database.GetDuckDBSumCommandPlan(amounts),
+            ["avg"] = context.Database.GetDuckDBAverageCommandPlan(amounts)
+        };
+
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+        foreach (var (function, plan) in plans)
+        {
+            Assert.Contains(function, plan.CommandText, StringComparison.OrdinalIgnoreCase);
+            var parameter = Assert.Single(plan.Parameters);
+            Assert.Equal(3, parameter.Value);
+            Assert.Equal("INTEGER", parameter.StoreType);
+        }
+    }
+
+    [ConditionalFact]
+    public async Task Extracted_aggregate_plans_can_be_replayed_as_dynamic_commands()
+    {
+        await using var context = new PlanContext(FileOptions<PlanContext>());
+        await context.Database.EnsureCreatedAsync();
+        context.AddRange(
+            new PlanEntity { Id = 1, Name = "one", Amount = 10m, Code = new PlanCode("one") },
+            new PlanEntity { Id = 2, Name = "two", Amount = 20m, Code = new PlanCode("two") });
+        await context.SaveChangesAsync();
+
+        var entities = context.Entities;
+        var amounts = entities.Select(entity => entity.Amount);
+        var ids = entities.Select(entity => entity.Id);
+        var longCount = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBLongCountCommandPlan(entities));
+        var minimum = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBMinCommandPlan(amounts));
+        var maximum = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBMaxCommandPlan(amounts));
+        var sum = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBSumCommandPlan(amounts));
+        var average = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBAverageCommandPlan(amounts));
+        var promotedAverage = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBAverageCommandPlan(ids));
+
+        Assert.Equal(2L, longCount);
+        Assert.Equal(10m, minimum);
+        Assert.Equal(20m, maximum);
+        Assert.Equal(30m, sum);
+        Assert.Equal(15m, average);
+        Assert.Equal(1.5d, promotedAverage);
+    }
+
+    [ConditionalFact]
+    public async Task Replayed_empty_aggregate_plans_expose_server_values_without_the_EF_result_shaper()
+    {
+        await using var context = new PlanContext(FileOptions<PlanContext>());
+        await context.Database.EnsureCreatedAsync();
+        var amounts = context.Entities.Select(entity => entity.Amount);
+
+        var minimum = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBMinCommandPlan(amounts));
+        var maximum = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBMaxCommandPlan(amounts));
+        var sum = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBSumCommandPlan(amounts));
+        var average = await ReadScalarAsync(
+            context,
+            context.Database.GetDuckDBAverageCommandPlan(amounts));
+
+        Assert.Null(minimum);
+        Assert.Null(maximum);
+        Assert.Equal(0m, sum);
+        Assert.Null(average);
+    }
+
+    [ConditionalFact]
+    public void Sum_and_average_reject_non_numeric_projections_early()
+    {
+        using var context = new PlanContext(FileOptions<PlanContext>());
+        var names = context.Entities.Select(entity => entity.Name);
+
+        var sum = Assert.Throws<NotSupportedException>(
+            () => context.Database.GetDuckDBSumCommandPlan(names));
+        var average = Assert.Throws<NotSupportedException>(
+            () => context.Database.GetDuckDBAverageCommandPlan(names));
+
+        Assert.Contains("Project to int, long, float, double, decimal", sum.Message);
+        Assert.Contains("Project to int, long, float, double, decimal", average.Message);
+    }
+
+    [Theory]
+    [MemberData(nameof(NumericTerminalTypes))]
+    public void Numeric_terminal_resolver_covers_every_queryable_overload(
+        Type elementType,
+        Type expectedSumType,
+        Type expectedAverageType)
+    {
+        var sum = DuckDBTerminalQueryMethodResolver.Resolve(DuckDBTerminalQueryOperator.Sum, elementType);
+        var average = DuckDBTerminalQueryMethodResolver.Resolve(DuckDBTerminalQueryOperator.Average, elementType);
+
+        Assert.Equal(expectedSumType, sum.ReturnType);
+        Assert.Equal(expectedAverageType, average.ReturnType);
+        Assert.Equal(typeof(IQueryable<>).MakeGenericType(elementType), sum.GetParameters()[0].ParameterType);
+        Assert.Equal(typeof(IQueryable<>).MakeGenericType(elementType), average.GetParameters()[0].ParameterType);
+    }
+
+    [ConditionalFact]
     public async Task Extracted_terminal_plan_can_be_executed_as_a_dynamic_command()
     {
         await using var context = new PlanContext(FileOptions<PlanContext>());
@@ -182,13 +321,28 @@ public sealed class DuckDBCommandPlanTests : DuckDBTestBase
             .Options;
         using var context = new PlanContext(options);
 
-        var plan = context.Database.GetDuckDBAnyCommandPlan(
-            context.Entities.Where(entity => entity.Name == "test"));
+        var query = context.Entities.Where(entity => entity.Name == "test");
+        var plan = context.Database.GetDuckDBAnyCommandPlan(query);
+        var aggregate = context.Database.GetDuckDBSumCommandPlan(
+            query.Select(entity => (decimal?)entity.Amount));
 
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
         Assert.Contains("EXISTS", plan.CommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sum", aggregate.CommandText, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(plan.Parameters);
+        Assert.Empty(aggregate.Parameters);
         Assert.False(File.Exists(metadataPath));
+    }
+
+    private static async Task<object?> ReadScalarAsync(PlanContext context, DuckDBCommandPlan plan)
+    {
+        await using var result = await context.Database.SqlQueryDynamicCommandAsync(plan);
+        await foreach (var row in result.ReadRowsAsync())
+        {
+            return row.Span[0];
+        }
+
+        throw new InvalidOperationException("The scalar command returned no row.");
     }
 
     private sealed class PlanContext(DbContextOptions<PlanContext> options) : DbContext(options)

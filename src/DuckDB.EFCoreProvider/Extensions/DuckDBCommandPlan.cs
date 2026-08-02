@@ -99,7 +99,9 @@ public sealed record DuckDBCommandPlanParameter
 /// </summary>
 /// <remarks>
 ///     This is a database-command contract, not a DuckDB optimizer plan and not a representation of EF's
-///     client-side result shaper. Multi-command query shapes are rejected by the extraction API.
+///     client-side result shaper. Replaying a terminal aggregate exposes the database result directly; for example,
+///     an empty <c>Min</c>, <c>Max</c>, or <c>Average</c> command can return database null where EF's non-nullable
+///     terminal operator would apply client-side empty-sequence semantics. Multi-command query shapes are rejected.
 /// </remarks>
 public sealed class DuckDBCommandPlan
 {

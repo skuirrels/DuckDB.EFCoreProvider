@@ -25,8 +25,9 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 - `ReadBenchmarks` — no-tracking read / filter materialisation.
 - `ReferencedPrincipalUpdateBenchmarks` — referenced-table update correctness and
   the provider workaround's cost, with an unreferenced update as a regression guard.
-- `ParameterPathBenchmarks`, `SaveChangesParameterBenchmarks`, and `SqlGenerationPathBenchmarks` — regression
-  coverage for provider command-plan metadata, parameterized queries, and deterministic identifier metadata.
+- `CommandPlanExtractionBenchmarks`, `ParameterPathBenchmarks`, `SaveChangesParameterBenchmarks`, and
+  `SqlGenerationPathBenchmarks` — regression coverage for scalar terminal command extraction, provider command-plan
+  metadata, parameterized queries, and deterministic identifier metadata.
 
 ## LINQ provider follow-up regression guard
 

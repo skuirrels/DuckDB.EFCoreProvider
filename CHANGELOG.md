@@ -2,6 +2,13 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.17.0
+
+- Extend non-executing command extraction to terminal `LongCount`, `Min`, `Max`, `Sum`, and `Average` operations.
+  Numeric aggregates accept projected `int`, `long`, `float`, `double`, `decimal`, and nullable equivalents; invalid
+  projections fail before EF query compilation. Replayed plans intentionally expose database values without EF's
+  client-side empty-sequence result shaping.
+
 ## 1.16.0
 
 - Add non-executing command extraction for single-command LINQ queries and terminal `Count`/`Any` operations,

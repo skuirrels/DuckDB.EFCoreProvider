@@ -6,8 +6,10 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.Internal;
 using Microsoft.EntityFrameworkCore.Storage;
+using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Linq.Expressions;
+using System.Reflection;
 
 namespace DuckDB.EFCoreProvider.Query.Internal;
 
@@ -20,6 +22,15 @@ internal sealed class DuckDBCommandPlanFactory(
     IDiagnosticsLogger<DbLoggerCategory.Query> queryLogger,
     ILiftableConstantProcessor liftableConstantProcessor)
 {
+    private delegate DuckDBCommandPlan ScalarPlanCreator(
+        DuckDBCommandPlanFactory factory,
+        Expression expression);
+
+    private static readonly MethodInfo CreateScalarCoreMethod = typeof(DuckDBCommandPlanFactory)
+        .GetMethod(nameof(CreateScalarCore), BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    private static readonly ConcurrentDictionary<Type, ScalarPlanCreator> AveragePlanCreators = new();
+
     public DuckDBCommandPlan Create<T>(IQueryable<T> query)
     {
         ValidateQuery(query);
@@ -28,26 +39,61 @@ internal sealed class DuckDBCommandPlanFactory(
     }
 
     public DuckDBCommandPlan CreateCount<T>(IQueryable<T> query)
-        => CreateScalar<int, T>(query, nameof(Queryable.Count));
+        => CreateScalar<int, T>(query, DuckDBTerminalQueryOperator.Count);
+
+    public DuckDBCommandPlan CreateLongCount<T>(IQueryable<T> query)
+        => CreateScalar<long, T>(query, DuckDBTerminalQueryOperator.LongCount);
 
     public DuckDBCommandPlan CreateAny<T>(IQueryable<T> query)
-        => CreateScalar<bool, T>(query, nameof(Queryable.Any));
+        => CreateScalar<bool, T>(query, DuckDBTerminalQueryOperator.Any);
 
-    private DuckDBCommandPlan CreateScalar<TResult, T>(IQueryable<T> query, string methodName)
+    public DuckDBCommandPlan CreateMin<T>(IQueryable<T> query)
+        => CreateScalar<T, T>(query, DuckDBTerminalQueryOperator.Min);
+
+    public DuckDBCommandPlan CreateMax<T>(IQueryable<T> query)
+        => CreateScalar<T, T>(query, DuckDBTerminalQueryOperator.Max);
+
+    public DuckDBCommandPlan CreateSum<T>(IQueryable<T> query)
+        => CreateScalar<T, T>(query, DuckDBTerminalQueryOperator.Sum);
+
+    public DuckDBCommandPlan CreateAverage<T>(IQueryable<T> query)
+        => CreateAverageWithResolvedResult(query);
+
+    private DuckDBCommandPlan CreateScalar<TResult, T>(
+        IQueryable<T> query,
+        DuckDBTerminalQueryOperator queryOperator)
     {
         ValidateQuery(query);
 
+        var method = DuckDBTerminalQueryMethodResolver.Resolve(queryOperator, typeof(T));
+        var expression = Expression.Call(method, query.Expression);
+
+        return CreateScalarCore<TResult>(expression);
+    }
+
+    private DuckDBCommandPlan CreateAverageWithResolvedResult<T>(IQueryable<T> query)
+    {
+        ValidateQuery(query);
+
+        var method = DuckDBTerminalQueryMethodResolver.Resolve(DuckDBTerminalQueryOperator.Average, typeof(T));
+        var expression = Expression.Call(method, query.Expression);
+        var creator = AveragePlanCreators.GetOrAdd(
+            expression.Type,
+            static resultType => CreateScalarCoreMethod
+                .MakeGenericMethod(resultType)
+                .CreateDelegate<ScalarPlanCreator>());
+
+        return creator(this, expression);
+    }
+
+    private DuckDBCommandPlan CreateScalarCore<TResult>(Expression expression)
+    {
         if (queryCompiler is not QueryCompiler compiler)
         {
             throw new NotSupportedException(
                 "DuckDB command-plan extraction requires EF Core's standard query compiler.");
         }
 
-        var expression = Expression.Call(
-            typeof(Queryable),
-            methodName,
-            [typeof(T)],
-            query.Expression);
         var queryContext = queryContextFactory.Create();
         var parameterized = compiler.ExtractParameters(expression, queryContext.Parameters, queryLogger);
         var compilationContext = queryCompilationContextFactory.Create(async: false);
@@ -155,5 +201,4 @@ internal sealed class DuckDBCommandPlanFactory(
             return _result is null ? base.Visit(node) : node;
         }
     }
-
 }
