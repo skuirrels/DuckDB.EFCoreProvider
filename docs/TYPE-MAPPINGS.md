@@ -44,6 +44,8 @@ The structured result distinguishes scalar properties, `STRUCT` complex properti
 unsupported types. Canonical integer store types and aliases preserve DuckDB signedness: for example, `INT8` and
 `LONG` map to signed `long`, while `UBIGINT` and `UINT64` map to `ulong`.
 Variable-length `T[]` lists have EF property mappings; fixed-size `T[n]` arrays are reported as raw-reader-only.
+The [query command-plan guide](QUERY-COMMAND-PLANS.md#inspect-catalog-store-types) shows how an external compiler or
+dynamic-model generator should consume this classification without maintaining its own store-type table.
 
 ## Raw DuckDB.NET reader mappings
 

@@ -21,6 +21,7 @@
 | Data lifecycle | Hot DuckDB tables with relational aggregates archived to partitioned Parquet |
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
 | Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings |
+| Query tooling | Non-executing command plans, exact named-parameter replay, and structured store-type inspection |
 
 > **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility) and the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
@@ -230,7 +231,9 @@ await using var result = await context.Database.SqlQueryDynamicCommandAsync(
 
 Provider-generated LINQ commands can be captured without opening or querying the database. The returned contract
 contains exact command text plus parameter metadata and values; it is a server-command snapshot, not EF's
-client-side result shaper or a DuckDB optimizer plan:
+client-side result shaper or a DuckDB optimizer plan. See the complete
+[query command-plan guide](docs/QUERY-COMMAND-PLANS.md) for compiler/tooling boundaries, version support, replay,
+type inspection, and security responsibilities:
 
 ```csharp
 var query = context.Events.Where(e => e.Timestamp < cutoff);
