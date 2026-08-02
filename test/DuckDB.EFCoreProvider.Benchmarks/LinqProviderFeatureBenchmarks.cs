@@ -7,6 +7,85 @@ using System.Data.Common;
 
 namespace DuckDB.EFCoreProvider.Benchmarks;
 
+/// <summary>Measures explicit non-executing command extraction for queryable and scalar terminal shapes.</summary>
+[MemoryDiagnoser]
+public class CommandPlanExtractionBenchmarks
+{
+    private PlanContext _context = null!;
+    private IQueryable<PlanRow> _filtered = null!;
+    private IQueryable<decimal> _amounts = null!;
+    private IQueryable<int> _quantities = null!;
+
+    [GlobalSetup]
+    public void GlobalSetup()
+    {
+        var options = new DbContextOptionsBuilder<PlanContext>()
+            .UseDuckDB("DataSource=:memory:")
+            .Options;
+        _context = new PlanContext(options);
+        _filtered = _context.Rows.Where(row => row.Id > 10);
+        _amounts = _filtered.Select(row => row.Amount);
+        _quantities = _filtered.Select(row => row.Quantity);
+
+        _ = Count();
+        _ = LongCount();
+        _ = Any();
+        _ = Min();
+        _ = Max();
+        _ = Sum();
+        _ = Average();
+        _ = PromotedAverage();
+    }
+
+    [GlobalCleanup]
+    public void GlobalCleanup()
+        => _context.Dispose();
+
+    [Benchmark(Baseline = true)]
+    public DuckDBCommandPlan Count()
+        => _context.Database.GetDuckDBCountCommandPlan(_filtered);
+
+    [Benchmark]
+    public DuckDBCommandPlan LongCount()
+        => _context.Database.GetDuckDBLongCountCommandPlan(_filtered);
+
+    [Benchmark]
+    public DuckDBCommandPlan Any()
+        => _context.Database.GetDuckDBAnyCommandPlan(_filtered);
+
+    [Benchmark]
+    public DuckDBCommandPlan Min()
+        => _context.Database.GetDuckDBMinCommandPlan(_amounts);
+
+    [Benchmark]
+    public DuckDBCommandPlan Max()
+        => _context.Database.GetDuckDBMaxCommandPlan(_amounts);
+
+    [Benchmark]
+    public DuckDBCommandPlan Sum()
+        => _context.Database.GetDuckDBSumCommandPlan(_amounts);
+
+    [Benchmark]
+    public DuckDBCommandPlan Average()
+        => _context.Database.GetDuckDBAverageCommandPlan(_amounts);
+
+    [Benchmark]
+    public DuckDBCommandPlan PromotedAverage()
+        => _context.Database.GetDuckDBAverageCommandPlan(_quantities);
+
+    private sealed class PlanContext(DbContextOptions<PlanContext> options) : DbContext(options)
+    {
+        public DbSet<PlanRow> Rows => Set<PlanRow>();
+    }
+
+    private sealed class PlanRow
+    {
+        public int Id { get; set; }
+        public int Quantity { get; set; }
+        public decimal Amount { get; set; }
+    }
+}
+
 /// <summary>Measures shared provider paths touched by the LINQ-provider feature work.</summary>
 [MemoryDiagnoser]
 public class ParameterPathBenchmarks

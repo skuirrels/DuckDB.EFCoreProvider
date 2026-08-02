@@ -129,6 +129,15 @@ public static class DuckDBDatabaseFacadeExtensions
         return database.GetService<DuckDBCommandPlanFactory>().CreateCount(query);
     }
 
+    /// <summary>Extracts the database command generated for a terminal LongCount operation.</summary>
+    public static DuckDBCommandPlan GetDuckDBLongCountCommandPlan<T>(
+        this DatabaseFacade database,
+        IQueryable<T> query)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        return database.GetService<DuckDBCommandPlanFactory>().CreateLongCount(query);
+    }
+
     /// <summary>Extracts the database command generated for a terminal Any operation.</summary>
     public static DuckDBCommandPlan GetDuckDBAnyCommandPlan<T>(
         this DatabaseFacade database,
@@ -136,6 +145,44 @@ public static class DuckDBDatabaseFacadeExtensions
     {
         ArgumentNullException.ThrowIfNull(database);
         return database.GetService<DuckDBCommandPlanFactory>().CreateAny(query);
+    }
+
+    /// <summary>Extracts the database command generated for a terminal Min operation.</summary>
+    public static DuckDBCommandPlan GetDuckDBMinCommandPlan<T>(
+        this DatabaseFacade database,
+        IQueryable<T> query)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        return database.GetService<DuckDBCommandPlanFactory>().CreateMin(query);
+    }
+
+    /// <summary>Extracts the database command generated for a terminal Max operation.</summary>
+    public static DuckDBCommandPlan GetDuckDBMaxCommandPlan<T>(
+        this DatabaseFacade database,
+        IQueryable<T> query)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        return database.GetService<DuckDBCommandPlanFactory>().CreateMax(query);
+    }
+
+    /// <summary>Extracts the database command generated for a terminal Sum operation.</summary>
+    /// <remarks>Project the query to a supported numeric or nullable numeric type before calling this method.</remarks>
+    public static DuckDBCommandPlan GetDuckDBSumCommandPlan<T>(
+        this DatabaseFacade database,
+        IQueryable<T> query)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        return database.GetService<DuckDBCommandPlanFactory>().CreateSum(query);
+    }
+
+    /// <summary>Extracts the database command generated for a terminal Average operation.</summary>
+    /// <remarks>Project the query to a supported numeric or nullable numeric type before calling this method.</remarks>
+    public static DuckDBCommandPlan GetDuckDBAverageCommandPlan<T>(
+        this DatabaseFacade database,
+        IQueryable<T> query)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        return database.GetService<DuckDBCommandPlanFactory>().CreateAverage(query);
     }
 
     /// <summary>Reports the provider's EF-property support for a DuckDB store type.</summary>
