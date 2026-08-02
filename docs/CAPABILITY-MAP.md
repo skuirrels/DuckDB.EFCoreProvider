@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-30.
+**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-08-02.
 
 ---
 
@@ -35,7 +35,7 @@ This document is the published capability matrix for the provider. It serves two
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | Type-mapping contract | EF model mappings and raw DuckDB.NET reader mappings are documented separately in [TYPE-MAPPINGS.md](TYPE-MAPPINGS.md) |
-| Command extraction | Single-command `IQueryable<T>` and terminal `Count`, `LongCount`, `Any`, `Min`, `Max`, `Sum`, and `Average` commands can be captured without opening the context connection; snapshots contain exact SQL and provider parameter metadata/values |
+| Command extraction | Single-command `IQueryable<T>` and terminal `Count`, `LongCount`, `Any`, `Min`, `Max`, `Sum`, and `Average` commands can be captured without opening the context connection; snapshots contain exact SQL and provider parameter metadata/values. See [QUERY-COMMAND-PLANS.md](QUERY-COMMAND-PLANS.md) |
 | File sources | `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (and fluent `FromParquet`/`FromCsv`/`FromJsonFile`) → `read_parquet`/`read_csv`/`read_json` |
 | Tiered storage (hot + cold) | `ToTieredStore(...)` + root-only ordered `.PartitionBy(p => p.By(..., "alias").ByMonth(..., "alias"))` + `.WithTieredView()` or `.WithReadModel<T>()` + `ArchiveTierAsync(...)`: provider-managed union views with optional EF projection types, `ToTieredView(...)` mapping with equivalent read-only-context pruning, bounded first publication via `BootstrapArchiveTierAsync(...)`, immutable active-cold trimming via `PlanArchiveRetentionAsync(...)` / `PublishArchiveRetentionAsync(...)`, fail-closed generation cleanup planning, and external-checkpoint recovery via `CaptureArchiveRecoveryCheckpointAsync(...)` / `PlanArchiveRecoveryAsync(...)` / `ApplyArchiveRecoveryAsync(...)`. Supports application-defined Hive names/order/transforms, inherited child layout, and root-scoped bindings when one child table participates in multiple independent archives. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) and the [tiered compatibility matrix](TIERED-STORAGE-COMPATIBILITY.md) |
 | Bulk insert | `DbContext.BulkInsert(...)` / `BulkInsertAsync(...)` via the DuckDB `Appender` (raw fast path — see §4) |
