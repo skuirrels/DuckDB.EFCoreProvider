@@ -34,9 +34,16 @@ DuckDB.EFCoreProvider has two distinct type contracts:
 | `TimeSpan` | `TIME` | Uses a provider value converter; this is not a dedicated `INTERVAL` mapping. |
 | `JsonDocument`, `JsonElement`, `string` | `JSON` | Owned JSON through `ToJson()` is also supported. |
 | `T[]`, `List<T>` | `T[]` | One-dimensional collections whose element type has a relational mapping. |
+| EF complex property | `STRUCT(...)` | Opt in with `UseStructMapping()`; each nested field must have a supported scalar or nested complex mapping. |
 
-Native `MAP`, `UNION`, `HUGEINT`/`UHUGEINT`, `VARIANT`, and native `STRUCT` entity-property mappings are not
-currently implemented. A raw reader may still return these types through DuckDB.NET.
+Native scalar-property mappings for `MAP`, `UNION`, `HUGEINT`/`UHUGEINT`, and `VARIANT` are not currently
+implemented. A raw reader may still return these types through DuckDB.NET.
+
+Use `context.Database.GetDuckDBStoreTypeMapping(storeType)` when tooling needs the mapping contract at runtime.
+The structured result distinguishes scalar properties, `STRUCT` complex properties, raw-reader-only types, and
+unsupported types. Canonical integer store types and aliases preserve DuckDB signedness: for example, `INT8` and
+`LONG` map to signed `long`, while `UBIGINT` and `UINT64` map to `ulong`.
+Variable-length `T[]` lists have EF property mappings; fixed-size `T[n]` arrays are reported as raw-reader-only.
 
 ## Raw DuckDB.NET reader mappings
 

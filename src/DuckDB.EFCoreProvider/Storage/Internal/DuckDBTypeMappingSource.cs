@@ -70,21 +70,60 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
 
     private static readonly Dictionary<string, RelationalTypeMapping> StoreTypeMappings = new(StringComparer.OrdinalIgnoreCase)
     {
-        { "INT8", UInt64TypeMapping },
-        { "LONG", UInt64TypeMapping },
+        // Boolean
+        { "BOOLEAN", BooleanTypeMapping },
+        { "BOOL", BooleanTypeMapping },
+        { "LOGICAL", BooleanTypeMapping },
+
+        // Signed integers. DuckDB's INTn aliases use bytes, so INT8 is a signed BIGINT.
+        { "TINYINT", SByteTypeMapping },
+        { "INT1", SByteTypeMapping },
+        { "SMALLINT", Int16TypeMapping },
+        { "INT2", Int16TypeMapping },
+        { "INT16", Int16TypeMapping },
+        { "SHORT", Int16TypeMapping },
+        { "INTEGER", Int32TypeMapping },
+        { "INT4", Int32TypeMapping },
+        { "INT32", Int32TypeMapping },
+        { "INT", Int32TypeMapping },
+        { "SIGNED", Int32TypeMapping },
+        { "BIGINT", Int64TypeMapping },
+        { "INT8", Int64TypeMapping },
+        { "INT64", Int64TypeMapping },
+        { "LONG", Int64TypeMapping },
+
+        // Unsigned integers. DuckDB's UINTn aliases use bits.
+        { "UTINYINT", ByteTypeMapping },
+        { "UINT8", ByteTypeMapping },
+        { "USMALLINT", UInt16TypeMapping },
+        { "UINT16", UInt16TypeMapping },
+        { "UINTEGER", UInt32TypeMapping },
+        { "UINT32", UInt32TypeMapping },
+        { "UBIGINT", UInt64TypeMapping },
+        { "UINT64", UInt64TypeMapping },
+
+        // Floating point and fixed precision
+        { "FLOAT", FloatTypeMapping },
+        { "FLOAT4", FloatTypeMapping },
+        { "REAL", FloatTypeMapping },
+        { "DOUBLE", DoubleTypeMapping },
+        { "FLOAT8", DoubleTypeMapping },
+        { "DECIMAL", DuckDBDecimalTypeMapping.Default },
+        { "NUMERIC", DuckDBDecimalTypeMapping.Default },
+
+        // Binary and text
+        { "BLOB", DuckDBBlobTypeMapping.Default },
         { "BYTEA", DuckDBBlobTypeMapping.Default },
         { "BINARY", DuckDBBlobTypeMapping.Default },
         { "VARBINARY", DuckDBBlobTypeMapping.Default },
-        { "BOOL", BooleanTypeMapping },
-        { "LOGICAL", BooleanTypeMapping },
-        { "FLOAT8", DoubleTypeMapping },
-        { "FLOAT4", FloatTypeMapping },
-        { "REAL", FloatTypeMapping },
-        { "INT4", Int32TypeMapping },
-        { "INT", Int32TypeMapping },
-        { "SIGNED", Int32TypeMapping },
-        { "INT2", Int16TypeMapping },
-        { "SHORT", Int16TypeMapping },
+        { "VARCHAR", StringTypeMapping },
+        { "CHAR", StringTypeMapping },
+        { "BPCHAR", StringTypeMapping },
+        { "TEXT", StringTypeMapping },
+        { "STRING", StringTypeMapping },
+
+        { "UUID", GuidTypeMapping },
+        { "DATE", DateTypeMapping },
 
         // Timestamp Types
         { "TIMESTAMP_NS", DuckDBTimestampTypeMapping.TimestampNs },
@@ -92,7 +131,7 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
         { "DATETIME", DuckDBTimestampTypeMapping.Timestamp },
         { "TIMESTAMP WITHOUT TIME ZONE", DuckDBTimestampTypeMapping.Timestamp },
         { "TIMESTAMP_MS", DuckDBTimestampTypeMapping.TimestampMs },
-        { "TIMESTAMP_S", DuckDBTimestampTypeMapping.TimestampS }, 
+        { "TIMESTAMP_S", DuckDBTimestampTypeMapping.TimestampS },
         { "TIMESTAMPTZ", DuckDBTimestampTypeMapping.TimestampTz },
         { "TIMESTAMP WITH TIME ZONE", DuckDBTimestampTypeMapping.TimestampTz },
 
@@ -103,11 +142,6 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
         { "TIME WITH TIME ZONE", DuckDBTimeTypeMapping.TimeTz },
         { "TIME_NS", DuckDBTimeTypeMapping.TimeNs },
 
-        { "INT1", SByteTypeMapping },
-        { "CHAR", StringTypeMapping },
-        { "BPCHAR", StringTypeMapping },
-        { "TEXT", StringTypeMapping },
-        { "STRING", StringTypeMapping },
         { "JSON", JsonString }
     };
 
@@ -178,65 +212,65 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
         switch (storeType)
         {
             case null:
-            {
-                if (modelClrType is null)
-                {
-                    return null;
-                }
-
-                Debug.Assert(elementType is not null, "elementClrType is null");
-
-                if (elementType == typeof(object))
-                {
-                    return null;
-                }
-
-                var relationalElementMapping = elementMapping as RelationalTypeMapping ?? FindMapping(elementType);
-                if (relationalElementMapping is not { ElementTypeMapping: null })
-                {
-                    return null;
-                }
-
-                concreteCollectionType = FindTypeToInstantiate(modelClrType, elementType);
-
-                return (DuckDBArrayTypeMapping)Activator.CreateInstance(
-                    typeof(DuckDBArrayTypeMapping<,,>).MakeGenericType(modelClrType, concreteCollectionType, elementType),
-                    relationalElementMapping)!;
-            }
-
-            case var _ when storeType.EndsWith("[]", StringComparison.Ordinal):
-            {
-                var elementStoreType = storeType.Substring(0, storeType.Length - 2);
-
-                var relationalElementMapping = elementMapping as RelationalTypeMapping
-                    ?? (elementType is null
-                        ? FindMapping(elementStoreType)
-                        : FindMapping(elementType, elementStoreType));
-                if (relationalElementMapping is not { ElementTypeMapping: null })
-                {
-                    return null;
-                }
-
-                if (relationalElementMapping is not null and not DuckDBArrayTypeMapping)
                 {
                     if (modelClrType is null)
                     {
-                        elementType = relationalElementMapping.ClrType;
-                        modelClrType = concreteCollectionType = typeof(List<>).MakeGenericType(elementType);
+                        return null;
                     }
-                    else
+
+                    Debug.Assert(elementType is not null, "elementClrType is null");
+
+                    if (elementType == typeof(object))
                     {
-                        concreteCollectionType = FindTypeToInstantiate(modelClrType, elementType!);
-                        Debug.Assert(elementType is not null, "elementType is null");
+                        return null;
                     }
+
+                    var relationalElementMapping = elementMapping as RelationalTypeMapping ?? FindMapping(elementType);
+                    if (relationalElementMapping is not { ElementTypeMapping: null })
+                    {
+                        return null;
+                    }
+
+                    concreteCollectionType = FindTypeToInstantiate(modelClrType, elementType);
 
                     return (DuckDBArrayTypeMapping)Activator.CreateInstance(
                         typeof(DuckDBArrayTypeMapping<,,>).MakeGenericType(modelClrType, concreteCollectionType, elementType),
-                        storeType, relationalElementMapping)!;
+                        relationalElementMapping)!;
                 }
 
-                return null;
-            }
+            case var _ when storeType.EndsWith("[]", StringComparison.Ordinal):
+                {
+                    var elementStoreType = storeType.Substring(0, storeType.Length - 2);
+
+                    var relationalElementMapping = elementMapping as RelationalTypeMapping
+                        ?? (elementType is null
+                            ? FindMapping(elementStoreType)
+                            : FindMapping(elementType, elementStoreType));
+                    if (relationalElementMapping is not { ElementTypeMapping: null })
+                    {
+                        return null;
+                    }
+
+                    if (relationalElementMapping is not null and not DuckDBArrayTypeMapping)
+                    {
+                        if (modelClrType is null)
+                        {
+                            elementType = relationalElementMapping.ClrType;
+                            modelClrType = concreteCollectionType = typeof(List<>).MakeGenericType(elementType);
+                        }
+                        else
+                        {
+                            concreteCollectionType = FindTypeToInstantiate(modelClrType, elementType!);
+                            Debug.Assert(elementType is not null, "elementType is null");
+                        }
+
+                        return (DuckDBArrayTypeMapping)Activator.CreateInstance(
+                            typeof(DuckDBArrayTypeMapping<,,>).MakeGenericType(modelClrType, concreteCollectionType, elementType),
+                            storeType, relationalElementMapping)!;
+                    }
+
+                    return null;
+                }
 
 #pragma warning disable EF1001 // SelectExpression constructors are pubternal
 
@@ -295,6 +329,7 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
         }
 
         var storeTypeName = mappingInfo.StoreTypeName;
+        var storeTypeNameBase = mappingInfo.StoreTypeNameBase;
 
         if (clrType != null && ClrTypeMappings.TryGetValue(clrType, out var mapping))
         {
@@ -306,7 +341,7 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
                     return mapping;
                 }
 
-                if (StoreTypeMappings.TryGetValue(storeTypeName, out var storeMapping)
+                if (TryGetBuiltInStoreTypeMapping(storeTypeName, storeTypeNameBase, out var storeMapping)
                     && storeMapping.ClrType.UnwrapNullableType() != clrType)
                 {
                     return null;
@@ -323,7 +358,7 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
         }
 
         if (storeTypeName != null
-            && StoreTypeMappings.TryGetValue(storeTypeName, out mapping)
+            && TryGetBuiltInStoreTypeMapping(storeTypeName, storeTypeNameBase, out mapping)
             && (clrType == null || mapping.ClrType.UnwrapNullableType() == clrType))
         {
             return mapping;
@@ -347,7 +382,16 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
         }
 
         return null;
+
     }
+
+    internal static bool TryGetBuiltInStoreTypeMapping(
+        string storeTypeName,
+        string? storeTypeNameBase,
+        out RelationalTypeMapping mapping)
+        => StoreTypeMappings.TryGetValue(storeTypeName, out mapping!)
+            || storeTypeNameBase is not null
+            && StoreTypeMappings.TryGetValue(storeTypeNameBase, out mapping!);
 
     private readonly Func<string, RelationalTypeMapping?>[] _typeRules =
     [

@@ -34,7 +34,7 @@ public abstract class DuckDBArrayTypeMapping : RelationalTypeMapping
         get
         {
             var elementTypeMapping = base.ElementTypeMapping;
-            
+
             Debug.Assert(
                 elementTypeMapping is not null,
                 "DuckDBArrayTypeMapping without an element type mapping");
@@ -98,7 +98,7 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
                     typeof(TCollection), typeof(TConcreteCollection), typeof(List<>).MakeGenericType(elementType)))!;
         }
 
-        #pragma warning disable EF1001
+#pragma warning disable EF1001
         var comparer = typeof(TCollection).IsArray && typeof(TCollection).GetArrayRank() > 1
             // Multidimensional arrays have no element value comparer here, so change tracking compares them by
             // reference. This is a known limitation; single-dimension arrays and lists use a deep comparer.
@@ -179,7 +179,7 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
                     break;
             }
         }
-        
+
         var param = base.CreateParameter(command, name, value, nullable, direction);
 
         if (param is not DuckDBParameter)
@@ -221,7 +221,7 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
         }
 
         var sb = new StringBuilder("[");
-        
+
         var isFirst = true;
 
         foreach (var element in enumerable)
@@ -234,10 +234,10 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
             {
                 sb.Append(", ");
             }
-            
+
             sb.Append(ElementTypeMapping.GenerateProviderValueSqlLiteral(element));
         }
-        
+
         sb.Append("]::").Append(ElementTypeMapping.StoreType).Append("[]");
 
         return sb.ToString();
@@ -246,7 +246,7 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).RemoveDollarSign();
+        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
         base.ConfigureParameter(parameter);
     }
 

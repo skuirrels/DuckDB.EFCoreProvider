@@ -25,6 +25,67 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 - `ReadBenchmarks` — no-tracking read / filter materialisation.
 - `ReferencedPrincipalUpdateBenchmarks` — referenced-table update correctness and
   the provider workaround's cost, with an unreferenced update as a regression guard.
+- `ParameterPathBenchmarks`, `SaveChangesParameterBenchmarks`, and `SqlGenerationPathBenchmarks` — regression
+  coverage for provider command-plan metadata, parameterized queries, and deterministic identifier metadata.
+
+## LINQ provider follow-up regression guard
+
+The command-plan implementation was compared with its exact base commit
+`2025f34384d1249dfb46a2a3ddd289e08c31735f` on the same Apple Silicon machine,
+.NET 10.0.8, and Skuirrels DuckDB.NET 1.5.5.3/native DuckDB 1.5.5. BenchmarkDotNet
+used five warmups and fifteen measurements through the in-process toolchain.
+Lower is better; `±` is the 99.9% confidence-interval half-width.
+
+The first implementation registered every provider parameter in a
+`ConditionalWeakTable`. The focused benchmark demonstrated a material shared-path
+regression, so metadata capture was changed to a nested synchronous scope that is
+active only while command-plan extraction creates its `DbCommand`.
+
+| Parameters created | Exact base | Initial feature | Final scoped capture | Allocations: base / initial / final | Winner |
+|---:|---:|---:|---:|---:|---|
+| 1 | 23.67 ± 0.27 ns | 143.8 ± 2.19 ns | 23.08 ± 0.09 ns | 152 / 176 / 152 B | No meaningful winner: base vs final |
+| 5 | 116.00 ± 0.55 ns | 678.6 ± 1.51 ns | 115.56 ± 0.79 ns | 760 / 880 / 760 B | No meaningful winner: base vs final |
+| 20 | 457.10 ± 1.72 ns | 2,748.4 ± 38.17 ns | 448.45 ± 1.99 ns | 3,040 / 3,520 / 3,040 B | No meaningful winner: base vs final |
+
+End-to-end execution remained native-engine dominated and final allocations
+matched the base within a few bytes:
+
+| Scenario | Exact base | Final scoped capture | Allocations: base / final | Winner |
+|---|---:|---:|---:|---|
+| Parameterized query, 1 parameter | 3.447 ± 0.059 ms | 3.354 ± 0.051 ms | 7,569 / 7,547 B | No meaningful winner |
+| Parameterized query, 5 parameters | 3.577 ± 0.035 ms | 3.422 ± 0.029 ms | 12,431 / 12,442 B | Final scoped capture |
+| Parameterized query, 20 parameters | 3.577 ± 0.043 ms | 3.559 ± 0.064 ms | 33,938 / 33,905 B | No meaningful winner |
+| `SaveChanges`, 100 six-column rows | 21.41 ± 3.31 ms | 19.95 ± 1.43 ms | 901.62 / 901.62 KB | No meaningful winner |
+
+Fifteen alternating fresh-process probes measured one-time startup paths. The
+first baseline identifier sample was discarded as an OS-cache outlier; the table
+reports medians for the remaining fourteen baseline and all fifteen feature runs.
+
+| Startup path | Exact base median | Final feature median | Managed allocation: base / final | Winner |
+|---|---:|---:|---:|---|
+| First reserved identifier | 29.904 ms | 2.125 ms | 220.25 / 269.97 KB | Final feature |
+| Warm reserved identifier | 99.90 ± 0.94 ns | 21.77 ± 0.16 ns | 40 / 40 B | Final feature |
+| Five-property model startup | 157.932 ms | 157.863 ms | 1,291.55 / 1,350.04 KB | No meaningful winner |
+
+Deterministic identifier metadata therefore trades about 50–59 KB of one-time
+managed startup allocation for eliminating the scratch DuckDB connection and
+system-table query. It does not add steady-state allocation and substantially
+reduces both first-use and warmed identifier latency.
+
+Reproduce the retained benchmarks with:
+
+```bash
+dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- \
+  --filter '*ParameterPathBenchmarks*' '*SqlGenerationPathBenchmarks*' \
+  --inProcess --warmupCount 5 --iterationCount 15
+
+dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- \
+  --filter '*SaveChangesParameterBenchmarks*' \
+  --inProcess --warmupCount 3 --iterationCount 10
+
+dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --cold-sql-probe
+dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --model-startup-probe
+```
 
 For the current package-level and cross-language comparison, including the
 one-million-row `ListAppenderBenchmark`, see

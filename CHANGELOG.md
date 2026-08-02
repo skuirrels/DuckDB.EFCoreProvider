@@ -2,6 +2,21 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.16.0
+
+- Add non-executing command extraction for single-command LINQ queries and terminal `Count`/`Any` operations,
+  including provider parameter metadata and values. Split queries fail explicitly instead of returning a partial
+  command contract.
+- Add named dynamic-command execution that preserves SQL text exactly and copies caller-owned ADO.NET parameters,
+  plus replay of extracted command plans through the dynamic-result API.
+- Add structured store-type mapping inspection for scalar, `STRUCT` complex-property, raw-reader-only, and
+  unsupported contracts.
+- Correct canonical integer store-type and alias mappings, including signed `INT8`/`INT64`/`LONG`, unsigned
+  integer aliases, and faceted store-type lookup such as `DECIMAL(12,2)`.
+- Keep exact type-mapping capture scoped to command-plan extraction. Controlled before/after benchmarks show
+  normal parameter creation and `SaveChanges` retain baseline allocations, while static identifier metadata
+  removes the previous first-use scratch database query.
+
 ## 1.15.2
 
 - Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.2 to 1.5.5.3,
