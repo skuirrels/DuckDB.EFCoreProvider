@@ -216,6 +216,32 @@ overload with `{0}` placeholders and a parameter list for values. Raw SQL text i
 The provider does not impose UI row limits or choose a JSON serialization policy. See the
 [type-mapping contract](docs/TYPE-MAPPINGS.md).
 
+When SQL already contains named provider parameters, use `SqlQueryDynamicCommandAsync`. It passes command text
+through unchanged (including literal DuckDB `STRUCT`/`MAP` braces), copies the supplied `DbParameter` values, and
+does not mutate caller-owned parameters:
+
+```csharp
+var parameter = new DuckDBParameter("$minimum", 10);
+await using var result = await context.Database.SqlQueryDynamicCommandAsync(
+    "SELECT * FROM events WHERE id >= $minimum",
+    [parameter],
+    cancellationToken);
+```
+
+Provider-generated LINQ commands can be captured without opening or querying the database. The returned contract
+contains exact command text plus parameter metadata and values; it is a server-command snapshot, not EF's
+client-side result shaper or a DuckDB optimizer plan:
+
+```csharp
+var query = context.Events.Where(e => e.Timestamp < cutoff);
+var queryPlan = context.Database.GetDuckDBCommandPlan(query);
+var countPlan = context.Database.GetDuckDBCountCommandPlan(query);
+var anyPlan = context.Database.GetDuckDBAnyCommandPlan(query);
+```
+
+Only single-command shapes are supported; split queries are rejected explicitly. A captured plan can be handed to
+`SqlQueryDynamicCommandAsync(plan, cancellationToken)` when its runtime result shape is required.
+
 This API is a streaming result-set path. DuckDB.NET currently reports `DbDataReader.RecordsAffected` as `-1`, so the
 provider does not infer DML counts by parsing SQL or inspecting result columns. Use `ExecuteSqlRawAsync` for known
 `INSERT`, `UPDATE`, or `DELETE` commands when the affected-row count is required.

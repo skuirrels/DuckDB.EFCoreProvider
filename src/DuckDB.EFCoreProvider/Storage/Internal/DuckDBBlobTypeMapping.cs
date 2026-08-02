@@ -41,7 +41,7 @@ public class DuckDBBlobTypeMapping : ByteArrayTypeMapping
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).RemoveDollarSign();
+        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
         base.ConfigureParameter(parameter);
     }
 
@@ -56,7 +56,7 @@ public class DuckDBBlobTypeMapping : ByteArrayTypeMapping
     {
         var streamType = typeof(Stream);
         var readStreamMethod = typeof(DuckDBBlobTypeMapping).GetMethod(nameof(ReadStream), BindingFlags.Static | BindingFlags.NonPublic)!;
-        return Expression.Call(readStreamMethod, expression); 
+        return Expression.Call(readStreamMethod, expression);
     }
 
     private static byte[] ReadStream(Stream stream)

@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.NET.Data;
 using System.Data;
 using System.Numerics;
 using Xunit;
@@ -63,6 +64,55 @@ public sealed class DynamicQueryResultTests : DuckDBTestBase
         {
             Assert.Equal(expected, row.Span[0]);
         }
+    }
+
+    [ConditionalFact]
+    public async Task Executes_named_parameters_without_formatting_sql_or_mutating_parameters()
+    {
+        await using var context = new DynamicContext(FileOptions<DynamicContext>());
+        var parameter = new DuckDBParameter("$threshold", 7);
+
+        await using var result = await context.Database.SqlQueryDynamicCommandAsync(
+            "SELECT $threshold::INTEGER AS value, MAP {'items': [1, 2]} AS nested_value",
+            [parameter]);
+
+        Assert.Equal("$threshold", parameter.ParameterName);
+        await foreach (var row in result.ReadRowsAsync())
+        {
+            Assert.Equal(7, row.Span[0]);
+            var map = Assert.IsType<Dictionary<string, List<int>>>(row.Span[1]);
+            Assert.Equal([1, 2], map["items"]);
+        }
+    }
+
+    [ConditionalFact]
+    public async Task Named_command_preserves_explicit_type_for_database_null()
+    {
+        await using var context = new DynamicContext(FileOptions<DynamicContext>());
+        var parameter = new DuckDBParameter("missing", DBNull.Value) { DbType = DbType.String };
+
+        await using var result = await context.Database.SqlQueryDynamicCommandAsync(
+            "SELECT $missing::VARCHAR AS value",
+            [parameter]);
+
+        await foreach (var row in result.ReadRowsAsync())
+        {
+            Assert.Null(row.Span[0]);
+        }
+    }
+
+    [ConditionalFact]
+    public async Task Named_command_rejects_duplicate_normalized_names_before_opening_connection()
+    {
+        await using var context = new DynamicContext(FileOptions<DynamicContext>());
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => context.Database.SqlQueryDynamicCommandAsync(
+                "SELECT $value",
+                [new DuckDBParameter("$value", 1), new DuckDBParameter("value", 2)]));
+
+        Assert.Contains("more than once", exception.Message);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
     }
 
     [ConditionalFact]

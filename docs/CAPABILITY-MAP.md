@@ -35,6 +35,7 @@ This document is the published capability matrix for the provider. It serves two
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | Type-mapping contract | EF model mappings and raw DuckDB.NET reader mappings are documented separately in [TYPE-MAPPINGS.md](TYPE-MAPPINGS.md) |
+| Command extraction | Single-command `IQueryable<T>`, terminal `Count`, and terminal `Any` commands can be captured without opening the context connection; snapshots contain exact SQL and provider parameter metadata/values |
 | File sources | `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (and fluent `FromParquet`/`FromCsv`/`FromJsonFile`) → `read_parquet`/`read_csv`/`read_json` |
 | Tiered storage (hot + cold) | `ToTieredStore(...)` + root-only ordered `.PartitionBy(p => p.By(..., "alias").ByMonth(..., "alias"))` + `.WithTieredView()` or `.WithReadModel<T>()` + `ArchiveTierAsync(...)`: provider-managed union views with optional EF projection types, `ToTieredView(...)` mapping with equivalent read-only-context pruning, bounded first publication via `BootstrapArchiveTierAsync(...)`, immutable active-cold trimming via `PlanArchiveRetentionAsync(...)` / `PublishArchiveRetentionAsync(...)`, fail-closed generation cleanup planning, and external-checkpoint recovery via `CaptureArchiveRecoveryCheckpointAsync(...)` / `PlanArchiveRecoveryAsync(...)` / `ApplyArchiveRecoveryAsync(...)`. Supports application-defined Hive names/order/transforms, inherited child layout, and root-scoped bindings when one child table participates in multiple independent archives. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) and the [tiered compatibility matrix](TIERED-STORAGE-COMPATIBILITY.md) |
 | Bulk insert | `DbContext.BulkInsert(...)` / `BulkInsertAsync(...)` via the DuckDB `Appender` (raw fast path — see §4) |
@@ -58,7 +59,7 @@ The profile is covered by real-extension functional tests, not inferred from nat
 | Bulk insert | ✅ DuckDB appender after provider-controlled connection initialization |
 | Upsert | ✅ staged appender batch plus `MERGE INTO` |
 | Read-only / named secret | ✅ dedicated profile options; credentials remain in the connection initializer |
-| Dynamic unknown-shape SQL | ✅ `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync` stream raw DuckDB.NET values with runtime column metadata; known DML that needs an affected-row count uses `ExecuteSqlRawAsync` because DuckDB.NET readers currently report `RecordsAffected == -1` |
+| Dynamic unknown-shape SQL | ✅ `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync` stream raw DuckDB.NET values with runtime column metadata; `SqlQueryDynamicCommandAsync` accepts unchanged named-parameter SQL or a captured provider command plan; known DML that needs an affected-row count uses `ExecuteSqlRawAsync` because DuckDB.NET readers currently report `RecordsAffected == -1` |
 | Maintenance | ✅ typed snapshot, expiry, cleanup, orphan deletion, flush, merge, and rewrite operations; destructive lifecycle calls default to dry-run where DuckLake supports it |
 | Historical LINQ | ✅ `DbSet.AsOfSnapshot(long)` / `DbSet.AsOfTimestamp(DateTimeOffset)` for an explicit table root, plus catalog-wide read-only context profiles for coherent joins |
 | Additional catalogs | ✅ local catalogs through `AlsoAttach(...)` and secret-backed catalogs through `AlsoAttachNamedSecret(...)`; catalog-qualified dynamic/raw SQL is supported, while non-primary EF entity mapping remains roadmap |
@@ -190,7 +191,7 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 ### Types
 | DuckDB type | Provider |
 |---|---|
-| `STRUCT` | ➖ persisted as JSON, not a native struct column |
+| `STRUCT` | ✅ opt-in EF complex-property mapping through `UseStructMapping()`; scalar `Dictionary<string, object>` properties remain unsupported |
 | `MAP` | ❌ no mapping |
 | `UNION` | ❌ no mapping |
 | `LIST` / `ARRAY` (1-D) | ✅ arrays / `List<T>` |
