@@ -1,4 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Diagnostics.Internal;
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Infrastructure;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Internal;
@@ -136,6 +137,9 @@ public static class DuckDBServiceCollectionExtensions
                 .TryAddSingleton<IDuckDBSingletonOptions, DuckDBSingletonOptions>()
                 .TryAddSingleton<IDuckLakeSingletonOptions, DuckLakeSingletonOptions>()
                 .TryAddSingleton<IDuckDBEngineCapabilities, DuckDBEngineCapabilities>()
+                .TryAddScoped(p => ActivatorUtilities.CreateInstance<DuckDBCommandPlanFactory>(p))
+                .TryAddScoped(p => ActivatorUtilities.CreateInstance<DuckDBDynamicCommandExecutor>(p))
+                .TryAddScoped(p => ActivatorUtilities.CreateInstance<DuckDBStoreTypeInspector>(p))
                 .TryAddScoped<IDuckDBArchiveFileProbe, DuckDBArchiveFileProbe>()
                 .TryAddScoped<IDuckDBTierFailureInjector, DuckDBTierFailureInjector>()
                 .TryAddScoped<IDuckDBRelationalConnection, DuckDBRelationalConnection>());

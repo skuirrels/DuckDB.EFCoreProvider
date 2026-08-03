@@ -30,7 +30,7 @@ public class DuckDBInt16TypeMapping : ShortTypeMapping
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).RemoveDollarSign();
+        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
         base.ConfigureParameter(parameter);
     }
 }

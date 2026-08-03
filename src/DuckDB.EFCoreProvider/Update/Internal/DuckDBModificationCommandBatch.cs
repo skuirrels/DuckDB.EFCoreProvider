@@ -1,3 +1,5 @@
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 
 namespace DuckDB.EFCoreProvider.Update.Internal;
@@ -48,6 +50,8 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     private readonly bool _insertBatching;
     private readonly bool _updateBatching;
     private readonly bool _deleteBatching;
+    private readonly bool _useUpdateFallback;
+    private bool _requiresUpdateFallbackExecution;
 
     public DuckDBModificationCommandBatch(
         ModificationCommandBatchFactoryDependencies dependencies,
@@ -55,11 +59,31 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         bool insertBatching,
         bool updateBatching,
         bool deleteBatching)
+        : this(
+            dependencies,
+            maxBatchSize,
+            insertBatching,
+            updateBatching,
+            deleteBatching,
+            global::DuckDB.EFCoreProvider.Internal.DuckDBEngineCapabilities.Native)
+    {
+    }
+
+    internal DuckDBModificationCommandBatch(
+        ModificationCommandBatchFactoryDependencies dependencies,
+        int maxBatchSize,
+        bool insertBatching,
+        bool updateBatching,
+        bool deleteBatching,
+        IDuckDBEngineCapabilities capabilities)
         : base(dependencies, maxBatchSize)
     {
         _insertBatching = insertBatching;
         _updateBatching = updateBatching;
         _deleteBatching = deleteBatching;
+        _useUpdateFallback =
+            capabilities.SupportsReturning
+            && !capabilities.SupportsReturningOnReferencedTableUpdates;
     }
 
     private new DuckDBUpdateSqlGenerator UpdateSqlGenerator
@@ -68,6 +92,13 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     /// <inheritdoc />
     public override bool TryAddCommand(IReadOnlyModificationCommand modificationCommand)
     {
+        var requiresSpecialExecution = RequiresUpdateFallbackExecution(modificationCommand);
+        if (_requiresUpdateFallbackExecution
+            || (requiresSpecialExecution && ModificationCommands.Count > 0))
+        {
+            return false;
+        }
+
         // A pending insert/update run must be flushed before a command that cannot join it (a different
         // operation kind, a different table, or a different column shape) is added.
         if (_pendingBulkInsertCommands.Count > 0
@@ -97,6 +128,8 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     /// <inheritdoc />
     protected override void AddCommand(IReadOnlyModificationCommand modificationCommand)
     {
+        var requiresUpdateFallback = RequiresUpdateFallbackExecution(modificationCommand);
+
         // Buffer the eligible insert/update and add its parameters now; the merged SQL is generated when the
         // run is flushed (on the next non-mergeable command or on Complete).
         if (_insertBatching && DuckDBBulkInsertPlanner.CanPlan(modificationCommand))
@@ -104,7 +137,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
             _pendingBulkInsertCommands.Add(modificationCommand);
             AddParameters(modificationCommand);
         }
-        else if (_updateBatching && DuckDBBulkUpdatePlanner.CanPlan(modificationCommand))
+        else if (CanUseBulkUpdate(modificationCommand))
         {
             _pendingBulkUpdateCommands.Add(modificationCommand);
             AddParameters(modificationCommand);
@@ -116,9 +149,19 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         }
         else
         {
+            _requiresUpdateFallbackExecution = requiresUpdateFallback;
             base.AddCommand(modificationCommand);
         }
     }
+
+    private bool RequiresUpdateFallbackExecution(IReadOnlyModificationCommand command)
+        => _useUpdateFallback
+            && !CanUseBulkUpdate(command)
+            && DuckDBUpdateFallbackPlanner.CanPlan(command);
+
+    private bool CanUseBulkUpdate(IReadOnlyModificationCommand command)
+        => _updateBatching
+            && DuckDBBulkUpdatePlanner.CanPlan(command);
 
     /// <inheritdoc />
     protected override void RollbackLastCommand(IReadOnlyModificationCommand modificationCommand)
@@ -189,6 +232,45 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         ApplyPendingBulkDeleteCommands();
 
         base.Complete(moreBatchesExpected);
+    }
+
+    /// <inheritdoc />
+    public override void Execute(IRelationalConnection connection)
+    {
+        if (_requiresUpdateFallbackExecution)
+        {
+            DuckDBUpdateFallbackExecutor.Execute(
+                Dependencies,
+                UpdateSqlGenerator,
+                connection,
+                StoreCommand,
+                ModificationCommands);
+            return;
+        }
+
+        base.Execute(connection);
+    }
+
+    /// <inheritdoc />
+    public override async Task ExecuteAsync(
+        IRelationalConnection connection,
+        CancellationToken cancellationToken = default)
+    {
+        if (_requiresUpdateFallbackExecution)
+        {
+            await DuckDBUpdateFallbackExecutor
+                .ExecuteAsync(
+                    Dependencies,
+                    UpdateSqlGenerator,
+                    connection,
+                    StoreCommand,
+                    ModificationCommands,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        await base.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
     }
 
     private void ApplyPendingBulkInsertCommands()

@@ -21,8 +21,9 @@
 | Data lifecycle | Hot DuckDB tables with relational aggregates archived to partitioned Parquet |
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
 | Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings |
+| Query tooling | Non-executing command plans, exact named-parameter replay, and structured store-type inspection |
 
-> **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility).
+> **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility) and the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
 ## Getting started
 
@@ -215,6 +216,47 @@ returned by DuckDB.NET; database nulls become `null`. Use `SqlQueryDynamicAsync(
 overload with `{0}` placeholders and a parameter list for values. Raw SQL text is trusted SQL and is not sanitized.
 The provider does not impose UI row limits or choose a JSON serialization policy. See the
 [type-mapping contract](docs/TYPE-MAPPINGS.md).
+
+When SQL already contains named provider parameters, use `SqlQueryDynamicCommandAsync`. It passes command text
+through unchanged (including literal DuckDB `STRUCT`/`MAP` braces), copies the supplied `DbParameter` values, and
+does not mutate caller-owned parameters:
+
+```csharp
+var parameter = new DuckDBParameter("$minimum", 10);
+await using var result = await context.Database.SqlQueryDynamicCommandAsync(
+    "SELECT * FROM events WHERE id >= $minimum",
+    [parameter],
+    cancellationToken);
+```
+
+Provider-generated LINQ commands can be captured without opening or querying the database. The returned contract
+contains exact command text plus parameter metadata and values; it is a server-command snapshot, not EF's
+client-side result shaper or a DuckDB optimizer plan. See the complete
+[query command-plan guide](docs/QUERY-COMMAND-PLANS.md) for compiler/tooling boundaries, version support, replay,
+type inspection, and security responsibilities:
+
+```csharp
+var query = context.Events.Where(e => e.Timestamp < cutoff);
+var queryPlan = context.Database.GetDuckDBCommandPlan(query);
+var countPlan = context.Database.GetDuckDBCountCommandPlan(query);
+var anyPlan = context.Database.GetDuckDBAnyCommandPlan(query);
+var sumPlan = context.Database.GetDuckDBSumCommandPlan(
+    query.Select(e => (decimal?)e.Amount));
+var averagePlan = context.Database.GetDuckDBAverageCommandPlan(
+    query.Select(e => (decimal?)e.Amount));
+```
+
+Terminal `LongCount`, `Min`, `Max`, `Sum`, and `Average` commands can also be captured. Compose predicates with
+`Where` and selectors with `Select` before extraction; `Sum` and `Average` require a projection to `int`, `long`,
+`float`, `double`, `decimal`, or the corresponding nullable type.
+
+Replay returns the database result without EF's client-side result shaper. On an empty input, a replayed `Min`,
+`Max`, or `Average` plan can therefore yield `null` even where executing the corresponding non-nullable LINQ
+terminal operator would apply EF's empty-sequence behavior. Execute the original LINQ operator when those semantics
+are required.
+
+Only single-command shapes are supported; split queries are rejected explicitly. A captured plan can be handed to
+`SqlQueryDynamicCommandAsync(plan, cancellationToken)` when its runtime result shape is required.
 
 This API is a streaming result-set path. DuckDB.NET currently reports `DbDataReader.RecordsAffected` as `-1`, so the
 provider does not infer DML counts by parsing SQL or inspecting result columns. Use `ExecuteSqlRawAsync` for known
@@ -959,6 +1001,9 @@ connection can change the setting for that instance. DuckDB spills larger-than-m
 its temp directory, so a lower memory limit trades memory for more disk spilling on big analytical queries
 rather than failing. (For an in-memory database — `Data Source=:memory:` — spilling requires a
 `temp_directory`, which DuckDB does not set automatically.)
+
+For the relationship between concurrent `DbContext` instances, a continuous bulk writer, and the shared thread
+budget, see the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
 ## Compatibility
 

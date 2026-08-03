@@ -1,7 +1,4 @@
-﻿using System.Data.Common;
-using System.Linq.Expressions;
-using System.Reflection;
-using System.Text;
+﻿using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.NTS.Storage.Json;
 using DuckDB.EFCoreProvider.NTS.Storage.ValueConversion.Internal;
 using DuckDB.NET.Data;
@@ -11,6 +8,10 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NetTopologySuite;
 using NetTopologySuite.Geometries;
 using NetTopologySuite.IO;
+using System.Data.Common;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Text;
 
 namespace DuckDB.EFCoreProvider.NTS.Storage.Internal;
 
@@ -86,10 +87,7 @@ public class DuckDBGeometryTypeMapping<TGeometry> : RelationalGeometryTypeMappin
 
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        // DuckDB uses $name in SQL; the DuckDBParameter object must be registered without the '$'
-        if (parameter is DuckDBParameter duckParam && duckParam.ParameterName.StartsWith('$'))
-            duckParam.ParameterName = duckParam.ParameterName[1..];
-
+        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
         parameter.DbType = System.Data.DbType.String;
         base.ConfigureParameter(parameter);
     }

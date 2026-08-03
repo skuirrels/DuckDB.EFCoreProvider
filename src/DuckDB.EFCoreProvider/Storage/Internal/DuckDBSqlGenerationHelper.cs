@@ -1,5 +1,4 @@
-﻿using DuckDB.NET.Data;
-using Microsoft.EntityFrameworkCore.Storage;
+﻿using Microsoft.EntityFrameworkCore.Storage;
 using System.Text;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
@@ -12,45 +11,6 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBSqlGenerationHelper : RelationalSqlGenerationHelper
 {
-    // DuckDB's reserved keywords and function names are read from the engine itself (so the set stays correct
-    // across DuckDB versions). It is loaded lazily on first identifier delimiting rather than in a static
-    // constructor, so the database I/O is deferred and a failure to load degrades gracefully instead of
-    // surfacing as a TypeInitializationException.
-    private static readonly Lazy<IReadOnlySet<string>> ReservedWords = new(LoadReservedWords);
-
-    private static IReadOnlySet<string> LoadReservedWords()
-    {
-        var reservedWords = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
-
-        try
-        {
-            using var connection = new DuckDBConnection(DuckDBConnectionStringBuilder.InMemorySharedConnectionString);
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                                  SELECT keyword_name FROM duckdb_keywords()
-                                  UNION
-                                  SELECT function_name FROM duckdb_functions()
-                                  """;
-
-            connection.Open();
-
-            using var reader = command.ExecuteReader();
-
-            while (reader.Read())
-            {
-                reservedWords.Add(reader.GetString(0));
-            }
-        }
-        catch (DuckDBException)
-        {
-            // If the keyword/function list cannot be loaded, fall back to quoting based purely on the
-            // character rules in RequiresQuoting rather than failing. Identifiers that happen to collide with
-            // a reserved word simply will not be force-quoted in this (unexpected) degraded state.
-        }
-
-        return reservedWords;
-    }
-
     public DuckDBSqlGenerationHelper(RelationalSqlGenerationHelperDependencies dependencies) : base(dependencies)
     {
     }
@@ -107,6 +67,6 @@ public class DuckDBSqlGenerationHelper : RelationalSqlGenerationHelper
             return true;
         }
 
-        return ReservedWords.Value.Contains(identifier);
+        return DuckDBIdentifierMetadata.ReservedIdentifiers.Contains(identifier);
     }
 }

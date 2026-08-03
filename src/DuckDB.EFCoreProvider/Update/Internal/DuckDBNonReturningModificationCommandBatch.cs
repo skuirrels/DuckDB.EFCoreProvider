@@ -22,7 +22,7 @@ internal sealed class DuckDBNonReturningModificationCommandBatch(
         try
         {
             var affectedRows = StoreCommand.RelationalCommand.ExecuteNonQuery(CreateParameterObject(connection));
-            ValidateAffectedRows(affectedRows);
+            DuckDBAffectedRowsValidator.Validate(Dependencies, ModificationCommands, affectedRows);
         }
         catch (Exception exception) when (exception is not DbUpdateException and not OperationCanceledException)
         {
@@ -47,7 +47,9 @@ internal sealed class DuckDBNonReturningModificationCommandBatch(
             var affectedRows = await StoreCommand.RelationalCommand
                 .ExecuteNonQueryAsync(CreateParameterObject(connection), cancellationToken)
                 .ConfigureAwait(false);
-            await ValidateAffectedRowsAsync(affectedRows, cancellationToken).ConfigureAwait(false);
+            await DuckDBAffectedRowsValidator
+                .ValidateAsync(Dependencies, ModificationCommands, affectedRows, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not DbUpdateException and not OperationCanceledException)
         {
@@ -66,75 +68,6 @@ internal sealed class DuckDBNonReturningModificationCommandBatch(
             Dependencies.CurrentContext.Context,
             Dependencies.Logger,
             CommandSource.SaveChanges);
-
-    private void ValidateAffectedRows(int affectedRows)
-    {
-        const int expectedRows = 1;
-        if (affectedRows == expectedRows)
-        {
-            return;
-        }
-
-        var entries = GetEntries();
-        var exception = CreateConcurrencyException(expectedRows, affectedRows, entries);
-
-        if (!Dependencies.UpdateLogger.OptimisticConcurrencyException(
-                Dependencies.CurrentContext.Context,
-                entries,
-                exception,
-                CreateConcurrencyExceptionEventData).IsSuppressed)
-        {
-            throw exception;
-        }
-    }
-
-    private async Task ValidateAffectedRowsAsync(int affectedRows, CancellationToken cancellationToken)
-    {
-        const int expectedRows = 1;
-        if (affectedRows == expectedRows)
-        {
-            return;
-        }
-
-        var entries = GetEntries();
-        var exception = CreateConcurrencyException(expectedRows, affectedRows, entries);
-
-        if (!(await Dependencies.UpdateLogger.OptimisticConcurrencyExceptionAsync(
-                    Dependencies.CurrentContext.Context,
-                    entries,
-                    exception,
-                    CreateConcurrencyExceptionEventData,
-                    cancellationToken)
-                .ConfigureAwait(false)).IsSuppressed)
-        {
-            throw exception;
-        }
-    }
-
-    private IReadOnlyList<IUpdateEntry> GetEntries()
-        => ModificationCommands.SelectMany(command => command.Entries).ToList();
-
-    private static DbUpdateConcurrencyException CreateConcurrencyException(
-        int expectedRows,
-        int affectedRows,
-        IReadOnlyList<IUpdateEntry> entries)
-        => new(
-            RelationalStrings.UpdateConcurrencyException(expectedRows, affectedRows),
-            entries);
-
-    private static ConcurrencyExceptionEventData CreateConcurrencyExceptionEventData(
-        DbContext context,
-        DbUpdateConcurrencyException exception,
-        IReadOnlyList<IUpdateEntry> entries,
-        EventDefinition<Exception> definition)
-        => new(
-            definition,
-            static (eventDefinition, eventData)
-                => ((EventDefinition<Exception>)eventDefinition)
-                    .GenerateMessage(((ConcurrencyExceptionEventData)eventData).Exception),
-            context,
-            entries,
-            exception);
 
     protected override void Consume(RelationalDataReader reader)
         => throw new NotSupportedException("Non-returning modification batches do not consume result sets.");

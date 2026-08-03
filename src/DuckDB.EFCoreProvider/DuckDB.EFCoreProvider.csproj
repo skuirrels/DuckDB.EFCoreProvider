@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.15.0</PackageVersion>
-    <FileVersion>1.15.0.0</FileVersion>
-    <Version>1.15.0</Version>
+    <PackageVersion>1.17.0</PackageVersion>
+    <FileVersion>1.17.0.0</FileVersion>
+    <Version>1.17.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,27 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.14.2</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.16.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.17.0
+- Extend non-executing command extraction to terminal LongCount, Min, Max, Sum, and Average operations. Numeric aggregates accept projected int, long, float, double, decimal, and nullable equivalents; unsupported projections fail before EF query compilation.
+- Preserve direct generic extraction for fixed-result terminal operations and use cached result-type dispatch only where Average promotes the CLR result type.
+- Document that replayed aggregate command plans expose database values without EF's client-side empty-sequence result shaping, with focused replay and extraction benchmark coverage.
+
+1.16.0
+- Add non-executing command extraction for single-command LINQ queries and terminal Count/Any operations, including exact provider parameter metadata and defensive value snapshots. Split and other multi-command query shapes fail explicitly.
+- Add named dynamic-command execution that preserves SQL text, copies caller-owned ADO.NET parameters, and replays extracted command plans through the dynamic-result API.
+- Add structured runtime inspection of scalar, STRUCT complex-property, raw-reader-only, and unsupported DuckDB store-type contracts.
+- Correct canonical signed and unsigned integer aliases, including INT8/INT64/LONG, and support faceted mapping lookup such as DECIMAL(12,2).
+- Scope exact type-mapping capture to command-plan extraction so normal parameter creation and SaveChanges retain baseline allocations. Replace the first-use scratch database query for identifier metadata with deterministic static metadata.
+
+1.15.2
+- Upgrade Skuirrels.DuckDB.NET.Data.Full from 1.5.5.2 to 1.5.5.3, resolving the matching Skuirrels.DuckDB.NET.Bindings.Full 1.5.5.3 package. Controlled before-and-after runs of all 33 provider benchmark cases found no material performance or allocation regressions.
+- Improve collection read performance through Skuirrels 1.5.5.3's cached typed List&lt;T&gt; materializers. Additional element types and nested/fixed-array shapes avoid the previous per-element boxing path. The provider's scalar and BLOB read benchmarks remained stable in a higher-confidence follow-up run. Provider APIs are unchanged.
+
+1.15.1
+- Fix SaveChanges updates to tables referenced by foreign keys when store-generated values must be refreshed. The provider avoids DuckDB 1.5.5's failing UPDATE ... RETURNING path, validates affected rows, and reads generated values back by key in the same transaction.
+
 1.15.0
 - Add opt-in mapping of EF Core complex properties to native DuckDB STRUCT columns through UseStructMapping, HasStructField, and HasStructFieldName.
 - Support STRUCT schema creation, migrations, SaveChanges inserts and partial updates, and LINQ projection, filtering, ordering, joins, and subqueries, including nested structures and explicit physical field names.

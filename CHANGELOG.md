@@ -2,6 +2,50 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.17.0
+
+- Extend non-executing command extraction to terminal `LongCount`, `Min`, `Max`, `Sum`, and `Average` operations.
+  Numeric aggregates accept projected `int`, `long`, `float`, `double`, `decimal`, and nullable equivalents; invalid
+  projections fail before EF query compilation. Replayed plans intentionally expose database values without EF's
+  client-side empty-sequence result shaping.
+
+## 1.16.0
+
+- Add non-executing command extraction for single-command LINQ queries and terminal `Count`/`Any` operations,
+  including provider parameter metadata and values. Split queries fail explicitly instead of returning a partial
+  command contract.
+- Add named dynamic-command execution that preserves SQL text exactly and copies caller-owned ADO.NET parameters,
+  plus replay of extracted command plans through the dynamic-result API.
+- Add structured store-type mapping inspection for scalar, `STRUCT` complex-property, raw-reader-only, and
+  unsupported contracts.
+- Correct canonical integer store-type and alias mappings, including signed `INT8`/`INT64`/`LONG`, unsigned
+  integer aliases, and faceted store-type lookup such as `DECIMAL(12,2)`.
+- Keep exact type-mapping capture scoped to command-plan extraction. Controlled before/after benchmarks show
+  normal parameter creation and `SaveChanges` retain baseline allocations, while static identifier metadata
+  removes the previous first-use scratch database query.
+
+## 1.15.2
+
+- Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.2 to 1.5.5.3,
+  resolving the matching `Skuirrels.DuckDB.NET.Bindings.Full` 1.5.5.3
+  package. Controlled before-and-after runs of all 33 provider benchmark cases
+  found no material performance or allocation regressions.
+- Improve collection read performance through Skuirrels 1.5.5.3's cached typed
+  `List<T>` materializers. Additional element types and nested/fixed-array
+  shapes avoid the previous per-element boxing path. The provider's scalar and
+  BLOB read benchmarks remained stable in a higher-confidence follow-up run.
+  Provider APIs are unchanged.
+
+## 1.15.1
+
+- Fix `SaveChanges` updates to a table referenced by a foreign key. DuckDB
+  1.5.5 rejects `UPDATE ... RETURNING` for such tables while dependent rows
+  exist, even when the update does not modify the referenced key. The provider
+  now executes the update without `RETURNING`, validates the affected-row count,
+  and reads store-generated values back by key in the same transaction.
+  Eligible opt-in multi-row updates remain on the existing
+  `UPDATE ... FROM (VALUES ...)` fast path, which does not use `RETURNING`.
+
 ## 1.15.0
 
 - Add opt-in mapping of EF Core complex properties to native DuckDB `STRUCT`

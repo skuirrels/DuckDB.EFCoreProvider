@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-07-22.
+**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-08-02.
 
 ---
 
@@ -27,7 +27,7 @@ This document is the published capability matrix for the provider. It serves two
 | Area | Notes |
 |---|---|
 | CRUD via `SaveChanges` | insert / update / delete |
-| Generated keys & store-generated values | DuckDB `RETURNING`; `UseAutoIncrement()` backed by sequences |
+| Generated keys & store-generated values | DuckDB `RETURNING`; referenced-table updates use a transactional `UPDATE` plus keyed `SELECT` because DuckDB 1.5.5 rejects `UPDATE ... RETURNING` while dependent rows exist; `UseAutoIncrement()` is backed by sequences |
 | Optimistic concurrency | concurrency tokens |
 | Transactions | commit / rollback |
 | Migrations — create | tables, columns, indexes, sequences, comments, history table |
@@ -35,6 +35,7 @@ This document is the published capability matrix for the provider. It serves two
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | Type-mapping contract | EF model mappings and raw DuckDB.NET reader mappings are documented separately in [TYPE-MAPPINGS.md](TYPE-MAPPINGS.md) |
+| Command extraction | Single-command `IQueryable<T>` and terminal `Count`, `LongCount`, `Any`, `Min`, `Max`, `Sum`, and `Average` commands can be captured without opening the context connection; snapshots contain exact SQL and provider parameter metadata/values. See [QUERY-COMMAND-PLANS.md](QUERY-COMMAND-PLANS.md) |
 | File sources | `[FromParquet]`/`[FromCsv]`/`[FromJsonFile]` (and fluent `FromParquet`/`FromCsv`/`FromJsonFile`) → `read_parquet`/`read_csv`/`read_json` |
 | Tiered storage (hot + cold) | `ToTieredStore(...)` + root-only ordered `.PartitionBy(p => p.By(..., "alias").ByMonth(..., "alias"))` + `.WithTieredView()` or `.WithReadModel<T>()` + `ArchiveTierAsync(...)`: provider-managed union views with optional EF projection types, `ToTieredView(...)` mapping with equivalent read-only-context pruning, bounded first publication via `BootstrapArchiveTierAsync(...)`, immutable active-cold trimming via `PlanArchiveRetentionAsync(...)` / `PublishArchiveRetentionAsync(...)`, fail-closed generation cleanup planning, and external-checkpoint recovery via `CaptureArchiveRecoveryCheckpointAsync(...)` / `PlanArchiveRecoveryAsync(...)` / `ApplyArchiveRecoveryAsync(...)`. Supports application-defined Hive names/order/transforms, inherited child layout, and root-scoped bindings when one child table participates in multiple independent archives. See [docs/TIERED-STORAGE.md](TIERED-STORAGE.md) and the [tiered compatibility matrix](TIERED-STORAGE-COMPATIBILITY.md) |
 | Bulk insert | `DbContext.BulkInsert(...)` / `BulkInsertAsync(...)` via the DuckDB `Appender` (raw fast path — see §4) |
@@ -58,7 +59,7 @@ The profile is covered by real-extension functional tests, not inferred from nat
 | Bulk insert | ✅ DuckDB appender after provider-controlled connection initialization |
 | Upsert | ✅ staged appender batch plus `MERGE INTO` |
 | Read-only / named secret | ✅ dedicated profile options; credentials remain in the connection initializer |
-| Dynamic unknown-shape SQL | ✅ `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync` stream raw DuckDB.NET values with runtime column metadata; known DML that needs an affected-row count uses `ExecuteSqlRawAsync` because DuckDB.NET readers currently report `RecordsAffected == -1` |
+| Dynamic unknown-shape SQL | ✅ `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync` stream raw DuckDB.NET values with runtime column metadata; `SqlQueryDynamicCommandAsync` accepts unchanged named-parameter SQL or a captured provider command plan; known DML that needs an affected-row count uses `ExecuteSqlRawAsync` because DuckDB.NET readers currently report `RecordsAffected == -1` |
 | Maintenance | ✅ typed snapshot, expiry, cleanup, orphan deletion, flush, merge, and rewrite operations; destructive lifecycle calls default to dry-run where DuckLake supports it |
 | Historical LINQ | ✅ `DbSet.AsOfSnapshot(long)` / `DbSet.AsOfTimestamp(DateTimeOffset)` for an explicit table root, plus catalog-wide read-only context profiles for coherent joins |
 | Additional catalogs | ✅ local catalogs through `AlsoAttach(...)` and secret-backed catalogs through `AlsoAttachNamedSecret(...)`; catalog-qualified dynamic/raw SQL is supported, while non-primary EF entity mapping remains roadmap |
@@ -79,7 +80,7 @@ See [DUCKLAKE.md](DUCKLAKE.md) for configuration, security, model rules, and ope
 ### Concurrency & transactions
 | Limitation | Evidence |
 |---|---|
-| Native DuckDB file is single-writer and embedded | `access_mode=READ_ONLY` permits multiple native-file readers; DuckLake concurrency instead depends on its metadata catalog, as documented in [DUCKLAKE.md](DUCKLAKE.md#concurrency-and-read-scaling) |
+| Native DuckDB file is single-writer and embedded | One process can combine concurrent reader contexts with a writer; see the [native concurrency guide](NATIVE-DUCKDB-CONCURRENCY.md). `access_mode=READ_ONLY` permits multiple native-file readers when no process is writing. DuckLake concurrency instead depends on its metadata catalog, as documented in [DUCKLAKE.md](DUCKLAKE.md#concurrency-and-read-scaling) |
 | No savepoints (no nested-transaction partial rollback) | `DuckDBRelationalTransaction.SupportsSavepoints => false` |
 | No retrying execution strategy / `EnableRetryOnFailure` | not provided (embedded model) |
 
@@ -90,7 +91,7 @@ into a target-model table rebuild with `EnableMigrationTableRebuilds()`.
 |---|---|
 | Foreign key in `CREATE TABLE` | ✅ emitted and enforced; unsupported cascade actions become `NO ACTION` with a migration warning |
 | Add / drop foreign key | clear `NotSupportedException`; ✅ opt-in table rebuild |
-| Update / delete a referenced row | DuckDB rejects the operation while dependent rows exist, including non-key updates |
+| Update / delete a referenced row | DuckDB 1.5.5 rejects `UPDATE ... RETURNING` while dependent rows exist, including non-key updates. `SaveChanges` works around this with an affected-row-checked `UPDATE` and transactional keyed read-back when store-generated values are required. Eligible opt-in multi-row updates retain the provider's non-returning `UPDATE ... FROM (VALUES ...)` fast path. Direct SQL must omit `RETURNING` and must not write the referenced key while dependants exist. Deleting a referenced row remains subject to the foreign-key constraint. |
 | Add / drop primary, unique, or check constraint | clear engine error by default; ✅ opt-in table rebuild |
 | Add column with constraint / default / required | `Adding columns with constraints not yet supported` |
 | Add / alter computed (generated) column | `Adding generated columns after table creation is not supported yet` |
@@ -190,7 +191,7 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 ### Types
 | DuckDB type | Provider |
 |---|---|
-| `STRUCT` | ➖ persisted as JSON, not a native struct column |
+| `STRUCT` | ✅ opt-in EF complex-property mapping through `UseStructMapping()`; scalar `Dictionary<string, object>` properties remain unsupported |
 | `MAP` | ❌ no mapping |
 | `UNION` | ❌ no mapping |
 | `LIST` / `ARRAY` (1-D) | ✅ arrays / `List<T>` |
