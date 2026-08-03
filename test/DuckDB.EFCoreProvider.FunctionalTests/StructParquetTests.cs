@@ -196,7 +196,6 @@ public sealed class StructParquetTests : DuckDBTestBase
                 principalsPath,
                 dependentsPath,
                 required: true);
-            Assert.True(context.Database.EnsureCreated());
             Assert.True(
                 context.Model.FindEntityType(typeof(StructDependent))!
                     .FindNavigation(nameof(StructDependent.Principal))!

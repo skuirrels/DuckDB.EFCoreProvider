@@ -264,8 +264,8 @@ public class DuckDBModelValidator : RelationalModelValidator
         => string.Join(".", new[] { field.StructColumnName }.Concat(field.FieldPath));
 
     private static bool IsFileBacked(IReadOnlyEntityType entityType)
-        => entityType is IEntityType mutableEntityType
-            && mutableEntityType.GetDuckDBFileSourceFunction() is not null;
+        => entityType is IEntityType fileSourceEntityType
+            && DuckDBFileSourceDefinition.TryCreate(fileSourceEntityType, out _);
 
         private static void ValidateStructPathCollisions(
             IEntityType entityType,
