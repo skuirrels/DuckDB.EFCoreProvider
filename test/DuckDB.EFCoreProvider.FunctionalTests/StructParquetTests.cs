@@ -490,10 +490,11 @@ public sealed class StructParquetTests : DuckDBTestBase
             {
                 entity.FromParquet(dependentsPath);
                 entity.Property(dependent => dependent.Id).ValueGeneratedNever();
-                entity.Property(dependent => dependent.PrincipalId)
-                    .HasColumnName("principal_key")
-                    .HasStructField("Relationship")
-                    .HasStructFieldName("parent_id");
+                entity.Ignore(dependent => dependent.Relationship);
+                entity.HasStructFieldPath(
+                    dependent => dependent.PrincipalId,
+                    dependent => dependent.Relationship.ParentId,
+                    leafFieldName: "parent_id");
                 entity.HasOne(dependent => dependent.Principal)
                     .WithMany(principal => principal.Dependents)
                     .HasForeignKey(dependent => dependent.PrincipalId)
@@ -549,6 +550,12 @@ public sealed class StructParquetTests : DuckDBTestBase
     {
         public int Id { get; set; }
         public int? PrincipalId { get; set; }
+        public StructRelationshipPath Relationship { get; set; } = null!;
         public StructPrincipal? Principal { get; set; }
+    }
+
+    private sealed class StructRelationshipPath
+    {
+        public int? ParentId { get; set; }
     }
 }

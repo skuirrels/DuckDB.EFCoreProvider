@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using System.Linq.Expressions;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -150,6 +151,38 @@ public static class DuckDBStructPropertyBuilderExtensions
         return propertyBuilder;
     }
 
+    internal static PropertyBuilder<TProperty> ConfigureStructFieldPath<TEntity, TProperty>(
+        PropertyBuilder<TProperty> propertyBuilder,
+        Expression<Func<TEntity, object?>> fieldExpression,
+        string? structColumnName = null,
+        string? leafFieldName = null)
+        where TEntity : class
+    {
+        ArgumentNullException.ThrowIfNull(propertyBuilder);
+
+        var memberNames = GetMemberPath(fieldExpression);
+        var physicalRootName = structColumnName is null
+            ? memberNames[0]
+            : ValidateName(structColumnName, nameof(structColumnName));
+        var physicalLeafName = leafFieldName is null
+            ? ToCamelCase(memberNames[^1])
+            : ValidateName(leafFieldName, nameof(leafFieldName));
+        var nestedFieldNames = memberNames
+            .Skip(1)
+            .Take(memberNames.Count - 2)
+            .Select(ToCamelCase)
+            .ToArray();
+
+        propertyBuilder.HasAnnotation(
+            DuckDBAnnotationNames.StructField,
+            new DuckDBStructFieldInfo(
+                physicalRootName,
+                nestedFieldNames,
+                physicalLeafName));
+
+        return propertyBuilder;
+    }
+
     public static ComplexTypePropertyBuilder<TProperty> HasStructField<TProperty>(
         this ComplexTypePropertyBuilder<TProperty> propertyBuilder,
         string structColumnName,
@@ -164,6 +197,46 @@ public static class DuckDBStructPropertyBuilderExtensions
                 propertyBuilder.Metadata.FindAnnotation(DuckDBAnnotationNames.StructFieldName)?.Value as string));
         return propertyBuilder;
     }
+
+    private static IReadOnlyList<string> GetMemberPath<TEntity>(
+        Expression<Func<TEntity, object?>> expression)
+        where TEntity : class
+    {
+        ArgumentNullException.ThrowIfNull(expression);
+
+        var members = new List<string>();
+        Expression current = UnwrapConvert(expression.Body);
+        while (current is MemberExpression member && member.Expression is not null)
+        {
+            members.Add(member.Member.Name);
+            current = UnwrapConvert(member.Expression);
+        }
+
+        if (!ReferenceEquals(current, expression.Parameters[0]) || members.Count < 2)
+        {
+            throw new ArgumentException(
+                "The STRUCT field selector must be a nested member path rooted at the entity, "
+                + "for example 'e => e.Relationship.ParentId'.",
+                nameof(expression));
+        }
+
+        members.Reverse();
+        return members;
+    }
+
+    private static Expression UnwrapConvert(Expression expression)
+        => expression is UnaryExpression
+        {
+            NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+            Operand: var operand,
+        }
+            ? operand
+            : expression;
+
+    private static string ToCamelCase(string name)
+        => string.IsNullOrEmpty(name) || char.IsLower(name[0])
+            ? name
+            : char.ToLowerInvariant(name[0]) + name[1..];
 
     private static string ValidateName(string name, string parameterName)
         => string.IsNullOrWhiteSpace(name)

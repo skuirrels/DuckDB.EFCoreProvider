@@ -324,16 +324,16 @@ e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
 
 `HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
 
-File-backed entities can use an explicitly mapped scalar STRUCT field as an EF foreign key. Configure the physical root/path and leaf on the scalar property, then define the relationship with the standard EF APIs:
+File-backed entities can use an explicitly mapped scalar STRUCT field as an EF foreign key. Configure the scalar property and physical root/path, then define the relationship with the standard EF APIs:
 
 ```csharp
 modelBuilder.Entity<Order>(e =>
 {
     e.FromParquet("orders.parquet");
-    e.Property(o => o.CustomerId)
-        .HasColumnName("customer_key")       // Synthetic EF column identity
-        .HasStructField("Relationship")      // Physical STRUCT root and optional nested path
-        .HasStructFieldName("customer_id");  // Physical leaf
+    e.HasStructFieldPath(
+        o => o.CustomerId,
+        o => o.Relationship.CustomerId,
+        leafFieldName: "customer_id");
 
     e.HasOne(o => o.Customer)
         .WithMany(c => c.Orders)
@@ -342,6 +342,15 @@ modelBuilder.Entity<Order>(e =>
 });
 
 modelBuilder.Entity<Customer>(e => e.FromParquet("customers.parquet"));
+```
+
+`HasStructFieldPath` is a typed convenience for the common case: the first member names the STRUCT root, intermediate members name nested fields, and the last member names the leaf. The selector describes the physical path only; `CustomerId` remains the scalar EF foreign-key property. Its CLR path may be an ignored or otherwise unmapped shape used only for configuration. Pass `structColumnName` or `leafFieldName` when a physical name differs from the CLR convention. For full control over every physical name, keep using `HasStructField` together with `HasStructFieldName`:
+
+```csharp
+e.Property(o => o.CustomerId)
+    .HasColumnName("customer_key")       // Synthetic EF column identity
+    .HasStructField("Relationship")      // Physical STRUCT root and optional nested path
+    .HasStructFieldName("customer_id");  // Physical leaf
 ```
 
 Use a nullable FK property with `.IsRequired(false)` for an optional navigation; the provider emits a left join and preserves a null STRUCT field. STRUCT foreign keys are query-only and require both relationship ends to be DuckDB file sources. Physical DuckDB table constraints cannot target nested fields, so STRUCT foreign keys on physical tables are rejected during model validation. STRUCT fields also remain unsupported as principal/alternate keys or indexes.
