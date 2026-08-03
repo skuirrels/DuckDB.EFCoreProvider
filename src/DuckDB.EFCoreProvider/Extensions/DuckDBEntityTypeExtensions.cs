@@ -1,7 +1,6 @@
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using System.Linq.Expressions;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -46,48 +45,6 @@ public static class DuckDBEntityTypeExtensions
         string path)
         where TEntity : class
         => entityTypeBuilder.FromDuckDBFile("read_parquet", path);
-
-    /// <summary>
-    ///     Maps a scalar entity property to a STRUCT leaf selected by a typed CLR member path.
-    /// </summary>
-    /// <typeparam name="TEntity">The entity type being configured.</typeparam>
-    /// <typeparam name="TProperty">The scalar property type.</typeparam>
-    /// <param name="entityTypeBuilder">The builder for the entity type being configured.</param>
-    /// <param name="propertyExpression">The scalar EF property that stores the foreign-key value.</param>
-    /// <param name="fieldExpression">
-    ///     A nested member path whose first member identifies the STRUCT root and whose last member identifies the
-    ///     leaf, for example <c>order =&gt; order.Relationship.ParentId</c>.
-    /// </param>
-    /// <param name="structColumnName">
-    ///     An optional physical STRUCT root override. When omitted, the first member name is used.
-    /// </param>
-    /// <param name="leafFieldName">
-    ///     An optional physical leaf override. When omitted, the last member name is converted to camel case.
-    /// </param>
-    /// <remarks>
-    ///     The field selector describes the physical STRUCT path; the first selector remains the scalar EF property
-    ///     used by the relationship. It does not make a nested complex property an EF foreign key.
-    ///     Use <see cref="DuckDBStructPropertyBuilderExtensions.HasStructField{TProperty}(PropertyBuilder{TProperty}, string, string[])" />
-    ///     when intermediate physical names do not follow the CLR path.
-    /// </remarks>
-    public static EntityTypeBuilder<TEntity> HasStructFieldPath<TEntity, TProperty>(
-        this EntityTypeBuilder<TEntity> entityTypeBuilder,
-        Expression<Func<TEntity, TProperty>> propertyExpression,
-        Expression<Func<TEntity, object?>> fieldExpression,
-        string? structColumnName = null,
-        string? leafFieldName = null)
-        where TEntity : class
-    {
-        ArgumentNullException.ThrowIfNull(entityTypeBuilder);
-
-        DuckDBStructPropertyBuilderExtensions.ConfigureStructFieldPath(
-            entityTypeBuilder.Property(propertyExpression),
-            fieldExpression,
-            structColumnName,
-            leafFieldName);
-
-        return entityTypeBuilder;
-    }
 
     /// <summary>
     ///     Configures the entity type to query data from the specified CSV path via DuckDB <c>read_csv(...)</c>

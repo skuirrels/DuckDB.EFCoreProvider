@@ -206,7 +206,7 @@ public sealed class StructParquetTests : DuckDBTestBase
                 .Select(dependent => new
                 {
                     dependent.Id,
-                    dependent.PrincipalId,
+                    ParentId = dependent.Relationship.ParentId,
                     PrincipalName = dependent.Principal!.Name
                 });
 
@@ -217,8 +217,8 @@ public sealed class StructParquetTests : DuckDBTestBase
             Assert.Contains(".\"Relationship\".parent_id", sql, StringComparison.Ordinal);
             Assert.Equal(
                 [
-                    new { Id = 10, PrincipalId = (int?)2, PrincipalName = "South" },
-                    new { Id = 11, PrincipalId = (int?)1, PrincipalName = "North" }
+                    new { Id = 10, ParentId = (int?)2, PrincipalName = "South" },
+                    new { Id = 11, ParentId = (int?)1, PrincipalName = "North" }
                 ],
                 results);
 
@@ -265,7 +265,10 @@ public sealed class StructParquetTests : DuckDBTestBase
                 required: false);
             Assert.True(
                 context.Model.FindEntityType(typeof(StructDependent))!
-                    .FindProperty(nameof(StructDependent.PrincipalId))!
+                    .GetForeignKeys()
+                    .Single()
+                    .Properties
+                    .Single()
                     .IsNullable);
             Assert.False(
                 context.Model.FindEntityType(typeof(StructDependent))!
@@ -277,7 +280,7 @@ public sealed class StructParquetTests : DuckDBTestBase
                 .Select(dependent => new
                 {
                     dependent.Id,
-                    dependent.PrincipalId,
+                    ParentId = dependent.Relationship.ParentId,
                     PrincipalName = dependent.Principal == null ? null : dependent.Principal.Name
                 });
 
@@ -288,8 +291,8 @@ public sealed class StructParquetTests : DuckDBTestBase
             Assert.Contains(".\"Relationship\".parent_id", sql, StringComparison.Ordinal);
             Assert.Equal(
                 [
-                    new { Id = 20, PrincipalId = (int?)1, PrincipalName = (string?)"North" },
-                    new { Id = 21, PrincipalId = (int?)null, PrincipalName = (string?)null }
+                    new { Id = 20, ParentId = (int?)1, PrincipalName = (string?)"North" },
+                    new { Id = 21, ParentId = (int?)null, PrincipalName = (string?)null }
                 ],
                 results);
         }
@@ -490,14 +493,14 @@ public sealed class StructParquetTests : DuckDBTestBase
             {
                 entity.FromParquet(dependentsPath);
                 entity.Property(dependent => dependent.Id).ValueGeneratedNever();
-                entity.Ignore(dependent => dependent.Relationship);
-                entity.HasStructFieldPath(
-                    dependent => dependent.PrincipalId,
-                    dependent => dependent.Relationship.ParentId,
-                    leafFieldName: "parent_id");
+                entity.ComplexProperty(dependent => dependent.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
                 entity.HasOne(dependent => dependent.Principal)
                     .WithMany(principal => principal.Dependents)
-                    .HasForeignKey(dependent => dependent.PrincipalId)
+                    .HasStructForeignKey(dependent => dependent.Relationship.ParentId)
                     .IsRequired(required);
             });
         }
@@ -549,8 +552,7 @@ public sealed class StructParquetTests : DuckDBTestBase
     private sealed class StructDependent
     {
         public int Id { get; set; }
-        public int? PrincipalId { get; set; }
-        public StructRelationshipPath Relationship { get; set; } = null!;
+        public required StructRelationshipPath Relationship { get; set; }
         public StructPrincipal? Principal { get; set; }
     }
 

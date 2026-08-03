@@ -324,27 +324,29 @@ e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
 
 `HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
 
-File-backed entities can use an explicitly mapped scalar STRUCT field as an EF foreign key. Configure the scalar property and physical root/path, then define the relationship with the standard EF APIs:
+File-backed entities can use a leaf inside a mapped STRUCT as an EF foreign key. Define the STRUCT mapping once, then connect that leaf to the principal with `HasStructForeignKey`:
 
 ```csharp
 modelBuilder.Entity<Order>(e =>
 {
     e.FromParquet("orders.parquet");
-    e.HasStructFieldPath(
-        o => o.CustomerId,
-        o => o.Relationship.CustomerId,
-        leafFieldName: "customer_id");
+    e.ComplexProperty(o => o.Relationship, relationship =>
+    {
+        relationship.UseStructMapping();
+        relationship.Property(r => r.CustomerId)
+            .HasStructFieldName("customer_id");
+    });
 
     e.HasOne(o => o.Customer)
         .WithMany(c => c.Orders)
-        .HasForeignKey(o => o.CustomerId)
+        .HasStructForeignKey(o => o.Relationship.CustomerId)
         .IsRequired();
 });
 
 modelBuilder.Entity<Customer>(e => e.FromParquet("customers.parquet"));
 ```
 
-`HasStructFieldPath` is a typed convenience for the common case: the first member names the STRUCT root, intermediate members name nested fields, and the last member names the leaf. The selector describes the physical path only; `CustomerId` remains the scalar EF foreign-key property. Its CLR path may be an ignored or otherwise unmapped shape used only for configuration. Pass `structColumnName` or `leafFieldName` when a physical name differs from the CLR convention. For full control over every physical name, keep using `HasStructField` together with `HasStructFieldName`:
+`HasStructForeignKey` creates an internal shadow property for EF's relationship plumbing and reuses the existing complex-property leaf mapping; no duplicate scalar FK or second STRUCT field definition is required. The selector must end at a scalar leaf of a complex property configured with `UseStructMapping`. If the Parquet schema uses a physical name that differs from the CLR convention, define that name once with `HasStructFieldName`. For full control over scalar property mappings, `HasStructField` remains available:
 
 ```csharp
 e.Property(o => o.CustomerId)

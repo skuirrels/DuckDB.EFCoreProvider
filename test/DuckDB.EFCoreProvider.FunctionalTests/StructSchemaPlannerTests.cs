@@ -483,12 +483,14 @@ public sealed class StructSchemaPlannerTests
                     nameof(StructRelationshipDependent),
                     table => table.HasCheckConstraint("CK_StructRelationshipDependent_Id", "\"Id\" > 0"));
                 entity.Property(value => value.Id).ValueGeneratedNever();
-                entity.Property(value => value.PrincipalId)
-                    .HasStructField("Relationship")
-                    .HasStructFieldName("principal_id");
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("principal_id");
+                });
                 entity.HasOne(value => value.Principal)
                     .WithMany(value => value.Dependents)
-                    .HasForeignKey(value => value.PrincipalId);
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
             });
         }
     }
@@ -516,8 +518,13 @@ public sealed class StructSchemaPlannerTests
     {
         public int Id { get; set; }
 
-        public int PrincipalId { get; set; }
+        public required StructRelationshipPath Relationship { get; set; }
 
         public StructRelationshipPrincipal? Principal { get; set; }
+    }
+
+    private sealed class StructRelationshipPath
+    {
+        public int ParentId { get; set; }
     }
 }

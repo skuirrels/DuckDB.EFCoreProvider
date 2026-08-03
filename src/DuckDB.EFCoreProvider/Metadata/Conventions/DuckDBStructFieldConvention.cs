@@ -45,6 +45,7 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
             }
 
             var table = StoreObjectIdentifier.Create(entityType, StoreObjectType.Table);
+            ApplyStructForeignKeyBindings(entityType);
             foreach (var property in GetProperties(entityType))
             {
                 if (property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
@@ -123,6 +124,76 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
         }
 
     }
+
+    private static void ApplyStructForeignKeyBindings(IConventionEntityType entityType)
+    {
+        foreach (var foreignKey in entityType.GetForeignKeys().OfType<IConventionForeignKey>())
+        {
+            if (foreignKey.FindAnnotation(DuckDBAnnotationNames.StructForeignKeyPath)?.Value
+                is not DuckDBStructForeignKeyPath binding)
+            {
+                continue;
+            }
+
+            if (foreignKey.Properties.Count != 1
+                || !string.Equals(
+                    foreignKey.Properties[0].Name,
+                    binding.ShadowPropertyName,
+                    StringComparison.Ordinal))
+            {
+                throw new NotSupportedException(
+                    $"STRUCT foreign-key path '{FormatPath(binding)}' must be the only property in its foreign key. "
+                    + "Composite STRUCT foreign keys are not supported.");
+            }
+
+            var leafProperty = FindStructLeaf(entityType, binding.MemberNames);
+            var field = leafProperty?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+                as DuckDBStructFieldInfo;
+            if (field?.EfColumnName is null)
+            {
+                throw new InvalidOperationException(
+                    $"STRUCT foreign-key path '{FormatPath(binding)}' does not resolve to a mapped DuckDB STRUCT "
+                    + "leaf. Configure the dependent complex property with UseStructMapping before calling "
+                    + "HasStructForeignKey.");
+            }
+
+            var shadowProperty = entityType.FindProperty(binding.ShadowPropertyName)
+                ?? throw new InvalidOperationException(
+                    $"The internal STRUCT foreign-key property '{binding.ShadowPropertyName}' could not be created.");
+            shadowProperty.SetColumnName(field.EfColumnName, fromDataAnnotation: false);
+            foreignKey.SetOrRemoveAnnotation(
+                DuckDBAnnotationNames.StructForeignKeyPath,
+                null,
+                fromDataAnnotation: false);
+        }
+    }
+
+    private static IConventionProperty? FindStructLeaf(
+        IConventionEntityType entityType,
+        IReadOnlyList<string> memberNames)
+    {
+        if (memberNames.Count < 2
+            || entityType.FindComplexProperty(memberNames[0]) is not { } root)
+        {
+            return null;
+        }
+
+        var complexType = root.ComplexType;
+        for (var index = 1; index < memberNames.Count - 1; index++)
+        {
+            if (complexType.FindComplexProperty(memberNames[index]) is not { } nested)
+            {
+                return null;
+            }
+
+            complexType = nested.ComplexType;
+        }
+
+        return complexType.FindProperty(memberNames[^1]);
+    }
+
+    private static string FormatPath(DuckDBStructForeignKeyPath binding)
+        => string.Join(".", binding.MemberNames);
 
     private static IEnumerable<IConventionProperty> GetProperties(IConventionTypeBase typeBase)
     {

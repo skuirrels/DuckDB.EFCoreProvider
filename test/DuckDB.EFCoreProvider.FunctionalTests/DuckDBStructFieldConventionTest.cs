@@ -62,18 +62,6 @@ public class DuckDBStructFieldConventionTest
         public required string Zip { get; set; }
     }
 
-    private sealed class EntityWithLambdaStructField
-    {
-        public int Id { get; set; }
-        public int? PrincipalId { get; set; }
-        public StructRelationshipPath Relationship { get; set; } = null!;
-    }
-
-    private sealed class StructRelationshipPath
-    {
-        public int? ParentId { get; set; }
-    }
-
     // ── Mixed complex properties: one struct-mapped, one not ──────────
 
     private sealed class EntityWithMixedComplexProperties
@@ -293,44 +281,6 @@ public class DuckDBStructFieldConventionTest
         var cityProp = GetComplexScalar(model, typeof(CustomerWithAttribute), "Location", "City");
         Assert.Equal("city_name", cityProp.GetColumnName());
         Assert.Equal("city", GetStructFieldInfo(cityProp)?.LeafFieldName);
-    }
-
-    [Fact]
-    public void Lambda_struct_field_path_infers_root_and_nested_names()
-    {
-        var model = BuildModel<EntityWithLambdaStructField>(mb =>
-            mb.Entity<EntityWithLambdaStructField>(e =>
-            {
-                e.Ignore(value => value.Relationship);
-                e.HasStructFieldPath(
-                    value => value.PrincipalId,
-                    value => value.Relationship.ParentId,
-                    leafFieldName: "parent_id");
-            }));
-
-        var entity = model.FindEntityType(typeof(EntityWithLambdaStructField));
-        Assert.NotNull(entity);
-        var property = entity.FindProperty(nameof(EntityWithLambdaStructField.PrincipalId));
-        Assert.NotNull(property);
-
-        var info = GetStructFieldInfo(property);
-        Assert.NotNull(info);
-        Assert.Equal("Relationship", info.StructColumnName);
-        Assert.Empty(info.NestedFieldNames);
-        Assert.Equal("parent_id", info.LeafFieldName);
-    }
-
-    [Fact]
-    public void Lambda_struct_field_path_rejects_a_scalar_selector()
-    {
-        var exception = Assert.Throws<ArgumentException>(() =>
-            BuildModel<EntityWithLambdaStructField>(mb =>
-                mb.Entity<EntityWithLambdaStructField>(e =>
-                    e.HasStructFieldPath(
-                        value => value.PrincipalId,
-                        value => value.PrincipalId))));
-
-        Assert.Contains("nested member path", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

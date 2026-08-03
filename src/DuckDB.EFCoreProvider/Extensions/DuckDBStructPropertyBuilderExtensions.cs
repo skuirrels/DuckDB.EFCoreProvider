@@ -151,38 +151,6 @@ public static class DuckDBStructPropertyBuilderExtensions
         return propertyBuilder;
     }
 
-    internal static PropertyBuilder<TProperty> ConfigureStructFieldPath<TEntity, TProperty>(
-        PropertyBuilder<TProperty> propertyBuilder,
-        Expression<Func<TEntity, object?>> fieldExpression,
-        string? structColumnName = null,
-        string? leafFieldName = null)
-        where TEntity : class
-    {
-        ArgumentNullException.ThrowIfNull(propertyBuilder);
-
-        var memberNames = GetMemberPath(fieldExpression);
-        var physicalRootName = structColumnName is null
-            ? memberNames[0]
-            : ValidateName(structColumnName, nameof(structColumnName));
-        var physicalLeafName = leafFieldName is null
-            ? ToCamelCase(memberNames[^1])
-            : ValidateName(leafFieldName, nameof(leafFieldName));
-        var nestedFieldNames = memberNames
-            .Skip(1)
-            .Take(memberNames.Count - 2)
-            .Select(ToCamelCase)
-            .ToArray();
-
-        propertyBuilder.HasAnnotation(
-            DuckDBAnnotationNames.StructField,
-            new DuckDBStructFieldInfo(
-                physicalRootName,
-                nestedFieldNames,
-                physicalLeafName));
-
-        return propertyBuilder;
-    }
-
     public static ComplexTypePropertyBuilder<TProperty> HasStructField<TProperty>(
         this ComplexTypePropertyBuilder<TProperty> propertyBuilder,
         string structColumnName,
@@ -198,9 +166,7 @@ public static class DuckDBStructPropertyBuilderExtensions
         return propertyBuilder;
     }
 
-    private static IReadOnlyList<string> GetMemberPath<TEntity>(
-        Expression<Func<TEntity, object?>> expression)
-        where TEntity : class
+    internal static IReadOnlyList<string> GetMemberPath(LambdaExpression expression)
     {
         ArgumentNullException.ThrowIfNull(expression);
 
@@ -232,11 +198,6 @@ public static class DuckDBStructPropertyBuilderExtensions
         }
             ? operand
             : expression;
-
-    private static string ToCamelCase(string name)
-        => string.IsNullOrEmpty(name) || char.IsLower(name[0])
-            ? name
-            : char.ToLowerInvariant(name[0]) + name[1..];
 
     private static string ValidateName(string name, string parameterName)
         => string.IsNullOrWhiteSpace(name)

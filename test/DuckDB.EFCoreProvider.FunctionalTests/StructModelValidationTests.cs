@@ -43,7 +43,7 @@ public sealed class StructModelValidationTests
     }
 
     [Fact]
-    public void Allows_struct_foreign_key_between_file_backed_entities()
+    public void Has_struct_foreign_key_reuses_existing_complex_leaf_mapping()
     {
         using var context = CreateContext(modelBuilder =>
         {
@@ -56,22 +56,64 @@ public sealed class StructModelValidationTests
             {
                 entity.FromParquet("dependents.parquet");
                 entity.Property(value => value.Id).ValueGeneratedNever();
-                entity.Property(value => value.PrincipalId)
-                    .HasStructField("Relationship")
-                    .HasStructFieldName("parent_id");
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
                 entity.HasOne(value => value.Principal)
                     .WithMany(value => value.Dependents)
-                    .HasForeignKey(value => value.PrincipalId);
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
             });
         });
 
         var dependent = context.Model.FindEntityType(typeof(StructDependent));
-        var property = dependent!.FindProperty(nameof(StructDependent.PrincipalId));
+        var foreignKey = Assert.Single(dependent!.GetForeignKeys());
+        var property = Assert.Single(foreignKey.Properties);
+        var leaf = dependent.FindComplexProperty(nameof(StructDependent.Relationship))!
+            .ComplexType
+            .FindProperty(nameof(StructRelationshipPath.ParentId))!;
 
-        Assert.NotNull(property);
-        Assert.Single(property.GetContainingForeignKeys());
-        Assert.Equal("Relationship", property.GetStructFieldInfo()!.StructColumnName);
-        Assert.Equal("parent_id", property.GetStructFieldInfo()!.LeafFieldName);
+        Assert.StartsWith("__DuckDBStructForeignKey_", property.Name, StringComparison.Ordinal);
+        Assert.Equal(leaf.GetColumnName(), property.GetColumnName());
+        Assert.Null(property.GetStructFieldInfo());
+        Assert.Equal("Relationship", leaf.GetStructFieldInfo()!.StructColumnName);
+        Assert.Equal("parent_id", leaf.GetStructFieldInfo()!.LeafFieldName);
+    }
+
+    [Fact]
+    public void Has_struct_foreign_key_supports_one_to_one_relationships()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructOnePrincipal>(entity =>
+            {
+                entity.FromParquet("principals.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructOneDependent>(entity =>
+            {
+                entity.FromParquet("dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+                entity.HasOne(value => value.Principal)
+                    .WithOne(value => value.Dependent)
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
+            });
+        });
+
+        var dependent = context.Model.FindEntityType(typeof(StructOneDependent));
+        var foreignKey = Assert.Single(dependent!.GetForeignKeys());
+
+        Assert.StartsWith(
+            "__DuckDBStructForeignKey_",
+            Assert.Single(foreignKey.Properties).Name,
+            StringComparison.Ordinal);
+        Assert.True(foreignKey.IsUnique);
     }
 
     [Fact]
@@ -84,17 +126,64 @@ public sealed class StructModelValidationTests
             modelBuilder.Entity<StructDependent>(entity =>
             {
                 entity.Property(value => value.Id).ValueGeneratedNever();
-                entity.Property(value => value.PrincipalId)
-                    .HasStructField("Relationship")
-                    .HasStructFieldName("parent_id");
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
                 entity.HasOne(value => value.Principal)
                     .WithMany(value => value.Dependents)
-                    .HasForeignKey(value => value.PrincipalId);
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
             });
         });
 
         var exception = Assert.Throws<NotSupportedException>(() => _ = context.Model);
         Assert.Contains("only between DuckDB file-backed entities", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Rejects_struct_foreign_key_without_a_struct_mapping()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructPrincipal>(entity =>
+                entity.Property(value => value.Id).ValueGeneratedNever());
+            modelBuilder.Entity<StructDependent>(entity =>
+            {
+                entity.FromParquet("dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship);
+                entity.HasOne(value => value.Principal)
+                    .WithMany(value => value.Dependents)
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
+            });
+        });
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _ = context.Model);
+        Assert.Contains("does not resolve to a mapped DuckDB STRUCT leaf", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("UseStructMapping", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Struct_foreign_key_selector_must_end_at_a_nested_member()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructPrincipal>(entity =>
+                entity.Property(value => value.Id).ValueGeneratedNever());
+            modelBuilder.Entity<StructDependent>(entity =>
+            {
+                entity.FromParquet("dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship).UseStructMapping();
+                entity.HasOne(value => value.Principal)
+                    .WithMany(value => value.Dependents)
+                    .HasStructForeignKey(value => value.Id);
+            });
+        });
+
+        var exception = Assert.Throws<ArgumentException>(() => _ = context.Model);
+        Assert.Contains("nested member path", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -319,75 +408,96 @@ public sealed class StructModelValidationTests
     {
         public int Id { get; set; }
 
-        public int? PrincipalId { get; set; }
+        public required StructRelationshipPath Relationship { get; set; }
 
         public StructPrincipal? Principal { get; set; }
     }
 
-        private sealed class PathCollisionEntity
-        {
-            public int Id { get; set; }
-
-            public required PathCollisionAddress Location { get; set; }
-        }
-
-        private sealed class PathCollisionAddress
-        {
-            public string Address { get; set; } = null!;
-
-            public required PathCollisionDetails Details { get; set; }
-        }
-
-        private sealed class PathCollisionDetails
-        {
-            public string Country { get; set; } = null!;
-        }
-
-        private sealed class FieldOverrideEntity
-        {
-            public int Id { get; set; }
-
-            public required FieldOverrideAddress Location { get; set; }
-        }
-
-        private sealed class FieldOverrideAddress
-        {
-            public string Street { get; set; } = null!;
-
-            public required FieldOverrideDetails Details { get; set; }
-        }
-
-        private sealed class FieldOverrideDetails
-        {
-            public string Country { get; set; } = null!;
-        }
-
-        private sealed class DeepCollisionEntity
-        {
-            public int Id { get; set; }
-
-            public required DeepCollisionRoot Location { get; set; }
-        }
-
-        private sealed class DeepCollisionRoot
-        {
-            public required ShallowBranch Shallow { get; set; }
-
-            public required DeepBranch Deep { get; set; }
-        }
-
-        private sealed class ShallowBranch
-        {
-            public string Value { get; set; } = null!;
-        }
-
-        private sealed class DeepBranch
-        {
-            public required DeepBranchInner Inner { get; set; }
-        }
-
-        private sealed class DeepBranchInner
-        {
-            public string Value { get; set; } = null!;
-        }
+    private sealed class StructRelationshipPath
+    {
+        public int? ParentId { get; set; }
     }
+
+    private sealed class StructOnePrincipal
+    {
+        public int Id { get; set; }
+
+        public StructOneDependent? Dependent { get; set; }
+    }
+
+    private sealed class StructOneDependent
+    {
+        public int Id { get; set; }
+
+        public required StructRelationshipPath Relationship { get; set; }
+
+        public StructOnePrincipal? Principal { get; set; }
+    }
+
+    private sealed class PathCollisionEntity
+    {
+        public int Id { get; set; }
+
+        public required PathCollisionAddress Location { get; set; }
+    }
+
+    private sealed class PathCollisionAddress
+    {
+        public string Address { get; set; } = null!;
+
+        public required PathCollisionDetails Details { get; set; }
+    }
+
+    private sealed class PathCollisionDetails
+    {
+        public string Country { get; set; } = null!;
+    }
+
+    private sealed class FieldOverrideEntity
+    {
+        public int Id { get; set; }
+
+        public required FieldOverrideAddress Location { get; set; }
+    }
+
+    private sealed class FieldOverrideAddress
+    {
+        public string Street { get; set; } = null!;
+
+        public required FieldOverrideDetails Details { get; set; }
+    }
+
+    private sealed class FieldOverrideDetails
+    {
+        public string Country { get; set; } = null!;
+    }
+
+    private sealed class DeepCollisionEntity
+    {
+        public int Id { get; set; }
+
+        public required DeepCollisionRoot Location { get; set; }
+    }
+
+    private sealed class DeepCollisionRoot
+    {
+        public required ShallowBranch Shallow { get; set; }
+
+        public required DeepBranch Deep { get; set; }
+    }
+
+    private sealed class ShallowBranch
+    {
+        public string Value { get; set; } = null!;
+    }
+
+    private sealed class DeepBranch
+    {
+        public required DeepBranchInner Inner { get; set; }
+    }
+
+    private sealed class DeepBranchInner
+    {
+        public string Value { get; set; } = null!;
+    }
+}
