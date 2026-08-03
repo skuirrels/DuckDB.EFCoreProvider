@@ -324,7 +324,7 @@ e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
 
 `HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
 
-File-backed entities can use a leaf inside a mapped STRUCT as an EF foreign key. Define the STRUCT mapping once, then connect that leaf to the principal with `HasStructForeignKey`:
+Use a mapped STRUCT leaf as a foreign key with `HasStructForeignKey`:
 
 ```csharp
 modelBuilder.Entity<Order>(e =>
@@ -346,16 +346,7 @@ modelBuilder.Entity<Order>(e =>
 modelBuilder.Entity<Customer>(e => e.FromParquet("customers.parquet"));
 ```
 
-`HasStructForeignKey` creates an internal shadow property for EF's relationship plumbing and reuses the existing complex-property leaf mapping; no duplicate scalar FK or second STRUCT field definition is required. The selector must end at a scalar leaf of a complex property configured with `UseStructMapping`. If the Parquet schema uses a physical name that differs from the CLR convention, define that name once with `HasStructFieldName`. For full control over scalar property mappings, `HasStructField` remains available:
-
-```csharp
-e.Property(o => o.CustomerId)
-    .HasColumnName("customer_key")       // Synthetic EF column identity
-    .HasStructField("Relationship")      // Physical STRUCT root and optional nested path
-    .HasStructFieldName("customer_id");  // Physical leaf
-```
-
-Use a nullable FK property with `.IsRequired(false)` for an optional navigation; the provider emits a left join and preserves a null STRUCT field. STRUCT foreign keys are query-only and require both relationship ends to be DuckDB file sources. Physical DuckDB table constraints cannot target nested fields, so STRUCT foreign keys on physical tables are rejected during model validation. STRUCT fields also remain unsupported as principal/alternate keys or indexes.
+The mapped leaf is reused as EF relationship plumbing; no duplicate scalar FK or field metadata is needed. Use `.IsRequired(false)` for optional navigations. STRUCT foreign keys are query-only and require file-backed entities; physical-table and composite STRUCT foreign keys are rejected.
 
 **Limitations & Behavior:**
 - Queries with LINQ projections, filters, sorting, joins, and subqueries are fully supported
