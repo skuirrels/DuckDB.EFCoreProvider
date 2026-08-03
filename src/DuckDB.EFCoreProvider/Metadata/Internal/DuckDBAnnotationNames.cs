@@ -106,6 +106,11 @@ public static class DuckDBAnnotationNames
     public const string StructField = Prefix + "StructField";
 
     /// <summary>
+    ///     Marks an EF foreign key that uses a STRUCT field for query navigation only.
+    /// </summary>
+    public const string LogicalStructForeignKey = Prefix + "LogicalStructForeignKey";
+
+    /// <summary>
     ///     A <see cref="DuckDBStructMapping" /> attached to a complex property (or nested
     ///     complex property) describing the DuckDB STRUCT column and child field names for
     ///     that specific usage. This disambiguates shared complex types used under multiple

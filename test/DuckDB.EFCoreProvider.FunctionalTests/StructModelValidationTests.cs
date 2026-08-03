@@ -43,6 +43,61 @@ public sealed class StructModelValidationTests
     }
 
     [Fact]
+    public void Allows_struct_foreign_key_between_file_backed_entities()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructPrincipal>(entity =>
+            {
+                entity.FromParquet("principals.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructDependent>(entity =>
+            {
+                entity.FromParquet("dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.Property(value => value.PrincipalId)
+                    .HasStructField("Relationship")
+                    .HasStructFieldName("parent_id");
+                entity.HasOne(value => value.Principal)
+                    .WithMany(value => value.Dependents)
+                    .HasForeignKey(value => value.PrincipalId);
+            });
+        });
+
+        var dependent = context.Model.FindEntityType(typeof(StructDependent));
+        var property = dependent!.FindProperty(nameof(StructDependent.PrincipalId));
+
+        Assert.NotNull(property);
+        Assert.Single(property.GetContainingForeignKeys());
+        Assert.Equal("Relationship", property.GetStructFieldInfo()!.StructColumnName);
+        Assert.Equal("parent_id", property.GetStructFieldInfo()!.LeafFieldName);
+    }
+
+    [Fact]
+    public void Rejects_struct_foreign_key_on_physical_table()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructPrincipal>(entity =>
+                entity.Property(value => value.Id).ValueGeneratedNever());
+            modelBuilder.Entity<StructDependent>(entity =>
+            {
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.Property(value => value.PrincipalId)
+                    .HasStructField("Relationship")
+                    .HasStructFieldName("parent_id");
+                entity.HasOne(value => value.Principal)
+                    .WithMany(value => value.Dependents)
+                    .HasForeignKey(value => value.PrincipalId);
+            });
+        });
+
+        var exception = Assert.Throws<NotSupportedException>(() => _ = context.Model);
+        Assert.Contains("only between DuckDB file-backed entities", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Rejects_optional_struct_root()
     {
         using var context = CreateContext(modelBuilder =>
@@ -251,6 +306,22 @@ public sealed class StructModelValidationTests
         public string City { get; set; } = null!;
 
         public string? Region { get; set; }
+    }
+
+    private sealed class StructPrincipal
+    {
+        public int Id { get; set; }
+
+        public List<StructDependent> Dependents { get; set; } = [];
+    }
+
+    private sealed class StructDependent
+    {
+        public int Id { get; set; }
+
+        public int? PrincipalId { get; set; }
+
+        public StructPrincipal? Principal { get; set; }
     }
 
         private sealed class PathCollisionEntity

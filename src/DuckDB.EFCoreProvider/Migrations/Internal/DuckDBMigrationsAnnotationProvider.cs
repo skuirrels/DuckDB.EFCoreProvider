@@ -15,6 +15,14 @@ internal sealed class DuckDBMigrationsAnnotationProvider(
     public override IEnumerable<IAnnotation> ForRename(IColumn column)
         => GetStructAnnotations(column);
 
+    public override IEnumerable<IAnnotation> ForRemove(IForeignKeyConstraint foreignKey)
+    {
+        if (DuckDBAnnotationProvider.IsLogicalStructForeignKey(foreignKey))
+        {
+            yield return new Annotation(DuckDBAnnotationNames.LogicalStructForeignKey, true);
+        }
+    }
+
     private static IEnumerable<IAnnotation> GetStructAnnotations(IColumn column)
     {
         if (DuckDBAnnotationProvider.ResolveStructFieldInfo(column) is { } field)

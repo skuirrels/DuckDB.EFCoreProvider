@@ -40,7 +40,10 @@ internal static class DuckDBStructSchemaPlanner
             .Select(field => field.Ordinal)
             .Where(ordinal => !replacements.ContainsKey(ordinal))
             .ToImmutableHashSet();
-        return new DuckDBCreateTableStructPlan(replacements, suppressed);
+        return new DuckDBCreateTableStructPlan(
+            replacements,
+            suppressed,
+            fields.Select(field => field.Name));
     }
 
     public static DuckDBTableRebuildPlan PlanTable(ITable table)
@@ -288,13 +291,16 @@ internal sealed class DuckDBCreateTableStructPlan
 {
     private readonly ImmutableDictionary<int, DuckDBStructColumnPlan> _replacements;
     private readonly ImmutableHashSet<int> _suppressedOrdinals;
+    private readonly ImmutableHashSet<string> _structFieldColumns;
 
     public DuckDBCreateTableStructPlan(
         ImmutableDictionary<int, DuckDBStructColumnPlan> replacements,
-        ImmutableHashSet<int> suppressedOrdinals)
+        ImmutableHashSet<int> suppressedOrdinals,
+        IEnumerable<string> structFieldColumns)
     {
         _replacements = replacements;
         _suppressedOrdinals = suppressedOrdinals;
+        _structFieldColumns = structFieldColumns.ToImmutableHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     public bool HasStructColumns => _replacements.Count > 0;
@@ -304,6 +310,9 @@ internal sealed class DuckDBCreateTableStructPlan
 
     public bool IsSuppressed(int ordinal)
         => _suppressedOrdinals.Contains(ordinal);
+
+    public bool IsStructFieldColumn(string columnName)
+        => _structFieldColumns.Contains(columnName);
 }
 
 internal sealed class DuckDBTableRebuildPlan

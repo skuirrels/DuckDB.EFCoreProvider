@@ -170,6 +170,138 @@ public sealed class StructParquetTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Required_navigation_joins_through_struct_foreign_key_between_parquet_files()
+    {
+        var principalsPath = ParquetPath();
+        var dependentsPath = ParquetPath();
+        try
+        {
+            WriteStructParquet(principalsPath, """
+                CREATE TABLE t (Id INTEGER, Name VARCHAR);
+                INSERT INTO t VALUES
+                    (1, 'North'),
+                    (2, 'South')
+                """);
+            WriteStructParquet(dependentsPath, """
+                CREATE TABLE t (
+                    Id INTEGER,
+                    Relationship STRUCT(parent_id INTEGER, label VARCHAR)
+                );
+                INSERT INTO t VALUES
+                    (10, {'parent_id': 2, 'label': 'second'}),
+                    (11, {'parent_id': 1, 'label': 'first'})
+                """);
+
+            using var context = CreateStructRelationshipContext<RequiredRelationshipTag>(
+                principalsPath,
+                dependentsPath,
+                required: true);
+            Assert.True(context.Database.EnsureCreated());
+            Assert.True(
+                context.Model.FindEntityType(typeof(StructDependent))!
+                    .FindNavigation(nameof(StructDependent.Principal))!
+                    .ForeignKey.IsRequired);
+
+            var query = context.Dependents
+                .OrderBy(dependent => dependent.Id)
+                .Select(dependent => new
+                {
+                    dependent.Id,
+                    dependent.PrincipalId,
+                    PrincipalName = dependent.Principal!.Name
+                });
+
+            var sql = query.ToQueryString();
+            var results = query.ToList();
+
+            Assert.Contains("INNER JOIN", sql, StringComparison.Ordinal);
+            Assert.Contains(".\"Relationship\".parent_id", sql, StringComparison.Ordinal);
+            Assert.Equal(
+                [
+                    new { Id = 10, PrincipalId = (int?)2, PrincipalName = "South" },
+                    new { Id = 11, PrincipalId = (int?)1, PrincipalName = "North" }
+                ],
+                results);
+
+            var north = context.Principals
+                .Include(principal => principal.Dependents)
+                .Single(principal => principal.Id == 1);
+
+            Assert.Equal("North", north.Name);
+            Assert.Equal(11, Assert.Single(north.Dependents).Id);
+        }
+        finally
+        {
+            File.Delete(principalsPath);
+            File.Delete(dependentsPath);
+        }
+    }
+
+    [ConditionalFact]
+    public void Optional_navigation_left_joins_through_nullable_struct_foreign_key_between_parquet_files()
+    {
+        var principalsPath = ParquetPath();
+        var dependentsPath = ParquetPath();
+        try
+        {
+            WriteStructParquet(principalsPath, """
+                CREATE TABLE t (Id INTEGER, Name VARCHAR);
+                INSERT INTO t VALUES
+                    (1, 'North'),
+                    (2, 'South')
+                """);
+            WriteStructParquet(dependentsPath, """
+                CREATE TABLE t (
+                    Id INTEGER,
+                    Relationship STRUCT(parent_id INTEGER, label VARCHAR)
+                );
+                INSERT INTO t VALUES
+                    (20, {'parent_id': 1, 'label': 'linked'}),
+                    (21, {'parent_id': NULL, 'label': 'unlinked'})
+                """);
+
+            using var context = CreateStructRelationshipContext<OptionalRelationshipTag>(
+                principalsPath,
+                dependentsPath,
+                required: false);
+            Assert.True(
+                context.Model.FindEntityType(typeof(StructDependent))!
+                    .FindProperty(nameof(StructDependent.PrincipalId))!
+                    .IsNullable);
+            Assert.False(
+                context.Model.FindEntityType(typeof(StructDependent))!
+                    .FindNavigation(nameof(StructDependent.Principal))!
+                    .ForeignKey.IsRequired);
+
+            var query = context.Dependents
+                .OrderBy(dependent => dependent.Id)
+                .Select(dependent => new
+                {
+                    dependent.Id,
+                    dependent.PrincipalId,
+                    PrincipalName = dependent.Principal == null ? null : dependent.Principal.Name
+                });
+
+            var sql = query.ToQueryString();
+            var results = query.ToList();
+
+            Assert.Contains("LEFT JOIN", sql, StringComparison.Ordinal);
+            Assert.Contains(".\"Relationship\".parent_id", sql, StringComparison.Ordinal);
+            Assert.Equal(
+                [
+                    new { Id = 20, PrincipalId = (int?)1, PrincipalName = (string?)"North" },
+                    new { Id = 21, PrincipalId = (int?)null, PrincipalName = (string?)null }
+                ],
+                results);
+        }
+        finally
+        {
+            File.Delete(principalsPath);
+            File.Delete(dependentsPath);
+        }
+    }
+
+    [ConditionalFact]
     public void Explicit_naming_from_parquet_round_trips()
     {
         var path = ParquetPath();
@@ -247,6 +379,19 @@ public sealed class StructParquetTests : DuckDBTestBase
         return new ExplicitNamingContext<TTag>(options, parquetPath);
     }
 
+    private StructRelationshipContext<TTag> CreateStructRelationshipContext<TTag>(
+        string principalsPath,
+        string dependentsPath,
+        bool required)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<StructRelationshipContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new StructRelationshipContext<TTag>(options, principalsPath, dependentsPath, required);
+    }
+
     // Tag types give each test its own DbContext type so EF Core's model cache is not
     // shared across tests with different Parquet paths.
     private sealed class ProjectionTag;
@@ -255,6 +400,8 @@ public sealed class StructParquetTests : DuckDBTestBase
     private sealed class DuplicateLeavesTag;
     private sealed class JoinTag;
     private sealed class ExplicitNamingTag;
+    private sealed class RequiredRelationshipTag;
+    private sealed class OptionalRelationshipTag;
 
     private sealed class CustomerContext<TTag>(DbContextOptions<CustomerContext<TTag>> options, string parquetPath) : DbContext(options)
     {
@@ -322,6 +469,40 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
+    private sealed class StructRelationshipContext<TTag>(
+        DbContextOptions<StructRelationshipContext<TTag>> options,
+        string principalsPath,
+        string dependentsPath,
+        bool required)
+        : DbContext(options)
+        where TTag : class
+    {
+        public DbSet<StructPrincipal> Principals => Set<StructPrincipal>();
+        public DbSet<StructDependent> Dependents => Set<StructDependent>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<StructPrincipal>(entity =>
+            {
+                entity.FromParquet(principalsPath);
+                entity.Property(principal => principal.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructDependent>(entity =>
+            {
+                entity.FromParquet(dependentsPath);
+                entity.Property(dependent => dependent.Id).ValueGeneratedNever();
+                entity.Property(dependent => dependent.PrincipalId)
+                    .HasColumnName("principal_key")
+                    .HasStructField("Relationship")
+                    .HasStructFieldName("parent_id");
+                entity.HasOne(dependent => dependent.Principal)
+                    .WithMany(principal => principal.Dependents)
+                    .HasForeignKey(dependent => dependent.PrincipalId)
+                    .IsRequired(required);
+            });
+        }
+    }
+
     private sealed class Customer
     {
         public int Id { get; set; }
@@ -356,5 +537,19 @@ public sealed class StructParquetTests : DuckDBTestBase
         public int Id { get; set; }
         public int CustomerId { get; set; }
         public required string Method { get; set; }
+    }
+
+    private sealed class StructPrincipal
+    {
+        public int Id { get; set; }
+        public required string Name { get; set; }
+        public List<StructDependent> Dependents { get; set; } = [];
+    }
+
+    private sealed class StructDependent
+    {
+        public int Id { get; set; }
+        public int? PrincipalId { get; set; }
+        public StructPrincipal? Principal { get; set; }
     }
 }

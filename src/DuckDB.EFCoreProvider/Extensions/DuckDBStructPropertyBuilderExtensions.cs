@@ -94,6 +94,13 @@ public static class DuckDBStructPropertyBuilderExtensions
         return propertyBuilder;
     }
 
+    /// <summary>
+    ///     Configures the physical DuckDB STRUCT leaf name for an entity scalar property.
+    /// </summary>
+    /// <remarks>
+    ///     Use this after <see cref="HasStructField{TProperty}(PropertyBuilder{TProperty}, string, string[])" />
+    ///     when the physical leaf name differs from the EF property name.
+    /// </remarks>
     public static PropertyBuilder<TProperty> HasStructFieldName<TProperty>(
         this PropertyBuilder<TProperty> propertyBuilder,
         string fieldName)
@@ -117,6 +124,17 @@ public static class DuckDBStructPropertyBuilderExtensions
         return propertyBuilder;
     }
 
+    /// <summary>
+    ///     Maps an entity scalar property to a field inside a physical DuckDB STRUCT column.
+    /// </summary>
+    /// <param name="propertyBuilder">The scalar property builder.</param>
+    /// <param name="structColumnName">The physical STRUCT root column.</param>
+    /// <param name="nestedFieldNames">The physical path from the root to the leaf's parent.</param>
+    /// <remarks>
+    ///     Configure the physical leaf with <see cref="HasStructFieldName{TProperty}(PropertyBuilder{TProperty}, string)" />.
+    ///     A mapped scalar can be an EF foreign-key property when both relationship ends are query-only
+    ///     DuckDB file sources. The normal EF relationship APIs continue to define the relationship.
+    /// </remarks>
     public static PropertyBuilder<TProperty> HasStructField<TProperty>(
         this PropertyBuilder<TProperty> propertyBuilder,
         string structColumnName,

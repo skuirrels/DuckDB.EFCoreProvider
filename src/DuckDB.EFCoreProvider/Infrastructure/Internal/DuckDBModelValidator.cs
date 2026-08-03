@@ -171,9 +171,16 @@ public class DuckDBModelValidator : RelationalModelValidator
                 throw UnsupportedStructProperty(propertyName, field, "keys");
             }
 
-            if (property.GetContainingForeignKeys().Any())
+            var containingForeignKeys = property.GetContainingForeignKeys().ToArray();
+            if (containingForeignKeys.Length > 0
+                && containingForeignKeys.Any(foreignKey =>
+                    !IsFileBacked(foreignKey.DeclaringEntityType)
+                    || !IsFileBacked(foreignKey.PrincipalEntityType)))
             {
-                throw UnsupportedStructProperty(propertyName, field, "foreign keys");
+                throw new NotSupportedException(
+                    $"Property '{propertyName}' maps to DuckDB STRUCT path '{FormatStructPath(field)}'. "
+                    + "STRUCT fields can be used as foreign keys only between DuckDB file-backed entities "
+                    + "because physical table constraints cannot target nested fields.");
             }
 
             if (property.GetContainingIndexes().Any())
@@ -255,6 +262,10 @@ public class DuckDBModelValidator : RelationalModelValidator
 
     private static string FormatStructPath(DuckDBStructFieldInfo field)
         => string.Join(".", new[] { field.StructColumnName }.Concat(field.FieldPath));
+
+    private static bool IsFileBacked(IReadOnlyEntityType entityType)
+        => entityType is IEntityType mutableEntityType
+            && mutableEntityType.GetDuckDBFileSourceFunction() is not null;
 
         private static void ValidateStructPathCollisions(
             IEntityType entityType,

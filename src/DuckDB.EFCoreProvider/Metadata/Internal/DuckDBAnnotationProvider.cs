@@ -48,6 +48,17 @@ public class DuckDBAnnotationProvider : RelationalAnnotationProvider
         }
     }
 
+    public override IEnumerable<IAnnotation> For(IForeignKeyConstraint foreignKey, bool designTime)
+    {
+        if (IsLogicalStructForeignKey(foreignKey))
+        {
+            yield return new Annotation(DuckDBAnnotationNames.LogicalStructForeignKey, true);
+        }
+    }
+
+    internal static bool IsLogicalStructForeignKey(IForeignKeyConstraint foreignKey)
+        => foreignKey.Columns.Any(column => ResolveStructFieldInfo(column) is not null);
+
     internal static DuckDBStructFieldInfo? ResolveStructFieldInfo(IColumn column)
     {
         var columnMap = column.Table?.EntityTypeMappings

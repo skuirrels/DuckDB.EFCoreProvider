@@ -324,6 +324,28 @@ e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
 
 `HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
 
+File-backed entities can use an explicitly mapped scalar STRUCT field as an EF foreign key. Configure the physical root/path and leaf on the scalar property, then define the relationship with the standard EF APIs:
+
+```csharp
+modelBuilder.Entity<Order>(e =>
+{
+    e.FromParquet("orders.parquet");
+    e.Property(o => o.CustomerId)
+        .HasColumnName("customer_key")       // Synthetic EF column identity
+        .HasStructField("Relationship")      // Physical STRUCT root and optional nested path
+        .HasStructFieldName("customer_id");  // Physical leaf
+
+    e.HasOne(o => o.Customer)
+        .WithMany(c => c.Orders)
+        .HasForeignKey(o => o.CustomerId)
+        .IsRequired();
+});
+
+modelBuilder.Entity<Customer>(e => e.FromParquet("customers.parquet"));
+```
+
+Use a nullable FK property with `.IsRequired(false)` for an optional navigation; the provider emits a left join and preserves a null STRUCT field. STRUCT foreign keys are query-only and require both relationship ends to be DuckDB file sources. Physical DuckDB table constraints cannot target nested fields, so STRUCT foreign keys on physical tables are rejected during model validation. STRUCT fields also remain unsupported as principal/alternate keys or indexes.
+
 **Limitations & Behavior:**
 - Queries with LINQ projections, filters, sorting, joins, and subqueries are fully supported
 - `EnsureCreated`, migrations, and `SaveChanges` are supported (struct columns are created and INSERTs use DuckDB struct literals)
