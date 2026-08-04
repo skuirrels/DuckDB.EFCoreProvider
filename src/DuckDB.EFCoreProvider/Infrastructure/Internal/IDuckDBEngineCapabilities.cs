@@ -28,6 +28,12 @@ public interface IDuckDBEngineCapabilities
     /// </summary>
     bool SupportsReturningOnReferencedTableUpdates => false;
 
+    /// <summary>
+    ///     Indicates whether the engine can update outbound foreign-key columns on a table that is also
+    ///     referenced by dependent rows.
+    /// </summary>
+    bool SupportsReferencedTableForeignKeyUpdates => !SupportsSchemaConstraints;
+
     bool SupportsSaveChangesBatching { get; }
 
     bool SupportsSequences { get; }

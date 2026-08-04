@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-08-02.
+**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-08-04.
 
 ---
 
@@ -26,7 +26,7 @@ This document is the published capability matrix for the provider. It serves two
 
 | Area | Notes |
 |---|---|
-| CRUD via `SaveChanges` | insert / update / delete |
+| CRUD via `SaveChanges` | insert / update / delete. A row may have a stable key, be referenced by dependants, and also carry its own outbound foreign key: scalar updates are supported, and explicitly modified outbound FK writes whose original and current provider values are equal are omitted when another write remains. A sole outbound-FK write is guarded by `IS DISTINCT FROM` plus a keyed concurrency probe so disconnected updates are preserved. |
 | Generated keys & store-generated values | DuckDB `RETURNING`; referenced-table updates use a transactional `UPDATE` plus keyed `SELECT` because DuckDB 1.5.5 rejects `UPDATE ... RETURNING` while dependent rows exist; `UseAutoIncrement()` is backed by sequences |
 | Optimistic concurrency | concurrency tokens |
 | Transactions | commit / rollback |
@@ -53,7 +53,7 @@ The profile is covered by real-extension functional tests, not inferred from nat
 |---|---|
 | Connection lifecycle | ✅ extension load, secret callback, safe `ATTACH`, and `USE` before EF uses provider-owned or caller-owned connections, including already-open connections |
 | Queries / raw SQL | ✅ normal EF LINQ and relational raw SQL against the selected catalog |
-| Tracked writes | ✅ insert/update/delete without `RETURNING`; affected-row optimistic-concurrency checks |
+| Tracked writes | ✅ insert/update/delete without `RETURNING`; affected-row optimistic-concurrency checks. DuckLake does not create physical foreign keys, so native DuckDB's dual-role FK-update limitation is not applied merely because the EF model contains the same logical inbound and outbound relationships. |
 | Transactions | ✅ commit/rollback through DuckDB/DuckLake; explicit transactions can set snapshot author/message/extra information through `SetCommitMessageAsync(...)` |
 | Initial schema | ✅ `EnsureCreated`; unsupported physical constraints and indexes are omitted |
 | Bulk insert | ✅ DuckDB appender after provider-controlled connection initialization |
@@ -91,7 +91,7 @@ into a target-model table rebuild with `EnableMigrationTableRebuilds()`.
 |---|---|
 | Foreign key in `CREATE TABLE` | ✅ emitted and enforced; unsupported cascade actions become `NO ACTION` with a migration warning |
 | Add / drop foreign key | clear `NotSupportedException`; ✅ opt-in table rebuild |
-| Update / delete a referenced row | DuckDB 1.5.5 rejects `UPDATE ... RETURNING` while dependent rows exist, including non-key updates. `SaveChanges` works around this with an affected-row-checked `UPDATE` and transactional keyed read-back when store-generated values are required. Eligible opt-in multi-row updates retain the provider's non-returning `UPDATE ... FROM (VALUES ...)` fast path. Direct SQL must omit `RETURNING` and must not write the referenced key while dependants exist. Deleting a referenced row remains subject to the foreign-key constraint. |
+| Update / delete a referenced row | Keep the roles distinct: the row's primary/alternate-key identity can remain stable while an inbound child FK references it and the row also has an outbound FK. Scalar updates succeed through an affected-row-checked `UPDATE` without `RETURNING`, followed by a transactional keyed read-back when store-generated values are required. If EF explicitly marks the outbound FK modified but its original and current provider values are equal, the provider omits that column when another write remains; a sole FK write uses `IS DISTINCT FROM` and a keyed concurrency probe, preserving disconnected updates without issuing an unchanged physical write. Eligible multi-row updates can still use `UPDATE ... FROM (VALUES ...)`. A genuine outbound-FK change is never omitted: native DuckDB rejects it while an actual inbound dependant exists, and the provider reports the table and outbound column in an atomic `DbUpdateException`. The same reassignment succeeds when no inbound row exists. Bulk batching does not change or work around these semantics. Deleting a referenced row remains subject to the foreign-key constraint. |
 | Add / drop primary, unique, or check constraint | clear engine error by default; ✅ opt-in table rebuild |
 | Add column with constraint / default / required | `Adding columns with constraints not yet supported` |
 | Add / alter computed (generated) column | `Adding generated columns after table creation is not supported yet` |

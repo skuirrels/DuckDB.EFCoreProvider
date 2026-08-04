@@ -2,6 +2,15 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.17.2
+
+- Fix tracked updates for dual-role rows whose stable key is referenced by dependants and which also carry an
+  outbound foreign key. Unchanged outbound-FK writes are classified using provider values and omitted when another
+  write remains, avoiding DuckDB's referenced-row constraint without hiding genuine physical changes.
+- Preserve disconnected sole-FK updates with an atomic `IS DISTINCT FROM` update and keyed concurrency probe.
+  Genuine outbound-FK reassignments succeed when no inbound dependant exists and otherwise produce an actionable
+  `DbUpdateException`; DuckLake retains its logical-relationship behavior because it does not create physical FKs.
+
 ## 1.17.1
 
 - Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.3 to 1.5.5.4,

@@ -63,10 +63,20 @@ or `SET DEFAULT`. The provider emits an enforced `NO ACTION` constraint and logs
 EF model requests an unsupported action. EF can still cascade tracked, loaded dependants client-side; deleting
 a principal without loading its dependants is rejected by the database.
 
-DuckDB also currently rejects an update or delete of a referenced row while any foreign-key row points to it,
-even when an update changes only a non-key column. This is an engine limitation rather than a provider ordering
-issue. Design write-heavy aggregates so referenced principals are stable, or update the dependent rows as part
-of an application-controlled maintenance operation.
+DuckDB applies two distinct restrictions to a referenced row. First, `UPDATE ... RETURNING` is rejected while an
+inbound dependent row points to it, even for a scalar non-key update. Tracked `SaveChanges` avoids `RETURNING` for
+that table and performs a keyed read-back when a computed value must be refreshed.
+
+Second, consider a dual-role row whose primary/alternate-key identity is stable, whose alternate key is referenced
+by an inbound child FK, and which has its own outbound FK such as `Root.LookupId`. A scalar payload update is
+supported. If EF explicitly marks `LookupId` modified but its original and current provider values are equal, the
+provider omits that column when another write remains. If it is the only write, the provider uses an
+`IS DISTINCT FROM` guard plus a keyed concurrency probe; this avoids an unchanged physical write while preserving
+disconnected updates whose EF snapshot may not match the database. A genuine `LookupId` reassignment is never discarded: native DuckDB rejects it
+while an actual child row references `Root`, so the provider reports the referenced table and outbound FK column in
+an atomic `DbUpdateException`. The reassignment succeeds when no child exists. Enabling or disabling bulk update
+batching does not change this rule and is not a workaround. DuckLake has no physical FK constraints, so this native
+limitation is not applied solely from its logical EF relationships.
 
 | Area | Detail |
 |---|---|
