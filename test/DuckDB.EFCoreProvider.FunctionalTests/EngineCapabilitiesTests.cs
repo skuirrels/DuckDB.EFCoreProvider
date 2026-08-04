@@ -499,6 +499,7 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     {
         Assert.Equal(supported, capabilities.SupportsReturning);
         Assert.False(capabilities.SupportsReturningOnReferencedTableUpdates);
+        Assert.Equal(!supported, capabilities.SupportsReferencedTableForeignKeyUpdates);
         Assert.Equal(supported, capabilities.SupportsSaveChangesBatching);
         Assert.Equal(supported, capabilities.SupportsSequences);
         Assert.Equal(supported, capabilities.SupportsGeneratedColumns);
@@ -602,6 +603,7 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     {
         public virtual bool SupportsReturning => true;
         public virtual bool SupportsReturningOnReferencedTableUpdates => false;
+        public virtual bool SupportsReferencedTableForeignKeyUpdates => false;
         public virtual bool SupportsSaveChangesBatching => true;
         public virtual bool SupportsSequences => true;
         public virtual bool SupportsGeneratedColumns => true;
@@ -652,6 +654,7 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     private sealed record TestCapabilities(
         bool SupportsReturning = true,
         bool SupportsReturningOnReferencedTableUpdates = false,
+        bool SupportsReferencedTableForeignKeyUpdates = false,
         bool SupportsSaveChangesBatching = true,
         bool SupportsSequences = true,
         bool SupportsGeneratedColumns = true,

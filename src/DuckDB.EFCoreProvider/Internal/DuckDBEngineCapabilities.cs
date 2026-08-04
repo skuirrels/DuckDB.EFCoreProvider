@@ -28,6 +28,7 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
     {
         SupportsReturning = !isDuckLake;
         SupportsReturningOnReferencedTableUpdates = false;
+        SupportsReferencedTableForeignKeyUpdates = isDuckLake;
         SupportsSaveChangesBatching = !isDuckLake;
         SupportsSequences = !isDuckLake;
         SupportsGeneratedColumns = !isDuckLake;
@@ -44,6 +45,8 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
     public bool SupportsReturning { get; }
 
     public bool SupportsReturningOnReferencedTableUpdates { get; }
+
+    public bool SupportsReferencedTableForeignKeyUpdates { get; }
 
     public bool SupportsSaveChangesBatching { get; }
 
