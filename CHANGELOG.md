@@ -2,6 +2,15 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.17.1
+
+- Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.3 to 1.5.5.4,
+  resolving the matching `Skuirrels.DuckDB.NET.Bindings.Full` 1.5.5.4
+  package. Controlled same-machine A/B runs of all 49 provider benchmark
+  cases, plus higher-confidence and counterbalanced reruns, found no
+  reproducible performance or material allocation regressions. Provider APIs
+  and the bundled native DuckDB 1.5.5 runtime are unchanged.
+
 ## 1.17.0
 
 - Extend non-executing command extraction to terminal `LongCount`, `Min`, `Max`, `Sum`, and `Average` operations.
