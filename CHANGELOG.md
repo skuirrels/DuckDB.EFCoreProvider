@@ -10,6 +10,13 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   cases, plus higher-confidence and counterbalanced reruns, found no
   reproducible performance or material allocation regressions. Provider APIs
   and the bundled native DuckDB 1.5.5 runtime are unchanged.
+- Skuirrels 1.5.5.4 adds cached index-based writers for compatible `IList<T>`
+  and `IReadOnlyList<T>` values written to DuckDB collection columns. In the
+  upstream `ReadOnlyCollection<T>`-to-`LIST` benchmark, this improved throughput
+  by approximately 4.1%, reduced managed allocation from 31,343.4 KB to 91.8 KB
+  (approximately 99.7%), and eliminated the observed Gen0 collections. Existing
+  optimized array and exact `List<T>` paths were preserved; their control
+  benchmarks found no meaningful winner.
 
 ## 1.17.0
 
