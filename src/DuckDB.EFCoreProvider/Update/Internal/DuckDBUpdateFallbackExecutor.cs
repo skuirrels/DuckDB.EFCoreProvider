@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -18,7 +19,8 @@ internal static class DuckDBUpdateFallbackExecutor
         DuckDBUpdateSqlGenerator updateSqlGenerator,
         IRelationalConnection connection,
         RawSqlCommand? updateCommand,
-        IReadOnlyList<IReadOnlyModificationCommand> modificationCommands)
+        IReadOnlyList<IReadOnlyModificationCommand> modificationCommands,
+        IDuckDBEngineCapabilities capabilities)
     {
         if (updateCommand is null)
         {
@@ -34,7 +36,7 @@ internal static class DuckDBUpdateFallbackExecutor
                 return;
             }
 
-            var plan = DuckDBUpdateFallbackPlanner.Create(modificationCommands[0]);
+            var plan = DuckDBUpdateFallbackPlanner.Create(modificationCommands[0], capabilities);
             if (plan.ReadOperations.Count > 0)
             {
                 using var reader = CreateReadbackCommand(dependencies, updateSqlGenerator, plan).ExecuteReader(
@@ -44,7 +46,7 @@ internal static class DuckDBUpdateFallbackExecutor
         }
         catch (Exception exception) when (exception is not DbUpdateException and not OperationCanceledException)
         {
-            throw CreateDbUpdateException(exception, modificationCommands);
+            throw CreateDbUpdateException(exception, modificationCommands, capabilities);
         }
     }
 
@@ -54,6 +56,7 @@ internal static class DuckDBUpdateFallbackExecutor
         IRelationalConnection connection,
         RawSqlCommand? updateCommand,
         IReadOnlyList<IReadOnlyModificationCommand> modificationCommands,
+        IDuckDBEngineCapabilities capabilities,
         CancellationToken cancellationToken)
     {
         if (updateCommand is null)
@@ -74,7 +77,7 @@ internal static class DuckDBUpdateFallbackExecutor
                 return;
             }
 
-            var plan = DuckDBUpdateFallbackPlanner.Create(modificationCommands[0]);
+            var plan = DuckDBUpdateFallbackPlanner.Create(modificationCommands[0], capabilities);
             if (plan.ReadOperations.Count > 0)
             {
                 var reader = await CreateReadbackCommand(dependencies, updateSqlGenerator, plan)
@@ -86,7 +89,7 @@ internal static class DuckDBUpdateFallbackExecutor
         }
         catch (Exception exception) when (exception is not DbUpdateException and not OperationCanceledException)
         {
-            throw CreateDbUpdateException(exception, modificationCommands);
+            throw CreateDbUpdateException(exception, modificationCommands, capabilities);
         }
     }
 
@@ -160,9 +163,38 @@ internal static class DuckDBUpdateFallbackExecutor
 
     private static DbUpdateException CreateDbUpdateException(
         Exception exception,
-        IReadOnlyList<IReadOnlyModificationCommand> modificationCommands)
-        => new(
-            RelationalStrings.UpdateStoreException,
+        IReadOnlyList<IReadOnlyModificationCommand> modificationCommands,
+        IDuckDBEngineCapabilities capabilities)
+    {
+        var command = modificationCommands[0];
+        var dualRolePlan = DuckDBDualRoleUpdatePlanner.Create(command, capabilities);
+        var message = dualRolePlan.HasChangedForeignKeyWrites && IsInboundReferenceConstraintFailure(exception)
+            ? DuckDBCapabilityErrorMessages.UnsupportedDualRoleForeignKeyUpdate(
+                command.TableName,
+                dualRolePlan.ChangedColumnNames)
+            : RelationalStrings.UpdateStoreException;
+
+        return new DbUpdateException(
+            message,
             exception,
-            modificationCommands.SelectMany(command => command.Entries).ToList());
+            modificationCommands.SelectMany(current => current.Entries).ToList());
+    }
+
+    internal static DbUpdateException CreateConditionalForeignKeyException(
+        DbUpdateException exception,
+        IReadOnlyList<IReadOnlyModificationCommand> modificationCommands,
+        IDuckDBEngineCapabilities capabilities)
+    {
+        var command = modificationCommands[0];
+        var plan = DuckDBDualRoleUpdatePlanner.Create(command, capabilities);
+        return new DbUpdateException(
+            DuckDBCapabilityErrorMessages.UnsupportedDualRoleForeignKeyUpdate(
+                command.TableName,
+                plan.UnchangedForeignKeyWrites.Select(modification => modification.ColumnName)),
+            exception.InnerException ?? exception,
+            modificationCommands.SelectMany(current => current.Entries).ToList());
+    }
+
+    internal static bool IsInboundReferenceConstraintFailure(Exception exception)
+        => exception.ToString().Contains("still referenced", StringComparison.OrdinalIgnoreCase);
 }

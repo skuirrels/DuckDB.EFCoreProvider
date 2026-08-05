@@ -51,4 +51,14 @@ internal static class DuckDBCapabilityErrorMessages
         => $"The configured DuckDB engine does not support INSERT/UPDATE RETURNING. Table '{table}' has store-generated "
             + $"column(s): {string.Join(", ", columns)}. Configure client-assigned values or literal defaults that do "
             + "not need to be read back.";
+
+    public static string UnsupportedDualRoleForeignKeyUpdate(
+        string table,
+        IEnumerable<string> columns)
+        => $"Native DuckDB rejected an unsupported dual-role foreign-key update on referenced table '{table}'. "
+            + $"The write changes outbound foreign-key column(s): {string.Join(", ", columns)} while dependent rows "
+            + "reference the table. The table key and row identity remain stable; the unsupported operation is the "
+            + "outbound relationship reassignment. Remove or repoint the dependent rows before changing the outbound "
+            + "foreign key. Equal original and current provider values are omitted when another write remains; a sole "
+            + "foreign-key write is guarded against the stored value so disconnected updates are preserved.";
 }

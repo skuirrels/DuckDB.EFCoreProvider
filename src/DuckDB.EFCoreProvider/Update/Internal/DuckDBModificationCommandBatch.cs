@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 
@@ -51,7 +52,9 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     private readonly bool _updateBatching;
     private readonly bool _deleteBatching;
     private readonly bool _useUpdateFallback;
+    private readonly IDuckDBEngineCapabilities _capabilities;
     private bool _requiresUpdateFallbackExecution;
+    private bool _requiresConditionalForeignKeyExecution;
 
     public DuckDBModificationCommandBatch(
         ModificationCommandBatchFactoryDependencies dependencies,
@@ -81,6 +84,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         _insertBatching = insertBatching;
         _updateBatching = updateBatching;
         _deleteBatching = deleteBatching;
+        _capabilities = capabilities;
         _useUpdateFallback =
             capabilities.SupportsReturning
             && !capabilities.SupportsReturningOnReferencedTableUpdates;
@@ -92,8 +96,11 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     /// <inheritdoc />
     public override bool TryAddCommand(IReadOnlyModificationCommand modificationCommand)
     {
-        var requiresSpecialExecution = RequiresUpdateFallbackExecution(modificationCommand);
+        var dualRolePlan = DuckDBDualRoleUpdatePlanner.Create(modificationCommand, _capabilities);
+        var requiresSpecialExecution = dualRolePlan.RequiresConditionalForeignKeyUpdate
+            || RequiresUpdateFallbackExecution(modificationCommand, dualRolePlan);
         if (_requiresUpdateFallbackExecution
+            || _requiresConditionalForeignKeyExecution
             || (requiresSpecialExecution && ModificationCommands.Count > 0))
         {
             return false;
@@ -109,7 +116,10 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         }
 
         if (_pendingBulkUpdateCommands.Count > 0
-            && !DuckDBBulkUpdatePlanner.CanAppend(_pendingBulkUpdateCommands[0], modificationCommand))
+            && !DuckDBBulkUpdatePlanner.CanAppend(
+                _pendingBulkUpdateCommands[0],
+                modificationCommand,
+                _capabilities))
         {
             ApplyPendingBulkUpdateCommands();
             _pendingBulkUpdateCommands.Clear();
@@ -128,7 +138,9 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     /// <inheritdoc />
     protected override void AddCommand(IReadOnlyModificationCommand modificationCommand)
     {
-        var requiresUpdateFallback = RequiresUpdateFallbackExecution(modificationCommand);
+        var dualRolePlan = DuckDBDualRoleUpdatePlanner.Create(modificationCommand, _capabilities);
+        var requiresUpdateFallback = RequiresUpdateFallbackExecution(modificationCommand, dualRolePlan);
+        _requiresConditionalForeignKeyExecution = dualRolePlan.RequiresConditionalForeignKeyUpdate;
 
         // Buffer the eligible insert/update and add its parameters now; the merged SQL is generated when the
         // run is flushed (on the next non-mergeable command or on Complete).
@@ -137,7 +149,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
             _pendingBulkInsertCommands.Add(modificationCommand);
             AddParameters(modificationCommand);
         }
-        else if (CanUseBulkUpdate(modificationCommand))
+        else if (CanUseBulkUpdate(modificationCommand, dualRolePlan))
         {
             _pendingBulkUpdateCommands.Add(modificationCommand);
             AddParameters(modificationCommand);
@@ -154,14 +166,20 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         }
     }
 
-    private bool RequiresUpdateFallbackExecution(IReadOnlyModificationCommand command)
+    private bool RequiresUpdateFallbackExecution(
+        IReadOnlyModificationCommand command,
+        DuckDBDualRoleUpdatePlan dualRolePlan)
         => _useUpdateFallback
-            && !CanUseBulkUpdate(command)
+            && !dualRolePlan.RequiresConditionalForeignKeyUpdate
+            && !CanUseBulkUpdate(command, dualRolePlan)
             && DuckDBUpdateFallbackPlanner.CanPlan(command);
 
-    private bool CanUseBulkUpdate(IReadOnlyModificationCommand command)
+    private bool CanUseBulkUpdate(
+        IReadOnlyModificationCommand command,
+        DuckDBDualRoleUpdatePlan dualRolePlan)
         => _updateBatching
-            && DuckDBBulkUpdatePlanner.CanPlan(command);
+            && !dualRolePlan.HasChangedForeignKeyWrites
+            && DuckDBBulkUpdatePlanner.CanPlan(command, _capabilities);
 
     /// <inheritdoc />
     protected override void RollbackLastCommand(IReadOnlyModificationCommand modificationCommand)
@@ -244,11 +262,24 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
                 UpdateSqlGenerator,
                 connection,
                 StoreCommand,
-                ModificationCommands);
+                ModificationCommands,
+                _capabilities);
             return;
         }
 
-        base.Execute(connection);
+        try
+        {
+            base.Execute(connection);
+        }
+        catch (DbUpdateException exception) when (
+            _requiresConditionalForeignKeyExecution
+            && DuckDBUpdateFallbackExecutor.IsInboundReferenceConstraintFailure(exception))
+        {
+            throw DuckDBUpdateFallbackExecutor.CreateConditionalForeignKeyException(
+                exception,
+                ModificationCommands,
+                _capabilities);
+        }
     }
 
     /// <inheritdoc />
@@ -265,12 +296,25 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
                     connection,
                     StoreCommand,
                     ModificationCommands,
+                    _capabilities,
                     cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
 
-        await base.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await base.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateException exception) when (
+            _requiresConditionalForeignKeyExecution
+            && DuckDBUpdateFallbackExecutor.IsInboundReferenceConstraintFailure(exception))
+        {
+            throw DuckDBUpdateFallbackExecutor.CreateConditionalForeignKeyException(
+                exception,
+                ModificationCommands,
+                _capabilities);
+        }
     }
 
     private void ApplyPendingBulkInsertCommands()

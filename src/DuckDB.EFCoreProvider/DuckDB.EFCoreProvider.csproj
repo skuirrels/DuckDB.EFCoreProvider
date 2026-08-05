@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.17.0</PackageVersion>
-    <FileVersion>1.17.0.0</FileVersion>
-    <Version>1.17.0</Version>
+    <PackageVersion>1.17.2</PackageVersion>
+    <FileVersion>1.17.2.0</FileVersion>
+    <Version>1.17.2</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,15 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.16.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.17.1</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.17.2
+- Fix tracked updates for dual-role rows whose stable key is referenced by dependants and which also carry an outbound foreign key. Unchanged outbound-FK writes are classified using provider values and omitted when another write remains, avoiding DuckDB's referenced-row constraint without hiding genuine physical changes.
+- Preserve disconnected sole-FK updates with an atomic IS DISTINCT FROM update and keyed concurrency probe. Genuine outbound-FK reassignments succeed when no inbound dependant exists and otherwise produce an actionable DbUpdateException; DuckLake retains its logical-relationship behavior because it does not create physical FKs.
+
+1.17.1
+- Upgrade Skuirrels.DuckDB.NET.Data.Full from 1.5.5.3 to 1.5.5.4, resolving the matching Skuirrels.DuckDB.NET.Bindings.Full 1.5.5.4 package. Controlled same-machine A/B runs of all 49 provider benchmark cases, plus higher-confidence and counterbalanced reruns, found no reproducible performance or material allocation regressions. Provider APIs and the bundled native DuckDB 1.5.5 runtime are unchanged.
+
 1.17.0
 - Extend non-executing command extraction to terminal LongCount, Min, Max, Sum, and Average operations. Numeric aggregates accept projected int, long, float, double, decimal, and nullable equivalents; unsupported projections fail before EF query compilation.
 - Preserve direct generic extraction for fixed-result terminal operations and use cached result-type dispatch only where Average promotes the CLR result type.

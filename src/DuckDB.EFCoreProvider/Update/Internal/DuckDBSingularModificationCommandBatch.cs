@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 
@@ -13,18 +14,23 @@ internal sealed class DuckDBSingularModificationCommandBatch(
     IDuckDBEngineCapabilities capabilities)
     : SingularModificationCommandBatch(dependencies)
 {
+    private readonly IDuckDBEngineCapabilities _capabilities = capabilities;
     private readonly bool _useUpdateFallback =
         capabilities.SupportsReturning
         && !capabilities.SupportsReturningOnReferencedTableUpdates;
     private bool _requiresUpdateFallbackExecution;
+    private bool _requiresConditionalForeignKeyExecution;
 
     private new DuckDBUpdateSqlGenerator UpdateSqlGenerator
         => (DuckDBUpdateSqlGenerator)base.UpdateSqlGenerator;
 
     protected override void AddCommand(IReadOnlyModificationCommand modificationCommand)
     {
+        var dualRolePlan = DuckDBDualRoleUpdatePlanner.Create(modificationCommand, _capabilities);
+        _requiresConditionalForeignKeyExecution = dualRolePlan.RequiresConditionalForeignKeyUpdate;
         _requiresUpdateFallbackExecution =
             _useUpdateFallback
+            && !dualRolePlan.RequiresConditionalForeignKeyUpdate
             && DuckDBUpdateFallbackPlanner.CanPlan(modificationCommand);
         base.AddCommand(modificationCommand);
     }
@@ -38,11 +44,24 @@ internal sealed class DuckDBSingularModificationCommandBatch(
                 UpdateSqlGenerator,
                 connection,
                 StoreCommand,
-                ModificationCommands);
+                ModificationCommands,
+                _capabilities);
             return;
         }
 
-        base.Execute(connection);
+        try
+        {
+            base.Execute(connection);
+        }
+        catch (DbUpdateException exception) when (
+            _requiresConditionalForeignKeyExecution
+            && DuckDBUpdateFallbackExecutor.IsInboundReferenceConstraintFailure(exception))
+        {
+            throw DuckDBUpdateFallbackExecutor.CreateConditionalForeignKeyException(
+                exception,
+                ModificationCommands,
+                _capabilities);
+        }
     }
 
     public override async Task ExecuteAsync(
@@ -58,11 +77,24 @@ internal sealed class DuckDBSingularModificationCommandBatch(
                     connection,
                     StoreCommand,
                     ModificationCommands,
+                    _capabilities,
                     cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
 
-        await base.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await base.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DbUpdateException exception) when (
+            _requiresConditionalForeignKeyExecution
+            && DuckDBUpdateFallbackExecutor.IsInboundReferenceConstraintFailure(exception))
+        {
+            throw DuckDBUpdateFallbackExecutor.CreateConditionalForeignKeyException(
+                exception,
+                ModificationCommands,
+                _capabilities);
+        }
     }
 }
