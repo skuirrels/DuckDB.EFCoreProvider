@@ -53,7 +53,7 @@ public sealed class StructParquetTests : DuckDBTestBase
                     (1, {'shorttext': 'NYC'})
                 """);
 
-            using var context = CreateSparseCustomerContext(path);
+            using var context = CreateSparseCustomerContext<SelectiveProjectionTag>(path);
             var query = context.Systems
                 .Select(system => new SparseSystem
                 {
@@ -306,6 +306,122 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
+    [ConditionalFact]
+    public void Struct_selective_projection_where_presence_check_rewritten_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateSparseCustomerContext<PresenceCheckTag>(path);
+            var query = context.Systems
+                .Where(system => system.Attributes != null)
+                .Select(system => system.Attributes!.Shorttext);
+            var sql = query.ToQueryString();
+            var result = query.Single();
+
+            Assert.Equal("NYC", result);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_where_null_presence_check_rewritten_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateSparseCustomerContext<NullPresenceCheckTag>(path);
+            var query = context.Systems
+                .Where(system => system.Attributes == null)
+                .Select(system => system.Attributes!.Shorttext);
+            var sql = query.ToQueryString();
+            var result = query.ToList();
+
+            Assert.Empty(result);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_presence_check_uses_all_projected_fields_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR, other VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': NULL, 'other': 'Paris'}),
+                    (2, {'shorttext': NULL, 'other': NULL})
+                """);
+
+            using var context = CreateTwoFieldSparseCustomerContext(path);
+
+            // IS NOT NULL polarity: presence check is rebuilt as OR over every projected field,
+            // so row 1 (only 'other' set) must materialize as non-null and row 2 as null.
+            var notNullQuery = context.Systems
+                .Select(system => new TwoFieldSparseSystem
+                {
+                    Uid = system.Uid,
+                    Attributes = system.Attributes != null
+                        ? new TwoFieldSparseAttributes
+                        {
+                            Shorttext = system.Attributes.Shorttext,
+                            Other = system.Attributes.Other
+                        }
+                        : null
+                })
+                .OrderBy(system => system.Uid);
+            var notNullSql = notNullQuery.ToQueryString();
+            var notNullResults = notNullQuery.ToList();
+
+            Assert.NotNull(notNullResults[0].Attributes);
+            Assert.Equal("Paris", notNullResults[0].Attributes!.Other);
+            Assert.Null(notNullResults[1].Attributes);
+            Assert.DoesNotContain("xedrresponsibility", notNullSql, StringComparison.OrdinalIgnoreCase);
+
+            // IS NULL polarity: presence check is rebuilt as AND over every projected field.
+            var isNullResults = context.Systems
+                .OrderBy(system => system.Uid)
+                .Select(system => system.Attributes == null
+                    ? null
+                    : new TwoFieldSparseAttributes
+                    {
+                        Shorttext = system.Attributes.Shorttext,
+                        Other = system.Attributes.Other
+                    })
+                .ToList();
+
+            Assert.NotNull(isNullResults[0]);
+            Assert.Equal("Paris", isNullResults[0]!.Other);
+            Assert.Null(isNullResults[1]);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string ParquetPath()
         => Path.Combine(Path.GetTempPath(), $"struct_parquet_{Guid.NewGuid():N}.parquet");
 
@@ -361,13 +477,14 @@ public sealed class StructParquetTests : DuckDBTestBase
 
     // Tag types give each test its own DbContext type so EF Core's model cache is not
     // shared across tests with different Parquet paths.
-    private SparseCustomerContext CreateSparseCustomerContext(string parquetPath)
+    private SparseCustomerContext<TTag> CreateSparseCustomerContext<TTag>(string parquetPath)
+        where TTag : class
     {
-        var options = new DbContextOptionsBuilder<SparseCustomerContext>()
+        var options = new DbContextOptionsBuilder<SparseCustomerContext<TTag>>()
             .UseDuckDB($"DataSource={DbPath}")
             .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
             .Options;
-        return new SparseCustomerContext(options, parquetPath);
+        return new SparseCustomerContext<TTag>(options, parquetPath);
     }
 
     private NestedSparseCustomerContext CreateNestedSparseCustomerContext(string parquetPath)
@@ -388,12 +505,24 @@ public sealed class StructParquetTests : DuckDBTestBase
         return new AttributeSelectiveContext(options, parquetPath);
     }
 
+    private TwoFieldSparseCustomerContext CreateTwoFieldSparseCustomerContext(string parquetPath)
+    {
+        var options = new DbContextOptionsBuilder<TwoFieldSparseCustomerContext>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new TwoFieldSparseCustomerContext(options, parquetPath);
+    }
+
     private sealed class ProjectionTag;
     private sealed class FilterTag;
     private sealed class OrderByTag;
     private sealed class DuplicateLeavesTag;
     private sealed class JoinTag;
     private sealed class ExplicitNamingTag;
+    private sealed class SelectiveProjectionTag;
+    private sealed class PresenceCheckTag;
+    private sealed class NullPresenceCheckTag;
 
     private sealed class CustomerContext<TTag>(DbContextOptions<CustomerContext<TTag>> options, string parquetPath) : DbContext(options)
     {
@@ -409,8 +538,9 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
-    private sealed class SparseCustomerContext(DbContextOptions<SparseCustomerContext> options, string parquetPath)
+    private sealed class SparseCustomerContext<TTag>(DbContextOptions<SparseCustomerContext<TTag>> options, string parquetPath)
         : DbContext(options)
+        where TTag : class
     {
         public DbSet<SparseSystem> Systems => Set<SparseSystem>();
 
@@ -453,6 +583,22 @@ public sealed class StructParquetTests : DuckDBTestBase
                 entity.FromParquet(parquetPath);
                 entity.HasKey(system => system.Uid);
                 entity.ComplexProperty(system => system.Attributes);
+            });
+        }
+    }
+
+    private sealed class TwoFieldSparseCustomerContext(DbContextOptions<TwoFieldSparseCustomerContext> options, string parquetPath)
+        : DbContext(options)
+    {
+        public DbSet<TwoFieldSparseSystem> Systems => Set<TwoFieldSparseSystem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<TwoFieldSparseSystem>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.HasKey(system => system.Uid);
+                entity.ComplexProperty(system => system.Attributes).UseStructMapping(true);
             });
         }
     }
@@ -546,6 +692,19 @@ public sealed class StructParquetTests : DuckDBTestBase
         public string XEdrSoftware { get; set; } = null!;
         public string XNacZone { get; set; } = null!;
         public string XSource { get; set; } = null!;
+    }
+
+    private sealed class TwoFieldSparseSystem
+    {
+        public int Uid { get; set; }
+        [UseStructMapping]
+        public TwoFieldSparseAttributes? Attributes { get; set; }
+    }
+
+    private sealed class TwoFieldSparseAttributes
+    {
+        public string? Shorttext { get; set; }
+        public string? Other { get; set; }
     }
 
     private sealed class NestedSparseSystem
