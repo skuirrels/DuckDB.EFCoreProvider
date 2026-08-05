@@ -76,6 +76,84 @@ public sealed class StructParquetTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_selective_projection_nested_nullable_complex_property_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (
+                    Uid INTEGER,
+                    Attributes STRUCT(shorttext VARCHAR, details STRUCT(city VARCHAR))
+                );
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC', 'details': {'city': 'Paris'}})
+                """);
+
+            using var context = CreateNestedSparseCustomerContext(path);
+            var query = context.Systems
+                .Select(system => new NestedSparseSystem
+                {
+                    Uid = system.Uid,
+                    Attributes = system.Attributes != null
+                        ? new NestedSparseAttributes
+                        {
+                            Shorttext = system.Attributes.Shorttext,
+                            Details = system.Attributes.Details != null
+                                ? new NestedSparseDetails { City = system.Attributes.Details.City }
+                                : null
+                        }
+                        : null
+                });
+            var sql = query.ToQueryString();
+            var result = query.Single();
+
+            Assert.Equal(1, result.Uid);
+            Assert.Equal("NYC", result.Attributes!.Shorttext);
+            Assert.Equal("Paris", result.Attributes!.Details!.City);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_via_attribute_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateAttributeSelectiveContext(path);
+            var query = context.Systems
+                .Select(system => new AttributeSelectiveSystem
+                {
+                    Uid = system.Uid,
+                    Attributes = system.Attributes != null
+                        ? new SparseAttributes { Shorttext = system.Attributes.Shorttext }
+                        : null
+                });
+            var sql = query.ToQueryString();
+            var result = query.Single();
+
+            Assert.Equal(1, result.Uid);
+            Assert.Equal("NYC", result.Attributes!.Shorttext);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
     public void Struct_sub_field_filter_from_parquet()
     {
         var path = ParquetPath();
@@ -292,6 +370,24 @@ public sealed class StructParquetTests : DuckDBTestBase
         return new SparseCustomerContext(options, parquetPath);
     }
 
+    private NestedSparseCustomerContext CreateNestedSparseCustomerContext(string parquetPath)
+    {
+        var options = new DbContextOptionsBuilder<NestedSparseCustomerContext>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new NestedSparseCustomerContext(options, parquetPath);
+    }
+
+    private AttributeSelectiveContext CreateAttributeSelectiveContext(string parquetPath)
+    {
+        var options = new DbContextOptionsBuilder<AttributeSelectiveContext>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new AttributeSelectiveContext(options, parquetPath);
+    }
+
     private sealed class ProjectionTag;
     private sealed class FilterTag;
     private sealed class OrderByTag;
@@ -325,6 +421,38 @@ public sealed class StructParquetTests : DuckDBTestBase
                 entity.FromParquet(parquetPath);
                 entity.HasKey(system => system.Uid);
                 entity.ComplexProperty(system => system.Attributes).UseStructMapping(true);
+            });
+        }
+    }
+
+    private sealed class NestedSparseCustomerContext(DbContextOptions<NestedSparseCustomerContext> options, string parquetPath)
+        : DbContext(options)
+    {
+        public DbSet<NestedSparseSystem> Systems => Set<NestedSparseSystem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NestedSparseSystem>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.HasKey(system => system.Uid);
+                entity.ComplexProperty(system => system.Attributes).UseStructMapping(true);
+            });
+        }
+    }
+
+    private sealed class AttributeSelectiveContext(DbContextOptions<AttributeSelectiveContext> options, string parquetPath)
+        : DbContext(options)
+    {
+        public DbSet<AttributeSelectiveSystem> Systems => Set<AttributeSelectiveSystem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<AttributeSelectiveSystem>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.HasKey(system => system.Uid);
+                entity.ComplexProperty(system => system.Attributes);
             });
         }
     }
@@ -418,6 +546,32 @@ public sealed class StructParquetTests : DuckDBTestBase
         public string XEdrSoftware { get; set; } = null!;
         public string XNacZone { get; set; } = null!;
         public string XSource { get; set; } = null!;
+    }
+
+    private sealed class NestedSparseSystem
+    {
+        public int Uid { get; set; }
+        [UseStructMapping]
+        public NestedSparseAttributes? Attributes { get; set; }
+    }
+
+    private sealed class NestedSparseAttributes
+    {
+        public string? Shorttext { get; set; }
+        public string XEdrResponsibility { get; set; } = null!;
+        public NestedSparseDetails? Details { get; set; }
+    }
+
+    private sealed class NestedSparseDetails
+    {
+        public string City { get; set; } = null!;
+    }
+
+    private sealed class AttributeSelectiveSystem
+    {
+        public int Uid { get; set; }
+        [UseStructMapping(true)]
+        public SparseAttributes? Attributes { get; set; }
     }
 
     private sealed class Address

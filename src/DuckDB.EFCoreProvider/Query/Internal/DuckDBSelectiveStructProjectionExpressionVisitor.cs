@@ -153,11 +153,15 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
                 : Enumerable.Empty<DuckDBStructFieldExpression>())
             .FirstOrDefault();
 
-        return field is null
-            ? null
-            : _sqlExpressionFactory.NotEqual(
-                field,
-                _sqlExpressionFactory.Constant(null, field.Type, field.TypeMapping));
+        if (field is null)
+        {
+            return null;
+        }
+
+        var nullConstant = _sqlExpressionFactory.Constant(null, field.Type, field.TypeMapping);
+        return FindNullCheckOperator(expression) == ExpressionType.Equal
+            ? _sqlExpressionFactory.Equal(field, nullConstant)
+            : _sqlExpressionFactory.NotEqual(field, nullConstant);
     }
 
     private bool TryRewritePresenceCheck(
@@ -215,6 +219,41 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
         } binary
             && IsNullPresenceExpression(binary.Left)
             && IsNullPresenceExpression(binary.Right);
+    }
+
+    /// <summary>
+    ///     Finds the operator of the first leaf null-check in a struct null-presence
+    ///     expression. Presence checks are uniform, so the first leaf is representative.
+    /// </summary>
+    private static ExpressionType? FindNullCheckOperator(SqlExpression expression)
+    {
+        if (expression is SqlUnaryExpression
+            {
+                OperatorType: ExpressionType.Equal or ExpressionType.NotEqual,
+                Operand: DuckDBStructFieldExpression
+            } unary)
+        {
+            return unary.OperatorType;
+        }
+
+        if (expression is SqlBinaryExpression
+            {
+                OperatorType: ExpressionType.Equal or ExpressionType.NotEqual
+            } binary
+            && (binary.Left is DuckDBStructFieldExpression
+                && binary.Right is SqlConstantExpression { Value: null }
+                || binary.Right is DuckDBStructFieldExpression
+                && binary.Left is SqlConstantExpression { Value: null }))
+        {
+            return binary.OperatorType;
+        }
+
+        return expression is SqlBinaryExpression
+            {
+                OperatorType: ExpressionType.AndAlso or ExpressionType.OrElse
+            } nested
+                ? FindNullCheckOperator(nested.Left) ?? FindNullCheckOperator(nested.Right)
+                : null;
     }
 
     private static bool TryGetNullCheckField(

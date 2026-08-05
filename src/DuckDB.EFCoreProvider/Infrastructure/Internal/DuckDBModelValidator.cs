@@ -236,7 +236,8 @@ public class DuckDBModelValidator : RelationalModelValidator
         {
             throw new NotSupportedException(
                 $"DuckDB STRUCT complex property '{complexProperty.DeclaringType.DisplayName()}.{complexProperty.Name}' "
-                + "must be required. Optional STRUCT roots and nested complex properties are not supported.");
+                + "must be required when selective STRUCT projection is not enabled. Optional STRUCT roots and nested "
+                + "complex properties require UseStructMapping(selectiveProjection: true).");
         }
 
         foreach (var nestedProperty in complexProperty.ComplexType.GetComplexProperties())

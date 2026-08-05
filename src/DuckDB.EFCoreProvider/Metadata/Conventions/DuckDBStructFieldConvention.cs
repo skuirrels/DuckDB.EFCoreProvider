@@ -176,7 +176,8 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                 structColumnName,
                 rootPropertyName,
                 extendedPath,
-                nestedFields);
+                nestedFields,
+                selectiveProjection);
             nestedComplexProperty.SetStructMapping(nestedMapping, fromDataAnnotation: false);
             rootFields.AddRange(nestedFields);
             children[nestedComplexProperty.Name] = new DuckDBStructChildMapping(nestedFieldName, nestedMapping);
