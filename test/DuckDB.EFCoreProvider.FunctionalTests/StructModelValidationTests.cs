@@ -82,6 +82,102 @@ public sealed class StructModelValidationTests
     }
 
     [Fact]
+    public void Struct_foreign_key_requiredness_is_inferred_from_leaf_nullability()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructPrincipal>(entity =>
+            {
+                entity.FromParquet("principals.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructDependent>(entity =>
+            {
+                entity.FromParquet("dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+                entity.HasOne(value => value.Principal)
+                    .WithMany(value => value.Dependents)
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
+            });
+            modelBuilder.Entity<StructRequiredLeafDependent>(entity =>
+            {
+                entity.FromParquet("required_dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+                entity.HasOne(value => value.Principal)
+                    .WithMany()
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
+            });
+        });
+
+        var nullableLeafForeignKey = Assert.Single(
+            context.Model.FindEntityType(typeof(StructDependent))!.GetForeignKeys());
+        Assert.False(nullableLeafForeignKey.IsRequired);
+
+        var nonNullableLeafForeignKey = Assert.Single(
+            context.Model.FindEntityType(typeof(StructRequiredLeafDependent))!.GetForeignKeys());
+        Assert.True(nonNullableLeafForeignKey.IsRequired);
+    }
+
+    [Fact]
+    public void Explicit_requiredness_override_wins_over_leaf_inference()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructPrincipal>(entity =>
+            {
+                entity.FromParquet("principals.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructDependent>(entity =>
+            {
+                entity.FromParquet("dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+                entity.HasOne(value => value.Principal)
+                    .WithMany(value => value.Dependents)
+                    .HasStructForeignKey(value => value.Relationship.ParentId)
+                    .IsRequired(true);
+            });
+            modelBuilder.Entity<StructRequiredLeafDependent>(entity =>
+            {
+                entity.FromParquet("required_dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+                entity.HasOne(value => value.Principal)
+                    .WithMany()
+                    .HasStructForeignKey(value => value.Relationship.ParentId)
+                    .IsRequired(false);
+            });
+        });
+
+        var explicitlyRequiredForeignKey = Assert.Single(
+            context.Model.FindEntityType(typeof(StructDependent))!.GetForeignKeys());
+        Assert.True(explicitlyRequiredForeignKey.IsRequired);
+
+        var explicitlyOptionalForeignKey = Assert.Single(
+            context.Model.FindEntityType(typeof(StructRequiredLeafDependent))!.GetForeignKeys());
+        Assert.False(explicitlyOptionalForeignKey.IsRequired);
+    }
+
+    [Fact]
     public void Has_struct_foreign_key_supports_one_to_one_relationships()
     {
         using var context = CreateContext(modelBuilder =>
@@ -416,6 +512,20 @@ public sealed class StructModelValidationTests
     private sealed class StructRelationshipPath
     {
         public int? ParentId { get; set; }
+    }
+
+    private sealed class StructRequiredLeafDependent
+    {
+        public int Id { get; set; }
+
+        public required StructRequiredLeafPath Relationship { get; set; }
+
+        public StructPrincipal? Principal { get; set; }
+    }
+
+    private sealed class StructRequiredLeafPath
+    {
+        public int ParentId { get; set; }
     }
 
     private sealed class StructOnePrincipal

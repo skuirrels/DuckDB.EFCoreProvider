@@ -192,13 +192,13 @@ public sealed class StructParquetTests : DuckDBTestBase
                     (11, {'parent_id': 1, 'label': 'first'})
                 """);
 
-            using var context = CreateStructRelationshipContext<RequiredRelationshipTag>(
+            using var context = CreateStructRequiredRelationshipContext<RequiredRelationshipTag>(
                 principalsPath,
                 dependentsPath,
-                required: true);
+                required: null);
             Assert.True(
-                context.Model.FindEntityType(typeof(StructDependent))!
-                    .FindNavigation(nameof(StructDependent.Principal))!
+                context.Model.FindEntityType(typeof(StructRequiredDependent))!
+                    .FindNavigation(nameof(StructRequiredDependent.Principal))!
                     .ForeignKey.IsRequired);
 
             var query = context.Dependents
@@ -217,8 +217,8 @@ public sealed class StructParquetTests : DuckDBTestBase
             Assert.Contains(".\"Relationship\".parent_id", sql, StringComparison.Ordinal);
             Assert.Equal(
                 [
-                    new { Id = 10, ParentId = (int?)2, PrincipalName = "South" },
-                    new { Id = 11, ParentId = (int?)1, PrincipalName = "North" }
+                    new { Id = 10, ParentId = 2, PrincipalName = "South" },
+                    new { Id = 11, ParentId = 1, PrincipalName = "North" }
                 ],
                 results);
 
@@ -262,7 +262,7 @@ public sealed class StructParquetTests : DuckDBTestBase
             using var context = CreateStructRelationshipContext<OptionalRelationshipTag>(
                 principalsPath,
                 dependentsPath,
-                required: false);
+                required: null);
             Assert.True(
                 context.Model.FindEntityType(typeof(StructDependent))!
                     .GetForeignKeys()
@@ -293,6 +293,126 @@ public sealed class StructParquetTests : DuckDBTestBase
                 [
                     new { Id = 20, ParentId = (int?)1, PrincipalName = (string?)"North" },
                     new { Id = 21, ParentId = (int?)null, PrincipalName = (string?)null }
+                ],
+                results);
+        }
+        finally
+        {
+            File.Delete(principalsPath);
+            File.Delete(dependentsPath);
+        }
+    }
+
+    [ConditionalFact]
+    public void Required_override_wins_over_nullable_struct_leaf()
+    {
+        var principalsPath = ParquetPath();
+        var dependentsPath = ParquetPath();
+        try
+        {
+            WriteStructParquet(principalsPath, """
+                CREATE TABLE t (Id INTEGER, Name VARCHAR);
+                INSERT INTO t VALUES
+                    (1, 'North'),
+                    (2, 'South')
+                """);
+            WriteStructParquet(dependentsPath, """
+                CREATE TABLE t (
+                    Id INTEGER,
+                    Relationship STRUCT(parent_id INTEGER, label VARCHAR)
+                );
+                INSERT INTO t VALUES
+                    (30, {'parent_id': 2, 'label': 'second'}),
+                    (31, {'parent_id': 1, 'label': 'first'})
+                """);
+
+            // A nullable leaf would be inferred as optional, but an explicit IsRequired(true)
+            // must win and produce an INNER JOIN.
+            using var context = CreateStructRelationshipContext<RequiredOverrideTag>(
+                principalsPath,
+                dependentsPath,
+                required: true);
+            Assert.True(
+                context.Model.FindEntityType(typeof(StructDependent))!
+                    .FindNavigation(nameof(StructDependent.Principal))!
+                    .ForeignKey.IsRequired);
+
+            var query = context.Dependents
+                .OrderBy(dependent => dependent.Id)
+                .Select(dependent => new
+                {
+                    dependent.Id,
+                    ParentId = dependent.Relationship.ParentId,
+                    PrincipalName = dependent.Principal!.Name
+                });
+
+            var sql = query.ToQueryString();
+            var results = query.ToList();
+
+            Assert.Contains("INNER JOIN", sql, StringComparison.Ordinal);
+            Assert.Equal(
+                [
+                    new { Id = 30, ParentId = (int?)2, PrincipalName = "South" },
+                    new { Id = 31, ParentId = (int?)1, PrincipalName = "North" }
+                ],
+                results);
+        }
+        finally
+        {
+            File.Delete(principalsPath);
+            File.Delete(dependentsPath);
+        }
+    }
+
+    [ConditionalFact]
+    public void Optional_override_wins_over_non_nullable_struct_leaf()
+    {
+        var principalsPath = ParquetPath();
+        var dependentsPath = ParquetPath();
+        try
+        {
+            WriteStructParquet(principalsPath, """
+                CREATE TABLE t (Id INTEGER, Name VARCHAR);
+                INSERT INTO t VALUES
+                    (1, 'North'),
+                    (2, 'South')
+                """);
+            WriteStructParquet(dependentsPath, """
+                CREATE TABLE t (
+                    Id INTEGER,
+                    Relationship STRUCT(parent_id INTEGER, label VARCHAR)
+                );
+                INSERT INTO t VALUES
+                    (40, {'parent_id': 1, 'label': 'linked'})
+                """);
+
+            // A non-nullable leaf would be inferred as required, but an explicit IsRequired(false)
+            // must win and produce a LEFT JOIN.
+            using var context = CreateStructRequiredRelationshipContext<OptionalOverrideTag>(
+                principalsPath,
+                dependentsPath,
+                required: false);
+            Assert.False(
+                context.Model.FindEntityType(typeof(StructRequiredDependent))!
+                    .FindNavigation(nameof(StructRequiredDependent.Principal))!
+                    .ForeignKey.IsRequired);
+
+            var query = context.Dependents
+                .OrderBy(dependent => dependent.Id)
+                .Select(dependent => new
+                {
+                    dependent.Id,
+                    ParentId = dependent.Relationship.ParentId,
+                    PrincipalName = dependent.Principal == null ? null : dependent.Principal.Name
+                });
+
+            var sql = query.ToQueryString();
+            var results = query.ToList();
+
+            Assert.Contains("LEFT JOIN", sql, StringComparison.Ordinal);
+            Assert.Equal(
+                [
+                    new { Id = 40, ParentId = 1, PrincipalName = (string?)"North" }
                 ],
                 results);
         }
@@ -384,7 +504,7 @@ public sealed class StructParquetTests : DuckDBTestBase
     private StructRelationshipContext<TTag> CreateStructRelationshipContext<TTag>(
         string principalsPath,
         string dependentsPath,
-        bool required)
+        bool? required)
         where TTag : class
     {
         var options = new DbContextOptionsBuilder<StructRelationshipContext<TTag>>()
@@ -392,6 +512,19 @@ public sealed class StructParquetTests : DuckDBTestBase
             .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
             .Options;
         return new StructRelationshipContext<TTag>(options, principalsPath, dependentsPath, required);
+    }
+
+    private StructRequiredRelationshipContext<TTag> CreateStructRequiredRelationshipContext<TTag>(
+        string principalsPath,
+        string dependentsPath,
+        bool? required)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<StructRequiredRelationshipContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new StructRequiredRelationshipContext<TTag>(options, principalsPath, dependentsPath, required);
     }
 
     // Tag types give each test its own DbContext type so EF Core's model cache is not
@@ -404,6 +537,8 @@ public sealed class StructParquetTests : DuckDBTestBase
     private sealed class ExplicitNamingTag;
     private sealed class RequiredRelationshipTag;
     private sealed class OptionalRelationshipTag;
+    private sealed class RequiredOverrideTag;
+    private sealed class OptionalOverrideTag;
 
     private sealed class CustomerContext<TTag>(DbContextOptions<CustomerContext<TTag>> options, string parquetPath) : DbContext(options)
     {
@@ -475,7 +610,7 @@ public sealed class StructParquetTests : DuckDBTestBase
         DbContextOptions<StructRelationshipContext<TTag>> options,
         string principalsPath,
         string dependentsPath,
-        bool required)
+        bool? required)
         : DbContext(options)
         where TTag : class
     {
@@ -498,10 +633,51 @@ public sealed class StructParquetTests : DuckDBTestBase
                     complex.UseStructMapping();
                     complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
                 });
-                entity.HasOne(dependent => dependent.Principal)
+                var relationship = entity.HasOne(dependent => dependent.Principal)
                     .WithMany(principal => principal.Dependents)
-                    .HasStructForeignKey(dependent => dependent.Relationship.ParentId)
-                    .IsRequired(required);
+                    .HasStructForeignKey(dependent => dependent.Relationship.ParentId);
+                if (required is { } r)
+                {
+                    relationship.IsRequired(r);
+                }
+            });
+        }
+    }
+
+    private sealed class StructRequiredRelationshipContext<TTag>(
+        DbContextOptions<StructRequiredRelationshipContext<TTag>> options,
+        string principalsPath,
+        string dependentsPath,
+        bool? required)
+        : DbContext(options)
+        where TTag : class
+    {
+        public DbSet<StructRequiredPrincipal> Principals => Set<StructRequiredPrincipal>();
+        public DbSet<StructRequiredDependent> Dependents => Set<StructRequiredDependent>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<StructRequiredPrincipal>(entity =>
+            {
+                entity.FromParquet(principalsPath);
+                entity.Property(principal => principal.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructRequiredDependent>(entity =>
+            {
+                entity.FromParquet(dependentsPath);
+                entity.Property(dependent => dependent.Id).ValueGeneratedNever();
+                entity.ComplexProperty(dependent => dependent.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+                var relationship = entity.HasOne(dependent => dependent.Principal)
+                    .WithMany(principal => principal.Dependents)
+                    .HasStructForeignKey(dependent => dependent.Relationship.ParentId);
+                if (required is { } r)
+                {
+                    relationship.IsRequired(r);
+                }
             });
         }
     }
@@ -559,5 +735,24 @@ public sealed class StructParquetTests : DuckDBTestBase
     private sealed class StructRelationshipPath
     {
         public int? ParentId { get; set; }
+    }
+
+    private sealed class StructRequiredPrincipal
+    {
+        public int Id { get; set; }
+        public required string Name { get; set; }
+        public List<StructRequiredDependent> Dependents { get; set; } = [];
+    }
+
+    private sealed class StructRequiredDependent
+    {
+        public int Id { get; set; }
+        public required StructRequiredRelationshipPath Relationship { get; set; }
+        public StructRequiredPrincipal? Principal { get; set; }
+    }
+
+    private sealed class StructRequiredRelationshipPath
+    {
+        public int ParentId { get; set; }
     }
 }

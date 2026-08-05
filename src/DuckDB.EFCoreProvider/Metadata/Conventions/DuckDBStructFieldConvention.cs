@@ -161,6 +161,16 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                 ?? throw new InvalidOperationException(
                     $"The internal STRUCT foreign-key property '{binding.ShadowPropertyName}' could not be created.");
             shadowProperty.SetColumnName(field.EfColumnName, fromDataAnnotation: false);
+
+            // Infer the join shape from the mapped STRUCT leaf: a non-nullable leaf means the
+            // foreign key is required (INNER JOIN); a nullable leaf means it is optional (LEFT JOIN).
+            // An explicit IsRequired call (Explicit/DataAnnotation source) always wins over inference.
+            var requiredConfigurationSource = foreignKey.GetIsRequiredConfigurationSource();
+            if (requiredConfigurationSource is null or ConfigurationSource.Convention)
+            {
+                foreignKey.SetIsRequired(!leafProperty!.IsNullable, fromDataAnnotation: false);
+            }
+
             foreignKey.SetOrRemoveAnnotation(
                 DuckDBAnnotationNames.StructForeignKeyPath,
                 null,
