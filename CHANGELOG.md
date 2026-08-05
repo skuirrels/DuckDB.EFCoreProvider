@@ -2,6 +2,31 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.17.2
+
+- Fix tracked updates for dual-role rows whose stable key is referenced by dependants and which also carry an
+  outbound foreign key. Unchanged outbound-FK writes are classified using provider values and omitted when another
+  write remains, avoiding DuckDB's referenced-row constraint without hiding genuine physical changes.
+- Preserve disconnected sole-FK updates with an atomic `IS DISTINCT FROM` update and keyed concurrency probe.
+  Genuine outbound-FK reassignments succeed when no inbound dependant exists and otherwise produce an actionable
+  `DbUpdateException`; DuckLake retains its logical-relationship behavior because it does not create physical FKs.
+
+## 1.17.1
+
+- Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.3 to 1.5.5.4,
+  resolving the matching `Skuirrels.DuckDB.NET.Bindings.Full` 1.5.5.4
+  package. Controlled same-machine A/B runs of all 49 provider benchmark
+  cases, plus higher-confidence and counterbalanced reruns, found no
+  reproducible performance or material allocation regressions. Provider APIs
+  and the bundled native DuckDB 1.5.5 runtime are unchanged.
+- Skuirrels 1.5.5.4 adds cached index-based writers for compatible `IList<T>`
+  and `IReadOnlyList<T>` values written to DuckDB collection columns. In the
+  upstream `ReadOnlyCollection<T>`-to-`LIST` benchmark, this improved throughput
+  by approximately 4.1%, reduced managed allocation from 31,343.4 KB to 91.8 KB
+  (approximately 99.7%), and eliminated the observed Gen0 collections. Existing
+  optimized array and exact `List<T>` paths were preserved; their control
+  benchmarks found no meaningful winner.
+
 ## 1.17.0
 
 - Extend non-executing command extraction to terminal `LongCount`, `Min`, `Max`, `Sum`, and `Average` operations.

@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Update;
 using System.Diagnostics.CodeAnalysis;
@@ -22,6 +23,7 @@ internal static class DuckDBUpdateFallbackPlanner
 
     public static bool TryCreate(
         IReadOnlyModificationCommand command,
+        IDuckDBEngineCapabilities capabilities,
         [NotNullWhen(true)] out DuckDBUpdateFallbackPlan? plan)
     {
         if (!CanPlan(command))
@@ -30,12 +32,16 @@ internal static class DuckDBUpdateFallbackPlanner
             return false;
         }
 
-        plan = new DuckDBUpdateFallbackPlan(command);
+        plan = new DuckDBUpdateFallbackPlan(
+            command,
+            DuckDBDualRoleUpdatePlanner.Create(command, capabilities));
         return true;
     }
 
-    public static DuckDBUpdateFallbackPlan Create(IReadOnlyModificationCommand command)
-        => TryCreate(command, out var plan)
+    public static DuckDBUpdateFallbackPlan Create(
+        IReadOnlyModificationCommand command,
+        IDuckDBEngineCapabilities capabilities)
+        => TryCreate(command, capabilities, out var plan)
             ? plan
             : throw new ArgumentException(
                 "The command must be an update to a table referenced by a foreign key.",
@@ -62,15 +68,18 @@ internal static class DuckDBUpdateFallbackPlanner
 /// </summary>
 internal sealed class DuckDBUpdateFallbackPlan
 {
-    internal DuckDBUpdateFallbackPlan(IReadOnlyModificationCommand command)
+    internal DuckDBUpdateFallbackPlan(
+        IReadOnlyModificationCommand command,
+        DuckDBDualRoleUpdatePlan dualRolePlan)
     {
         Command = command;
         TableName = command.TableName;
         Schema = command.Schema;
-        WriteOperations = command.ColumnModifications.Where(operation => operation.IsWrite).ToArray();
+        WriteOperations = dualRolePlan.WriteOperations;
         ReadOperations = command.ColumnModifications.Where(operation => operation.IsRead).ToArray();
         ConditionOperations = command.ColumnModifications.Where(operation => operation.IsCondition).ToArray();
         KeyOperations = command.ColumnModifications.Where(operation => operation.IsKey).ToArray();
+        HasChangedForeignKeyWrites = dualRolePlan.HasChangedForeignKeyWrites;
     }
 
     public IReadOnlyModificationCommand Command { get; }
@@ -86,4 +95,6 @@ internal sealed class DuckDBUpdateFallbackPlan
     public IReadOnlyList<IColumnModification> ConditionOperations { get; }
 
     public IReadOnlyList<IColumnModification> KeyOperations { get; }
+
+    public bool HasChangedForeignKeyWrites { get; }
 }
