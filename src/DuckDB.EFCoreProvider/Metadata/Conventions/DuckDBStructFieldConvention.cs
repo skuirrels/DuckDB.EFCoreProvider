@@ -127,10 +127,32 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
 
     private static void ApplyStructForeignKeyBindings(IConventionEntityType entityType)
     {
-        foreach (var foreignKey in entityType.GetForeignKeys().OfType<IConventionForeignKey>())
+        var bindings = entityType.GetForeignKeys()
+            .OfType<IConventionForeignKey>()
+            .Select(foreignKey => (
+                ForeignKey: foreignKey,
+                Binding: foreignKey.FindAnnotation(DuckDBAnnotationNames.StructForeignKeyPath)?.Value
+                    as DuckDBStructForeignKeyPath))
+            .Where(entry => entry.Binding is not null)
+            .ToArray();
+
+        // Distinct STRUCT paths must never collapse onto the same shadow foreign-key property: the binding is
+        // consumed below, so the columns would otherwise silently overwrite one another during finalization.
+        foreach (var group in bindings.GroupBy(
+                     entry => entry.Binding!.ShadowPropertyName,
+                     StringComparer.Ordinal))
         {
-            if (foreignKey.FindAnnotation(DuckDBAnnotationNames.StructForeignKeyPath)?.Value
-                is not DuckDBStructForeignKeyPath binding)
+            if (group.Select(entry => entry.Binding!).Distinct().Skip(1).Any())
+            {
+                throw new InvalidOperationException(
+                    $"Multiple STRUCT foreign keys on '{entityType.DisplayName()}' resolve to the same shadow "
+                    + $"property '{group.Key}'. Use distinct STRUCT paths for distinct relationships.");
+            }
+        }
+
+        foreach (var (foreignKey, binding) in bindings)
+        {
+            if (binding is null)
             {
                 continue;
             }

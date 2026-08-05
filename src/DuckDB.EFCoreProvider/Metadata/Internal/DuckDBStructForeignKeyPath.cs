@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 
 namespace DuckDB.EFCoreProvider.Metadata.Internal;
 
@@ -30,5 +31,6 @@ internal sealed record DuckDBStructForeignKeyPath
         => "__DuckDBStructForeignKey_"
             + string.Join(
                 "_",
-                memberNames.Select(memberName => memberName.Replace("_", "__", StringComparison.Ordinal)));
+                memberNames.Select(memberName =>
+                    memberName.Length.ToString(CultureInfo.InvariantCulture) + "_" + memberName));
 }

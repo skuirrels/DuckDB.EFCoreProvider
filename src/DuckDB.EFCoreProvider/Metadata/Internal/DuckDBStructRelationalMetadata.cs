@@ -11,13 +11,14 @@ internal static class DuckDBStructRelationalMetadata
         ArgumentNullException.ThrowIfNull(column);
 
         // The entity-level map disambiguates shared complex types used under different STRUCT roots.
-        var columnMap = column.Table?.EntityTypeMappings
-            .Select(mapping => mapping.TypeBase is IEntityType entityType ? entityType.GetStructColumnMap() : null)
-            .FirstOrDefault(map => map is not null && map.ContainsKey(column.Name));
-
-        if (columnMap?.TryGetValue(column.Name, out var mappedField) == true)
+        foreach (var mapping in column.Table?.EntityTypeMappings ?? [])
         {
-            return mappedField;
+            if (mapping.TypeBase is IEntityType entityType
+                && entityType.GetStructColumnMap() is { } columnMap
+                && columnMap.TryGetValue(column.Name, out var mappedField))
+            {
+                return mappedField;
+            }
         }
 
         return column.PropertyMappings

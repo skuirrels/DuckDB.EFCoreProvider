@@ -64,10 +64,10 @@ public static class DuckDBRelationshipBuilderExtensions
 
     /// <summary>
     ///     Configures a typed one-to-one relationship whose dependent foreign-key value is stored in a mapped STRUCT
-    ///     leaf.
+    ///     leaf, where the declaring entity type is the dependent.
     /// </summary>
-    /// <typeparam name="TDependentEntity">The dependent entity type.</typeparam>
-    /// <typeparam name="TPrincipalEntity">The principal entity type.</typeparam>
+    /// <typeparam name="TEntity">The dependent entity type.</typeparam>
+    /// <typeparam name="TRelatedEntity">The principal entity type.</typeparam>
     /// <typeparam name="TProperty">The STRUCT leaf CLR type.</typeparam>
     /// <param name="relationshipBuilder">The one-to-one relationship builder.</param>
     /// <param name="foreignKeyExpression">
@@ -75,21 +75,55 @@ public static class DuckDBRelationshipBuilderExtensions
     ///     <c>dependent =&gt; dependent.Relationship.ParentId</c>.
     /// </param>
     /// <returns>The same relationship builder for further configuration.</returns>
-    public static ReferenceReferenceBuilder<TDependentEntity, TPrincipalEntity> HasStructForeignKey<
-        TDependentEntity,
-        TPrincipalEntity,
+    /// <remarks>
+    ///     This overload binds the foreign-key expression to the first generic argument of the relationship builder,
+    ///     so it applies when the dependent side initiated the configuration.
+    /// </remarks>
+    public static ReferenceReferenceBuilder<TEntity, TRelatedEntity> HasStructForeignKey<
+        TEntity,
+        TRelatedEntity,
         TProperty>(
-        this ReferenceReferenceBuilder<TDependentEntity, TPrincipalEntity> relationshipBuilder,
-        Expression<Func<TDependentEntity, TProperty>> foreignKeyExpression)
-        where TPrincipalEntity : class
-        where TDependentEntity : class
+        this ReferenceReferenceBuilder<TEntity, TRelatedEntity> relationshipBuilder,
+        Expression<Func<TEntity, TProperty>> foreignKeyExpression)
+        where TEntity : class
+        where TRelatedEntity : class
     {
         ArgumentNullException.ThrowIfNull(relationshipBuilder);
 
-        var binding = CreateBinding(foreignKeyExpression);
-        relationshipBuilder
-            .HasForeignKey(typeof(TDependentEntity), binding.ShadowPropertyName)
-            .HasAnnotation(DuckDBAnnotationNames.StructForeignKeyPath, binding);
+        Configure(relationshipBuilder, foreignKeyExpression);
+
+        return relationshipBuilder;
+    }
+
+    /// <summary>
+    ///     Configures a typed one-to-one relationship whose dependent foreign-key value is stored in a mapped STRUCT
+    ///     leaf, where the related entity type is the dependent.
+    /// </summary>
+    /// <typeparam name="TEntity">The principal entity type.</typeparam>
+    /// <typeparam name="TRelatedEntity">The dependent entity type.</typeparam>
+    /// <typeparam name="TProperty">The STRUCT leaf CLR type.</typeparam>
+    /// <param name="relationshipBuilder">The one-to-one relationship builder.</param>
+    /// <param name="foreignKeyExpression">
+    ///     A nested dependent member path ending at the mapped STRUCT leaf, such as
+    ///     <c>dependent =&gt; dependent.Relationship.ParentId</c>.
+    /// </param>
+    /// <returns>The same relationship builder for further configuration.</returns>
+    /// <remarks>
+    ///     This overload binds the foreign-key expression to the second generic argument of the relationship builder,
+    ///     so it applies when the principal side initiated the configuration.
+    /// </remarks>
+    public static ReferenceReferenceBuilder<TEntity, TRelatedEntity> HasStructForeignKey<
+        TEntity,
+        TRelatedEntity,
+        TProperty>(
+        this ReferenceReferenceBuilder<TEntity, TRelatedEntity> relationshipBuilder,
+        Expression<Func<TRelatedEntity, TProperty>> foreignKeyExpression)
+        where TEntity : class
+        where TRelatedEntity : class
+    {
+        ArgumentNullException.ThrowIfNull(relationshipBuilder);
+
+        Configure(relationshipBuilder, foreignKeyExpression);
 
         return relationshipBuilder;
     }
@@ -129,6 +163,17 @@ public static class DuckDBRelationshipBuilderExtensions
         var binding = CreateBinding(foreignKeyExpression);
         relationshipBuilder
             .HasForeignKey(binding.ShadowPropertyName)
+            .HasAnnotation(DuckDBAnnotationNames.StructForeignKeyPath, binding);
+    }
+
+    private static void Configure<TDependentEntity, TProperty>(
+        ReferenceReferenceBuilder relationshipBuilder,
+        Expression<Func<TDependentEntity, TProperty>> foreignKeyExpression)
+        where TDependentEntity : class
+    {
+        var binding = CreateBinding(foreignKeyExpression);
+        relationshipBuilder
+            .HasForeignKey(typeof(TDependentEntity), binding.ShadowPropertyName)
             .HasAnnotation(DuckDBAnnotationNames.StructForeignKeyPath, binding);
     }
 

@@ -16,7 +16,8 @@ internal static class DuckDBStructSchemaPlanner
     {
         ArgumentNullException.ThrowIfNull(operations);
         return operations
-            .Where(operation => operation[DuckDBAnnotationNames.LogicalStructForeignKey] is not true)
+            .Where(operation => operation.FindAnnotation(DuckDBAnnotationNames.LogicalStructForeignKey)?.Value
+                is not true)
             .ToArray();
     }
 

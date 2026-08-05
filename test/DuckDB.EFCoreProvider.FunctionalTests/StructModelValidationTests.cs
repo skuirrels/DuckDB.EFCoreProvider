@@ -213,6 +213,102 @@ public sealed class StructModelValidationTests
     }
 
     [Fact]
+    public void Has_struct_foreign_key_supports_one_to_one_from_principal_side()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructOnePrincipal>(entity =>
+            {
+                entity.FromParquet("principals.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.HasOne(value => value.Dependent)
+                    .WithOne(value => value.Principal)
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
+            });
+            modelBuilder.Entity<StructOneDependent>(entity =>
+            {
+                entity.FromParquet("dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+            });
+        });
+
+        var dependent = context.Model.FindEntityType(typeof(StructOneDependent));
+        var foreignKey = Assert.Single(dependent!.GetForeignKeys());
+
+        Assert.StartsWith(
+            "__DuckDBStructForeignKey_",
+            Assert.Single(foreignKey.Properties).Name,
+            StringComparison.Ordinal);
+        Assert.True(foreignKey.IsUnique);
+    }
+
+    [Fact]
+    public void Distinct_struct_foreign_key_paths_do_not_share_a_shadow_property()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructCollisionPrincipalA>(entity =>
+            {
+                entity.FromParquet("principals_a.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructCollisionPrincipalB>(entity =>
+            {
+                entity.FromParquet("principals_b.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructCollisionDependent>(entity =>
+            {
+                entity.FromParquet("collision_dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship_, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.B).HasStructFieldName("b");
+                });
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value._B).HasStructFieldName("_b");
+                });
+                entity.HasOne(value => value.PrincipalA)
+                    .WithMany()
+                    .HasStructForeignKey(value => value.Relationship_.B);
+                entity.HasOne(value => value.PrincipalB)
+                    .WithMany()
+                    .HasStructForeignKey(value => value.Relationship._B);
+            });
+        });
+
+        var dependent = context.Model.FindEntityType(typeof(StructCollisionDependent))!;
+        var foreignKeys = dependent.GetForeignKeys().ToArray();
+        Assert.Equal(2, foreignKeys.Length);
+
+        var properties = foreignKeys
+            .Select(foreignKey => Assert.Single(foreignKey.Properties))
+            .ToArray();
+        Assert.NotEqual(properties[0].Name, properties[1].Name);
+
+        // Each relationship must join through its own leaf: the paths 'Relationship_.B' and
+        // 'Relationship._B' used to collapse onto one shadow property.
+        var firstLeaf = dependent.FindComplexProperty(nameof(StructCollisionDependent.Relationship_))!
+            .ComplexType
+            .FindProperty(nameof(StructCollisionRootA.B))!;
+        var secondLeaf = dependent.FindComplexProperty(nameof(StructCollisionDependent.Relationship))!
+            .ComplexType
+            .FindProperty(nameof(StructCollisionRootB._B))!;
+
+        var columns = properties.Select(property => property.GetColumnName()).ToArray();
+        Assert.Contains(firstLeaf.GetColumnName(), columns);
+        Assert.Contains(secondLeaf.GetColumnName(), columns);
+    }
+
+    [Fact]
     public void Rejects_struct_foreign_key_on_physical_table()
     {
         using var context = CreateContext(modelBuilder =>
@@ -542,6 +638,39 @@ public sealed class StructModelValidationTests
         public required StructRelationshipPath Relationship { get; set; }
 
         public StructOnePrincipal? Principal { get; set; }
+    }
+
+    private sealed class StructCollisionPrincipalA
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class StructCollisionPrincipalB
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class StructCollisionDependent
+    {
+        public int Id { get; set; }
+
+        public required StructCollisionRootA Relationship_ { get; set; }
+
+        public required StructCollisionRootB Relationship { get; set; }
+
+        public StructCollisionPrincipalA? PrincipalA { get; set; }
+
+        public StructCollisionPrincipalB? PrincipalB { get; set; }
+    }
+
+    private sealed class StructCollisionRootA
+    {
+        public int? B { get; set; }
+    }
+
+    private sealed class StructCollisionRootB
+    {
+        public int? _B { get; set; }
     }
 
     private sealed class PathCollisionEntity
