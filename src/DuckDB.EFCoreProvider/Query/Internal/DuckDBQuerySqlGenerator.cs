@@ -116,8 +116,19 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             DuckDBJsonEachExpression e => VisitJsonEach(e),
             DuckDBRowValueExpression e => VisitRowValue(e),
             DuckDBStructFieldExpression e => VisitStructField(e),
+            DuckDBStructPresenceCheckExpression e => VisitStructPresenceCheck(e),
             _ => base.VisitExtension(extensionExpression)
         };
+    }
+
+    /// <summary>
+    ///     A struct presence check is SQL-transparent: it renders exactly the narrowed comparison
+    ///     EF Core generated for the whole-complex null check.
+    /// </summary>
+    protected virtual Expression VisitStructPresenceCheck(DuckDBStructPresenceCheckExpression presenceCheckExpression)
+    {
+        Visit(presenceCheckExpression.CheckedExpression);
+        return presenceCheckExpression;
     }
 
     /// <inheritdoc />

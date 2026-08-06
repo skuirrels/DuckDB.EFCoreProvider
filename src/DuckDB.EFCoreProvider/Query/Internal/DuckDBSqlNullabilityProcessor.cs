@@ -1,4 +1,4 @@
-﻿using DuckDB.EFCoreProvider.Query.Expressions.Internal;
+using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using System.Diagnostics;
@@ -216,8 +216,18 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
             DuckDBNewArrayExpression e => VisitNewArray(e, allowOptimizedExpansion, out nullable),
             DuckDBRowValueExpression e => VisitRowValueExpression(e, allowOptimizedExpansion, out nullable),
             DuckDBStructFieldExpression e => VisitStructField(e, allowOptimizedExpansion, out nullable),
+            DuckDBStructPresenceCheckExpression e => VisitStructPresenceCheck(e, allowOptimizedExpansion, out nullable),
             _ => base.VisitCustomSqlExpression(sqlExpression, allowOptimizedExpansion, out nullable)
         };
+    }
+
+    protected virtual SqlExpression VisitStructPresenceCheck(
+        DuckDBStructPresenceCheckExpression presenceCheckExpression,
+        bool allowOptimizedExpansion,
+        out bool nullable)
+    {
+        var checkedExpression = Visit(presenceCheckExpression.CheckedExpression, allowOptimizedExpansion, out nullable);
+        return presenceCheckExpression.Update(checkedExpression);
     }
 
     protected virtual SqlExpression VisitStructField(

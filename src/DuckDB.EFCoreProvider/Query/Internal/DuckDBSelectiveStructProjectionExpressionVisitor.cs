@@ -82,10 +82,7 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
             if (TryRewritePresenceCheck(projection.Expression, requestedFields, out var rewritten)
                 && rewritten != projection.Expression)
             {
-                projections.Add(projection.Update(
-                    rewritten
-                    ?? CreateFallbackPresenceCheck(projection.Expression, requestedFields)
-                    ?? projection.Expression));
+                projections.Add(projection.Update(rewritten!));
                 changed = true;
             }
             else
@@ -148,11 +145,17 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
     }
 
     /// <summary>
-    ///     Rewrites null-presence checks in the predicate, having clause and projections so that
-    ///     they only reference fields that are actually projected. Because EF Core narrows a complex
-    ///     property null check to a single representative field during translation, the check must be
-    ///     rebuilt from every requested (projected) field of the struct root.
+    ///     Rewrites EF-generated null-presence checks in the predicate, having clause and projections
+    ///     so that they only reference fields that are actually projected. Because EF Core narrows a
+    ///     complex property null check to a single representative field during translation, the check
+    ///     must be rebuilt from every requested (projected) field of the struct root.
     /// </summary>
+    /// <remarks>
+    ///     Only <see cref="DuckDBStructPresenceCheckExpression" /> markers - which EF translation
+    ///     emits exclusively for whole-complex null comparisons - are rewritten. User leaf-null
+    ///     filters such as <c>entity.Complex.Leaf == null</c> never carry the marker and are left
+    ///     untouched, so their semantics are always preserved.
+    /// </remarks>
     private SqlExpression? RewritePresenceCheckExpression(
         SqlExpression? expression,
         IReadOnlyDictionary<string, IReadOnlySet<DuckDBStructFieldExpression>> requestedFields)
@@ -162,18 +165,9 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
             return null;
         }
 
-        if (TryGetNullCheckField(expression, out var field))
+        if (expression is DuckDBStructPresenceCheckExpression presenceCheck)
         {
-            var rootKey = GetRootKey(field);
-            if (!_selectiveRoots.Contains(rootKey)
-                || !requestedFields.TryGetValue(rootKey, out var rootFields)
-                || rootFields.Count == 0
-                || rootFields.Any(candidate => GetFieldKey(candidate) == GetFieldKey(field)))
-            {
-                return expression;
-            }
-
-            return CreatePresenceCheck(FindNullCheckOperator(expression)!.Value, rootFields);
+            return RewritePresenceMarker(presenceCheck, requestedFields);
         }
 
         if (expression is SqlBinaryExpression
@@ -189,6 +183,36 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
         }
 
         return expression;
+    }
+
+    /// <summary>
+    ///     Rebuilds a single EF-generated presence check so it only references projected struct
+    ///     fields, or returns the original comparison unchanged when it already is valid.
+    /// </summary>
+    private SqlExpression RewritePresenceMarker(
+        DuckDBStructPresenceCheckExpression presenceCheck,
+        IReadOnlyDictionary<string, IReadOnlySet<DuckDBStructFieldExpression>> requestedFields)
+    {
+        var fields = new StructFieldCollector().Collect(presenceCheck.CheckedExpression);
+        if (fields.Count == 0)
+        {
+            // Not a STRUCT-mapped complex type (for example JSON or table splitting). The
+            // EF-generated comparison already targets the physical column and is valid as-is.
+            return presenceCheck.CheckedExpression;
+        }
+
+        var rootKey = GetRootKey(fields.First());
+        if (!_selectiveRoots.Contains(rootKey)
+            || !requestedFields.TryGetValue(rootKey, out var rootFields)
+            || rootFields.Count == 0
+            || fields.All(field => rootFields.Any(candidate => GetFieldKey(candidate) == GetFieldKey(field))))
+        {
+            // Every field the EF-generated check references is projected (or the struct is not
+            // selectively projected), so the original comparison is already valid.
+            return presenceCheck.CheckedExpression;
+        }
+
+        return CreatePresenceCheck(presenceCheck.OperatorType, rootFields);
     }
 
     /// <summary>
@@ -218,77 +242,42 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
         return presenceCheck!;
     }
 
-    private SqlExpression? CreateFallbackPresenceCheck(
-        SqlExpression expression,
-        IReadOnlyDictionary<string, IReadOnlySet<DuckDBStructFieldExpression>> requestedFields)
-    {
-        var nullCheckOperator = FindNullCheckOperator(expression);
-        if (nullCheckOperator is not (ExpressionType.Equal or ExpressionType.NotEqual))
-        {
-            return null;
-        }
-
-        var fields = new HashSet<DuckDBStructFieldExpression>();
-        foreach (var candidate in new StructFieldCollector().Collect(expression))
-        {
-            if (requestedFields.TryGetValue(GetRootKey(candidate), out var rootFields))
-            {
-                foreach (var rootField in rootFields)
-                {
-                    fields.Add(rootField);
-                }
-            }
-        }
-
-        return fields.Count == 0
-            ? null
-            : CreatePresenceCheck(nullCheckOperator.Value, fields);
-    }
-
     private bool TryRewritePresenceCheck(
         SqlExpression expression,
         IReadOnlyDictionary<string, IReadOnlySet<DuckDBStructFieldExpression>> requestedFields,
         out SqlExpression? rewritten)
     {
-        if (TryGetNullCheckField(expression, out var field))
+        if (expression is DuckDBStructPresenceCheckExpression presenceCheck)
         {
-            var rootKey = GetRootKey(field);
-            if (!_selectiveRoots.Contains(rootKey)
-                || !requestedFields.TryGetValue(rootKey, out var rootFields))
-            {
-                rewritten = null;
-                return false;
-            }
-
-            rewritten = rootFields.Any(candidate => GetFieldKey(candidate) == GetFieldKey(field))
-                ? expression
-                : null;
+            rewritten = RewritePresenceMarker(presenceCheck, requestedFields);
             return true;
         }
 
-        if (expression is not SqlBinaryExpression
+        if (expression is SqlBinaryExpression
             {
                 OperatorType: ExpressionType.AndAlso or ExpressionType.OrElse
-            } binary
-            || !TryRewritePresenceCheck(binary.Left, requestedFields, out var left)
-            || !TryRewritePresenceCheck(binary.Right, requestedFields, out var right))
+            } binary)
         {
-            rewritten = null;
-            return false;
+            var leftChanged = TryRewritePresenceCheck(binary.Left, requestedFields, out var left);
+            var rightChanged = TryRewritePresenceCheck(binary.Right, requestedFields, out var right);
+            if (leftChanged || rightChanged)
+            {
+                rewritten = binary.Update(left ?? binary.Left, right ?? binary.Right);
+                return true;
+            }
         }
 
-        rewritten = left is null
-            ? right
-            : right is null
-                ? left
-                : binary.OperatorType == ExpressionType.AndAlso
-                    ? _sqlExpressionFactory.AndAlso(left, right)
-                    : _sqlExpressionFactory.OrElse(left, right);
-        return true;
+        rewritten = null;
+        return false;
     }
 
     private bool IsNullPresenceExpression(SqlExpression expression)
     {
+        if (expression is DuckDBStructPresenceCheckExpression)
+        {
+            return true;
+        }
+
         if (TryGetNullCheckField(expression, out var field))
         {
             return _selectiveRoots.Contains(GetRootKey(field));
@@ -300,41 +289,6 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
         } binary
             && IsNullPresenceExpression(binary.Left)
             && IsNullPresenceExpression(binary.Right);
-    }
-
-    /// <summary>
-    ///     Finds the operator of the first leaf null-check in a struct null-presence
-    ///     expression. Presence checks are uniform, so the first leaf is representative.
-    /// </summary>
-    private static ExpressionType? FindNullCheckOperator(SqlExpression expression)
-    {
-        if (expression is SqlUnaryExpression
-            {
-                OperatorType: ExpressionType.Equal or ExpressionType.NotEqual,
-                Operand: DuckDBStructFieldExpression
-            } unary)
-        {
-            return unary.OperatorType;
-        }
-
-        if (expression is SqlBinaryExpression
-            {
-                OperatorType: ExpressionType.Equal or ExpressionType.NotEqual
-            } binary
-            && (binary.Left is DuckDBStructFieldExpression
-                && binary.Right is SqlConstantExpression { Value: null }
-                || binary.Right is DuckDBStructFieldExpression
-                && binary.Left is SqlConstantExpression { Value: null }))
-        {
-            return binary.OperatorType;
-        }
-
-        return expression is SqlBinaryExpression
-            {
-                OperatorType: ExpressionType.AndAlso or ExpressionType.OrElse
-            } nested
-                ? FindNullCheckOperator(nested.Left) ?? FindNullCheckOperator(nested.Right)
-                : null;
     }
 
     private static bool TryGetNullCheckField(

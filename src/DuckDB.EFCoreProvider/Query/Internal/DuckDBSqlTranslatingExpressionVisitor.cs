@@ -1,5 +1,6 @@
 ﻿using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using System.Diagnostics;
@@ -40,8 +41,11 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
     private static readonly MethodInfo StringJoinWithCharObjectArray =
         typeof(string).GetMethod(nameof(string.Join), [typeof(char), typeof(object[])])!;
 
+    private readonly IModel _model;
+
     public DuckDBSqlTranslatingExpressionVisitor(RelationalSqlTranslatingExpressionVisitorDependencies dependencies, QueryCompilationContext queryCompilationContext, QueryableMethodTranslatingExpressionVisitor queryableMethodTranslatingExpressionVisitor) : base(dependencies, queryCompilationContext, queryableMethodTranslatingExpressionVisitor)
     {
+        _model = queryCompilationContext.Model;
     }
 
     /// <inheritdoc />
@@ -203,10 +207,79 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
                     argumentsPropagateNullability: [true, true],
                     returnType: binaryExpression.Type,
                     typeMapping: ExpressionExtensions.InferTypeMapping(leftXor, rightXor)!);
+            case ExpressionType.Equal or ExpressionType.NotEqual
+                when IsComplexTypeNullComparison(binaryExpression):
+                // EF narrows a whole-complex null comparison to representative leaf columns
+                // (see StructuralEquality.TryGenerateComparisons). Wrap the narrowed result in a
+                // provenance marker so postprocessors can distinguish EF-generated presence checks
+                // from user leaf-null filters such as entity.Complex.Leaf == null.
+                var visited = base.VisitBinary(binaryExpression);
+                return visited is SqlExpression visitedSql
+                    ? new DuckDBStructPresenceCheckExpression(binaryExpression.NodeType, visitedSql)
+                    : visited;
             default:
                 return base.VisitBinary(binaryExpression);
         }
     }
+
+    /// <summary>
+    ///     Detects a whole-complex null comparison (<c>entity.Complex == null</c> / <c>!= null</c>),
+    ///     where one side is a null constant and the other side's type is a model complex type.
+    /// </summary>
+    private bool IsComplexTypeNullComparison(BinaryExpression binaryExpression)
+    {
+        var left = RemoveImplicitConvert(binaryExpression.Left);
+        var right = RemoveImplicitConvert(binaryExpression.Right);
+
+        Expression nonNullOperand;
+        if (left is ConstantExpression { Value: null })
+        {
+            nonNullOperand = right;
+        }
+        else if (right is ConstantExpression { Value: null })
+        {
+            nonNullOperand = left;
+        }
+        else
+        {
+            return false;
+        }
+
+        var clrType = Nullable.GetUnderlyingType(nonNullOperand.Type) ?? nonNullOperand.Type;
+        return EnumerateComplexTypes(_model)
+            .Any(complexType => complexType.ClrType == clrType);
+    }
+
+    private IEnumerable<IComplexType> EnumerateComplexTypes(IModel model)
+    {
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            foreach (var complexProperty in entityType.GetComplexProperties())
+            {
+                foreach (var complexType in EnumerateComplexTypes(complexProperty.ComplexType))
+                {
+                    yield return complexType;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<IComplexType> EnumerateComplexTypes(IComplexType complexType)
+    {
+        yield return complexType;
+        foreach (var nestedComplexProperty in complexType.GetComplexProperties())
+        {
+            foreach (var nestedType in EnumerateComplexTypes(nestedComplexProperty.ComplexType))
+            {
+                yield return nestedType;
+            }
+        }
+    }
+
+    private static Expression RemoveImplicitConvert(Expression expression)
+        => expression is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary
+            ? RemoveImplicitConvert(unary.Operand)
+            : expression;
 
     /// <inheritdoc />
     protected override Expression VisitNew(NewExpression newExpression)
