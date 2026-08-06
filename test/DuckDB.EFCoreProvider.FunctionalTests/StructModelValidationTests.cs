@@ -198,7 +198,7 @@ public sealed class StructModelValidationTests
                 });
                 entity.HasOne(value => value.Principal)
                     .WithOne(value => value.Dependent)
-                    .HasStructForeignKey(value => value.Relationship.ParentId);
+                    .HasStructForeignKey<StructOneDependent>(value => value.Relationship.ParentId);
             });
         });
 
@@ -223,7 +223,7 @@ public sealed class StructModelValidationTests
                 entity.Property(value => value.Id).ValueGeneratedNever();
                 entity.HasOne(value => value.Dependent)
                     .WithOne(value => value.Principal)
-                    .HasStructForeignKey(value => value.Relationship.ParentId);
+                    .HasStructForeignKey<StructOneDependent>(value => value.Relationship.ParentId);
             });
             modelBuilder.Entity<StructOneDependent>(entity =>
             {
@@ -306,6 +306,99 @@ public sealed class StructModelValidationTests
         var columns = properties.Select(property => property.GetColumnName()).ToArray();
         Assert.Contains(firstLeaf.GetColumnName(), columns);
         Assert.Contains(secondLeaf.GetColumnName(), columns);
+    }
+
+    [Fact]
+    public void Has_struct_foreign_key_one_to_one_with_shared_path_uses_explicit_dependent_type()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructSharedPathPrincipal>(entity =>
+            {
+                entity.FromParquet("shared_principals.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+                entity.HasOne(value => value.Dependent)
+                    .WithOne(value => value.Principal)
+                    .HasStructForeignKey<StructSharedPathDependent>(value => value.Relationship.ParentId);
+            });
+            modelBuilder.Entity<StructSharedPathDependent>(entity =>
+            {
+                entity.FromParquet("shared_dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+            });
+        });
+
+        // Both entity types expose 'Relationship.ParentId', so the old overloads were ambiguous (CS0121).
+        // The explicit dependent type must select the dependent's leaf.
+        var dependent = context.Model.FindEntityType(typeof(StructSharedPathDependent));
+        var foreignKey = Assert.Single(dependent!.GetForeignKeys());
+
+        Assert.Equal(typeof(StructSharedPathPrincipal), foreignKey.PrincipalEntityType.ClrType);
+        Assert.True(foreignKey.IsUnique);
+        Assert.StartsWith(
+            "__DuckDBStructForeignKey_",
+            Assert.Single(foreignKey.Properties).Name,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Repeated_struct_foreign_key_path_is_allowed_across_relationships()
+    {
+        using var context = CreateContext(modelBuilder =>
+        {
+            modelBuilder.Entity<StructRepeatedPrincipalA>(entity =>
+            {
+                entity.FromParquet("repeated_principals_a.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructRepeatedPrincipalB>(entity =>
+            {
+                entity.FromParquet("repeated_principals_b.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructRepeatedDependent>(entity =>
+            {
+                entity.FromParquet("repeated_dependents.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("parent_id");
+                });
+                entity.HasOne(value => value.PrincipalA)
+                    .WithMany()
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
+                entity.HasOne(value => value.PrincipalB)
+                    .WithMany()
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
+            });
+        });
+
+        var dependent = context.Model.FindEntityType(typeof(StructRepeatedDependent))!;
+        var foreignKeys = dependent.GetForeignKeys().ToArray();
+        Assert.Equal(2, foreignKeys.Length);
+
+        // Both relationships join through the same STRUCT leaf, so they share one shadow property. Identical
+        // paths are valid; the collision guard only rejects genuinely different paths on the same shadow property.
+        var properties = foreignKeys
+            .Select(foreignKey => Assert.Single(foreignKey.Properties))
+            .ToArray();
+        Assert.Equal(properties[0].Name, properties[1].Name);
+
+        var leaf = dependent.FindComplexProperty(nameof(StructRepeatedDependent.Relationship))!
+            .ComplexType
+            .FindProperty(nameof(StructRelationshipPath.ParentId))!;
+        Assert.Equal(leaf.GetColumnName(), properties[0].GetColumnName());
     }
 
     [Fact]
@@ -671,6 +764,45 @@ public sealed class StructModelValidationTests
     private sealed class StructCollisionRootB
     {
         public int? _B { get; set; }
+    }
+
+    private sealed class StructSharedPathPrincipal
+    {
+        public int Id { get; set; }
+
+        public required StructRelationshipPath Relationship { get; set; }
+
+        public StructSharedPathDependent? Dependent { get; set; }
+    }
+
+    private sealed class StructSharedPathDependent
+    {
+        public int Id { get; set; }
+
+        public required StructRelationshipPath Relationship { get; set; }
+
+        public StructSharedPathPrincipal? Principal { get; set; }
+    }
+
+    private sealed class StructRepeatedPrincipalA
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class StructRepeatedPrincipalB
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class StructRepeatedDependent
+    {
+        public int Id { get; set; }
+
+        public required StructRelationshipPath Relationship { get; set; }
+
+        public StructRepeatedPrincipalA? PrincipalA { get; set; }
+
+        public StructRepeatedPrincipalB? PrincipalB { get; set; }
     }
 
     private sealed class PathCollisionEntity

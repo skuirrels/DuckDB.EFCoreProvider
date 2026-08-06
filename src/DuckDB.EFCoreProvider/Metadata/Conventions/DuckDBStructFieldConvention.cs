@@ -136,8 +136,10 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
             .Where(entry => entry.Binding is not null)
             .ToArray();
 
-        // Distinct STRUCT paths must never collapse onto the same shadow foreign-key property: the binding is
-        // consumed below, so the columns would otherwise silently overwrite one another during finalization.
+        // Bindings that resolve to the same shadow property are valid when they describe the same STRUCT path:
+        // distinct relationships may join through the same physical leaf. Only genuinely different paths that
+        // collide on one shadow property must be rejected; they would otherwise overwrite one another's column
+        // mapping during finalization.
         foreach (var group in bindings.GroupBy(
                      entry => entry.Binding!.ShadowPropertyName,
                      StringComparer.Ordinal))
