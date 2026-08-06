@@ -166,6 +166,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.EnableBulkInsertBatching()` | Merge consecutive `SaveChanges` inserts into one multi-row statement (~10× faster). | off |
 | `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~8× faster). | off |
 | `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~14× faster). | off |
+| `.UseCaseInsensitiveStringSearches()` | Make simple `StartsWith`, `Contains`, and `EndsWith` queries case-insensitive for this context; literal `%` and `_` remain literals. | off |
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
 | `.Threads(4)` | Set the global thread count used by DuckDB query execution when the connection opens. | DuckDB default |
 | `.FileSearchPath("/data")` | Base directory (or comma-separated directories) for resolving relative file paths. | DuckDB default |
@@ -181,6 +182,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 options.UseDuckDB(
     "Data Source=app.duckdb",
     duckdb => duckdb
+        .UseCaseInsensitiveStringSearches()
         .EnableBulkInsertBatching()
         .MemoryLimit("4GB")
         .Threads(4)

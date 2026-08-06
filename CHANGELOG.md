@@ -2,6 +2,13 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.17.3
+
+- Add context-wide opt-in case-insensitive translation for string and character `StartsWith`, `Contains`, and
+  `EndsWith` searches. Existing case-sensitive behavior and exact equality remain unchanged by default.
+- Translate opted-in searches through null-safe `ilike_escape` expressions with explicit `VARCHAR` mappings and
+  literal escaping for `$`, `%`, and `_`, including native DuckDB and DuckLake execution coverage.
+
 ## 1.17.2
 
 - Fix tracked updates for dual-role rows whose stable key is referenced by dependants and which also carry an

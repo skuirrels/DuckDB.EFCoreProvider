@@ -13,12 +13,15 @@ public class DuckDBSingletonOptions : IDuckDBSingletonOptions
 {
     public virtual bool ReverseNullOrderingEnabled { get; private set; }
 
+    public virtual bool CaseInsensitiveStringSearchesEnabled { get; private set; }
+
     /// <inheritdoc />
     public void Initialize(IDbContextOptions options)
     {
         var duckDbOptions = options.FindExtension<DuckDBOptionsExtension>() ?? new DuckDBOptionsExtension();
 
         ReverseNullOrderingEnabled = duckDbOptions.ReverseNullOrdering;
+        CaseInsensitiveStringSearchesEnabled = duckDbOptions.CaseInsensitiveStringSearches;
     }
 
     /// <inheritdoc />
@@ -30,6 +33,16 @@ public class DuckDBSingletonOptions : IDuckDBSingletonOptions
         {
             throw new InvalidOperationException(
                 $"A call was made to an option method ('{nameof(DuckDBOptionsExtension.ReverseNullOrdering)}') that"
+                + " changed an option that must be constant within a service provider, but Entity Framework is not"
+                + " building its own internal service provider. Either allow Entity Framework to build the service"
+                + " provider by removing the call to 'UseInternalServiceProvider', or ensure that the configuration"
+                + " does not change for all uses of a given service provider.");
+        }
+
+        if (duckDbOptions.CaseInsensitiveStringSearches != CaseInsensitiveStringSearchesEnabled)
+        {
+            throw new InvalidOperationException(
+                $"A call was made to an option method ('{nameof(DuckDBOptionsExtension.CaseInsensitiveStringSearches)}') that"
                 + " changed an option that must be constant within a service provider, but Entity Framework is not"
                 + " building its own internal service provider. Either allow Entity Framework to build the service"
                 + " provider by removing the call to 'UseInternalServiceProvider', or ensure that the configuration"

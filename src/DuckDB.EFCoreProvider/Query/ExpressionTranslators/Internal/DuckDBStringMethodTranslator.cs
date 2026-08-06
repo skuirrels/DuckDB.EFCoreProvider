@@ -45,13 +45,24 @@ public class DuckDBStringMethodTranslator : IMethodCallTranslator
 
     private readonly ISqlExpressionFactory _sqlExpressionFactory;
     private readonly ITypeMappingSource _typeMappingSource;
+    private readonly bool _caseInsensitiveStringSearches;
     private RelationalTypeMapping? _boolTypeMapping;
     private RelationalTypeMapping? _charTypeMapping;
+    private RelationalTypeMapping? _stringTypeMapping;
 
     public DuckDBStringMethodTranslator(ISqlExpressionFactory sqlExpressionFactory, ITypeMappingSource typeMappingSource)
+        : this(sqlExpressionFactory, typeMappingSource, caseInsensitiveStringSearches: false)
+    {
+    }
+
+    public DuckDBStringMethodTranslator(
+        ISqlExpressionFactory sqlExpressionFactory,
+        ITypeMappingSource typeMappingSource,
+        bool caseInsensitiveStringSearches)
     {
         _sqlExpressionFactory = sqlExpressionFactory;
         _typeMappingSource = typeMappingSource;
+        _caseInsensitiveStringSearches = caseInsensitiveStringSearches;
     }
 
     public SqlExpression? Translate(
@@ -62,6 +73,11 @@ public class DuckDBStringMethodTranslator : IMethodCallTranslator
     {
         if (method == StartsWith || method == StartsWithChar)
         {
+            if (_caseInsensitiveStringSearches)
+            {
+                return TranslateCaseInsensitiveSearch(instance!, arguments[0], StringSearchMode.StartsWith);
+            }
+
             _boolTypeMapping ??= (RelationalTypeMapping)_typeMappingSource.FindMapping(typeof(bool))!;
 
             var startsWithFunction = _sqlExpressionFactory.Function(
@@ -80,6 +96,11 @@ public class DuckDBStringMethodTranslator : IMethodCallTranslator
 
         if (method == Contains || method == ContainsChar)
         {
+            if (_caseInsensitiveStringSearches)
+            {
+                return TranslateCaseInsensitiveSearch(instance!, arguments[0], StringSearchMode.Contains);
+            }
+
             _boolTypeMapping ??= (RelationalTypeMapping)_typeMappingSource.FindMapping(typeof(bool))!;
 
             var containsFunction = _sqlExpressionFactory.Function(
@@ -98,6 +119,11 @@ public class DuckDBStringMethodTranslator : IMethodCallTranslator
 
         if (method == EndsWith || method == EndsWithChar)
         {
+            if (_caseInsensitiveStringSearches)
+            {
+                return TranslateCaseInsensitiveSearch(instance!, arguments[0], StringSearchMode.EndsWith);
+            }
+
             _boolTypeMapping ??= (RelationalTypeMapping)_typeMappingSource.FindMapping(typeof(bool))!;
 
             var endsWithFunction = _sqlExpressionFactory.Function(
@@ -215,7 +241,7 @@ public class DuckDBStringMethodTranslator : IMethodCallTranslator
                 _sqlExpressionFactory.Subtract(instrResult, _sqlExpressionFactory.Constant(1)),
                 arguments[1]);
         }
-        
+
         if (method == TrimStart)
         {
             return _sqlExpressionFactory.Function(
@@ -372,7 +398,86 @@ public class DuckDBStringMethodTranslator : IMethodCallTranslator
                 returnType: typeof(char),
                 typeMapping: _charTypeMapping);
         }
-        
+
         return null;
+    }
+
+    private SqlExpression TranslateCaseInsensitiveSearch(
+        SqlExpression instance,
+        SqlExpression search,
+        StringSearchMode mode)
+    {
+        _boolTypeMapping ??= (RelationalTypeMapping)_typeMappingSource.FindMapping(typeof(bool))!;
+        _stringTypeMapping ??= (RelationalTypeMapping)_typeMappingSource.FindMapping(typeof(string))!;
+
+        var mappedInstance = _sqlExpressionFactory.ApplyTypeMapping(instance, _stringTypeMapping);
+        var mappedSearch = search.Type == typeof(char)
+            ? _sqlExpressionFactory.Convert(search, typeof(string), _stringTypeMapping)
+            : _sqlExpressionFactory.ApplyTypeMapping(search, _stringTypeMapping);
+
+        var escapedSearch = EscapeLikePattern(mappedSearch);
+        var wildcard = _sqlExpressionFactory.Constant("%", _stringTypeMapping);
+        var nonNullPattern = mode switch
+        {
+            StringSearchMode.StartsWith => _sqlExpressionFactory.Add(escapedSearch, wildcard),
+            StringSearchMode.Contains => _sqlExpressionFactory.Add(
+                _sqlExpressionFactory.Add(wildcard, escapedSearch),
+                wildcard),
+            StringSearchMode.EndsWith => _sqlExpressionFactory.Add(wildcard, escapedSearch),
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
+        };
+        var pattern = _sqlExpressionFactory.Case(
+            [
+                new CaseWhenClause(
+                    _sqlExpressionFactory.IsNull(mappedSearch),
+                    _sqlExpressionFactory.Constant(null, typeof(string), _stringTypeMapping))
+            ],
+            nonNullPattern);
+
+        var ilike = _sqlExpressionFactory.Function(
+            name: "ilike_escape",
+            arguments:
+            [
+                mappedInstance,
+                _sqlExpressionFactory.ApplyTypeMapping(pattern, _stringTypeMapping),
+                _sqlExpressionFactory.Constant("$", _stringTypeMapping)
+            ],
+            nullable: true,
+            argumentsPropagateNullability: [true, true, false],
+            returnType: typeof(bool),
+            typeMapping: _boolTypeMapping);
+
+        return _sqlExpressionFactory.Coalesce(
+            ilike,
+            _sqlExpressionFactory.Constant(false, typeof(bool), _boolTypeMapping),
+            _boolTypeMapping);
+    }
+
+    private SqlExpression EscapeLikePattern(SqlExpression expression)
+    {
+        expression = ReplacePatternText(expression, "$", "$$");
+        expression = ReplacePatternText(expression, "%", "$%");
+        return ReplacePatternText(expression, "_", "$_");
+    }
+
+    private SqlExpression ReplacePatternText(SqlExpression expression, string search, string replacement)
+        => _sqlExpressionFactory.Function(
+            name: "replace",
+            arguments:
+            [
+                expression,
+                _sqlExpressionFactory.Constant(search, _stringTypeMapping),
+                _sqlExpressionFactory.Constant(replacement, _stringTypeMapping)
+            ],
+            nullable: true,
+            argumentsPropagateNullability: [true, false, false],
+            returnType: typeof(string),
+            typeMapping: _stringTypeMapping);
+
+    private enum StringSearchMode
+    {
+        StartsWith,
+        Contains,
+        EndsWith
     }
 }
