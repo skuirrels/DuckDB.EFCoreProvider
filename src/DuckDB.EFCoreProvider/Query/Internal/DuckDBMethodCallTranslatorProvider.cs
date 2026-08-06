@@ -1,4 +1,6 @@
-﻿using DuckDB.EFCoreProvider.Query.ExpressionTranslators.Internal;
+﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
+using DuckDB.EFCoreProvider.Query.ExpressionTranslators.Internal;
 using Microsoft.EntityFrameworkCore.Query;
 
 namespace DuckDB.EFCoreProvider.Query.Internal;
@@ -11,12 +13,23 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 /// </summary>
 public class DuckDBMethodCallTranslatorProvider : RelationalMethodCallTranslatorProvider
 {
-    public DuckDBMethodCallTranslatorProvider(RelationalMethodCallTranslatorProviderDependencies dependencies) : base(dependencies)
+    public DuckDBMethodCallTranslatorProvider(RelationalMethodCallTranslatorProviderDependencies dependencies)
+        : this(dependencies, new DuckDBSingletonOptions())
+    {
+    }
+
+    public DuckDBMethodCallTranslatorProvider(
+        RelationalMethodCallTranslatorProviderDependencies dependencies,
+        IDuckDBSingletonOptions singletonOptions)
+        : base(dependencies)
     {
         AddTranslators([
             new DuckDBAnalyticalMethodTranslator(dependencies.SqlExpressionFactory),
             new DuckDBMathTranslator(dependencies.SqlExpressionFactory),
-            new DuckDBStringMethodTranslator(dependencies.SqlExpressionFactory, dependencies.RelationalTypeMappingSource),
+            new DuckDBStringMethodTranslator(
+                dependencies.SqlExpressionFactory,
+                dependencies.RelationalTypeMappingSource,
+                singletonOptions.CaseInsensitiveStringSearchesEnabled),
             new DuckDBDateOnlyMethodTranslator(dependencies.SqlExpressionFactory),
             new DuckDBDateTimeMethodTranslator(dependencies.SqlExpressionFactory),
             new DuckDBDateTimeOffsetMethodTranslator(dependencies.SqlExpressionFactory),

@@ -11,4 +11,9 @@ public interface IDuckDBSingletonOptions : ISingletonOptions
     ///     Whether reverse <see langword="null" /> ordering is enabled.
     /// </summary>
     bool ReverseNullOrderingEnabled { get; }
+
+    /// <summary>
+    ///     Whether simple string searches use case-insensitive DuckDB matching.
+    /// </summary>
+    bool CaseInsensitiveStringSearchesEnabled => false;
 }

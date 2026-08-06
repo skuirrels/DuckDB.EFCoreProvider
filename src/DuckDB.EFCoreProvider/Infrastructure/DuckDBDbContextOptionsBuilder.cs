@@ -72,6 +72,26 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
         => WithOption(e => e.WithReverseNullOrdering(reverseNullOrdering));
 
     /// <summary>
+    ///     Configures simple <see cref="string.StartsWith(string)" />, <see cref="string.Contains(string)" />,
+    ///     and <see cref="string.EndsWith(string)" /> queries to use case-insensitive DuckDB matching.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is a context-wide opt-in and is disabled by default. Both the string and character overloads
+    ///         are affected. When enabled, search text is escaped before it is passed to DuckDB's
+    ///         <c>ilike_escape</c> function, so <c>%</c> and <c>_</c> retain their literal .NET meanings.
+    ///     </para>
+    ///     <para>
+    ///         DuckDB determines the case-folding semantics. Calling this method does not change the database,
+    ///         connection, or process globally; it only affects queries translated by contexts using these options.
+    ///     </para>
+    /// </remarks>
+    /// <param name="enable"><see langword="true" /> to enable case-insensitive string searches; otherwise, <see langword="false" />.</param>
+    /// <returns>The DuckDB options builder so that further configuration can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder UseCaseInsensitiveStringSearches(bool enable = true)
+        => WithOption(e => e.WithCaseInsensitiveStringSearches(enable));
+
+    /// <summary>
     ///     Merges consecutive inserts within a <see cref="DbContext.SaveChanges()" /> batch into a single
     ///     multi-row <c>INSERT ... VALUES (..),(..)</c> statement. This is roughly an order of magnitude faster
     ///     than the default per-row insert path on DuckDB's columnar engine.

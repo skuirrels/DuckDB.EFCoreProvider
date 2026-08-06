@@ -26,6 +26,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private string? _fileSearchPath;
     private TimeSpan? _migrationLockTimeout;
     private bool _migrationTableRebuilds;
+    private bool _caseInsensitiveStringSearches;
     private IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions = [];
     private Action<DuckDBConnection>? _connectionInitializer;
     private DuckLakeOptions? _duckLakeOptions;
@@ -47,6 +48,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _fileSearchPath = copyFrom._fileSearchPath;
         _migrationLockTimeout = copyFrom._migrationLockTimeout;
         _migrationTableRebuilds = copyFrom._migrationTableRebuilds;
+        _caseInsensitiveStringSearches = copyFrom._caseInsensitiveStringSearches;
         _configuredExtensions = copyFrom._configuredExtensions;
         _connectionInitializer = copyFrom._connectionInitializer;
         _duckLakeOptions = copyFrom._duckLakeOptions;
@@ -145,6 +147,13 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     ///     <c>ALTER TABLE</c> surface may rebuild the affected table; otherwise, <see langword="false" />.
     /// </summary>
     public virtual bool MigrationTableRebuilds => _migrationTableRebuilds;
+
+    /// <summary>
+    ///     <see langword="true" /> when simple <see cref="string.StartsWith(string)" />,
+    ///     <see cref="string.Contains(string)" />, and <see cref="string.EndsWith(string)" /> queries use
+    ///     DuckDB's case-insensitive matching semantics; otherwise, <see langword="false" />.
+    /// </summary>
+    public virtual bool CaseInsensitiveStringSearches => _caseInsensitiveStringSearches;
 
     /// <summary>DuckDB extension names configured for compatibility with the original one-mode API.</summary>
     public virtual IReadOnlyList<string> ExtensionsToLoad
@@ -275,6 +284,14 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     {
         var clone = (DuckDBOptionsExtension)Clone();
         clone._migrationTableRebuilds = migrationTableRebuilds;
+        return clone;
+    }
+
+    /// <summary>Returns a copy configured with the specified string-search behaviour.</summary>
+    public virtual DuckDBOptionsExtension WithCaseInsensitiveStringSearches(bool caseInsensitiveStringSearches)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+        clone._caseInsensitiveStringSearches = caseInsensitiveStringSearches;
         return clone;
     }
 
@@ -416,6 +433,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         public override bool ShouldUseSameServiceProvider(DbContextOptionsExtensionInfo other)
             => other is ExtensionInfo otherInfo
                && Extension.ReverseNullOrdering == otherInfo.Extension.ReverseNullOrdering
+               && Extension.CaseInsensitiveStringSearches == otherInfo.Extension.CaseInsensitiveStringSearches
                && (Extension.DuckLakeOptions is null) == (otherInfo.Extension.DuckLakeOptions is null);
 
         public override string LogFragment
@@ -431,6 +449,11 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                     if (Extension.ReverseNullOrdering)
                     {
                         builder.Append(nameof(Extension.ReverseNullOrdering)).Append(' ');
+                    }
+
+                    if (Extension.CaseInsensitiveStringSearches)
+                    {
+                        builder.Append(nameof(Extension.CaseInsensitiveStringSearches)).Append(' ');
                     }
 
                     if (Extension.DuckLakeOptions is not null)
@@ -452,6 +475,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                 var hashCode = new HashCode();
 
                 hashCode.Add(Extension.ReverseNullOrdering);
+                hashCode.Add(Extension.CaseInsensitiveStringSearches);
                 hashCode.Add(Extension.DuckLakeOptions is not null);
 
                 _serviceProviderHash = hashCode.ToHashCode();
@@ -465,6 +489,8 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             debugInfo["DuckDB"] = "1";
             debugInfo["DuckDB.EFCoreProvider:" + nameof(ReverseNullOrdering)] = Extension.ReverseNullOrdering.GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);
+            debugInfo["DuckDB.EFCoreProvider:" + nameof(CaseInsensitiveStringSearches)] = Extension.CaseInsensitiveStringSearches
+                .GetHashCode().ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:DuckLake"] = (Extension.DuckLakeOptions is not null).GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);
         }
