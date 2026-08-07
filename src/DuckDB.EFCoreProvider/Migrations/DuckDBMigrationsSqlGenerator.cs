@@ -61,6 +61,7 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         IModel? model = null,
         MigrationsSqlGenerationOptions options = MigrationsSqlGenerationOptions.Default)
     {
+        operations = DuckDBStructSchemaPlanner.OmitLogicalForeignKeyOperations(operations);
         ValidateUnsupportedOperations(operations);
 
         if (_capabilities.SupportsIndexes && _capabilities.SupportsSchemaConstraints)
@@ -374,7 +375,7 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
             operation.PrimaryKey = AddPrimaryKeyOperation.CreateFrom(primaryKey);
         }
 
-        foreach (var foreignKey in table.ForeignKeyConstraints)
+        foreach (var foreignKey in plan.ForeignKeys)
         {
             operation.ForeignKeys.Add(AddForeignKeyOperation.CreateFrom(foreignKey));
         }
@@ -596,7 +597,7 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
             }
         }
 
-        operation.ForeignKeys.AddRange(source.ForeignKeys);
+        operation.ForeignKeys.AddRange(plan.ForeignKeys);
         operation.UniqueConstraints.AddRange(source.UniqueConstraints);
         operation.CheckConstraints.AddRange(source.CheckConstraints);
         return operation;

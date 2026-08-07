@@ -45,6 +45,7 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
             }
 
             var table = StoreObjectIdentifier.Create(entityType, StoreObjectType.Table);
+            ApplyStructForeignKeyBindings(entityType);
             foreach (var property in GetProperties(entityType))
             {
                 if (property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
@@ -123,6 +124,110 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
         }
 
     }
+
+    private static void ApplyStructForeignKeyBindings(IConventionEntityType entityType)
+    {
+        var bindings = entityType.GetForeignKeys()
+            .OfType<IConventionForeignKey>()
+            .Select(foreignKey => (
+                ForeignKey: foreignKey,
+                Binding: foreignKey.FindAnnotation(DuckDBAnnotationNames.StructForeignKeyPath)?.Value
+                    as DuckDBStructForeignKeyPath))
+            .Where(entry => entry.Binding is not null)
+            .ToArray();
+
+        // Bindings that resolve to the same shadow property are valid when they describe the same STRUCT path:
+        // distinct relationships may join through the same physical leaf. Only genuinely different paths that
+        // collide on one shadow property must be rejected; they would otherwise overwrite one another's column
+        // mapping during finalization.
+        foreach (var group in bindings.GroupBy(
+                     entry => entry.Binding!.ShadowPropertyName,
+                     StringComparer.Ordinal))
+        {
+            if (group.Select(entry => entry.Binding!).Distinct().Skip(1).Any())
+            {
+                throw new InvalidOperationException(
+                    $"Multiple STRUCT foreign keys on '{entityType.DisplayName()}' resolve to the same shadow "
+                    + $"property '{group.Key}'. Use distinct STRUCT paths for distinct relationships.");
+            }
+        }
+
+        foreach (var (foreignKey, binding) in bindings)
+        {
+            if (binding is null)
+            {
+                continue;
+            }
+
+            if (foreignKey.Properties.Count != 1
+                || !string.Equals(
+                    foreignKey.Properties[0].Name,
+                    binding.ShadowPropertyName,
+                    StringComparison.Ordinal))
+            {
+                throw new NotSupportedException(
+                    $"STRUCT foreign-key path '{FormatPath(binding)}' must be the only property in its foreign key. "
+                    + "Composite STRUCT foreign keys are not supported.");
+            }
+
+            var leafProperty = FindStructLeaf(entityType, binding.MemberNames);
+            var field = leafProperty?.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
+                as DuckDBStructFieldInfo;
+            if (field?.EfColumnName is null)
+            {
+                throw new InvalidOperationException(
+                    $"STRUCT foreign-key path '{FormatPath(binding)}' does not resolve to a mapped DuckDB STRUCT "
+                    + "leaf. Configure the dependent complex property with UseStructMapping before calling "
+                    + "HasStructForeignKey.");
+            }
+
+            var shadowProperty = entityType.FindProperty(binding.ShadowPropertyName)
+                ?? throw new InvalidOperationException(
+                    $"The internal STRUCT foreign-key property '{binding.ShadowPropertyName}' could not be created.");
+            shadowProperty.SetColumnName(field.EfColumnName, fromDataAnnotation: false);
+
+            // Infer the join shape from the mapped STRUCT leaf: a non-nullable leaf means the
+            // foreign key is required (INNER JOIN); a nullable leaf means it is optional (LEFT JOIN).
+            // An explicit IsRequired call (Explicit/DataAnnotation source) always wins over inference.
+            var requiredConfigurationSource = foreignKey.GetIsRequiredConfigurationSource();
+            if (requiredConfigurationSource is null or ConfigurationSource.Convention)
+            {
+                foreignKey.SetIsRequired(!leafProperty!.IsNullable, fromDataAnnotation: false);
+            }
+
+            foreignKey.SetOrRemoveAnnotation(
+                DuckDBAnnotationNames.StructForeignKeyPath,
+                null,
+                fromDataAnnotation: false);
+        }
+    }
+
+    private static IConventionProperty? FindStructLeaf(
+        IConventionEntityType entityType,
+        IReadOnlyList<string> memberNames)
+    {
+        if (memberNames.Count < 2
+            || entityType.FindComplexProperty(memberNames[0]) is not { } root)
+        {
+            return null;
+        }
+
+        var complexType = root.ComplexType;
+        for (var index = 1; index < memberNames.Count - 1; index++)
+        {
+            if (complexType.FindComplexProperty(memberNames[index]) is not { } nested)
+            {
+                return null;
+            }
+
+            complexType = nested.ComplexType;
+        }
+
+        return complexType.FindProperty(memberNames[^1]);
+    }
+
+    private static string FormatPath(DuckDBStructForeignKeyPath binding)
+        => string.Join(".", binding.MemberNames);
 
     private static IEnumerable<IConventionProperty> GetProperties(IConventionTypeBase typeBase)
     {

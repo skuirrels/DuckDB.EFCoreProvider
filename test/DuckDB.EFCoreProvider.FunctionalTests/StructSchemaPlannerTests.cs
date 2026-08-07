@@ -70,6 +70,124 @@ public sealed class StructSchemaPlannerTests
     }
 
     [Fact]
+    public void Create_table_omits_logical_foreign_key_for_struct_field()
+    {
+        var operation = new CreateTableOperation { Name = "dependents" };
+        operation.Columns.Add(new AddColumnOperation
+        {
+            Name = "Id",
+            Table = operation.Name,
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false
+        });
+        operation.Columns.Add(CreateField(
+            "principal_key",
+            "INTEGER",
+            new DuckDBStructFieldInfo("Relationship", [], "parent_id")));
+        operation.Columns[^1].Table = operation.Name;
+        operation.ForeignKeys.Add(new AddForeignKeyOperation
+        {
+            Name = "FK_dependents_principals_principal_key",
+            Table = operation.Name,
+            Columns = ["principal_key"],
+            PrincipalTable = "principals",
+            PrincipalColumns = ["Id"]
+        });
+
+        using var context = new AnnotationContext(
+            new DbContextOptionsBuilder<AnnotationContext>()
+                .UseDuckDB("DataSource=:memory:")
+                .Options);
+        var command = Assert.Single(
+            context.GetService<IMigrationsSqlGenerator>().Generate([operation]));
+
+        Assert.Contains("\"Relationship\" STRUCT(parent_id INTEGER)", command.CommandText, StringComparison.Ordinal);
+        Assert.DoesNotContain("FOREIGN KEY", command.CommandText, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"principal_key\"", command.CommandText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Logical_struct_foreign_key_annotations_flow_to_add_and_remove_operations()
+    {
+        using var context = new StructRelationshipAnnotationContext(
+            new DbContextOptionsBuilder<StructRelationshipAnnotationContext>()
+                .UseDuckDB("DataSource=:memory:")
+                .Options);
+        var foreignKey = Assert.Single(
+            context.GetService<IDesignTimeModel>().Model.GetRelationalModel()
+                .Tables.Single(table => table.Name == nameof(StructRelationshipDependent))
+                .ForeignKeyConstraints);
+
+        var addAnnotations = context.GetService<IRelationalAnnotationProvider>()
+            .For(foreignKey, designTime: true);
+        var removeAnnotations = context.GetService<IMigrationsAnnotationProvider>()
+            .ForRemove(foreignKey);
+
+        Assert.Contains(
+            addAnnotations,
+            annotation => annotation.Name == DuckDBAnnotationNames.LogicalStructForeignKey
+                && annotation.Value is true);
+        Assert.Contains(
+            removeAnnotations,
+            annotation => annotation.Name == DuckDBAnnotationNames.LogicalStructForeignKey
+                && annotation.Value is true);
+    }
+
+    [Fact]
+    public void Logical_struct_foreign_key_add_and_drop_operations_emit_no_ddl()
+    {
+        using var context = new AnnotationContext(
+            new DbContextOptionsBuilder<AnnotationContext>()
+                .UseDuckDB("DataSource=:memory:")
+                .Options);
+        var add = new AddForeignKeyOperation
+        {
+            Name = "FK_dependents_principals_principal_key",
+            Table = "dependents",
+            Columns = ["principal_key"],
+            PrincipalTable = "principals",
+            PrincipalColumns = ["Id"]
+        };
+        add.AddAnnotation(DuckDBAnnotationNames.LogicalStructForeignKey, true);
+        var drop = new DropForeignKeyOperation
+        {
+            Name = add.Name,
+            Table = add.Table
+        };
+        drop.AddAnnotation(DuckDBAnnotationNames.LogicalStructForeignKey, true);
+
+        var commands = context.GetService<IMigrationsSqlGenerator>().Generate([add, drop]);
+
+        Assert.Empty(commands);
+    }
+
+    [Fact]
+    public void Table_rebuild_omits_logical_struct_foreign_key()
+    {
+        using var context = new StructRelationshipAnnotationContext(
+            new DbContextOptionsBuilder<StructRelationshipAnnotationContext>()
+                .UseDuckDB(
+                    "DataSource=:memory:",
+                    options => options.EnableMigrationTableRebuilds())
+                .Options);
+        var operation = new AddCheckConstraintOperation
+        {
+            Name = "CK_StructRelationshipDependent_Id",
+            Table = nameof(StructRelationshipDependent),
+            Sql = "\"Id\" > 0"
+        };
+
+        var commands = context.GetService<IMigrationsSqlGenerator>().Generate(
+            [operation],
+            context.GetService<IDesignTimeModel>().Model);
+        var sql = string.Join(Environment.NewLine, commands.Select(command => command.CommandText));
+
+        Assert.Contains("CHECK (\"Id\" > 0)", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("FOREIGN KEY", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Migrations_annotation_provider_propagates_struct_field_for_remove_and_rename()
     {
         var options = new DbContextOptionsBuilder<AnnotationContext>()
@@ -347,6 +465,36 @@ public sealed class StructSchemaPlannerTests
             });
     }
 
+    private sealed class StructRelationshipAnnotationContext(
+        DbContextOptions<StructRelationshipAnnotationContext> options)
+        : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<StructRelationshipPrincipal>(entity =>
+            {
+                entity.FromParquet("principals.parquet");
+                entity.Property(value => value.Id).ValueGeneratedNever();
+            });
+            modelBuilder.Entity<StructRelationshipDependent>(entity =>
+            {
+                entity.FromParquet("dependents.parquet");
+                entity.ToTable(
+                    nameof(StructRelationshipDependent),
+                    table => table.HasCheckConstraint("CK_StructRelationshipDependent_Id", "\"Id\" > 0"));
+                entity.Property(value => value.Id).ValueGeneratedNever();
+                entity.ComplexProperty(value => value.Relationship, complex =>
+                {
+                    complex.UseStructMapping();
+                    complex.Property(value => value.ParentId).HasStructFieldName("principal_id");
+                });
+                entity.HasOne(value => value.Principal)
+                    .WithMany(value => value.Dependents)
+                    .HasStructForeignKey(value => value.Relationship.ParentId);
+            });
+        }
+    }
+
     private sealed class AnnotationEntity
     {
         public int Id { get; set; }
@@ -357,5 +505,26 @@ public sealed class StructSchemaPlannerTests
     private sealed class AnnotationAddress
     {
         public string City { get; set; } = null!;
+    }
+
+    private sealed class StructRelationshipPrincipal
+    {
+        public int Id { get; set; }
+
+        public List<StructRelationshipDependent> Dependents { get; set; } = [];
+    }
+
+    private sealed class StructRelationshipDependent
+    {
+        public int Id { get; set; }
+
+        public required StructRelationshipPath Relationship { get; set; }
+
+        public StructRelationshipPrincipal? Principal { get; set; }
+    }
+
+    private sealed class StructRelationshipPath
+    {
+        public int ParentId { get; set; }
     }
 }

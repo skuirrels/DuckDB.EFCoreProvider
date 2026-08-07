@@ -368,6 +368,29 @@ e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
 
 `HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
 
+Use a mapped STRUCT leaf as a foreign key with `HasStructForeignKey`. The relationship's requiredness is inferred from the mapped leaf: a non-nullable leaf (for example `int CustomerId`) produces a required relationship (INNER JOIN), while a nullable leaf (`int? CustomerId`) produces an optional one (LEFT JOIN):
+
+```csharp
+modelBuilder.Entity<Order>(e =>
+{
+    e.FromParquet("orders.parquet");
+    e.ComplexProperty(o => o.Relationship, relationship =>
+    {
+        relationship.UseStructMapping();
+        relationship.Property(r => r.CustomerId)
+            .HasStructFieldName("customer_id");
+    });
+
+    e.HasOne(o => o.Customer)
+        .WithMany(c => c.Orders)
+        .HasStructForeignKey(o => o.Relationship.CustomerId);
+});
+
+modelBuilder.Entity<Customer>(e => e.FromParquet("customers.parquet"));
+```
+
+The mapped leaf is reused as EF relationship plumbing; no duplicate scalar FK or field metadata is needed. Call `.IsRequired()` or `.IsRequired(false)` explicitly to override the inferred join shape. STRUCT foreign keys are query-only and require file-backed entities; physical-table and composite STRUCT foreign keys are rejected.
+
 **Limitations & Behavior:**
 - Queries with LINQ projections, filters, sorting, joins, and subqueries are fully supported
 - `EnsureCreated`, migrations, and `SaveChanges` are supported (struct columns are created and INSERTs use DuckDB struct literals)

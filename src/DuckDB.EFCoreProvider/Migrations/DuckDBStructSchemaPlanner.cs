@@ -7,10 +7,20 @@ using System.Collections.Immutable;
 namespace DuckDB.EFCoreProvider.Migrations;
 
 /// <summary>
-///     Resolves flattened relational columns into immutable physical DuckDB table plans.
+///     Resolves flattened relational columns and logical STRUCT relationships into immutable physical DuckDB schema plans.
 /// </summary>
 internal static class DuckDBStructSchemaPlanner
 {
+    public static IReadOnlyList<MigrationOperation> OmitLogicalForeignKeyOperations(
+        IReadOnlyList<MigrationOperation> operations)
+    {
+        ArgumentNullException.ThrowIfNull(operations);
+        return operations
+            .Where(operation => operation.FindAnnotation(DuckDBAnnotationNames.LogicalStructForeignKey)?.Value
+                is not true)
+            .ToArray();
+    }
+
     public static DuckDBCreateTableStructPlan PlanCreateTable(CreateTableOperation operation)
     {
         ArgumentNullException.ThrowIfNull(operation);
@@ -40,7 +50,14 @@ internal static class DuckDBStructSchemaPlanner
             .Select(field => field.Ordinal)
             .Where(ordinal => !replacements.ContainsKey(ordinal))
             .ToImmutableHashSet();
-        return new DuckDBCreateTableStructPlan(replacements, suppressed);
+        var structFieldColumns = fields
+            .Select(field => field.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return new DuckDBCreateTableStructPlan(
+            replacements,
+            suppressed,
+            operation.ForeignKeys
+                .Where(foreignKey => foreignKey.Columns.All(column => !structFieldColumns.Contains(column))));
     }
 
     public static DuckDBTableRebuildPlan PlanTable(ITable table)
@@ -59,8 +76,7 @@ internal static class DuckDBStructSchemaPlanner
                 column.StoreType,
                 column.IsNullable,
                 column,
-                column.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
-                    as DuckDBStructFieldInfo))
+                DuckDBStructRelationalMetadata.FindFieldInfo(column)))
             .Where(field => field.FieldInfo is not null)
             .ToArray();
         ValidateFields(fields);
@@ -94,7 +110,9 @@ internal static class DuckDBStructSchemaPlanner
             columns,
             columns
                 .Where(column => column.ComputedColumnSql is null)
-                .Select(column => column.Name));
+                .Select(column => column.Name),
+            table.ForeignKeyConstraints
+                .Where(foreignKey => !DuckDBStructRelationalMetadata.IsStructFieldForeignKey(foreignKey)));
     }
 
     public static void ValidateStandaloneColumnOperation(ColumnOperation operation, string operationName)
@@ -291,10 +309,12 @@ internal sealed class DuckDBCreateTableStructPlan
 
     public DuckDBCreateTableStructPlan(
         ImmutableDictionary<int, DuckDBStructColumnPlan> replacements,
-        ImmutableHashSet<int> suppressedOrdinals)
+        ImmutableHashSet<int> suppressedOrdinals,
+        IEnumerable<AddForeignKeyOperation> foreignKeys)
     {
         _replacements = replacements;
         _suppressedOrdinals = suppressedOrdinals;
+        ForeignKeys = foreignKeys.ToImmutableArray();
     }
 
     public bool HasStructColumns => _replacements.Count > 0;
@@ -304,6 +324,8 @@ internal sealed class DuckDBCreateTableStructPlan
 
     public bool IsSuppressed(int ordinal)
         => _suppressedOrdinals.Contains(ordinal);
+
+    public IReadOnlyList<AddForeignKeyOperation> ForeignKeys { get; }
 }
 
 internal sealed class DuckDBTableRebuildPlan
@@ -313,13 +335,15 @@ internal sealed class DuckDBTableRebuildPlan
         string? schema,
         string? comment,
         IEnumerable<DuckDBPhysicalColumnPlan> columns,
-        IEnumerable<string> copyColumnNames)
+        IEnumerable<string> copyColumnNames,
+        IEnumerable<IForeignKeyConstraint> foreignKeys)
     {
         TableName = tableName;
         Schema = schema;
         Comment = comment;
         Columns = columns.ToImmutableArray();
         CopyColumnNames = copyColumnNames.ToImmutableArray();
+        ForeignKeys = foreignKeys.ToImmutableArray();
     }
 
     public string TableName { get; }
@@ -331,6 +355,8 @@ internal sealed class DuckDBTableRebuildPlan
     public IReadOnlyList<DuckDBPhysicalColumnPlan> Columns { get; }
 
     public IReadOnlyList<string> CopyColumnNames { get; }
+
+    public IReadOnlyList<IForeignKeyConstraint> ForeignKeys { get; }
 }
 
 internal abstract class DuckDBPhysicalColumnPlan
