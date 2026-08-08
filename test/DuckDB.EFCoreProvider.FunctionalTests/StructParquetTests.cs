@@ -42,6 +42,42 @@ public sealed class StructParquetTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_sub_field_projection_selects_only_the_selected_field_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'country': 'US'}),
+                    (2, {'city': 'LDN', 'country': 'UK'})
+                """);
+
+            using var context = CreateCustomerContext<SingleFieldProjectionTag>(path);
+
+            // Projecting a single struct sub-field must emit only that field in the SELECT clause.
+            // The sibling fields must not be queried at all.
+            var sql = context.Customers
+                .Select(c => c.Location.City)
+                .ToQueryString();
+            Assert.Contains("\"Location\".city", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("country", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Country", sql, StringComparison.Ordinal);
+
+            var cities = context.Customers
+                .Select(c => c.Location.City)
+                .OrderBy(c => c)
+                .ToList();
+            Assert.Equal(["LDN", "NYC"], cities);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
     public void Struct_sub_field_filter_from_parquet()
     {
         var path = ParquetPath();
@@ -417,6 +453,7 @@ public sealed class StructParquetTests : DuckDBTestBase
     // Tag types give each test its own DbContext type so EF Core's model cache is not
     // shared across tests with different Parquet paths.
     private sealed class ProjectionTag;
+    private sealed class SingleFieldProjectionTag;
     private sealed class FilterTag;
     private sealed class OrderByTag;
     private sealed class DuplicateLeavesTag;
