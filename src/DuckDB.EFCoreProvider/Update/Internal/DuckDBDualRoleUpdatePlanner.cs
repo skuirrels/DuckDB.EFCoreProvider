@@ -27,7 +27,9 @@ internal static class DuckDBDualRoleUpdatePlanner
             || command.EntityState != EntityState.Modified
             || command.StoreStoredProcedure is not null)
         {
-            return DuckDBDualRoleUpdatePlan.Unchanged(command);
+            return command.EntityState == EntityState.Modified
+                ? DuckDBDualRoleUpdatePlan.Unchanged(command)
+                : DuckDBDualRoleUpdatePlan.NotApplicable(command);
         }
 
         using var entries = command.Entries.GetEnumerator();
@@ -72,7 +74,11 @@ internal static class DuckDBDualRoleUpdatePlanner
             }
         }
 
-        return new DuckDBDualRoleUpdatePlan(command, writeOperations, unchangedWrites, changedWrites);
+        return new DuckDBDualRoleUpdatePlan(
+            command,
+            writeOperations.ToArray(),
+            unchangedWrites.ToArray(),
+            changedWrites.ToArray());
     }
 
     private static bool ValuesEqual(IColumnModification modification)
@@ -91,44 +97,74 @@ internal static class DuckDBDualRoleUpdatePlanner
 /// <summary>
 ///     Immutable classification of outbound foreign-key writes for one dual-role table update.
 /// </summary>
-internal sealed class DuckDBDualRoleUpdatePlan
+internal readonly struct DuckDBDualRoleUpdatePlan
 {
-    private readonly IColumnModification[] _writeOperations;
-    private readonly IColumnModification[] _unchangedForeignKeyWrites;
-    private readonly IColumnModification[] _changedForeignKeyWrites;
+    private readonly IColumnModification[]? _writeOperations;
+    private readonly IColumnModification[]? _unchangedForeignKeyWrites;
+    private readonly IColumnModification[]? _changedForeignKeyWrites;
 
     public DuckDBDualRoleUpdatePlan(
         IReadOnlyModificationCommand command,
-        IReadOnlyList<IColumnModification> writeOperations,
-        IReadOnlyList<IColumnModification> unchangedForeignKeyWrites,
-        IReadOnlyList<IColumnModification> changedForeignKeyWrites)
+        IColumnModification[] writeOperations,
+        IColumnModification[] unchangedForeignKeyWrites,
+        IColumnModification[] changedForeignKeyWrites)
     {
         Command = command;
-        _writeOperations = writeOperations.ToArray();
-        _unchangedForeignKeyWrites = unchangedForeignKeyWrites.ToArray();
-        _changedForeignKeyWrites = changedForeignKeyWrites.ToArray();
+        _writeOperations = writeOperations;
+        _unchangedForeignKeyWrites = unchangedForeignKeyWrites;
+        _changedForeignKeyWrites = changedForeignKeyWrites;
     }
 
     public IReadOnlyModificationCommand Command { get; }
 
-    public IReadOnlyList<IColumnModification> WriteOperations => _writeOperations;
+    public IReadOnlyList<IColumnModification> WriteOperations => _writeOperations ?? [];
 
-    public IReadOnlyList<IColumnModification> UnchangedForeignKeyWrites => _unchangedForeignKeyWrites;
+    public IReadOnlyList<IColumnModification> UnchangedForeignKeyWrites => _unchangedForeignKeyWrites ?? [];
 
-    public IReadOnlyList<IColumnModification> ChangedForeignKeyWrites => _changedForeignKeyWrites;
+    public IReadOnlyList<IColumnModification> ChangedForeignKeyWrites => _changedForeignKeyWrites ?? [];
 
-    public bool HasChangedForeignKeyWrites => _changedForeignKeyWrites.Length > 0;
+    public bool HasChangedForeignKeyWrites => _changedForeignKeyWrites is { Length: > 0 };
 
     public bool RequiresConditionalForeignKeyUpdate
-        => _writeOperations.Length == 0 && _unchangedForeignKeyWrites.Length > 0;
+        => (_writeOperations?.Length ?? 0) == 0 && _unchangedForeignKeyWrites is { Length: > 0 };
 
     public IEnumerable<string> ChangedColumnNames
-        => _changedForeignKeyWrites.Select(modification => modification.ColumnName).Distinct(StringComparer.Ordinal);
+        => (_changedForeignKeyWrites ?? []).Select(modification => modification.ColumnName).Distinct(StringComparer.Ordinal);
 
     public static DuckDBDualRoleUpdatePlan Unchanged(IReadOnlyModificationCommand command)
         => new(
             command,
-            command.ColumnModifications.Where(modification => modification.IsWrite).ToArray(),
+            CollectWriteOperations(command),
             [],
             []);
+
+    public static DuckDBDualRoleUpdatePlan NotApplicable(IReadOnlyModificationCommand command)
+        => new(command, [], [], []);
+
+    private static IColumnModification[] CollectWriteOperations(IReadOnlyModificationCommand command)
+    {
+        var modifications = command.ColumnModifications;
+        var count = 0;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            count += modifications[i].IsWrite ? 1 : 0;
+        }
+
+        if (count == 0)
+        {
+            return [];
+        }
+
+        var writes = new IColumnModification[count];
+        var targetIndex = 0;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (modifications[i].IsWrite)
+            {
+                writes[targetIndex++] = modifications[i];
+            }
+        }
+
+        return writes;
+    }
 }

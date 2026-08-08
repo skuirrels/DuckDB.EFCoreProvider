@@ -2,6 +2,21 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.18.0
+
+- Reduce `SaveChanges` planning allocations by reusing immutable insert shapes and dual-role update plans, avoiding
+  scalar-path candidate arrays and detached per-cell snapshots, and bounding wide batches with a 10,000-cell guard.
+  The corrected benchmark measured insert allocation at 7,771.36 KB versus the 12,040.59 KB baseline and update
+  allocation at 4,976.05 KB versus 7,390.00 KB.
+- Reuse one temporary staging table per Upsert operation, share a compiled typed Appender writer with BulkInsert,
+  increase the default batch size from 100 to 500, and cap staged work at 100,000 cells. The default Upsert benchmark
+  measured 9.461 ms / 134.73 KB versus the 23.037 ms / 312.79 KB baseline.
+- Coalesce configured connection settings and spatial extension setup into one command per initialization path.
+- Replace the tiered-view crash/late-row guard's second Parquet scan with a persisted active-generation root-key
+  index. The scoped tier benchmark opened 2 files versus 194 at baseline.
+- Add focused diagnostics, width-aware, staging-cleanup, connection, and exact Parquet-scan regression coverage. No
+  existing public API is removed or changed.
+
 ## 1.17.3
 
 - Add context-wide opt-in case-insensitive translation for string and character `StartsWith`, `Contains`, and

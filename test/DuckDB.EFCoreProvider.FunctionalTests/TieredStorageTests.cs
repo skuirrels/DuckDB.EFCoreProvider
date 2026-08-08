@@ -806,9 +806,9 @@ public sealed class TieredStorageTests : IDisposable
         var sql = groupAndMonth.ToQueryString();
         Assert.Contains("EffectiveAt_month", sql);
         Assert.Contains("date_trunc('month'", sql);
-        AssertFilesPruned(Explain(context, groupAndMonth), "1/4");
-        AssertFilesPruned(Explain(context, groupOnly), "2/4");
-        AssertFilesPruned(Explain(context, monthOnly), "2/4");
+        AssertParquetScanFractions(Explain(context, groupAndMonth), "1/4");
+        AssertParquetScanFractions(Explain(context, groupOnly), "2/4");
+        AssertParquetScanFractions(Explain(context, monthOnly), "2/4");
         Assert.Equal([2], groupAndMonth.Select(record => record.Id).ToList());
     }
 

@@ -48,6 +48,12 @@ public static class DuckDBTierControl
     /// <summary>The provider catalogue of exact Parquet objects belonging to published archive generations.</summary>
     public const string GenerationFileTable = "__duckdb_tier_generation_files";
 
+    /// <summary>The indexed active-generation root keys used to suppress crash-retry duplicates.</summary>
+    public const string ArchiveKeyTable = "__duckdb_tier_archive_keys";
+
+    /// <summary>The active generation and watermark represented by the archive-key index.</summary>
+    public const string ArchiveKeyStateTable = "__duckdb_tier_archive_key_state";
+
     private const string TimestampLiteralFormat = "yyyy-MM-dd HH:mm:ss.ffffff";
 
     /// <summary>
@@ -83,7 +89,51 @@ public static class DuckDBTierControl
            + "PRIMARY KEY (control_key, generation_id, table_name)); "
            + $"CREATE TABLE IF NOT EXISTS {sql.DelimitIdentifier(GenerationFileTable)} ("
            + "control_key TEXT NOT NULL, generation_id TEXT NOT NULL, table_name TEXT NOT NULL, "
-           + "file_path TEXT NOT NULL, PRIMARY KEY (control_key, generation_id, table_name, file_path));";
+           + "file_path TEXT NOT NULL, PRIMARY KEY (control_key, generation_id, table_name, file_path)); "
+           + $"CREATE TABLE IF NOT EXISTS {sql.DelimitIdentifier(ArchiveKeyTable)} ("
+           + "control_key TEXT NOT NULL, key_token TEXT NOT NULL, PRIMARY KEY (control_key, key_token)); "
+           + $"CREATE TABLE IF NOT EXISTS {sql.DelimitIdentifier(ArchiveKeyStateTable)} ("
+           + "control_key TEXT PRIMARY KEY, generation_id TEXT NOT NULL, watermark TIMESTAMP NOT NULL);";
+
+    /// <summary>Checks whether the persisted archive-key index matches the active generation.</summary>
+    public static string ArchiveKeyIndexIsCurrentSql(
+        ISqlGenerationHelper sql,
+        string controlKey,
+        string generationId,
+        DateTime watermark)
+        => $"SELECT count(*) FROM {sql.DelimitIdentifier(ArchiveKeyStateTable)} "
+           + $"WHERE control_key = {Literal(controlKey)} AND generation_id = {Literal(generationId)} "
+           + $"AND watermark = {TimestampLiteral(watermark)};";
+
+    /// <summary>Clears the root-key index when an aggregate no longer has an active cold branch.</summary>
+    public static string ClearArchiveKeyIndexSql(ISqlGenerationHelper sql, string controlKey)
+        => $"DELETE FROM {sql.DelimitIdentifier(ArchiveKeyTable)} WHERE control_key = {Literal(controlKey)}; "
+           + $"DELETE FROM {sql.DelimitIdentifier(ArchiveKeyStateTable)} WHERE control_key = {Literal(controlKey)};";
+
+    /// <summary>Rebuilds the indexed active-generation root keys from the exact cold source.</summary>
+    public static string RebuildArchiveKeyIndexSql(
+        ISqlGenerationHelper sql,
+        string controlKey,
+        string generationId,
+        DateTime watermark,
+        IReadOnlyList<string> keyColumns,
+        string timestampColumn,
+        string archivePath,
+        IReadOnlyList<string>? archiveFiles = null)
+    {
+        EnsureKeyColumns(keyColumns, controlKey);
+        var coldAlias = "c";
+        var keyToken = ArchiveKeyToken(sql, keyColumns, coldAlias);
+        var timestamp = coldAlias + "." + sql.DelimitIdentifier(timestampColumn);
+        return ClearArchiveKeyIndexSql(sql, controlKey) + " "
+               + $"INSERT INTO {sql.DelimitIdentifier(ArchiveKeyTable)} (control_key, key_token) "
+               + $"SELECT DISTINCT {Literal(controlKey)}, {keyToken} FROM read_parquet("
+               + ParquetFileArgument(archivePath, archiveFiles)
+               + $", hive_partitioning = true, union_by_name = true) AS {coldAlias} "
+               + $"WHERE {timestamp} IS NOT NULL AND {timestamp} < {TimestampLiteral(watermark)}; "
+               + $"INSERT INTO {sql.DelimitIdentifier(ArchiveKeyStateTable)} (control_key, generation_id, watermark) "
+               + $"VALUES ({Literal(controlKey)}, {Literal(generationId)}, {TimestampLiteral(watermark)});";
+    }
 
     /// <summary>Records or refreshes one successfully published generation.</summary>
     public static string UpsertGenerationSql(
@@ -409,7 +459,7 @@ public static class DuckDBTierControl
                     : TemporalPartitionColumns(granularity).Select(partition => partition.Name),
                 rootPartitions),
             contractProjection);
-        var hotKeyMatch = KeyMatchPredicate(sql, keyColumns, "c", hotAlias);
+        var hotKeyToken = ArchiveKeyToken(sql, keyColumns, hotAlias);
         var coldSource = new StringBuilder("(SELECT ")
             .Append(coldProjection)
             .Append(" FROM read_parquet(").Append(ParquetFileArgument(archivePath, archiveFiles))
@@ -423,8 +473,8 @@ public static class DuckDBTierControl
             .Append("\nUNION ALL BY NAME\n")
             .Append("SELECT ").Append(hotProjection).Append(" FROM ").Append(Table(sql, hotTable, hotSchema)).Append(" AS ").Append(hotAlias)
             .Append("\n  WHERE ").Append(hotTimestamp).Append(" IS NOT NULL AND ").Append(hotTimestamp).Append(" < ").Append(watermark)
-            .Append(" AND NOT EXISTS (SELECT 1 FROM ").Append(coldSource).Append(" AS c WHERE c.").Append(ts)
-            .Append(" IS NOT NULL AND c.").Append(ts).Append(" < ").Append(watermark).Append(" AND ").Append(hotKeyMatch).Append(')')
+            .Append(" AND NOT EXISTS (SELECT 1 FROM ").Append(sql.DelimitIdentifier(ArchiveKeyTable)).Append(" AS k")
+            .Append(" WHERE k.control_key = ").Append(Literal(controlKey)).Append(" AND k.key_token = ").Append(hotKeyToken).Append(')')
             .Append("\nUNION ALL BY NAME\n")
             .Append("SELECT * FROM ").Append(coldSource).Append(" AS c WHERE c.").Append(ts).Append(" IS NOT NULL AND c.").Append(ts).Append(" < ").Append(watermark).Append(';')
             .ToString();
@@ -1915,6 +1965,17 @@ public static class DuckDBTierControl
         => string.Join(
             " AND ",
             keyColumns.Select(column => $"{leftAlias}.{sql.DelimitIdentifier(column)} = {rightAlias}.{sql.DelimitIdentifier(column)}"));
+
+    private static string ArchiveKeyToken(
+        ISqlGenerationHelper sql,
+        IReadOnlyList<string> keyColumns,
+        string alias)
+        => "CAST(to_json(struct_pack("
+           + string.Join(
+               ", ",
+               keyColumns.Select((column, index) =>
+                   $"k{index.ToString(CultureInfo.InvariantCulture)} := {alias}.{sql.DelimitIdentifier(column)}"))
+           + ")) AS VARCHAR)";
 
     private static string RowMatchPredicate(
         ISqlGenerationHelper sql,

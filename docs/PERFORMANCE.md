@@ -17,6 +17,12 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 
 # referenced-principal update regression
 dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *ReferencedPrincipalUpdateBenchmarks*
+
+# provider allocation, adaptive width, connection, Upsert, and tier-query regressions
+dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter \
+  '*AllocationBenchmarks*' '*HotPathReviewBenchmarks*' '*SaveChangesWidthBenchmarks*' \
+  '*ConnectionInitializationBenchmarks*' '*UpsertBatchSizeBenchmarks*' \
+  '*TieredCatalogueScaleBenchmarks*'
 ```
 
 - `WriteBenchmarks` — `SaveChanges` (per-statement `INSERT … RETURNING`) vs `BulkInsert` (Appender).
@@ -25,9 +31,17 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 - `ReadBenchmarks` — no-tracking read / filter materialisation.
 - `ReferencedPrincipalUpdateBenchmarks` — referenced-table update correctness and
   the provider workaround's cost, with an unreferenced update as a regression guard.
+- `AllocationBenchmarks` and `HotPathReviewBenchmarks` — SaveChanges planning and allocation guards.
+- `SaveChangesWidthBenchmarks` — narrow and wide SaveChanges workloads for adaptive cell-limit coverage.
+- `ConnectionInitializationBenchmarks` — default and multi-setting connection-open paths.
+- `UpsertBatchSizeBenchmarks` — controlled staging-table reuse across batch sizes 25 through 1,000.
+- `TieredCatalogueScaleBenchmarks` — tier catalogue, regeneration, pruning, and scoped-query costs.
 - `CommandPlanExtractionBenchmarks`, `ParameterPathBenchmarks`, `SaveChangesParameterBenchmarks`, and
   `SqlGenerationPathBenchmarks` — regression coverage for scalar terminal command extraction, provider command-plan
   metadata, parameterized queries, and deterministic identifier metadata.
+
+The implementation comparison for these provider improvements is recorded in
+[`PROVIDER-PERFORMANCE-IMPROVEMENTS-2026-08.md`](PROVIDER-PERFORMANCE-IMPROVEMENTS-2026-08.md).
 
 ## LINQ provider follow-up regression guard
 

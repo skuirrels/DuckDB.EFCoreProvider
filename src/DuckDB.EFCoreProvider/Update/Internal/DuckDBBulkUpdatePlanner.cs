@@ -21,10 +21,18 @@ internal static class DuckDBBulkUpdatePlanner
         ArgumentNullException.ThrowIfNull(command);
         ArgumentNullException.ThrowIfNull(capabilities);
 
-        return CanPlan(
-            command,
-            DuckDBDualRoleUpdatePlanner.Create(command, capabilities).WriteOperations);
+        if (command.EntityState != EntityState.Modified || command.StoreStoredProcedure is not null)
+        {
+            return false;
+        }
+
+        return CanPlan(command, DuckDBDualRoleUpdatePlanner.Create(command, capabilities));
     }
+
+    internal static bool CanPlan(
+        IReadOnlyModificationCommand command,
+        DuckDBDualRoleUpdatePlan dualRolePlan)
+        => CanPlan(command, dualRolePlan.WriteOperations);
 
     private static bool CanPlan(
         IReadOnlyModificationCommand command,
@@ -50,8 +58,29 @@ internal static class DuckDBBulkUpdatePlanner
         ArgumentNullException.ThrowIfNull(second);
         ArgumentNullException.ThrowIfNull(capabilities);
 
-        var firstWrites = DuckDBDualRoleUpdatePlanner.Create(first, capabilities).WriteOperations;
-        var secondWrites = DuckDBDualRoleUpdatePlanner.Create(second, capabilities).WriteOperations;
+        if (first.EntityState != EntityState.Modified
+            || second.EntityState != EntityState.Modified
+            || first.StoreStoredProcedure is not null
+            || second.StoreStoredProcedure is not null)
+        {
+            return false;
+        }
+
+        return CanAppend(
+            first,
+            DuckDBDualRoleUpdatePlanner.Create(first, capabilities),
+            second,
+            DuckDBDualRoleUpdatePlanner.Create(second, capabilities));
+    }
+
+    internal static bool CanAppend(
+        IReadOnlyModificationCommand first,
+        DuckDBDualRoleUpdatePlan firstPlan,
+        IReadOnlyModificationCommand second,
+        DuckDBDualRoleUpdatePlan secondPlan)
+    {
+        var firstWrites = firstPlan.WriteOperations;
+        var secondWrites = secondPlan.WriteOperations;
 
         return CanPlan(first, firstWrites)
             && CanPlan(second, secondWrites)
@@ -133,6 +162,30 @@ internal static class DuckDBBulkUpdatePlanner
                 "Bulk update commands must be eligible updates with matching tables, schemas, condition columns, and write columns.",
                 nameof(commands));
 
+    internal static DuckDBBulkUpdatePlan Create(
+        IReadOnlyList<IReadOnlyModificationCommand> commands,
+        IReadOnlyList<DuckDBDualRoleUpdatePlan> dualRolePlans)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+        ArgumentNullException.ThrowIfNull(dualRolePlans);
+        if (commands.Count == 0 || commands.Count != dualRolePlans.Count)
+        {
+            throw new ArgumentException("Bulk update commands and classifications must be non-empty and positionally aligned.");
+        }
+
+        if (!CanPlan(commands[0], dualRolePlans[0].WriteOperations))
+        {
+            throw new ArgumentException("The first command is not eligible for bulk update.", nameof(commands));
+        }
+
+        return new DuckDBBulkUpdatePlan(
+            commands,
+            dualRolePlans,
+            DuckDBModificationCommandShape.CountColumns(
+                commands[0],
+                DuckDBModificationColumnRole.Condition));
+    }
+
     private static bool WriteShapesEqual(
         IReadOnlyList<IColumnModification> first,
         IReadOnlyList<IColumnModification> second)
@@ -141,9 +194,28 @@ internal static class DuckDBBulkUpdatePlanner
         var secondPlan = CreateMutationPlan(second);
         return firstPlan is null
             ? secondPlan is null
-                && first.Select(modification => modification.ColumnName)
-                    .SequenceEqual(second.Select(modification => modification.ColumnName), StringComparer.Ordinal)
+                && ColumnNamesEqual(first, second)
             : secondPlan is not null && firstPlan.HasSamePhysicalShape(secondPlan);
+    }
+
+    private static bool ColumnNamesEqual(
+        IReadOnlyList<IColumnModification> first,
+        IReadOnlyList<IColumnModification> second)
+    {
+        if (first.Count != second.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < first.Count; i++)
+        {
+            if (!string.Equals(first[i].ColumnName, second[i].ColumnName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static DuckDBStructMutationPlan? CreateMutationPlan(IReadOnlyList<IColumnModification> writes)
