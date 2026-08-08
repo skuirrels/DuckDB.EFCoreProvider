@@ -30,6 +30,12 @@ internal sealed class DuckDBStructMutationPlan
 
     public IReadOnlyList<DuckDBStructMutationEntry> Entries { get; }
 
+    internal static bool IsStructField(IColumnModification modification)
+    {
+        ArgumentNullException.ThrowIfNull(modification);
+        return ResolveFieldInfo(modification) is not null;
+    }
+
     public static bool TryCreate(
         IReadOnlyList<IColumnModification> modifications,
         DuckDBStructMutationMode mode,
@@ -37,29 +43,36 @@ internal sealed class DuckDBStructMutationPlan
     {
         ArgumentNullException.ThrowIfNull(modifications);
 
-        var candidates = modifications
-            .Select((modification, ordinal) => new
+        // Scalar writes are overwhelmingly the common path. Detect them without allocating the candidate and
+        // resolved arrays needed only for STRUCT mutation planning.
+        var hasStructField = false;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (ResolveFieldInfo(modifications[i]) is not null)
             {
-                Modification = modification,
-                Ordinal = ordinal,
-                FieldInfo = ResolveFieldInfo(modification)
-            })
-            .ToArray();
-        if (candidates.All(entry => entry.FieldInfo is null))
+                hasStructField = true;
+                break;
+            }
+        }
+
+        if (!hasStructField)
         {
             plan = null;
             return false;
         }
 
-        var resolved = candidates
-            .Select(entry => new ResolvedModification(
-                entry.Modification.ColumnName,
-                entry.Modification.ParameterName
+        var resolved = new ResolvedModification[modifications.Count];
+        for (var ordinal = 0; ordinal < modifications.Count; ordinal++)
+        {
+            var modification = modifications[ordinal];
+            resolved[ordinal] = new ResolvedModification(
+                modification.ColumnName,
+                modification.ParameterName
                     ?? throw new InvalidOperationException(
-                        $"STRUCT write column '{entry.Modification.ColumnName}' has no parameter name."),
-                entry.Ordinal,
-                entry.FieldInfo))
-            .ToArray();
+                        $"STRUCT write column '{modification.ColumnName}' has no parameter name."),
+                ordinal,
+                ResolveFieldInfo(modification));
+        }
 
         var collision = DuckDBStructPathCollision.Find(
             resolved

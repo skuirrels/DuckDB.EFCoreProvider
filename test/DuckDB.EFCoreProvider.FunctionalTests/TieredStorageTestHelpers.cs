@@ -1,5 +1,6 @@
 using System.Data;
 using System.Text;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -43,5 +44,17 @@ internal static class TieredStorageTestHelpers
     {
         Assert.Contains("Scanning Files:", plan);
         Assert.Contains(expectedFraction, plan);
+    }
+
+    public static void AssertParquetScanFractions(string plan, params string[] expectedFractions)
+    {
+        var actualFractions = Regex.Matches(
+                plan,
+                @"Scanning Files:[^\d]*(\d+/\d+)",
+                RegexOptions.CultureInvariant | RegexOptions.Singleline)
+            .Select(match => match.Groups[1].Value)
+            .ToArray();
+
+        Assert.Equal(expectedFractions, actualFractions);
     }
 }
