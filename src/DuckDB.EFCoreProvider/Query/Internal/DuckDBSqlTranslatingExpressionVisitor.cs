@@ -1,5 +1,6 @@
-﻿using DuckDB.EFCoreProvider.Query.Expressions.Internal;
+using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using System.Diagnostics;
@@ -40,8 +41,11 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
     private static readonly MethodInfo StringJoinWithCharObjectArray =
         typeof(string).GetMethod(nameof(string.Join), [typeof(char), typeof(object[])])!;
 
+    private readonly IModel _model;
+
     public DuckDBSqlTranslatingExpressionVisitor(RelationalSqlTranslatingExpressionVisitorDependencies dependencies, QueryCompilationContext queryCompilationContext, QueryableMethodTranslatingExpressionVisitor queryableMethodTranslatingExpressionVisitor) : base(dependencies, queryCompilationContext, queryableMethodTranslatingExpressionVisitor)
     {
+        _model = queryCompilationContext.Model;
     }
 
     /// <inheritdoc />
@@ -203,10 +207,129 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
                     argumentsPropagateNullability: [true, true],
                     returnType: binaryExpression.Type,
                     typeMapping: ExpressionExtensions.InferTypeMapping(leftXor, rightXor)!);
+            case ExpressionType.Equal or ExpressionType.NotEqual
+                when IsComplexTypeNullComparison(binaryExpression):
+                // EF narrows a whole-complex null comparison to representative leaf columns
+                // (see StructuralEquality.TryGenerateComparisons). Wrap the narrowed result in a
+                // provenance marker carrying the nesting depth of the checked complex below its
+                // struct root so a postprocessor can replace it with a single struct-itself
+                // IS NULL / IS NOT NULL check. That avoids per-field checks that binder-error on
+                // sparse STRUCTs and minimizes the number of null checks.
+                var visited = base.VisitBinary(binaryExpression);
+                return visited is SqlExpression visitedSql
+                    ? CreateStructPresenceCheck(binaryExpression, visitedSql) ?? visited
+                    : visited;
             default:
                 return base.VisitBinary(binaryExpression);
         }
     }
+
+    /// <summary>
+    ///     Detects a whole-complex null comparison (<c>entity.Complex == null</c> / <c>!= null</c>),
+    ///     where one side is a null constant and the other side's type is a model complex type.
+    /// </summary>
+    private bool IsComplexTypeNullComparison(BinaryExpression binaryExpression)
+    {
+        var left = RemoveImplicitConvert(binaryExpression.Left);
+        var right = RemoveImplicitConvert(binaryExpression.Right);
+
+        Expression nonNullOperand;
+        if (left is ConstantExpression { Value: null })
+        {
+            nonNullOperand = right;
+        }
+        else if (right is ConstantExpression { Value: null })
+        {
+            nonNullOperand = left;
+        }
+        else
+        {
+            return false;
+        }
+
+        var clrType = Nullable.GetUnderlyingType(nonNullOperand.Type) ?? nonNullOperand.Type;
+        return EnumerateComplexTypes(_model)
+            .Any(complexType => complexType.ClrType == clrType);
+    }
+
+    /// <summary>
+    ///     Builds a struct presence marker for a whole-complex null comparison, or returns
+    ///     <see langword="null" /> when the operand is not a complex-property access so EF's
+    ///     narrowed comparison is kept unchanged.
+    /// </summary>
+    private DuckDBStructPresenceCheckExpression? CreateStructPresenceCheck(
+        BinaryExpression binaryExpression,
+        SqlExpression visitedSql)
+    {
+        // Determine the checked complex property's nesting depth below its struct root from the
+        // operand member chain: c.Location == null -> depth 0; c.Location.Address == null -> depth 1.
+        var left = RemoveImplicitConvert(binaryExpression.Left);
+        var right = RemoveImplicitConvert(binaryExpression.Right);
+        var operand = left is ConstantExpression { Value: null } ? right : left;
+        var depth = GetComplexPropertyChainDepth(operand) - 1;
+
+        return depth < 0
+            ? null
+            : new DuckDBStructPresenceCheckExpression(binaryExpression.NodeType, visitedSql, depth);
+    }
+
+    /// <summary>
+    ///     Counts the member expressions in the operand chain, or returns -1 when the operand is
+    ///     not the expected complex-property access shape.
+    /// </summary>
+    private static int GetComplexPropertyChainDepth(Expression expression)
+    {
+        var depth = 0;
+        var current = expression;
+        while (true)
+        {
+            current = RemoveImplicitConvert(current);
+            switch (current)
+            {
+                case MemberExpression { Expression: { } inner } member:
+                    depth++;
+                    current = inner;
+                    break;
+                case ParameterExpression:
+                case RelationalStructuralTypeShaperExpression:
+                case null:
+                    return depth;
+                default:
+                    return -1;
+            }
+        }
+    }
+
+    private IEnumerable<IComplexType> EnumerateComplexTypes(IModel model)
+    {
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            foreach (var complexProperty in entityType.GetComplexProperties())
+            {
+                foreach (var complexType in EnumerateComplexTypes(complexProperty.ComplexType))
+                {
+                    yield return complexType;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<IComplexType> EnumerateComplexTypes(IComplexType complexType)
+    {
+        yield return complexType;
+        foreach (var nestedComplexProperty in complexType.GetComplexProperties())
+        {
+            foreach (var nestedType in EnumerateComplexTypes(nestedComplexProperty.ComplexType))
+            {
+                yield return nestedType;
+            }
+        }
+    }
+
+    private static Expression RemoveImplicitConvert(Expression expression)
+        => expression is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary
+            ? RemoveImplicitConvert(unary.Operand)
+            : expression;
 
     /// <inheritdoc />
     protected override Expression VisitNew(NewExpression newExpression)

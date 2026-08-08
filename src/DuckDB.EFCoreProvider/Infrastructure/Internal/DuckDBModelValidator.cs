@@ -158,11 +158,6 @@ public class DuckDBModelValidator : RelationalModelValidator
 
                 ValidateStructPathCollisions(entityType, fields);
 
-        foreach (var complexProperty in entityType.GetComplexProperties())
-        {
-            ValidateRequiredStructComplexProperty(complexProperty);
-        }
-
         foreach (var (property, field) in fields)
         {
             var propertyName = $"{entityType.DisplayName()}.{property.Name}";
@@ -227,21 +222,6 @@ public class DuckDBModelValidator : RelationalModelValidator
             {
                 yield return entry;
             }
-        }
-    }
-
-    private static void ValidateRequiredStructComplexProperty(IReadOnlyComplexProperty complexProperty)
-    {
-        if (complexProperty.GetStructMapping() is not null && complexProperty.IsNullable)
-        {
-            throw new NotSupportedException(
-                $"DuckDB STRUCT complex property '{complexProperty.DeclaringType.DisplayName()}.{complexProperty.Name}' "
-                + "must be required. Optional STRUCT roots and nested complex properties are not supported.");
-        }
-
-        foreach (var nestedProperty in complexProperty.ComplexType.GetComplexProperties())
-        {
-            ValidateRequiredStructComplexProperty(nestedProperty);
         }
     }
 

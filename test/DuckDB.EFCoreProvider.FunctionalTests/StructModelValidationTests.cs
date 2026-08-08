@@ -43,7 +43,7 @@ public sealed class StructModelValidationTests
     }
 
     [Fact]
-    public void Rejects_optional_struct_root()
+    public void Allows_optional_struct_root()
     {
         using var context = CreateContext(modelBuilder =>
             modelBuilder.Entity<OptionalStructEntity>(entity =>
@@ -56,8 +56,12 @@ public sealed class StructModelValidationTests
                 });
             }));
 
-        var exception = Assert.Throws<NotSupportedException>(() => _ = context.Model);
-        Assert.Contains("must be required", exception.Message, StringComparison.Ordinal);
+        // Optional (nullable) STRUCT roots are supported so whole-complex null comparisons can be
+        // rewritten to struct-itself IS NULL / IS NOT NULL checks.
+        var location = context.Model.FindEntityType(typeof(OptionalStructEntity))!
+            .FindComplexProperty("Location")!;
+        Assert.True(location.IsNullable);
+        Assert.NotNull(location.GetStructMapping());
     }
 
     [Fact]

@@ -332,6 +332,8 @@ e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
 - Raw SQL (`FromSqlRaw`) and composable raw SQL with struct columns work; mapped views with struct properties are rejected at model build time
 - Non-struct complex properties (scalar flattening) continue to work unchanged and are unaffected by this feature
 
+**Null checks on whole structs:** comparing an optional struct-mapped complex property to `null` (`c.Location == null` / `!= null`) translates to a single DuckDB struct-itself check (`"Location" IS NULL` / `IS NOT NULL`) instead of checking each struct field. This is correct on sparse STRUCTs whose physical key set is a subset of the mapped fields (per-field checks would reference missing keys and raise a Binder Error), and is faster because only one column is inspected. Nested struct members work the same way (`c.Location.Address == null` checks `"Location".address IS NULL`). Note that a struct whose fields are all `NULL` is still a present struct: a struct-itself `IS NOT NULL` check keeps such rows, whereas EF's per-field check would have excluded them.
+
 **Convention Inference:**
 The `DuckDBStructFieldConvention` automatically infers struct mapping metadata at model finalization:
 - Complex property name becomes the struct column name (e.g., `Location` → physical column `"Location"`)

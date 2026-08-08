@@ -194,6 +194,153 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
+    [ConditionalFact]
+    public void Struct_itself_null_check_on_sparse_struct_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            // The physical STRUCT only contains the shorttext key; city/country do not exist.
+            // A per-field null check on the struct would reference a missing key and throw
+            // Binder Error, so the whole-complex null comparison must be rewritten to a single
+            // struct-itself IS NULL / IS NOT NULL check.
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'hello'}),
+                    (2, NULL)
+                """);
+
+            using var context = CreateNullableCustomerContext<SparseNullTag>(path);
+
+            var notNullSql = context.Customers
+                .Where(c => c.Location != null)
+                .Select(c => c.Id)
+                .ToQueryString();
+            Assert.Contains("\"Location\" IS NOT NULL", notNullSql, StringComparison.Ordinal);
+            Assert.DoesNotContain("shorttext", notNullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("city", notNullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("country", notNullSql, StringComparison.OrdinalIgnoreCase);
+
+            var present = context.Customers
+                .Where(c => c.Location != null)
+                .Select(c => c.Id)
+                .OrderBy(c => c)
+                .ToList();
+            Assert.Equal([1], present);
+
+            var nullSql = context.Customers
+                .Where(c => c.Location == null)
+                .Select(c => c.Id)
+                .ToQueryString();
+            Assert.Contains("\"Location\" IS NULL", nullSql, StringComparison.Ordinal);
+            Assert.DoesNotContain("shorttext", nullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("city", nullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("country", nullSql, StringComparison.OrdinalIgnoreCase);
+
+            var absent = context.Customers
+                .Where(c => c.Location == null)
+                .Select(c => c.Id)
+                .ToList();
+            Assert.Equal([2], absent);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_itself_null_check_distinguishes_null_struct_from_all_null_members()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'country': 'US'}),
+                    (2, {'city': NULL, 'country': NULL}),
+                    (3, NULL)
+                """);
+
+            using var context = CreateNullableCustomerContext<AllNullMembersTag>(path);
+
+            var present = context.Customers
+                .Where(c => c.Location != null)
+                .Select(c => c.Id)
+                .OrderBy(c => c)
+                .ToList();
+
+            // A struct whose members are all NULL is still a present (non-null) struct; only a
+            // NULL struct value itself should be excluded by a struct-itself IS NOT NULL check.
+            Assert.Equal([1, 2], present);
+
+            var absent = context.Customers
+                .Where(c => c.Location == null)
+                .Select(c => c.Id)
+                .ToList();
+            Assert.Equal([3], absent);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Nested_struct_itself_null_check_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, address STRUCT(street VARCHAR)));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'address': {'street': 'Main'}}),
+                    (2, {'city': 'LDN', 'address': NULL}),
+                    (3, NULL)
+                """);
+
+            using var context = CreateNullableNestedCustomerContext<NestedNullTag>(path);
+
+            var notNullSql = context.Customers
+                .Where(c => c.Location!.Address != null)
+                .Select(c => c.Id)
+                .ToQueryString();
+            Assert.Contains("\"Location\".address IS NOT NULL", notNullSql, StringComparison.Ordinal);
+            Assert.DoesNotContain("street", notNullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("city", notNullSql, StringComparison.OrdinalIgnoreCase);
+
+            var present = context.Customers
+                .Where(c => c.Location!.Address != null)
+                .Select(c => c.Id)
+                .OrderBy(c => c)
+                .ToList();
+            Assert.Equal([1], present);
+
+            var nullSql = context.Customers
+                .Where(c => c.Location!.Address == null)
+                .Select(c => c.Id)
+                .ToQueryString();
+            Assert.Contains("\"Location\".address IS NULL", nullSql, StringComparison.Ordinal);
+            Assert.DoesNotContain("street", nullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("city", nullSql, StringComparison.OrdinalIgnoreCase);
+
+            var absent = context.Customers
+                .Where(c => c.Location!.Address == null)
+                .Select(c => c.Id)
+                .OrderBy(c => c)
+                .ToList();
+            // Both a NULL nested struct and a NULL whole struct count as "Address is null".
+            Assert.Equal([2, 3], absent);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string ParquetPath()
         => Path.Combine(Path.GetTempPath(), $"struct_parquet_{Guid.NewGuid():N}.parquet");
 
@@ -247,6 +394,26 @@ public sealed class StructParquetTests : DuckDBTestBase
         return new ExplicitNamingContext<TTag>(options, parquetPath);
     }
 
+    private NullableCustomerContext<TTag> CreateNullableCustomerContext<TTag>(string parquetPath)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<NullableCustomerContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new NullableCustomerContext<TTag>(options, parquetPath);
+    }
+
+    private NullableNestedCustomerContext<TTag> CreateNullableNestedCustomerContext<TTag>(string parquetPath)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<NullableNestedCustomerContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new NullableNestedCustomerContext<TTag>(options, parquetPath);
+    }
+
     // Tag types give each test its own DbContext type so EF Core's model cache is not
     // shared across tests with different Parquet paths.
     private sealed class ProjectionTag;
@@ -255,6 +422,9 @@ public sealed class StructParquetTests : DuckDBTestBase
     private sealed class DuplicateLeavesTag;
     private sealed class JoinTag;
     private sealed class ExplicitNamingTag;
+    private sealed class SparseNullTag;
+    private sealed class AllNullMembersTag;
+    private sealed class NestedNullTag;
 
     private sealed class CustomerContext<TTag>(DbContextOptions<CustomerContext<TTag>> options, string parquetPath) : DbContext(options)
     {
@@ -322,6 +492,34 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
+    private sealed class NullableCustomerContext<TTag>(DbContextOptions<NullableCustomerContext<TTag>> options, string parquetPath) : DbContext(options)
+    {
+        public DbSet<NullableCustomer> Customers => Set<NullableCustomer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NullableCustomer>(e =>
+            {
+                e.FromParquet(parquetPath);
+                e.ComplexProperty(c => c.Location).UseStructMapping();
+            });
+        }
+    }
+
+    private sealed class NullableNestedCustomerContext<TTag>(DbContextOptions<NullableNestedCustomerContext<TTag>> options, string parquetPath) : DbContext(options)
+    {
+        public DbSet<NullableNestedCustomer> Customers => Set<NullableNestedCustomer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NullableNestedCustomer>(e =>
+            {
+                e.FromParquet(parquetPath);
+                e.ComplexProperty(c => c.Location).UseStructMapping();
+            });
+        }
+    }
+
     private sealed class Customer
     {
         public int Id { get; set; }
@@ -343,6 +541,33 @@ public sealed class StructParquetTests : DuckDBTestBase
         public int Id { get; set; }
         [UseStructMapping]
         public required Address Location { get; set; }
+    }
+
+    private sealed class NestedAddress
+    {
+        public string Street { get; set; } = null!;
+    }
+
+    private sealed class NullableCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public Address? Location { get; set; }
+    }
+
+    private sealed class NullableNestedCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public NullableNestedLocation? Location { get; set; }
+    }
+
+    private sealed class NullableNestedLocation
+    {
+        // City stays required so the flattened-complex validation accepts the type; the nested
+        // Address member under test is the optional one whose presence is checked.
+        public string City { get; set; } = null!;
+        public NestedAddress? Address { get; set; }
     }
 
     private sealed class Address
