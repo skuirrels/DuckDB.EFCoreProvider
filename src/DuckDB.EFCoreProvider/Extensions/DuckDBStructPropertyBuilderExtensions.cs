@@ -13,9 +13,23 @@ public static class DuckDBStructPropertyBuilderExtensions
 
     public static ComplexPropertyBuilder UseStructMapping(
         this ComplexPropertyBuilder propertyBuilder,
+        bool selectiveProjection)
+        => UseStructMapping(propertyBuilder, null, selectiveProjection);
+
+    public static ComplexPropertyBuilder UseStructMapping(
+        this ComplexPropertyBuilder propertyBuilder,
         string? structColumnName)
+        => UseStructMapping(propertyBuilder, structColumnName, selectiveProjection: false);
+
+    public static ComplexPropertyBuilder UseStructMapping(
+        this ComplexPropertyBuilder propertyBuilder,
+        string? structColumnName,
+        bool selectiveProjection)
     {
         ArgumentNullException.ThrowIfNull(propertyBuilder);
+        propertyBuilder.Metadata.SetAnnotation(
+            DuckDBAnnotationNames.SelectiveStructProjection,
+            selectiveProjection);
         propertyBuilder.Metadata.SetAnnotation(DuckDBAnnotationNames.UseStructMapping, true);
         if (structColumnName is not null)
         {
@@ -34,11 +48,27 @@ public static class DuckDBStructPropertyBuilderExtensions
 
     public static ComplexPropertyBuilder<TComplex> UseStructMapping<TComplex>(
         this ComplexPropertyBuilder<TComplex> propertyBuilder,
+        bool selectiveProjection)
+        where TComplex : class
+        => UseStructMapping(propertyBuilder, null, selectiveProjection);
+
+    public static ComplexPropertyBuilder<TComplex> UseStructMapping<TComplex>(
+        this ComplexPropertyBuilder<TComplex> propertyBuilder,
         string? structColumnName)
+        where TComplex : class
+        => UseStructMapping(propertyBuilder, structColumnName, selectiveProjection: false);
+
+    public static ComplexPropertyBuilder<TComplex> UseStructMapping<TComplex>(
+        this ComplexPropertyBuilder<TComplex> propertyBuilder,
+        string? structColumnName,
+        bool selectiveProjection)
         where TComplex : class
     {
         ArgumentNullException.ThrowIfNull(propertyBuilder);
         propertyBuilder.Metadata.SetAnnotation(DuckDBAnnotationNames.UseStructMapping, true);
+        propertyBuilder.Metadata.SetAnnotation(
+            DuckDBAnnotationNames.SelectiveStructProjection,
+            selectiveProjection);
         if (structColumnName is not null)
         {
             propertyBuilder.Metadata.SetAnnotation(

@@ -23,4 +23,14 @@ namespace DuckDB.EFCoreProvider.Metadata;
 ///     </para>
 /// </remarks>
 [AttributeUsage(AttributeTargets.Property)]
-public sealed class UseStructMappingAttribute : Attribute;
+public sealed class UseStructMappingAttribute : Attribute
+{
+    public UseStructMappingAttribute()
+    {
+    }
+
+    public UseStructMappingAttribute(bool selectiveProjection)
+        => SelectiveProjection = selectiveProjection;
+
+    public bool SelectiveProjection { get; }
+}

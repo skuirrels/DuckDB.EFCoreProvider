@@ -11,7 +11,16 @@ public sealed class DuckDBStructMapping
         string structColumnName,
         string? fieldName,
         IReadOnlyDictionary<string, DuckDBStructChildMapping> children)
-        : this(structColumnName, fieldName, children, [])
+        : this(structColumnName, fieldName, children, selectiveProjection: false)
+    {
+    }
+
+    public DuckDBStructMapping(
+        string structColumnName,
+        string? fieldName,
+        IReadOnlyDictionary<string, DuckDBStructChildMapping> children,
+        bool selectiveProjection)
+        : this(structColumnName, fieldName, children, [], selectiveProjection)
     {
     }
 
@@ -20,6 +29,16 @@ public sealed class DuckDBStructMapping
         string? fieldName,
         IReadOnlyDictionary<string, DuckDBStructChildMapping> children,
         IEnumerable<DuckDBStructFieldInfo> fields)
+        : this(structColumnName, fieldName, children, fields, selectiveProjection: false)
+    {
+    }
+
+    internal DuckDBStructMapping(
+        string structColumnName,
+        string? fieldName,
+        IReadOnlyDictionary<string, DuckDBStructChildMapping> children,
+        IEnumerable<DuckDBStructFieldInfo> fields,
+        bool selectiveProjection)
     {
         if (string.IsNullOrWhiteSpace(structColumnName))
         {
@@ -37,6 +56,7 @@ public sealed class DuckDBStructMapping
                 pair.Value ?? throw new ArgumentException("STRUCT child mappings cannot be null.", nameof(children))))
             .ToImmutableDictionary(StringComparer.Ordinal);
         Fields = fields.ToImmutableArray();
+        SelectiveProjection = selectiveProjection;
     }
 
     public string StructColumnName { get; }
@@ -50,6 +70,12 @@ public sealed class DuckDBStructMapping
     ///     used to derive relational lookup indexes.
     /// </summary>
     public IReadOnlyList<DuckDBStructFieldInfo> Fields { get; }
+
+    /// <summary>
+    ///     Whether complex-null presence checks should be limited to fields used by
+    ///     the query projection.
+    /// </summary>
+    public bool SelectiveProjection { get; }
 
     private static string ValidateName(string name, string parameterName)
         => string.IsNullOrWhiteSpace(name)

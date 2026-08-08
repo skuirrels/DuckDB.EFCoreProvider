@@ -64,6 +64,24 @@ public class DuckDBModelValidator : RelationalModelValidator
         ValidateEngineCapabilities(model, _capabilities);
     }
 
+    /// <inheritdoc />
+    protected override void ValidatePropertyMapping(
+        IConventionComplexProperty complexProperty,
+        IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
+    {
+        // Struct-mapped complex properties are stored as a single nullable STRUCT column, so EF Core's
+        // flattened-columns rule (an optional complex type must have at least one required member to tell
+        // "null" apart from "empty") does not apply: the whole STRUCT column being NULL means the complex
+        // property is null, regardless of how many members are nullable. Struct-specific validation runs
+        // in ValidateStructMappings, so skip the relational check for struct-mapped properties only.
+        if (complexProperty.GetStructMapping() is not null)
+        {
+            return;
+        }
+
+        base.ValidatePropertyMapping(complexProperty, logger);
+    }
+
     private static void ValidateStructMappings(IModel model)
     {
         var structTables = new Dictionary<
@@ -304,11 +322,12 @@ public class DuckDBModelValidator : RelationalModelValidator
 
     private static void ValidateRequiredStructComplexProperty(IReadOnlyComplexProperty complexProperty)
     {
-        if (complexProperty.GetStructMapping() is not null && complexProperty.IsNullable)
+        if (complexProperty.GetStructMapping() is { SelectiveProjection: false } && complexProperty.IsNullable)
         {
             throw new NotSupportedException(
                 $"DuckDB STRUCT complex property '{complexProperty.DeclaringType.DisplayName()}.{complexProperty.Name}' "
-                + "must be required. Optional STRUCT roots and nested complex properties are not supported.");
+                + "must be required when selective STRUCT projection is not enabled. Optional STRUCT roots and nested "
+                + "complex properties require UseStructMapping(selectiveProjection: true).");
         }
 
         foreach (var nestedProperty in complexProperty.ComplexType.GetComplexProperties())

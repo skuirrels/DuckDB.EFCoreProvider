@@ -42,6 +42,118 @@ public sealed class StructParquetTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_selective_projection_from_parquet_ignores_missing_fields()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateSparseCustomerContext<SelectiveProjectionTag>(path);
+            var query = context.Systems
+                .Select(system => new SparseSystem
+                {
+                    Uid = system.Uid,
+                    Attributes = system.Attributes != null
+                        ? new SparseAttributes { Shorttext = system.Attributes.Shorttext }
+                        : null
+                });
+            var sql = query.ToQueryString();
+            var result = query.Single();
+
+            Assert.Equal(1, result.Uid);
+            Assert.Equal("NYC", result.Attributes!.Shorttext);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_nested_nullable_complex_property_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (
+                    Uid INTEGER,
+                    Attributes STRUCT(shorttext VARCHAR, details STRUCT(city VARCHAR))
+                );
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC', 'details': {'city': 'Paris'}})
+                """);
+
+            using var context = CreateNestedSparseCustomerContext(path);
+            var query = context.Systems
+                .Select(system => new NestedSparseSystem
+                {
+                    Uid = system.Uid,
+                    Attributes = system.Attributes != null
+                        ? new NestedSparseAttributes
+                        {
+                            Shorttext = system.Attributes.Shorttext,
+                            Details = system.Attributes.Details != null
+                                ? new NestedSparseDetails { City = system.Attributes.Details.City }
+                                : null
+                        }
+                        : null
+                });
+            var sql = query.ToQueryString();
+            var result = query.Single();
+
+            Assert.Equal(1, result.Uid);
+            Assert.Equal("NYC", result.Attributes!.Shorttext);
+            Assert.Equal("Paris", result.Attributes!.Details!.City);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_via_attribute_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateAttributeSelectiveContext(path);
+            var query = context.Systems
+                .Select(system => new AttributeSelectiveSystem
+                {
+                    Uid = system.Uid,
+                    Attributes = system.Attributes != null
+                        ? new SparseAttributes { Shorttext = system.Attributes.Shorttext }
+                        : null
+                });
+            var sql = query.ToQueryString();
+            var result = query.Single();
+
+            Assert.Equal(1, result.Uid);
+            Assert.Equal("NYC", result.Attributes!.Shorttext);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
     public void Struct_sub_field_filter_from_parquet()
     {
         var path = ParquetPath();
@@ -448,6 +560,343 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
+    [ConditionalFact]
+    public void Struct_selective_projection_where_presence_check_rewritten_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateSparseCustomerContext<PresenceCheckTag>(path);
+            var query = context.Systems
+                .Where(system => system.Attributes != null)
+                .Select(system => system.Attributes!.Shorttext);
+            var sql = query.ToQueryString();
+            var result = query.Single();
+
+            Assert.Equal("NYC", result);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_leaf_null_filter_preserved_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR, other VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC', 'other': NULL}),
+                    (2, {'shorttext': 'LA', 'other': 'x'})
+                """);
+
+            using var context = CreateTwoFieldSparseCustomerContext<LeafNullFilterTag>(path);
+
+            // The filter targets a single leaf of the complex property. It is a user leaf-null
+            // filter - not an EF-generated whole-complex presence check - so it must be preserved
+            // verbatim and must not be rebuilt from the projected fields.
+            var query = context.Systems
+                .Where(system => system.Attributes!.Other == null)
+                .Select(system => system.Attributes!.Shorttext);
+            var sql = query.ToQueryString();
+            var result = query.ToList();
+
+            Assert.Equal(["NYC"], result);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_leaf_not_null_filter_preserved_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR, other VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC', 'other': NULL}),
+                    (2, {'shorttext': 'LA', 'other': 'x'})
+                """);
+
+            using var context = CreateTwoFieldSparseCustomerContext<LeafNotNullFilterTag>(path);
+
+            var query = context.Systems
+                .Where(system => system.Attributes!.Other != null)
+                .Select(system => system.Attributes!.Shorttext);
+            var sql = query.ToQueryString();
+            var result = query.ToList();
+
+            Assert.Equal(["LA"], result);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_leaf_null_filter_preserved_without_forgiving_operator_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR, other VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC', 'other': NULL}),
+                    (2, {'shorttext': 'LA', 'other': 'x'})
+                """);
+
+            using var context = CreateTwoFieldSparseCustomerContext<LeafNullFilterNoForgiveTag>(path);
+
+            // The `!` null-forgiving operator is compile-time only and is erased in the EF
+            // expression tree, so this query shape is identical to a user's
+            // `x.Attributes.Responsibility == null` leaf-null filter. It must be preserved
+            // verbatim and must not be rebuilt from the projected fields.
+#pragma warning disable CS8602
+            var query = context.Systems
+                .Where(system => system.Attributes.Other == null)
+                .Select(system => system.Attributes.Shorttext);
+#pragma warning restore CS8602
+            var sql = query.ToQueryString();
+            var result = query.ToList();
+
+            Assert.Equal(["NYC"], result);
+            Assert.Contains("other", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_nonnullable_leaf_null_filter_preserved_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR, xedrresponsibility VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC', 'xedrresponsibility': NULL}),
+                    (2, {'shorttext': 'LA', 'xedrresponsibility': 'x'})
+                """);
+
+            using var context = CreateSparseCustomerContext<LeafNullFilterNoForgiveTag>(path);
+
+            // Reviewer scenario: a leaf null filter against a non-nullable scalar member of a
+            // selective struct. EF's null semantics may synthesize a whole-complex guard, but
+            // the marker must only be emitted for genuinely whole-complex comparisons, never
+            // for this intentional user leaf filter.
+#pragma warning disable CS8602
+            var query = context.Systems
+                .Where(system => system.Attributes.XEdrResponsibility == null)
+                .Select(system => system.Attributes.Shorttext);
+#pragma warning restore CS8602
+            var sql = query.ToQueryString();
+            var result = query.ToList();
+
+            Assert.Equal(["NYC"], result);
+            Assert.Contains("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("shorttext IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_nonnullable_leaf_not_null_filter_preserved_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR, xedrresponsibility VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC', 'xedrresponsibility': NULL}),
+                    (2, {'shorttext': 'LA', 'xedrresponsibility': 'x'})
+                """);
+
+            using var context = CreateSparseCustomerContext<LeafNotNullFilterNoForgiveTag>(path);
+
+            // The not-null polarity of the reviewer scenario: a leaf IS NOT NULL filter against
+            // a non-nullable scalar member must also be preserved verbatim.
+#pragma warning disable CS8602
+            var query = context.Systems
+                .Where(system => system.Attributes.XEdrResponsibility != null)
+                .Select(system => system.Attributes.Shorttext);
+#pragma warning restore CS8602
+            var sql = query.ToQueryString();
+            var result = query.ToList();
+
+            Assert.Equal(["LA"], result);
+            Assert.Contains("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("IS NOT NULL", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("shorttext IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_where_null_presence_check_rewritten_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateSparseCustomerContext<NullPresenceCheckTag>(path);
+            var query = context.Systems
+                .Where(system => system.Attributes == null)
+                .Select(system => system.Attributes!.Shorttext);
+            var sql = query.ToQueryString();
+            var result = query.ToList();
+
+            Assert.Empty(result);
+            Assert.DoesNotContain("xedrresponsibility", sql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_presence_check_uses_all_projected_fields_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR, other VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': NULL, 'other': 'Paris'}),
+                    (2, {'shorttext': NULL, 'other': NULL})
+                """);
+
+            using var context = CreateTwoFieldSparseCustomerContext<TwoFieldPresenceCheckTag>(path);
+
+            // IS NOT NULL polarity: presence check is rebuilt as OR over every projected field,
+            // so row 1 (only 'other' set) must materialize as non-null and row 2 as null.
+            var notNullQuery = context.Systems
+                .Select(system => new TwoFieldSparseSystem
+                {
+                    Uid = system.Uid,
+                    Attributes = system.Attributes != null
+                        ? new TwoFieldSparseAttributes
+                        {
+                            Shorttext = system.Attributes.Shorttext,
+                            Other = system.Attributes.Other
+                        }
+                        : null
+                })
+                .OrderBy(system => system.Uid);
+            var notNullSql = notNullQuery.ToQueryString();
+            var notNullResults = notNullQuery.ToList();
+
+            Assert.NotNull(notNullResults[0].Attributes);
+            Assert.Equal("Paris", notNullResults[0].Attributes!.Other);
+            Assert.Null(notNullResults[1].Attributes);
+            Assert.DoesNotContain("xedrresponsibility", notNullSql, StringComparison.OrdinalIgnoreCase);
+
+            // IS NULL polarity: presence check is rebuilt as AND over every projected field.
+            var isNullResults = context.Systems
+                .OrderBy(system => system.Uid)
+                .Select(system => system.Attributes == null
+                    ? null
+                    : new TwoFieldSparseAttributes
+                    {
+                        Shorttext = system.Attributes.Shorttext,
+                        Other = system.Attributes.Other
+                    })
+                .ToList();
+
+            Assert.NotNull(isNullResults[0]);
+            Assert.Equal("Paris", isNullResults[0]!.Other);
+            Assert.Null(isNullResults[1]);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_selective_projection_nested_conditional_presence_check_rewritten_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateSparseCustomerContext<NestedConditionalPresenceCheckTag>(path);
+
+            // IS NULL polarity: the whole-complex null check is the test of a conditional that EF
+            // translates to a CASE, so the presence marker is nested inside the CASE expression.
+            // It must still be rewritten to only reference the projected shorttext field.
+            var isNullQuery = context.Systems
+                .Where(system => system.Attributes == null
+                    ? system.Uid < 0
+                    : system.Uid > 0)
+                .Select(system => system.Attributes!.Shorttext);
+            var isNullSql = isNullQuery.ToQueryString();
+            var isNullResult = isNullQuery.Single();
+
+            Assert.Equal("NYC", isNullResult);
+            Assert.DoesNotContain("xedrresponsibility", isNullSql, StringComparison.OrdinalIgnoreCase);
+
+            // IS NOT NULL polarity of the same nested shape.
+            var notNullQuery = context.Systems
+                .Where(system => system.Attributes != null
+                    ? system.Uid > 0
+                    : system.Uid < 0)
+                .Select(system => system.Attributes!.Shorttext);
+            var notNullSql = notNullQuery.ToQueryString();
+            var notNullResult = notNullQuery.Single();
+
+            Assert.Equal("NYC", notNullResult);
+            Assert.DoesNotContain("xedrresponsibility", notNullSql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string ParquetPath()
         => Path.Combine(Path.GetTempPath(), $"struct_parquet_{Guid.NewGuid():N}.parquet");
 
@@ -529,12 +978,59 @@ public sealed class StructParquetTests : DuckDBTestBase
 
     // Tag types give each test its own DbContext type so EF Core's model cache is not
     // shared across tests with different Parquet paths.
+    private SparseCustomerContext<TTag> CreateSparseCustomerContext<TTag>(string parquetPath)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<SparseCustomerContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new SparseCustomerContext<TTag>(options, parquetPath);
+    }
+
+    private NestedSparseCustomerContext CreateNestedSparseCustomerContext(string parquetPath)
+    {
+        var options = new DbContextOptionsBuilder<NestedSparseCustomerContext>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new NestedSparseCustomerContext(options, parquetPath);
+    }
+
+    private AttributeSelectiveContext CreateAttributeSelectiveContext(string parquetPath)
+    {
+        var options = new DbContextOptionsBuilder<AttributeSelectiveContext>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new AttributeSelectiveContext(options, parquetPath);
+    }
+
+    private TwoFieldSparseCustomerContext<TTag> CreateTwoFieldSparseCustomerContext<TTag>(string parquetPath)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<TwoFieldSparseCustomerContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new TwoFieldSparseCustomerContext<TTag>(options, parquetPath);
+    }
+
     private sealed class ProjectionTag;
     private sealed class FilterTag;
     private sealed class OrderByTag;
     private sealed class DuplicateLeavesTag;
     private sealed class JoinTag;
     private sealed class ExplicitNamingTag;
+    private sealed class SelectiveProjectionTag;
+    private sealed class PresenceCheckTag;
+    private sealed class NullPresenceCheckTag;
+    private sealed class LeafNullFilterTag;
+    private sealed class LeafNotNullFilterTag;
+    private sealed class LeafNullFilterNoForgiveTag;
+    private sealed class LeafNotNullFilterNoForgiveTag;
+    private sealed class TwoFieldPresenceCheckTag;
+    private sealed class NestedConditionalPresenceCheckTag;
     private sealed class RequiredRelationshipTag;
     private sealed class OptionalRelationshipTag;
     private sealed class RequiredOverrideTag;
@@ -550,6 +1046,72 @@ public sealed class StructParquetTests : DuckDBTestBase
             {
                 e.FromParquet(parquetPath);
                 e.ComplexProperty(c => c.Location).UseStructMapping();
+            });
+        }
+    }
+
+    private sealed class SparseCustomerContext<TTag>(DbContextOptions<SparseCustomerContext<TTag>> options, string parquetPath)
+        : DbContext(options)
+        where TTag : class
+    {
+        public DbSet<SparseSystem> Systems => Set<SparseSystem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<SparseSystem>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.HasKey(system => system.Uid);
+                entity.ComplexProperty(system => system.Attributes).UseStructMapping(true);
+            });
+        }
+    }
+
+    private sealed class NestedSparseCustomerContext(DbContextOptions<NestedSparseCustomerContext> options, string parquetPath)
+        : DbContext(options)
+    {
+        public DbSet<NestedSparseSystem> Systems => Set<NestedSparseSystem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NestedSparseSystem>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.HasKey(system => system.Uid);
+                entity.ComplexProperty(system => system.Attributes).UseStructMapping(true);
+            });
+        }
+    }
+
+    private sealed class AttributeSelectiveContext(DbContextOptions<AttributeSelectiveContext> options, string parquetPath)
+        : DbContext(options)
+    {
+        public DbSet<AttributeSelectiveSystem> Systems => Set<AttributeSelectiveSystem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<AttributeSelectiveSystem>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.HasKey(system => system.Uid);
+                entity.ComplexProperty(system => system.Attributes);
+            });
+        }
+    }
+
+    private sealed class TwoFieldSparseCustomerContext<TTag>(DbContextOptions<TwoFieldSparseCustomerContext<TTag>> options, string parquetPath)
+        : DbContext(options)
+        where TTag : class
+    {
+        public DbSet<TwoFieldSparseSystem> Systems => Set<TwoFieldSparseSystem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<TwoFieldSparseSystem>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.HasKey(system => system.Uid);
+                entity.ComplexProperty(system => system.Attributes).UseStructMapping(true);
             });
         }
     }
@@ -703,6 +1265,61 @@ public sealed class StructParquetTests : DuckDBTestBase
         public int Id { get; set; }
         [UseStructMapping]
         public required Address Location { get; set; }
+    }
+
+    private sealed class SparseSystem
+    {
+        public int Uid { get; set; }
+        [UseStructMapping]
+        public SparseAttributes? Attributes { get; set; }
+    }
+
+    private sealed class SparseAttributes
+    {
+        public string? Shorttext { get; set; }
+        public string XEdrResponsibility { get; set; } = null!;
+        public string XEdrSoftware { get; set; } = null!;
+        public string XNacZone { get; set; } = null!;
+        public string XSource { get; set; } = null!;
+    }
+
+    private sealed class TwoFieldSparseSystem
+    {
+        public int Uid { get; set; }
+        [UseStructMapping]
+        public TwoFieldSparseAttributes? Attributes { get; set; }
+    }
+
+    private sealed class TwoFieldSparseAttributes
+    {
+        public string? Shorttext { get; set; }
+        public string? Other { get; set; }
+    }
+
+    private sealed class NestedSparseSystem
+    {
+        public int Uid { get; set; }
+        [UseStructMapping]
+        public NestedSparseAttributes? Attributes { get; set; }
+    }
+
+    private sealed class NestedSparseAttributes
+    {
+        public string? Shorttext { get; set; }
+        public string XEdrResponsibility { get; set; } = null!;
+        public NestedSparseDetails? Details { get; set; }
+    }
+
+    private sealed class NestedSparseDetails
+    {
+        public string City { get; set; } = null!;
+    }
+
+    private sealed class AttributeSelectiveSystem
+    {
+        public int Uid { get; set; }
+        [UseStructMapping(true)]
+        public SparseAttributes? Attributes { get; set; }
     }
 
     private sealed class Address

@@ -253,6 +253,45 @@ public class DuckDBStructFieldConventionTest
     }
 
     [Fact]
+    public void Selective_projection_flag_propagates_to_nested_struct_mappings()
+    {
+        var model = BuildModel<OrderWithNestedStruct>(mb =>
+            mb.Entity<OrderWithNestedStruct>(e =>
+                e.ComplexProperty(o => o.Shipping).UseStructMapping(true)));
+
+        var entity = model.FindEntityType(typeof(OrderWithNestedStruct))!;
+        var shippingProp = entity.FindComplexProperty("Shipping")!;
+        var shippingMapping = shippingProp.GetStructMapping();
+        Assert.NotNull(shippingMapping);
+        Assert.True(shippingMapping.SelectiveProjection);
+
+        // Nested struct complex properties must inherit the root's selective flag.
+        var addressComplex = shippingProp.ComplexType.FindComplexProperty("Address")!;
+        var addressMapping = addressComplex.GetStructMapping();
+        Assert.NotNull(addressMapping);
+        Assert.True(addressMapping.SelectiveProjection);
+    }
+
+    [Fact]
+    public void Non_selective_struct_mapping_keeps_nested_mappings_non_selective()
+    {
+        var model = BuildModel<OrderWithNestedStruct>(mb =>
+            mb.Entity<OrderWithNestedStruct>(e =>
+                e.ComplexProperty(o => o.Shipping).UseStructMapping()));
+
+        var entity = model.FindEntityType(typeof(OrderWithNestedStruct))!;
+        var shippingProp = entity.FindComplexProperty("Shipping")!;
+        var shippingMapping = shippingProp.GetStructMapping();
+        Assert.NotNull(shippingMapping);
+        Assert.False(shippingMapping.SelectiveProjection);
+
+        var addressComplex = shippingProp.ComplexType.FindComplexProperty("Address")!;
+        var addressMapping = addressComplex.GetStructMapping();
+        Assert.NotNull(addressMapping);
+        Assert.False(addressMapping.SelectiveProjection);
+    }
+
+    [Fact]
     public void Explicit_HasStructField_overrides_convention()
     {
         var model = BuildModel<CustomerWithAttribute>(mb =>

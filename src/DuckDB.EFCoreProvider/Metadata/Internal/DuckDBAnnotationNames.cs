@@ -148,4 +148,10 @@ public static class DuckDBAnnotationNames
     ///     the CLR property or the <c>ComplexProperty(...).UseStructMapping()</c> fluent API.
     /// </summary>
     public const string UseStructMapping = Prefix + "UseStructMapping";
+
+    /// <summary>
+    ///     Set to <see langword="true" /> when STRUCT complex-null presence checks should
+    ///     reference only fields used by the query projection.
+    /// </summary>
+    public const string SelectiveStructProjection = Prefix + "SelectiveStructProjection";
 }
