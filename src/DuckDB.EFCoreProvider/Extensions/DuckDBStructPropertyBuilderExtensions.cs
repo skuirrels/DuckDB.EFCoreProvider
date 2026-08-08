@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using System.Linq.Expressions;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -124,6 +125,13 @@ public static class DuckDBStructPropertyBuilderExtensions
         return propertyBuilder;
     }
 
+    /// <summary>
+    ///     Configures the physical DuckDB STRUCT leaf name for an entity scalar property.
+    /// </summary>
+    /// <remarks>
+    ///     Use this after <see cref="HasStructField{TProperty}(PropertyBuilder{TProperty}, string, string[])" />
+    ///     when the physical leaf name differs from the EF property name.
+    /// </remarks>
     public static PropertyBuilder<TProperty> HasStructFieldName<TProperty>(
         this PropertyBuilder<TProperty> propertyBuilder,
         string fieldName)
@@ -147,6 +155,17 @@ public static class DuckDBStructPropertyBuilderExtensions
         return propertyBuilder;
     }
 
+    /// <summary>
+    ///     Maps an entity scalar property to a field inside a physical DuckDB STRUCT column.
+    /// </summary>
+    /// <param name="propertyBuilder">The scalar property builder.</param>
+    /// <param name="structColumnName">The physical STRUCT root column.</param>
+    /// <param name="nestedFieldNames">The physical path from the root to the leaf's parent.</param>
+    /// <remarks>
+    ///     Configure the physical leaf with <see cref="HasStructFieldName{TProperty}(PropertyBuilder{TProperty}, string)" />.
+    ///     A mapped scalar can be an EF foreign-key property when both relationship ends are query-only
+    ///     DuckDB file sources. The normal EF relationship APIs continue to define the relationship.
+    /// </remarks>
     public static PropertyBuilder<TProperty> HasStructField<TProperty>(
         this PropertyBuilder<TProperty> propertyBuilder,
         string structColumnName,
@@ -176,6 +195,39 @@ public static class DuckDBStructPropertyBuilderExtensions
                 propertyBuilder.Metadata.FindAnnotation(DuckDBAnnotationNames.StructFieldName)?.Value as string));
         return propertyBuilder;
     }
+
+    internal static IReadOnlyList<string> GetMemberPath(LambdaExpression expression)
+    {
+        ArgumentNullException.ThrowIfNull(expression);
+
+        var members = new List<string>();
+        Expression current = UnwrapConvert(expression.Body);
+        while (current is MemberExpression member && member.Expression is not null)
+        {
+            members.Add(member.Member.Name);
+            current = UnwrapConvert(member.Expression);
+        }
+
+        if (!ReferenceEquals(current, expression.Parameters[0]) || members.Count < 2)
+        {
+            throw new ArgumentException(
+                "The STRUCT field selector must be a nested member path rooted at the entity, "
+                + "for example 'e => e.Relationship.ParentId'.",
+                nameof(expression));
+        }
+
+        members.Reverse();
+        return members;
+    }
+
+    private static Expression UnwrapConvert(Expression expression)
+        => expression is UnaryExpression
+        {
+            NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
+            Operand: var operand,
+        }
+            ? operand
+            : expression;
 
     private static string ValidateName(string name, string parameterName)
         => string.IsNullOrWhiteSpace(name)

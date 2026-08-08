@@ -166,6 +166,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.EnableBulkInsertBatching()` | Merge consecutive `SaveChanges` inserts into one multi-row statement (~10× faster). | off |
 | `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~8× faster). | off |
 | `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~14× faster). | off |
+| `.UseCaseInsensitiveStringSearches()` | Make simple `StartsWith`, `Contains`, and `EndsWith` queries case-insensitive for this context; literal `%` and `_` remain literals. | off |
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
 | `.Threads(4)` | Set the global thread count used by DuckDB query execution when the connection opens. | DuckDB default |
 | `.FileSearchPath("/data")` | Base directory (or comma-separated directories) for resolving relative file paths. | DuckDB default |
@@ -181,6 +182,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 options.UseDuckDB(
     "Data Source=app.duckdb",
     duckdb => duckdb
+        .UseCaseInsensitiveStringSearches()
         .EnableBulkInsertBatching()
         .MemoryLimit("4GB")
         .Threads(4)
@@ -392,6 +394,29 @@ var result = context.Customers
 ```
 
 `UseStructMapping()` remains the default and preserves full mapped-member presence checks. In selective mode, complex-property null detection is based only on projected members; if all projected members are null while an unprojected member has a value, the projected complex property may materialize as `null`.
+
+Use a mapped STRUCT leaf as a foreign key with `HasStructForeignKey`. The relationship's requiredness is inferred from the mapped leaf: a non-nullable leaf (for example `int CustomerId`) produces a required relationship (INNER JOIN), while a nullable leaf (`int? CustomerId`) produces an optional one (LEFT JOIN):
+
+```csharp
+modelBuilder.Entity<Order>(e =>
+{
+    e.FromParquet("orders.parquet");
+    e.ComplexProperty(o => o.Relationship, relationship =>
+    {
+        relationship.UseStructMapping();
+        relationship.Property(r => r.CustomerId)
+            .HasStructFieldName("customer_id");
+    });
+
+    e.HasOne(o => o.Customer)
+        .WithMany(c => c.Orders)
+        .HasStructForeignKey(o => o.Relationship.CustomerId);
+});
+
+modelBuilder.Entity<Customer>(e => e.FromParquet("customers.parquet"));
+```
+
+The mapped leaf is reused as EF relationship plumbing; no duplicate scalar FK or field metadata is needed. Call `.IsRequired()` or `.IsRequired(false)` explicitly to override the inferred join shape. STRUCT foreign keys are query-only and require file-backed entities; physical-table and composite STRUCT foreign keys are rejected.
 
 **Limitations & Behavior:**
 - Queries with LINQ projections, filters, sorting, joins, and subqueries are fully supported

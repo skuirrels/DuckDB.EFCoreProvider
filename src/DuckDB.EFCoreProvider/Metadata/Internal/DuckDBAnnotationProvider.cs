@@ -19,11 +19,7 @@ public class DuckDBAnnotationProvider : RelationalAnnotationProvider
 
     public override IEnumerable<IAnnotation> For(IColumn column, bool designTime)
     {
-        // Prefer the entity-level column map when available: it holds the correct
-        // DuckDBStructFieldInfo for shared complex types used in multiple struct
-        // columns (e.g. Billing.City vs Shipping.City). Fall back to the legacy leaf
-        // property annotation for explicit HasStructField or older conventions.
-        var structFieldInfo = ResolveStructFieldInfo(column);
+        var structFieldInfo = DuckDBStructRelationalMetadata.FindFieldInfo(column);
         if (structFieldInfo is not null)
         {
             yield return new Annotation(DuckDBAnnotationNames.StructField, structFieldInfo);
@@ -48,19 +44,11 @@ public class DuckDBAnnotationProvider : RelationalAnnotationProvider
         }
     }
 
-    internal static DuckDBStructFieldInfo? ResolveStructFieldInfo(IColumn column)
+    public override IEnumerable<IAnnotation> For(IForeignKeyConstraint foreignKey, bool designTime)
     {
-        var columnMap = column.Table?.EntityTypeMappings
-            .Select(e => e.TypeBase is IEntityType entityType ? entityType.GetStructColumnMap() : null)
-            .FirstOrDefault(m => m is not null && m.ContainsKey(column.Name));
-
-        if (columnMap?.TryGetValue(column.Name, out var info) == true)
+        if (designTime && DuckDBStructRelationalMetadata.IsStructFieldForeignKey(foreignKey))
         {
-            return info;
+            yield return new Annotation(DuckDBAnnotationNames.LogicalStructForeignKey, true);
         }
-
-        return column.PropertyMappings
-            .Select(m => m.Property.FindAnnotation(DuckDBAnnotationNames.StructField))
-            .FirstOrDefault(a => a is not null)?.Value as DuckDBStructFieldInfo;
     }
 }

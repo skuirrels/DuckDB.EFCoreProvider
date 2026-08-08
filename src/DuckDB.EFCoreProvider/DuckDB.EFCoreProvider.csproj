@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.17.2</PackageVersion>
-    <FileVersion>1.17.2.0</FileVersion>
-    <Version>1.17.2</Version>
+    <PackageVersion>1.17.3</PackageVersion>
+    <FileVersion>1.17.3.0</FileVersion>
+    <Version>1.17.3</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,12 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.17.1</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.17.2</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.17.3
+- Add context-wide opt-in case-insensitive translation for string and character StartsWith, Contains, and EndsWith searches. Existing case-sensitive behavior and exact equality remain unchanged by default.
+- Translate opted-in searches through null-safe ilike_escape expressions with explicit VARCHAR mappings and literal escaping for $, %, and _, including native DuckDB and DuckLake execution coverage.
+
 1.17.2
 - Fix tracked updates for dual-role rows whose stable key is referenced by dependants and which also carry an outbound foreign key. Unchanged outbound-FK writes are classified using provider values and omitted when another write remains, avoiding DuckDB's referenced-row constraint without hiding genuine physical changes.
 - Preserve disconnected sole-FK updates with an atomic IS DISTINCT FROM update and keyed concurrency probe. Genuine outbound-FK reassignments succeed when no inbound dependant exists and otherwise produce an actionable DbUpdateException; DuckLake retains its logical-relationship behavior because it does not create physical FKs.
