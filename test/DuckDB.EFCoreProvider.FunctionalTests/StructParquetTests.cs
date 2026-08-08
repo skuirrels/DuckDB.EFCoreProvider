@@ -851,6 +851,52 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
+    [ConditionalFact]
+    public void Struct_selective_projection_nested_conditional_presence_check_rewritten_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Uid INTEGER, Attributes STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'NYC'})
+                """);
+
+            using var context = CreateSparseCustomerContext<NestedConditionalPresenceCheckTag>(path);
+
+            // IS NULL polarity: the whole-complex null check is the test of a conditional that EF
+            // translates to a CASE, so the presence marker is nested inside the CASE expression.
+            // It must still be rewritten to only reference the projected shorttext field.
+            var isNullQuery = context.Systems
+                .Where(system => system.Attributes == null
+                    ? system.Uid < 0
+                    : system.Uid > 0)
+                .Select(system => system.Attributes!.Shorttext);
+            var isNullSql = isNullQuery.ToQueryString();
+            var isNullResult = isNullQuery.Single();
+
+            Assert.Equal("NYC", isNullResult);
+            Assert.DoesNotContain("xedrresponsibility", isNullSql, StringComparison.OrdinalIgnoreCase);
+
+            // IS NOT NULL polarity of the same nested shape.
+            var notNullQuery = context.Systems
+                .Where(system => system.Attributes != null
+                    ? system.Uid > 0
+                    : system.Uid < 0)
+                .Select(system => system.Attributes!.Shorttext);
+            var notNullSql = notNullQuery.ToQueryString();
+            var notNullResult = notNullQuery.Single();
+
+            Assert.Equal("NYC", notNullResult);
+            Assert.DoesNotContain("xedrresponsibility", notNullSql, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string ParquetPath()
         => Path.Combine(Path.GetTempPath(), $"struct_parquet_{Guid.NewGuid():N}.parquet");
 
@@ -984,6 +1030,7 @@ public sealed class StructParquetTests : DuckDBTestBase
     private sealed class LeafNullFilterNoForgiveTag;
     private sealed class LeafNotNullFilterNoForgiveTag;
     private sealed class TwoFieldPresenceCheckTag;
+    private sealed class NestedConditionalPresenceCheckTag;
     private sealed class RequiredRelationshipTag;
     private sealed class OptionalRelationshipTag;
     private sealed class RequiredOverrideTag;

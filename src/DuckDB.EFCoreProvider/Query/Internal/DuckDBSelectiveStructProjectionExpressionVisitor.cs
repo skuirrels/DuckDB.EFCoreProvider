@@ -79,8 +79,8 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
         var projections = new List<ProjectionExpression>(selectExpression.Projection.Count);
         foreach (var projection in selectExpression.Projection)
         {
-            if (TryRewritePresenceCheck(projection.Expression, requestedFields, out var rewritten)
-                && rewritten != projection.Expression)
+            var rewritten = RewritePresenceCheckExpression(projection.Expression, requestedFields);
+            if (rewritten != projection.Expression)
             {
                 projections.Add(projection.Update(rewritten!));
                 changed = true;
@@ -145,10 +145,11 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
     }
 
     /// <summary>
-    ///     Rewrites EF-generated null-presence checks in the predicate, having clause and projections
-    ///     so that they only reference fields that are actually projected. Because EF Core narrows a
-    ///     complex property null check to a single representative field during translation, the check
-    ///     must be rebuilt from every requested (projected) field of the struct root.
+    ///     Rewrites EF-generated null-presence checks nested anywhere within a SQL expression -
+    ///     in the predicate, having clause and projections - so that they only reference fields that
+    ///     are actually projected. Because EF Core narrows a complex property null check to a single
+    ///     representative field during translation, the check must be rebuilt from every requested
+    ///     (projected) field of the struct root.
     /// </summary>
     /// <remarks>
     ///     Only <see cref="DuckDBStructPresenceCheckExpression" /> markers - which EF translation
@@ -165,24 +166,11 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
             return null;
         }
 
-        if (expression is DuckDBStructPresenceCheckExpression presenceCheck)
-        {
-            return RewritePresenceMarker(presenceCheck, requestedFields);
-        }
-
-        if (expression is SqlBinaryExpression
-            {
-                OperatorType: ExpressionType.AndAlso or ExpressionType.OrElse
-            } binary)
-        {
-            var left = RewritePresenceCheckExpression(binary.Left, requestedFields);
-            var right = RewritePresenceCheckExpression(binary.Right, requestedFields);
-            return left != binary.Left || right != binary.Right
-                ? binary.Update(left!, right!)
-                : expression;
-        }
-
-        return expression;
+        // The marker can be nested at arbitrary depth - inside the CASE produced by a conditional,
+        // a COALESCE, a function argument and so on - so the whole tree is visited recursively and
+        // rebuilt only when at least one marker was actually rewritten.
+        var presenceCheckRewriter = new PresenceCheckRewritingExpressionVisitor(this, requestedFields);
+        return (SqlExpression?)presenceCheckRewriter.Visit(expression);
     }
 
     /// <summary>
@@ -240,35 +228,6 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
         }
 
         return presenceCheck!;
-    }
-
-    private bool TryRewritePresenceCheck(
-        SqlExpression expression,
-        IReadOnlyDictionary<string, IReadOnlySet<DuckDBStructFieldExpression>> requestedFields,
-        out SqlExpression? rewritten)
-    {
-        if (expression is DuckDBStructPresenceCheckExpression presenceCheck)
-        {
-            rewritten = RewritePresenceMarker(presenceCheck, requestedFields);
-            return true;
-        }
-
-        if (expression is SqlBinaryExpression
-            {
-                OperatorType: ExpressionType.AndAlso or ExpressionType.OrElse
-            } binary)
-        {
-            var leftChanged = TryRewritePresenceCheck(binary.Left, requestedFields, out var left);
-            var rightChanged = TryRewritePresenceCheck(binary.Right, requestedFields, out var right);
-            if (leftChanged || rightChanged)
-            {
-                rewritten = binary.Update(left ?? binary.Left, right ?? binary.Right);
-                return true;
-            }
-        }
-
-        rewritten = null;
-        return false;
     }
 
     private bool IsNullPresenceExpression(SqlExpression expression)
@@ -397,6 +356,29 @@ internal sealed class DuckDBSelectiveStructProjectionExpressionVisitor(
             if (node is DuckDBStructFieldExpression field)
             {
                 _fields.Add(field);
+            }
+
+            return base.VisitExtension(node);
+        }
+    }
+
+    /// <summary>
+    ///     Recursively rewrites <see cref="DuckDBStructPresenceCheckExpression" /> markers found
+    ///     anywhere in a SQL expression tree. Unlike a root-only rewrite, this visitor descends into
+    ///     every child expression, so markers nested inside a CASE produced by a conditional, a
+    ///     COALESCE, a function argument or any other parent node are rewritten just like markers at
+    ///     the root. The tree is rebuilt only when at least one marker was actually rewritten.
+    /// </summary>
+    private sealed class PresenceCheckRewritingExpressionVisitor(
+        DuckDBSelectiveStructProjectionExpressionVisitor owner,
+        IReadOnlyDictionary<string, IReadOnlySet<DuckDBStructFieldExpression>> requestedFields)
+        : ExpressionVisitor
+    {
+        protected override Expression VisitExtension(Expression node)
+        {
+            if (node is DuckDBStructPresenceCheckExpression presenceCheck)
+            {
+                return owner.RewritePresenceMarker(presenceCheck, requestedFields);
             }
 
             return base.VisitExtension(node);
