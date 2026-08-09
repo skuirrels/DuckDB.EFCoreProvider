@@ -28,14 +28,14 @@ internal static class DuckDBBulkInsertPlanner
         ArgumentNullException.ThrowIfNull(second);
 
         return CanPlan(first)
-            && CanPlan(second)
-            && first.TableName == second.TableName
-            && first.Schema == second.Schema
-            && WriteShapesEqual(first, second)
-            && DuckDBModificationCommandShape.ColumnNamesEqual(
-                first,
-                second,
-                DuckDBModificationColumnRole.Read);
+            && CanAppend(CreateShape(first), second);
+    }
+
+    internal static bool CanAppend(DuckDBBulkInsertShape shape, IReadOnlyModificationCommand command)
+    {
+        ArgumentNullException.ThrowIfNull(shape);
+        ArgumentNullException.ThrowIfNull(command);
+        return shape.CanAppend(command);
     }
 
     public static bool TryCreate(
@@ -51,23 +51,17 @@ internal static class DuckDBBulkInsertPlanner
         }
 
         var firstCommand = commands[0];
+        var shape = CreateShape(firstCommand);
         for (var i = 1; i < commands.Count; i++)
         {
-            if (!CanAppend(firstCommand, commands[i]))
+            if (!CanAppend(shape, commands[i]))
             {
                 plan = null;
                 return false;
             }
         }
 
-        plan = new DuckDBBulkInsertPlan(
-            commands,
-            DuckDBModificationCommandShape.CountColumns(
-                firstCommand,
-                DuckDBModificationColumnRole.Write),
-            DuckDBModificationCommandShape.CountColumns(
-                firstCommand,
-                DuckDBModificationColumnRole.Read));
+        plan = new DuckDBBulkInsertPlan(commands, shape);
         return true;
     }
 
@@ -78,48 +72,170 @@ internal static class DuckDBBulkInsertPlanner
                 "Bulk insert commands must be eligible inserts with matching tables, schemas, write columns, and read columns.",
                 nameof(commands));
 
-    private static bool WriteShapesEqual(
-        IReadOnlyModificationCommand first,
-        IReadOnlyModificationCommand second)
+    internal static DuckDBBulkInsertPlan Create(
+        IReadOnlyList<IReadOnlyModificationCommand> commands,
+        DuckDBBulkInsertShape shape)
+        => new(commands, shape);
+
+    internal static DuckDBBulkInsertShape CreateShape(IReadOnlyModificationCommand command)
     {
-        var firstPlan = CreateMutationPlan(first);
-        var secondPlan = CreateMutationPlan(second);
-        return firstPlan is null
-            ? secondPlan is null
-                && DuckDBModificationCommandShape.ColumnNamesEqual(
-                    first,
-                    second,
-                    DuckDBModificationColumnRole.Write)
-            : secondPlan is not null && firstPlan.HasSamePhysicalShape(secondPlan);
+        ArgumentNullException.ThrowIfNull(command);
+        if (!CanPlan(command))
+        {
+            throw new ArgumentException("The command is not eligible for bulk insert.", nameof(command));
+        }
+
+        return new DuckDBBulkInsertShape(command, CreateMutationPlan(command));
     }
 
-    private static DuckDBStructMutationPlan? CreateMutationPlan(IReadOnlyModificationCommand command)
+    internal static DuckDBStructMutationPlan? CreateMutationPlan(IReadOnlyModificationCommand command)
     {
-        var writes = command.ColumnModifications.Where(modification => modification.IsWrite).ToArray();
+        var modifications = command.ColumnModifications;
+        var writeCount = 0;
+        var hasStructField = false;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (modifications[i].IsWrite)
+            {
+                writeCount++;
+                hasStructField |= DuckDBStructMutationPlan.IsStructField(modifications[i]);
+            }
+        }
+
+        if (writeCount == 0 || !hasStructField)
+        {
+            return null;
+        }
+
+        var writes = new IColumnModification[writeCount];
+        var writeIndex = 0;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (modifications[i].IsWrite)
+            {
+                writes[writeIndex++] = modifications[i];
+            }
+        }
+
         DuckDBStructMutationPlan.TryCreate(writes, DuckDBStructMutationMode.Insert, out var plan);
         return plan;
     }
 }
 
 /// <summary>
-///     Immutable snapshot of a validated bulk-insert command run.
+///     Immutable physical shape for one compatible bulk-insert run.
+/// </summary>
+internal sealed class DuckDBBulkInsertShape
+{
+    private readonly string[] _readColumnNames;
+    private readonly string[] _writeColumnNames;
+
+    internal DuckDBBulkInsertShape(
+        IReadOnlyModificationCommand command,
+        DuckDBStructMutationPlan? structMutationPlan)
+    {
+        TableName = command.TableName;
+        Schema = command.Schema;
+        _writeColumnNames = CollectColumnNames(command, DuckDBModificationColumnRole.Write);
+        _readColumnNames = CollectColumnNames(command, DuckDBModificationColumnRole.Read);
+        StructMutationPlan = structMutationPlan;
+    }
+
+    public string TableName { get; }
+
+    public string? Schema { get; }
+
+    public int WriteColumnCount => _writeColumnNames.Length;
+
+    public int ReadColumnCount => _readColumnNames.Length;
+
+    public DuckDBStructMutationPlan? StructMutationPlan { get; }
+
+    public bool CanAppend(IReadOnlyModificationCommand command)
+    {
+        if (!DuckDBBulkInsertPlanner.CanPlan(command)
+            || TableName != command.TableName
+            || Schema != command.Schema
+            || !ColumnNamesEqual(command, DuckDBModificationColumnRole.Read, _readColumnNames))
+        {
+            return false;
+        }
+
+        var candidateMutationPlan = DuckDBBulkInsertPlanner.CreateMutationPlan(command);
+        return StructMutationPlan is null
+            ? candidateMutationPlan is null
+                && ColumnNamesEqual(command, DuckDBModificationColumnRole.Write, _writeColumnNames)
+            : candidateMutationPlan is not null
+              && StructMutationPlan.HasSamePhysicalShape(candidateMutationPlan);
+    }
+
+    private static string[] CollectColumnNames(
+        IReadOnlyModificationCommand command,
+        DuckDBModificationColumnRole role)
+    {
+        var count = DuckDBModificationCommandShape.CountColumns(command, role);
+        var names = new string[count];
+        var targetIndex = 0;
+        var modifications = command.ColumnModifications;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (DuckDBModificationCommandShape.HasRole(modifications[i], role))
+            {
+                names[targetIndex++] = modifications[i].ColumnName;
+            }
+        }
+
+        return names;
+    }
+
+    private static bool ColumnNamesEqual(
+        IReadOnlyModificationCommand command,
+        DuckDBModificationColumnRole role,
+        IReadOnlyList<string> expected)
+    {
+        var matched = 0;
+        var modifications = command.ColumnModifications;
+        for (var i = 0; i < modifications.Count; i++)
+        {
+            if (!DuckDBModificationCommandShape.HasRole(modifications[i], role))
+            {
+                continue;
+            }
+
+            if (matched >= expected.Count
+                || !string.Equals(modifications[i].ColumnName, expected[matched], StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            matched++;
+        }
+
+        return matched == expected.Count;
+    }
+}
+
+/// <summary>
+///     Validated bulk-insert rendering plan. Command-owned column modifications are retained only for the
+///     immediate synchronous render performed by the update SQL generator.
 /// </summary>
 internal sealed class DuckDBBulkInsertPlan
 {
-    private readonly DuckDBColumnModificationSnapshot[] _readColumns;
-    private readonly DuckDBStructMutationPlan?[] _structMutationPlans;
-    private readonly DuckDBColumnModificationSnapshot[] _writeColumns;
+    private readonly IColumnModification[] _readColumns;
+    private readonly DuckDBStructMutationPlan?[]? _structMutationPlans;
+    private readonly IColumnModification[] _writeColumns;
     private readonly int _writeColumnCount;
 
     internal DuckDBBulkInsertPlan(
         IReadOnlyList<IReadOnlyModificationCommand> commands,
-        int writeColumnCount,
-        int readColumnCount)
+        DuckDBBulkInsertShape shape)
     {
-        _writeColumnCount = writeColumnCount;
-        _writeColumns = new DuckDBColumnModificationSnapshot[commands.Count * writeColumnCount];
-        _readColumns = new DuckDBColumnModificationSnapshot[readColumnCount];
-        _structMutationPlans = new DuckDBStructMutationPlan?[commands.Count];
+        _writeColumnCount = shape.WriteColumnCount;
+        _writeColumns = new IColumnModification[commands.Count * _writeColumnCount];
+        _readColumns = new IColumnModification[shape.ReadColumnCount];
+        _structMutationPlans = shape.StructMutationPlan is null
+            ? null
+            : new DuckDBStructMutationPlan?[commands.Count];
 
         for (var rowIndex = 0; rowIndex < commands.Count; rowIndex++)
         {
@@ -127,14 +243,24 @@ internal sealed class DuckDBBulkInsertPlan
                 commands[rowIndex],
                 DuckDBModificationColumnRole.Write,
                 _writeColumns,
-                rowIndex * writeColumnCount);
-            DuckDBStructMutationPlan.TryCreate(
-                new ArraySegment<DuckDBColumnModificationSnapshot>(
-                    _writeColumns,
-                    rowIndex * writeColumnCount,
-                    writeColumnCount),
-                DuckDBStructMutationMode.Insert,
-                out _structMutationPlans[rowIndex]);
+                rowIndex * _writeColumnCount);
+            if (_structMutationPlans is not null)
+            {
+                if (rowIndex == 0)
+                {
+                    _structMutationPlans[rowIndex] = shape.StructMutationPlan;
+                }
+                else
+                {
+                    DuckDBStructMutationPlan.TryCreate(
+                        new ArraySegment<IColumnModification>(
+                            _writeColumns,
+                            rowIndex * _writeColumnCount,
+                            _writeColumnCount),
+                        DuckDBStructMutationMode.Insert,
+                        out _structMutationPlans[rowIndex]);
+                }
+            }
         }
 
         CopyColumns(
@@ -143,8 +269,8 @@ internal sealed class DuckDBBulkInsertPlan
             _readColumns,
             0);
 
-        TableName = commands[0].TableName;
-        Schema = commands[0].Schema;
+        TableName = shape.TableName;
+        Schema = shape.Schema;
         RowCount = commands.Count;
     }
 
@@ -159,7 +285,7 @@ internal sealed class DuckDBBulkInsertPlan
     public int ReadColumnCount => _readColumns.Length;
 
     public DuckDBStructMutationPlan? GetStructMutationPlan(int rowIndex)
-        => _structMutationPlans[rowIndex];
+        => _structMutationPlans?[rowIndex];
 
     public void CollectWriteColumns(int rowIndex, List<IColumnModification> target)
     {
@@ -180,7 +306,7 @@ internal sealed class DuckDBBulkInsertPlan
     private static void CopyColumns(
         IReadOnlyModificationCommand command,
         DuckDBModificationColumnRole role,
-        DuckDBColumnModificationSnapshot[] target,
+        IColumnModification[] target,
         int targetIndex)
     {
         var modifications = command.ColumnModifications;
@@ -188,127 +314,8 @@ internal sealed class DuckDBBulkInsertPlan
         {
             if (DuckDBModificationCommandShape.HasRole(modifications[i], role))
             {
-                target[targetIndex++] = new DuckDBColumnModificationSnapshot(modifications[i]);
+                target[targetIndex++] = modifications[i];
             }
         }
     }
-}
-
-/// <summary>
-///     Captures the rendering state of an EF column modification without retaining its mutable values.
-/// </summary>
-internal sealed class DuckDBColumnModificationSnapshot : IColumnModification
-{
-    private const string ImmutableMessage = "Bulk-insert column snapshots cannot be modified.";
-
-    public DuckDBColumnModificationSnapshot(IColumnModification source)
-    {
-        ArgumentNullException.ThrowIfNull(source);
-
-        Entry = source.Entry;
-        Property = source.Property;
-        Column = source.Column;
-        TypeMapping = source.TypeMapping;
-        IsNullable = source.IsNullable;
-        IsRead = source.IsRead;
-        IsWrite = source.IsWrite;
-        IsCondition = source.IsCondition;
-        IsKey = source.IsKey;
-        UseOriginalValueParameter = source.UseOriginalValueParameter;
-        UseCurrentValueParameter = source.UseCurrentValueParameter;
-        UseOriginalValue = source.UseOriginalValue;
-        UseCurrentValue = source.UseCurrentValue;
-        UseParameter = source.UseParameter;
-        ParameterName = source.ParameterName;
-        OriginalParameterName = source.OriginalParameterName;
-        ColumnName = source.ColumnName;
-        ColumnType = source.ColumnType;
-        OriginalValue = source.OriginalValue;
-        Value = source.Value;
-        JsonPath = source.JsonPath;
-    }
-
-    public IUpdateEntry? Entry { get; }
-
-    public IProperty? Property { get; }
-
-    public IColumnBase? Column { get; }
-
-    public RelationalTypeMapping? TypeMapping { get; }
-
-    public bool? IsNullable { get; }
-
-    public bool IsRead { get; }
-
-    public bool IsWrite { get; }
-
-    public bool IsCondition { get; }
-
-    public bool IsKey { get; }
-
-    public bool UseOriginalValueParameter { get; }
-
-    public bool UseCurrentValueParameter { get; }
-
-    public bool UseOriginalValue { get; }
-
-    public bool UseCurrentValue { get; }
-
-    public bool UseParameter { get; }
-
-    public string? ParameterName { get; }
-
-    public string? OriginalParameterName { get; }
-
-    public string ColumnName { get; }
-
-    public string? ColumnType { get; }
-
-    public object? OriginalValue { get; }
-
-    public object? Value { get; }
-
-    public string? JsonPath { get; }
-
-    bool IColumnModification.IsRead
-    {
-        get => IsRead;
-        set => throw new NotSupportedException(ImmutableMessage);
-    }
-
-    bool IColumnModification.IsWrite
-    {
-        get => IsWrite;
-        set => throw new NotSupportedException(ImmutableMessage);
-    }
-
-    bool IColumnModification.IsCondition
-    {
-        get => IsCondition;
-        set => throw new NotSupportedException(ImmutableMessage);
-    }
-
-    bool IColumnModification.IsKey
-    {
-        get => IsKey;
-        set => throw new NotSupportedException(ImmutableMessage);
-    }
-
-    object? IColumnModification.OriginalValue
-    {
-        get => OriginalValue;
-        set => throw new NotSupportedException(ImmutableMessage);
-    }
-
-    object? IColumnModification.Value
-    {
-        get => Value;
-        set => throw new NotSupportedException(ImmutableMessage);
-    }
-
-    void IColumnModification.AddSharedColumnModification(IColumnModification modification)
-        => throw new NotSupportedException(ImmutableMessage);
-
-    void IColumnModification.ResetParameterNames()
-        => throw new NotSupportedException(ImmutableMessage);
 }

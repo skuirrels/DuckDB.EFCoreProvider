@@ -36,6 +36,8 @@ public static class DuckDBEventId
         DuckLakeAttachmentStarting,
         DuckLakeAttachmentCompleted,
         DuckLakeAttachmentFailed,
+
+        SaveChangesBatch = CoreEventId.ProviderBaseId + 200,
     }
 
     private static readonly string CommandPrefix = DbLoggerCategory.Database.Command.Name + ".";
@@ -100,4 +102,7 @@ public static class DuckDBEventId
 
     /// <summary>A DuckLake catalog attachment failed.</summary>
     public static readonly EventId DuckLakeAttachmentFailed = MakeInfrastructureId(Id.DuckLakeAttachmentFailed);
+
+    /// <summary>A SaveChanges batch was flushed or rejected by a provider batching guard.</summary>
+    public static readonly EventId SaveChangesBatch = MakeCommandId(Id.SaveChangesBatch);
 }

@@ -237,9 +237,12 @@ If the date predicate is omitted, it scans that group's lifecycle-date partition
 omitted, it scans the matching month across groups. Predicates beneath `OR` are deliberately not inferred,
 because adding a bucket filter there could change query semantics.
 
-`EXPLAIN ANALYZE` reports the result-bearing Parquet pruning as `Scanning Files: X/Y`. The crash/late-row guard may
-also show a separate key/timestamp probe over the cold files; that probe preserves the no-duplicate invariant and
-does not materialize the report's full projected columns.
+`EXPLAIN ANALYZE` reports the result-bearing Parquet pruning as `Scanning Files: X/Y`. When an active cold
+generation is published, the provider builds a root-scoped cold-key index in DuckDB and records the generation and
+watermark it represents. The crash/late-row guard probes that compact index rather than opening the cold Parquet
+catalogue again, so a scoped root query has only the result-bearing Parquet scan. Publication, retention, recovery,
+and purge refresh or clear the index together with the active generation; startup reuses it when its recorded state
+already matches the control row.
 
 `.Including(...)` declares which navigations are **aggregate children** (archived with the root). Anything not
 included — e.g. a `RecordPart → ReferenceEntry` reference — stays hot.
@@ -285,7 +288,8 @@ return `null` when the child is shared.
 
 ## 2. Create the physical objects
 
-`EnsureCreated()` builds the control table and all union views automatically:
+`EnsureCreated()` builds the provider tier metadata tables (control, generation catalogue, and cold-key index) and
+all union views automatically:
 
 ```csharp
 db.Database.EnsureCreated();

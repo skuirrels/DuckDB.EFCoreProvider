@@ -6,7 +6,7 @@
 
   <ItemGroup>
     <!-- Provider runtime dependencies -->
-    <PackageVersion Include="Skuirrels.DuckDB.NET.Data.Full" Version="1.5.5.2" />
+    <PackageVersion Include="Skuirrels.DuckDB.NET.Data.Full" Version="1.5.5.4" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Abstractions" Version="10.0.10" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10" />

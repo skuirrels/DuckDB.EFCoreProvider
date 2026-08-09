@@ -2,6 +2,97 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.18.0
+
+- Reduce `SaveChanges` planning allocations by reusing immutable insert shapes and dual-role update plans, avoiding
+  scalar-path candidate arrays and detached per-cell snapshots, and bounding wide batches with a 10,000-cell guard.
+  The corrected benchmark measured insert allocation at 7,771.36 KB versus the 12,040.59 KB baseline and update
+  allocation at 4,976.05 KB versus 7,390.00 KB.
+- Reuse one temporary staging table per Upsert operation, share a compiled typed Appender writer with BulkInsert,
+  increase the default batch size from 100 to 500, and cap staged work at 100,000 cells. The default Upsert benchmark
+  measured 9.461 ms / 134.73 KB versus the 23.037 ms / 312.79 KB baseline.
+- Coalesce configured connection settings and spatial extension setup into one command per initialization path.
+- Replace the tiered-view crash/late-row guard's second Parquet scan with a persisted active-generation root-key
+  index. The scoped tier benchmark opened 2 files versus 194 at baseline.
+- Add focused diagnostics, width-aware, staging-cleanup, connection, and exact Parquet-scan regression coverage. No
+  existing public API is removed or changed.
+
+## 1.17.3
+
+- Add context-wide opt-in case-insensitive translation for string and character `StartsWith`, `Contains`, and
+  `EndsWith` searches. Existing case-sensitive behavior and exact equality remain unchanged by default.
+- Translate opted-in searches through null-safe `ilike_escape` expressions with explicit `VARCHAR` mappings and
+  literal escaping for `$`, `%`, and `_`, including native DuckDB and DuckLake execution coverage.
+
+## 1.17.2
+
+- Fix tracked updates for dual-role rows whose stable key is referenced by dependants and which also carry an
+  outbound foreign key. Unchanged outbound-FK writes are classified using provider values and omitted when another
+  write remains, avoiding DuckDB's referenced-row constraint without hiding genuine physical changes.
+- Preserve disconnected sole-FK updates with an atomic `IS DISTINCT FROM` update and keyed concurrency probe.
+  Genuine outbound-FK reassignments succeed when no inbound dependant exists and otherwise produce an actionable
+  `DbUpdateException`; DuckLake retains its logical-relationship behavior because it does not create physical FKs.
+
+## 1.17.1
+
+- Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.3 to 1.5.5.4,
+  resolving the matching `Skuirrels.DuckDB.NET.Bindings.Full` 1.5.5.4
+  package. Controlled same-machine A/B runs of all 49 provider benchmark
+  cases, plus higher-confidence and counterbalanced reruns, found no
+  reproducible performance or material allocation regressions. Provider APIs
+  and the bundled native DuckDB 1.5.5 runtime are unchanged.
+- Skuirrels 1.5.5.4 adds cached index-based writers for compatible `IList<T>`
+  and `IReadOnlyList<T>` values written to DuckDB collection columns. In the
+  upstream `ReadOnlyCollection<T>`-to-`LIST` benchmark, this improved throughput
+  by approximately 4.1%, reduced managed allocation from 31,343.4 KB to 91.8 KB
+  (approximately 99.7%), and eliminated the observed Gen0 collections. Existing
+  optimized array and exact `List<T>` paths were preserved; their control
+  benchmarks found no meaningful winner.
+
+## 1.17.0
+
+- Extend non-executing command extraction to terminal `LongCount`, `Min`, `Max`, `Sum`, and `Average` operations.
+  Numeric aggregates accept projected `int`, `long`, `float`, `double`, `decimal`, and nullable equivalents; invalid
+  projections fail before EF query compilation. Replayed plans intentionally expose database values without EF's
+  client-side empty-sequence result shaping.
+
+## 1.16.0
+
+- Add non-executing command extraction for single-command LINQ queries and terminal `Count`/`Any` operations,
+  including provider parameter metadata and values. Split queries fail explicitly instead of returning a partial
+  command contract.
+- Add named dynamic-command execution that preserves SQL text exactly and copies caller-owned ADO.NET parameters,
+  plus replay of extracted command plans through the dynamic-result API.
+- Add structured store-type mapping inspection for scalar, `STRUCT` complex-property, raw-reader-only, and
+  unsupported contracts.
+- Correct canonical integer store-type and alias mappings, including signed `INT8`/`INT64`/`LONG`, unsigned
+  integer aliases, and faceted store-type lookup such as `DECIMAL(12,2)`.
+- Keep exact type-mapping capture scoped to command-plan extraction. Controlled before/after benchmarks show
+  normal parameter creation and `SaveChanges` retain baseline allocations, while static identifier metadata
+  removes the previous first-use scratch database query.
+
+## 1.15.2
+
+- Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.2 to 1.5.5.3,
+  resolving the matching `Skuirrels.DuckDB.NET.Bindings.Full` 1.5.5.3
+  package. Controlled before-and-after runs of all 33 provider benchmark cases
+  found no material performance or allocation regressions.
+- Improve collection read performance through Skuirrels 1.5.5.3's cached typed
+  `List<T>` materializers. Additional element types and nested/fixed-array
+  shapes avoid the previous per-element boxing path. The provider's scalar and
+  BLOB read benchmarks remained stable in a higher-confidence follow-up run.
+  Provider APIs are unchanged.
+
+## 1.15.1
+
+- Fix `SaveChanges` updates to a table referenced by a foreign key. DuckDB
+  1.5.5 rejects `UPDATE ... RETURNING` for such tables while dependent rows
+  exist, even when the update does not modify the referenced key. The provider
+  now executes the update without `RETURNING`, validates the affected-row count,
+  and reads store-generated values back by key in the same transaction.
+  Eligible opt-in multi-row updates remain on the existing
+  `UPDATE ... FROM (VALUES ...)` fast path, which does not use `RETURNING`.
+
 ## 1.15.0
 
 - Add opt-in mapping of EF Core complex properties to native DuckDB `STRUCT`

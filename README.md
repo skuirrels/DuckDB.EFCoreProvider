@@ -21,8 +21,9 @@
 | Data lifecycle | Hot DuckDB tables with relational aggregates archived to partitioned Parquet |
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
 | Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings |
+| Query tooling | Non-executing command plans, exact named-parameter replay, and structured store-type inspection |
 
-> **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility).
+> **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility) and the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
 ## Getting started
 
@@ -165,6 +166,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.EnableBulkInsertBatching()` | Merge consecutive `SaveChanges` inserts into one multi-row statement (~10× faster). | off |
 | `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~8× faster). | off |
 | `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~14× faster). | off |
+| `.UseCaseInsensitiveStringSearches()` | Make simple `StartsWith`, `Contains`, and `EndsWith` queries case-insensitive for this context; literal `%` and `_` remain literals. | off |
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
 | `.Threads(4)` | Set the global thread count used by DuckDB query execution when the connection opens. | DuckDB default |
 | `.FileSearchPath("/data")` | Base directory (or comma-separated directories) for resolving relative file paths. | DuckDB default |
@@ -180,6 +182,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 options.UseDuckDB(
     "Data Source=app.duckdb",
     duckdb => duckdb
+        .UseCaseInsensitiveStringSearches()
         .EnableBulkInsertBatching()
         .MemoryLimit("4GB")
         .Threads(4)
@@ -215,6 +218,47 @@ returned by DuckDB.NET; database nulls become `null`. Use `SqlQueryDynamicAsync(
 overload with `{0}` placeholders and a parameter list for values. Raw SQL text is trusted SQL and is not sanitized.
 The provider does not impose UI row limits or choose a JSON serialization policy. See the
 [type-mapping contract](docs/TYPE-MAPPINGS.md).
+
+When SQL already contains named provider parameters, use `SqlQueryDynamicCommandAsync`. It passes command text
+through unchanged (including literal DuckDB `STRUCT`/`MAP` braces), copies the supplied `DbParameter` values, and
+does not mutate caller-owned parameters:
+
+```csharp
+var parameter = new DuckDBParameter("$minimum", 10);
+await using var result = await context.Database.SqlQueryDynamicCommandAsync(
+    "SELECT * FROM events WHERE id >= $minimum",
+    [parameter],
+    cancellationToken);
+```
+
+Provider-generated LINQ commands can be captured without opening or querying the database. The returned contract
+contains exact command text plus parameter metadata and values; it is a server-command snapshot, not EF's
+client-side result shaper or a DuckDB optimizer plan. See the complete
+[query command-plan guide](docs/QUERY-COMMAND-PLANS.md) for compiler/tooling boundaries, version support, replay,
+type inspection, and security responsibilities:
+
+```csharp
+var query = context.Events.Where(e => e.Timestamp < cutoff);
+var queryPlan = context.Database.GetDuckDBCommandPlan(query);
+var countPlan = context.Database.GetDuckDBCountCommandPlan(query);
+var anyPlan = context.Database.GetDuckDBAnyCommandPlan(query);
+var sumPlan = context.Database.GetDuckDBSumCommandPlan(
+    query.Select(e => (decimal?)e.Amount));
+var averagePlan = context.Database.GetDuckDBAverageCommandPlan(
+    query.Select(e => (decimal?)e.Amount));
+```
+
+Terminal `LongCount`, `Min`, `Max`, `Sum`, and `Average` commands can also be captured. Compose predicates with
+`Where` and selectors with `Select` before extraction; `Sum` and `Average` require a projection to `int`, `long`,
+`float`, `double`, `decimal`, or the corresponding nullable type.
+
+Replay returns the database result without EF's client-side result shaper. On an empty input, a replayed `Min`,
+`Max`, or `Average` plan can therefore yield `null` even where executing the corresponding non-nullable LINQ
+terminal operator would apply EF's empty-sequence behavior. Execute the original LINQ operator when those semantics
+are required.
+
+Only single-command shapes are supported; split queries are rejected explicitly. A captured plan can be handed to
+`SqlQueryDynamicCommandAsync(plan, cancellationToken)` when its runtime result shape is required.
 
 This API is a streaming result-set path. DuckDB.NET currently reports `DbDataReader.RecordsAffected` as `-1`, so the
 provider does not infer DML counts by parsing SQL or inspecting result columns. Use `ExecuteSqlRawAsync` for known
@@ -323,6 +367,29 @@ e.ComplexProperty(c => c.Location).UseStructMapping("CustomerLocation")
 ```
 
 `HasColumnName` controls the EF/synthetic relational column identity used by the provider; it does not rename the physical DuckDB STRUCT leaf. Use `HasStructField("CustomerLocation", "address")` to configure an explicit root and nested path.
+
+Use a mapped STRUCT leaf as a foreign key with `HasStructForeignKey`. The relationship's requiredness is inferred from the mapped leaf: a non-nullable leaf (for example `int CustomerId`) produces a required relationship (INNER JOIN), while a nullable leaf (`int? CustomerId`) produces an optional one (LEFT JOIN):
+
+```csharp
+modelBuilder.Entity<Order>(e =>
+{
+    e.FromParquet("orders.parquet");
+    e.ComplexProperty(o => o.Relationship, relationship =>
+    {
+        relationship.UseStructMapping();
+        relationship.Property(r => r.CustomerId)
+            .HasStructFieldName("customer_id");
+    });
+
+    e.HasOne(o => o.Customer)
+        .WithMany(c => c.Orders)
+        .HasStructForeignKey(o => o.Relationship.CustomerId);
+});
+
+modelBuilder.Entity<Customer>(e => e.FromParquet("customers.parquet"));
+```
+
+The mapped leaf is reused as EF relationship plumbing; no duplicate scalar FK or field metadata is needed. Call `.IsRequired()` or `.IsRequired(false)` explicitly to override the inferred join shape. STRUCT foreign keys are query-only and require file-backed entities; physical-table and composite STRUCT foreign keys are rejected.
 
 **Limitations & Behavior:**
 - Queries with LINQ projections, filters, sorting, joins, and subqueries are fully supported
@@ -939,6 +1006,9 @@ connection can change the setting for that instance. DuckDB spills larger-than-m
 its temp directory, so a lower memory limit trades memory for more disk spilling on big analytical queries
 rather than failing. (For an in-memory database — `Data Source=:memory:` — spilling requires a
 `temp_directory`, which DuckDB does not set automatically.)
+
+For the relationship between concurrent `DbContext` instances, a continuous bulk writer, and the shared thread
+budget, see the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
 ## Compatibility
 

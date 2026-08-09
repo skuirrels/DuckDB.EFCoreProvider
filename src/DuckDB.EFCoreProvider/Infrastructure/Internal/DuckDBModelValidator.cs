@@ -126,6 +126,8 @@ public class DuckDBModelValidator : RelationalModelValidator
             {
                 var columnName = property.GetColumnName(table);
                 if (property.GetStructFieldInfo() is null
+                    && !(property.IsShadowProperty()
+                        && DuckDBStructForeignKeyPath.IsShadowProperty(property.Name))
                     && columnName is not null
                     && structColumns.Contains(columnName))
                 {
@@ -136,7 +138,68 @@ public class DuckDBModelValidator : RelationalModelValidator
                 }
             }
         }
+
     }
+
+    private static void ValidateStructForeignKeyAliases(
+        IEntityType entityType,
+        IReadOnlyList<(IReadOnlyProperty Property, DuckDBStructFieldInfo Field)> fields,
+        StoreObjectIdentifier table)
+    {
+        foreach (var property in entityType.GetProperties()
+                     .Where(property => property.IsShadowProperty()
+                         && DuckDBStructForeignKeyPath.IsShadowProperty(property.Name)))
+        {
+            var containingForeignKeys = property.GetContainingForeignKeys().ToArray();
+            if (containingForeignKeys.Length == 0)
+            {
+                continue;
+            }
+
+            var columnName = property.GetColumnName(table);
+            var mappedField = fields.FirstOrDefault(
+                entry => string.Equals(entry.Field.EfColumnName, columnName, StringComparison.Ordinal));
+            if (mappedField.Property is null)
+            {
+                throw new InvalidOperationException(
+                    $"Internal STRUCT foreign-key property '{entityType.DisplayName()}.{property.Name}' does not "
+                    + $"map to a STRUCT leaf column on '{entityType.DisplayName()}'.");
+            }
+
+            if (!AreCompatibleTypes(property.ClrType, mappedField.Property.ClrType))
+            {
+                throw new InvalidOperationException(
+                    $"STRUCT foreign-key property '{entityType.DisplayName()}.{property.Name}' has CLR type "
+                    + $"'{property.ClrType.DisplayName()}', but mapped leaf "
+                    + $"'{entityType.DisplayName()}.{mappedField.Property.Name}' has CLR type "
+                    + $"'{mappedField.Property.ClrType.DisplayName()}'.");
+            }
+
+            foreach (var foreignKey in containingForeignKeys)
+            {
+                if (foreignKey.Properties.Count != 1)
+                {
+                    throw new NotSupportedException(
+                        $"STRUCT foreign key '{foreignKey.DeclaringEntityType.DisplayName()}' uses a composite key. "
+                        + "Composite STRUCT foreign keys are not supported.");
+                }
+
+                if (foreignKey.DeclaringEntityType is not IEntityType dependentEntity
+                    || !IsFileBacked(dependentEntity)
+                    || !IsFileBacked(foreignKey.PrincipalEntityType))
+                {
+                    throw new NotSupportedException(
+                        $"Property '{entityType.DisplayName()}.{mappedField.Property.Name}' maps to DuckDB STRUCT "
+                        + "and can be used as a foreign key only between DuckDB file-backed entities because "
+                        + "physical table constraints cannot target nested fields.");
+                }
+            }
+        }
+    }
+
+    private static bool AreCompatibleTypes(Type first, Type second)
+        => (Nullable.GetUnderlyingType(first) ?? first)
+            == (Nullable.GetUnderlyingType(second) ?? second);
 
     private static void ValidateStructEntity(
         IEntityType entityType,
@@ -156,7 +219,7 @@ public class DuckDBModelValidator : RelationalModelValidator
                 + $"'{FormatStructPath(duplicatePath.First().Field)}'.");
         }
 
-                ValidateStructPathCollisions(entityType, fields);
+        ValidateStructPathCollisions(entityType, fields);
 
         foreach (var (property, field) in fields)
         {
@@ -166,9 +229,16 @@ public class DuckDBModelValidator : RelationalModelValidator
                 throw UnsupportedStructProperty(propertyName, field, "keys");
             }
 
-            if (property.GetContainingForeignKeys().Any())
+            var containingForeignKeys = property.GetContainingForeignKeys().ToArray();
+            if (containingForeignKeys.Length > 0
+                && containingForeignKeys.Any(foreignKey =>
+                    !IsFileBacked(foreignKey.DeclaringEntityType)
+                    || !IsFileBacked(foreignKey.PrincipalEntityType)))
             {
-                throw UnsupportedStructProperty(propertyName, field, "foreign keys");
+                throw new NotSupportedException(
+                    $"Property '{propertyName}' maps to DuckDB STRUCT path '{FormatStructPath(field)}'. "
+                    + "STRUCT fields can be used as foreign keys only between DuckDB file-backed entities "
+                    + "because physical table constraints cannot target nested fields.");
             }
 
             if (property.GetContainingIndexes().Any())
@@ -202,6 +272,8 @@ public class DuckDBModelValidator : RelationalModelValidator
                 throw UnsupportedStructProperty(propertyName, field, "column comments");
             }
         }
+
+        ValidateStructForeignKeyAliases(entityType, fields, table);
     }
 
     private static IEnumerable<(IReadOnlyProperty Property, DuckDBStructFieldInfo Field)> GetStructProperties(
@@ -236,22 +308,26 @@ public class DuckDBModelValidator : RelationalModelValidator
     private static string FormatStructPath(DuckDBStructFieldInfo field)
         => string.Join(".", new[] { field.StructColumnName }.Concat(field.FieldPath));
 
-        private static void ValidateStructPathCollisions(
-            IEntityType entityType,
-            IReadOnlyList<(IReadOnlyProperty Property, DuckDBStructFieldInfo Field)> fields)
-        {
-            var collision = DuckDBStructPathCollision.Find(fields.Select(entry => entry.Field));
-            if (collision is { } conflict)
-            {
-                var (root, leafPath, nestedPath) = conflict;
-                throw new InvalidOperationException(
-                    $"Entity '{entityType.DisplayName()}' maps conflicting DuckDB STRUCT paths in STRUCT root "
-                    + $"'{root}': '{DuckDBStructPathCollision.FormatPath(root, leafPath)}' is used as a scalar leaf "
-                    + $"and as a parent of '{DuckDBStructPathCollision.FormatPath(root, nestedPath)}'.");
-            }
-        }
+    private static bool IsFileBacked(IReadOnlyEntityType entityType)
+        => entityType is IEntityType fileSourceEntityType
+            && DuckDBFileSourceDefinition.TryCreate(fileSourceEntityType, out _);
 
-        private static void ValidateFileSources(IModel model)
+    private static void ValidateStructPathCollisions(
+        IEntityType entityType,
+        IReadOnlyList<(IReadOnlyProperty Property, DuckDBStructFieldInfo Field)> fields)
+    {
+        var collision = DuckDBStructPathCollision.Find(fields.Select(entry => entry.Field));
+        if (collision is { } conflict)
+        {
+            var (root, leafPath, nestedPath) = conflict;
+            throw new InvalidOperationException(
+                $"Entity '{entityType.DisplayName()}' maps conflicting DuckDB STRUCT paths in STRUCT root "
+                + $"'{root}': '{DuckDBStructPathCollision.FormatPath(root, leafPath)}' is used as a scalar leaf "
+                + $"and as a parent of '{DuckDBStructPathCollision.FormatPath(root, nestedPath)}'.");
+        }
+    }
+
+    private static void ValidateFileSources(IModel model)
     {
         var tableMappings = new Dictionary<StoreObjectIdentifier, HashSet<IEntityType>>();
         foreach (var entityType in model.GetEntityTypes())

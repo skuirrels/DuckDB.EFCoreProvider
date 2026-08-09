@@ -56,8 +56,12 @@ public sealed class TierControlTests
         Assert.Contains("SELECT * EXCLUDE (\"year\", \"month\")", sql);
         Assert.Contains("read_parquet('archive/events/**/*.parquet', hive_partitioning = true, union_by_name = true)", sql);
         Assert.Contains("WHERE (h.\"Ts\" IS NULL OR h.\"Ts\" >= (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered'))", sql);
-        Assert.Contains("AND NOT EXISTS (SELECT 1 FROM (SELECT * EXCLUDE (\"year\", \"month\") FROM read_parquet", sql);
+        Assert.Contains("AND NOT EXISTS (SELECT 1 FROM __duckdb_tier_archive_keys AS k", sql);
+        Assert.Contains(
+            "WHERE k.control_key = 'events_tiered' AND k.key_token = CAST(to_json(struct_pack(k0 := h.\"Id\")) AS VARCHAR)",
+            sql);
         Assert.Contains("AS c WHERE c.\"Ts\" IS NOT NULL AND c.\"Ts\" < (SELECT watermark FROM __duckdb_tier_control WHERE name = 'events_tiered')", sql);
+        Assert.Equal(1, sql.Split("read_parquet(", StringSplitOptions.None).Length - 1);
     }
 
     [Fact]

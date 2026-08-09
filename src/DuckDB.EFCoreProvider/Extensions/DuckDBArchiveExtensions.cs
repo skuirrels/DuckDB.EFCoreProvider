@@ -1405,7 +1405,13 @@ public static partial class DuckDBArchiveExtensions
                 // Regenerate the views so a table whose archive is now completely empty falls back to a hot-only
                 // view instead of leaving a cold read_parquet() branch over a glob that matches no files (which
                 // would throw on every query).
-                RegenerateViews(connection, sql, archiveFileProbe, aggregate, activeArchiveBasePath);
+                RegenerateViews(
+                    connection,
+                    sql,
+                    archiveFileProbe,
+                    aggregate,
+                    activeArchiveBasePath,
+                    forceArchiveKeyRefresh: true);
             }
 
             return deleted;
@@ -1437,9 +1443,11 @@ public static partial class DuckDBArchiveExtensions
         ISqlGenerationHelper sql,
         IDuckDBArchiveFileProbe archiveFileProbe,
         DuckDBTierAggregate aggregate,
-        string activeArchiveBasePath)
+        string activeArchiveBasePath,
+        bool forceArchiveKeyRefresh = false)
     {
-        var hasWatermark = ReadWatermark(connection, sql, aggregate.ControlKey) is not null;
+        var currentWatermark = ReadWatermark(connection, sql, aggregate.ControlKey);
+        var hasWatermark = currentWatermark is not null;
         var activeGenerationId = ReadArchiveRevision(connection, sql, aggregate.ControlKey) ?? "base";
         foreach (var node in aggregate.Nodes.Where(node => node.IsRoot))
         {
@@ -1458,6 +1466,40 @@ public static partial class DuckDBArchiveExtensions
                     activeGenerationId,
                     node.Table)
                 : null;
+            if (includeCold)
+            {
+                var archiveKeyIndexIsCurrent = !forceArchiveKeyRefresh
+                    && Convert.ToInt64(
+                        ExecuteScalar(
+                            connection,
+                            DuckDBTierControl.ArchiveKeyIndexIsCurrentSql(
+                                sql,
+                                aggregate.ControlKey,
+                                activeGenerationId,
+                                currentWatermark!.Value)),
+                        CultureInfo.InvariantCulture) > 0;
+                if (!archiveKeyIndexIsCurrent)
+                {
+                    ExecuteNonQuery(
+                        connection,
+                        DuckDBTierControl.RebuildArchiveKeyIndexSql(
+                            sql,
+                            aggregate.ControlKey,
+                            activeGenerationId,
+                            currentWatermark!.Value,
+                            node.KeyColumns,
+                            aggregate.RootTimestampColumn,
+                            archivePath,
+                            cataloguedFiles));
+                }
+            }
+            else
+            {
+                ExecuteNonQuery(
+                    connection,
+                    DuckDBTierControl.ClearArchiveKeyIndexSql(sql, aggregate.ControlKey));
+            }
+
             ExecuteNonQuery(
                 connection,
                 DuckDBTierControl.ViewSql(

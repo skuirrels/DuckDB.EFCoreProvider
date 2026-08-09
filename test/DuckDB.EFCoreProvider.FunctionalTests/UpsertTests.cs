@@ -55,8 +55,16 @@ public class UpsertTests : DuckDBTestBase
 
         using (var context = CreateContext())
         {
-            // 250 updates + 250 inserts, spanning multiple batches (default batch size 100).
-            context.Upsert(Enumerable.Range(1, 500).Select(i => new Item { Id = i, Name = $"n{i}", Quantity = i }));
+            // 250 updates + 250 inserts, spanning five batches through one reused staging table.
+            context.Database.OpenConnection();
+            context.Upsert(
+                Enumerable.Range(1, 500).Select(i => new Item { Id = i, Name = $"n{i}", Quantity = i }),
+                batchSize: 100);
+
+            using var command = context.Database.GetDbConnection().CreateCommand();
+            command.CommandText =
+                "SELECT count(*) FROM duckdb_tables() WHERE starts_with(table_name, '__duckdb_upsert_')";
+            Assert.Equal(0L, command.ExecuteScalar());
         }
 
         using (var context = CreateContext())

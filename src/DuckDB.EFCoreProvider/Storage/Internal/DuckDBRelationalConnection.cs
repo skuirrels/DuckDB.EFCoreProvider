@@ -363,57 +363,66 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     private void ApplyConfigurationIfNeeded()
     {
-        var statements = BuildConfigurationStatements();
-        if (statements.Count == 0)
+        var commandText = BuildConfigurationCommandText(_memoryLimit, _threads, _fileSearchPath);
+        if (commandText is null)
         {
             return;
         }
 
         var paramObj = new RelationalCommandParameterObject(this, null, null, null, null);
-        foreach (var sql in statements)
-        {
-            _rawSqlCommandBuilder.Build(sql).ExecuteNonQuery(paramObj);
-        }
+        _rawSqlCommandBuilder.Build(commandText).ExecuteNonQuery(paramObj);
     }
 
     private async Task ApplyConfigurationIfNeededAsync(CancellationToken cancellationToken)
     {
-        var statements = BuildConfigurationStatements();
-        if (statements.Count == 0)
+        var commandText = BuildConfigurationCommandText(_memoryLimit, _threads, _fileSearchPath);
+        if (commandText is null)
         {
             return;
         }
 
         var paramObj = new RelationalCommandParameterObject(this, null, null, null, null);
-        foreach (var sql in statements)
-        {
-            await _rawSqlCommandBuilder.Build(sql).ExecuteNonQueryAsync(paramObj, cancellationToken);
-        }
+        await _rawSqlCommandBuilder
+            .Build(commandText)
+            .ExecuteNonQueryAsync(paramObj, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     // DuckDB settings applied on connection open. They are developer-supplied configuration, but the string
     // literals are escaped defensively. Values are global DuckDB settings, so applying them on open configures
     // the database instance.
-    private List<string> BuildConfigurationStatements()
+    internal static string? BuildConfigurationCommandText(
+        string? memoryLimit,
+        int? threads,
+        string? fileSearchPath)
     {
+        if (string.IsNullOrWhiteSpace(memoryLimit)
+            && threads is null
+            && string.IsNullOrWhiteSpace(fileSearchPath))
+        {
+            return null;
+        }
+
         var statements = new List<string>();
 
-        if (!string.IsNullOrWhiteSpace(_memoryLimit))
+        if (!string.IsNullOrWhiteSpace(memoryLimit))
         {
-            statements.Add($"SET memory_limit = '{_memoryLimit.Replace("'", "''")}'");
+            statements.Add($"SET memory_limit = '{memoryLimit.Replace("'", "''")}'");
         }
 
-        if (_threads is not null)
+        if (threads is not null)
         {
-            statements.Add($"SET threads = {_threads.Value.ToString(CultureInfo.InvariantCulture)}");
+            statements.Add($"SET threads = {threads.Value.ToString(CultureInfo.InvariantCulture)}");
         }
 
-        if (!string.IsNullOrWhiteSpace(_fileSearchPath))
+        if (!string.IsNullOrWhiteSpace(fileSearchPath))
         {
-            statements.Add($"SET file_search_path = '{_fileSearchPath.Replace("'", "''")}'");
+            statements.Add($"SET file_search_path = '{fileSearchPath.Replace("'", "''")}'");
         }
 
-        return statements;
+        return statements.Count == 0
+            ? null
+            : string.Join("; ", statements) + ";";
     }
 
     private void LoadSpatialExtensionIfNeeded()
@@ -424,8 +433,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         }
 
         var paramObj = new RelationalCommandParameterObject(this, null, null, null, null);
-        _rawSqlCommandBuilder.Build("INSTALL spatial").ExecuteNonQuery(paramObj);
-        _rawSqlCommandBuilder.Build("LOAD spatial").ExecuteNonQuery(paramObj);
+        _rawSqlCommandBuilder.Build("INSTALL spatial; LOAD spatial;").ExecuteNonQuery(paramObj);
     }
 
     private async Task LoadSpatialExtensionIfNeededAsync(CancellationToken cancellationToken)
@@ -436,8 +444,10 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         }
 
         var paramObj = new RelationalCommandParameterObject(this, null, null, null, null);
-        await _rawSqlCommandBuilder.Build("INSTALL spatial").ExecuteNonQueryAsync(paramObj, cancellationToken);
-        await _rawSqlCommandBuilder.Build("LOAD spatial").ExecuteNonQueryAsync(paramObj, cancellationToken);
+        await _rawSqlCommandBuilder
+            .Build("INSTALL spatial; LOAD spatial;")
+            .ExecuteNonQueryAsync(paramObj, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private void LoadConfiguredExtensions()

@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.15.0</PackageVersion>
-    <FileVersion>1.15.0.0</FileVersion>
-    <Version>1.15.0</Version>
+    <PackageVersion>1.18.0</PackageVersion>
+    <FileVersion>1.18.0.0</FileVersion>
+    <Version>1.18.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,45 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.14.2</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.17.3</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.18.0
+- Reduce SaveChanges planning allocations by reusing immutable insert shapes and dual-role update plans, avoiding scalar-path candidate arrays and detached per-cell snapshots, and bounding wide batches with a 10,000-cell guard. The corrected benchmark measured insert allocation at 7,771.36 KB versus the 12,040.59 KB baseline and update allocation at 4,976.05 KB versus 7,390.00 KB.
+- Reuse one temporary staging table per Upsert operation, share a compiled typed Appender writer with BulkInsert, increase the default batch size from 100 to 500, and cap staged work at 100,000 cells. The default Upsert benchmark measured 9.461 ms / 134.73 KB versus the 23.037 ms / 312.79 KB baseline.
+- Coalesce configured connection settings and spatial extension setup into one command per initialization path.
+- Replace the tiered-view crash/late-row guard's second Parquet scan with a persisted active-generation root-key index. The scoped tier benchmark opened 2 files versus 194 at baseline.
+- Add focused diagnostics, width-aware, staging-cleanup, connection, and exact Parquet-scan regression coverage. No existing public API is removed or changed.
+
+1.17.3
+- Add context-wide opt-in case-insensitive translation for string and character StartsWith, Contains, and EndsWith searches. Existing case-sensitive behavior and exact equality remain unchanged by default.
+- Translate opted-in searches through null-safe ilike_escape expressions with explicit VARCHAR mappings and literal escaping for $, %, and _, including native DuckDB and DuckLake execution coverage.
+
+1.17.2
+- Fix tracked updates for dual-role rows whose stable key is referenced by dependants and which also carry an outbound foreign key. Unchanged outbound-FK writes are classified using provider values and omitted when another write remains, avoiding DuckDB's referenced-row constraint without hiding genuine physical changes.
+- Preserve disconnected sole-FK updates with an atomic IS DISTINCT FROM update and keyed concurrency probe. Genuine outbound-FK reassignments succeed when no inbound dependant exists and otherwise produce an actionable DbUpdateException; DuckLake retains its logical-relationship behavior because it does not create physical FKs.
+
+1.17.1
+- Upgrade Skuirrels.DuckDB.NET.Data.Full from 1.5.5.3 to 1.5.5.4, resolving the matching Skuirrels.DuckDB.NET.Bindings.Full 1.5.5.4 package. Controlled same-machine A/B runs of all 49 provider benchmark cases, plus higher-confidence and counterbalanced reruns, found no reproducible performance or material allocation regressions. Provider APIs and the bundled native DuckDB 1.5.5 runtime are unchanged.
+
+1.17.0
+- Extend non-executing command extraction to terminal LongCount, Min, Max, Sum, and Average operations. Numeric aggregates accept projected int, long, float, double, decimal, and nullable equivalents; unsupported projections fail before EF query compilation.
+- Preserve direct generic extraction for fixed-result terminal operations and use cached result-type dispatch only where Average promotes the CLR result type.
+- Document that replayed aggregate command plans expose database values without EF's client-side empty-sequence result shaping, with focused replay and extraction benchmark coverage.
+
+1.16.0
+- Add non-executing command extraction for single-command LINQ queries and terminal Count/Any operations, including exact provider parameter metadata and defensive value snapshots. Split and other multi-command query shapes fail explicitly.
+- Add named dynamic-command execution that preserves SQL text, copies caller-owned ADO.NET parameters, and replays extracted command plans through the dynamic-result API.
+- Add structured runtime inspection of scalar, STRUCT complex-property, raw-reader-only, and unsupported DuckDB store-type contracts.
+- Correct canonical signed and unsigned integer aliases, including INT8/INT64/LONG, and support faceted mapping lookup such as DECIMAL(12,2).
+- Scope exact type-mapping capture to command-plan extraction so normal parameter creation and SaveChanges retain baseline allocations. Replace the first-use scratch database query for identifier metadata with deterministic static metadata.
+
+1.15.2
+- Upgrade Skuirrels.DuckDB.NET.Data.Full from 1.5.5.2 to 1.5.5.3, resolving the matching Skuirrels.DuckDB.NET.Bindings.Full 1.5.5.3 package. Controlled before-and-after runs of all 33 provider benchmark cases found no material performance or allocation regressions.
+- Improve collection read performance through Skuirrels 1.5.5.3's cached typed List&lt;T&gt; materializers. Additional element types and nested/fixed-array shapes avoid the previous per-element boxing path. The provider's scalar and BLOB read benchmarks remained stable in a higher-confidence follow-up run. Provider APIs are unchanged.
+
+1.15.1
+- Fix SaveChanges updates to tables referenced by foreign keys when store-generated values must be refreshed. The provider avoids DuckDB 1.5.5's failing UPDATE ... RETURNING path, validates affected rows, and reads generated values back by key in the same transaction.
+
 1.15.0
 - Add opt-in mapping of EF Core complex properties to native DuckDB STRUCT columns through UseStructMapping, HasStructField, and HasStructFieldName.
 - Support STRUCT schema creation, migrations, SaveChanges inserts and partial updates, and LINQ projection, filtering, ordering, joins, and subqueries, including nested structures and explicit physical field names.

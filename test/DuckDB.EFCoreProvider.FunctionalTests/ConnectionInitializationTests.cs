@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using System.Data;
 using Xunit;
@@ -68,6 +69,25 @@ public sealed class ConnectionInitializationTests : DuckDBTestBase
         Assert.Throws<InvalidOperationException>(() => context.Database.OpenConnection());
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
     }
+
+    [ConditionalFact]
+    public void Configured_settings_are_composed_into_one_command()
+    {
+        var commandText = DuckDBRelationalConnection.BuildConfigurationCommandText(
+            "256MiB",
+            2,
+            "/tmp/duckdb-provider-settings");
+
+        Assert.NotNull(commandText);
+        Assert.Equal(3, commandText!.Count(character => character == ';'));
+        Assert.Contains("SET memory_limit", commandText);
+        Assert.Contains("SET threads = 2", commandText);
+        Assert.Contains("SET file_search_path", commandText);
+    }
+
+    [ConditionalFact]
+    public void Unconfigured_settings_do_not_create_a_command()
+        => Assert.Null(DuckDBRelationalConnection.BuildConfigurationCommandText(null, null, null));
 
     private sealed class InitContext(DbContextOptions<InitContext> options) : DbContext(options);
 }

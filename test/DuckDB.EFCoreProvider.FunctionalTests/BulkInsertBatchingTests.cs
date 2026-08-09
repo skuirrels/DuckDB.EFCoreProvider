@@ -1,10 +1,10 @@
+using DuckDB.EFCoreProvider.Diagnostics;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Update.Internal;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Storage;
-using Microsoft.EntityFrameworkCore.Update;
+using Microsoft.Extensions.Logging;
 using System.Data.Common;
 using Xunit;
 
@@ -25,6 +25,13 @@ public class BulkInsertBatchingTests : DuckDBTestBase
         => new(new DbContextOptionsBuilder<BatchingContext>(
                 FileOptions<BatchingContext>(duckdb => duckdb.EnableBulkInsertBatching()))
             .AddInterceptors(interceptor)
+            .Options);
+
+    private BatchingContext CreateWideContext(DbCommandInterceptor interceptor, ILoggerFactory loggerFactory)
+        => new(new DbContextOptionsBuilder<BatchingContext>(
+                FileOptions<BatchingContext>(duckdb => duckdb.EnableBulkInsertBatching().MaxBatchSize(1_000)))
+            .AddInterceptors(interceptor)
+            .UseLoggerFactory(loggerFactory)
             .Options);
 
     [ConditionalFact]
@@ -154,31 +161,53 @@ public class BulkInsertBatchingTests : DuckDBTestBase
     }
 
     [ConditionalFact]
-    public void Bulk_insert_column_snapshot_does_not_follow_source_mutations()
+    public void SaveChanges_with_batching_splits_wide_rows_at_the_cell_limit_and_logs_the_decision()
     {
-        using var context = CreateContext(enableBatching: true);
-        var typeMapping = context.GetService<IRelationalTypeMappingSource>().FindMapping(typeof(string))!;
-        var source = new ColumnModification(
-            new ColumnModificationParameters(
-                columnName: "Name",
-                originalValue: null,
-                value: "before",
-                property: null,
-                columnType: "VARCHAR",
-                typeMapping,
-                read: false,
-                write: true,
-                key: false,
-                condition: false,
-                sensitiveLoggingEnabled: false,
-                isNullable: false));
-        var snapshot = new DuckDBColumnModificationSnapshot(source);
+        var interceptor = new CommandCaptureInterceptor();
+        var loggerProvider = new CaptureLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(
+            builder => builder.SetMinimumLevel(LogLevel.Debug).AddProvider(loggerProvider));
+        using var context = CreateWideContext(interceptor, loggerFactory);
+        context.Database.EnsureCreated();
+        interceptor.CommandTexts.Clear();
+        loggerProvider.Events.Clear();
 
-        source.Value = "after";
+        context.AddRange(Enumerable.Range(1, 700).Select(i => new WideRow
+        {
+            Id = i,
+            C01 = i,
+            C02 = i,
+            C03 = i,
+            C04 = i,
+            C05 = i,
+            C06 = i,
+            C07 = i,
+            C08 = i,
+            C09 = i,
+            C10 = i,
+            C11 = i,
+            C12 = i,
+            C13 = i,
+            C14 = i,
+            C15 = i,
+        }));
 
-        Assert.Equal("before", snapshot.Value);
-        var immutableSnapshot = (IColumnModification)snapshot;
-        Assert.Throws<NotSupportedException>(() => immutableSnapshot.Value = "replacement");
+        Assert.Equal(700, context.SaveChanges());
+
+        Assert.Equal(
+            2,
+            interceptor.CommandTexts.Count(
+                commandText => commandText.StartsWith("INSERT INTO \"WideRows\"", StringComparison.Ordinal)));
+        Assert.Contains(
+            loggerProvider.Events,
+            entry => entry.EventId == DuckDBEventId.SaveChangesBatch
+                     && entry.Message.Contains("columns=16", StringComparison.Ordinal)
+                     && entry.Message.Contains("cells=10016", StringComparison.Ordinal)
+                     && entry.Message.Contains("reason=CellLimit", StringComparison.Ordinal));
+        Assert.Contains(
+            loggerProvider.Events,
+            entry => entry.EventId == DuckDBEventId.SaveChangesBatch
+                     && entry.Message.Contains("reason=Completed", StringComparison.Ordinal));
     }
 
     [ConditionalFact]
@@ -208,10 +237,12 @@ public class BulkInsertBatchingTests : DuckDBTestBase
         public DbSet<ExplicitKeyRow> ExplicitKeyRows => Set<ExplicitKeyRow>();
         public DbSet<GeneratedKeyRow> GeneratedKeyRows => Set<GeneratedKeyRow>();
         public DbSet<DefaultedValueRow> DefaultedValueRows => Set<DefaultedValueRow>();
+        public DbSet<WideRow> WideRows => Set<WideRow>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ExplicitKeyRow>().Property(e => e.Id).ValueGeneratedNever();
+            modelBuilder.Entity<WideRow>().Property(e => e.Id).ValueGeneratedNever();
             modelBuilder.Entity<DefaultedValueRow>(entity =>
             {
                 entity.Property(e => e.Id).ValueGeneratedNever();
@@ -240,6 +271,26 @@ public class BulkInsertBatchingTests : DuckDBTestBase
         public int Value { get; set; }
     }
 
+    private sealed class WideRow
+    {
+        public int Id { get; set; }
+        public int C01 { get; set; }
+        public int C02 { get; set; }
+        public int C03 { get; set; }
+        public int C04 { get; set; }
+        public int C05 { get; set; }
+        public int C06 { get; set; }
+        public int C07 { get; set; }
+        public int C08 { get; set; }
+        public int C09 { get; set; }
+        public int C10 { get; set; }
+        public int C11 { get; set; }
+        public int C12 { get; set; }
+        public int C13 { get; set; }
+        public int C14 { get; set; }
+        public int C15 { get; set; }
+    }
+
     private sealed class CommandCaptureInterceptor : DbCommandInterceptor
     {
         public List<string> CommandTexts { get; } = [];
@@ -260,6 +311,36 @@ public class BulkInsertBatchingTests : DuckDBTestBase
         {
             CommandTexts.Add(command.CommandText);
             return result;
+        }
+    }
+
+    private sealed class CaptureLoggerProvider : ILoggerProvider
+    {
+        public List<(EventId EventId, string Message)> Events { get; } = [];
+
+        public ILogger CreateLogger(string categoryName)
+            => new CaptureLogger(Events);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class CaptureLogger(List<(EventId EventId, string Message)> events) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull
+                => null;
+
+            public bool IsEnabled(LogLevel logLevel)
+                => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+                => events.Add((eventId, formatter(state, exception)));
         }
     }
 }

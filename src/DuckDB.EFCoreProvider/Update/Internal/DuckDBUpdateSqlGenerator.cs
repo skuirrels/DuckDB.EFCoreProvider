@@ -138,8 +138,26 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         int commandPosition,
         out bool requiresTransaction)
     {
+        var dualRolePlan = DuckDBDualRoleUpdatePlanner.Create(command, _capabilities);
+        if (dualRolePlan.RequiresConditionalForeignKeyUpdate)
+        {
+            return AppendConditionalForeignKeyUpdateOperation(
+                commandStringBuilder,
+                dualRolePlan,
+                out requiresTransaction);
+        }
+
         if (_capabilities.SupportsReturning)
         {
+            if (!_capabilities.SupportsReturningOnReferencedTableUpdates
+                && DuckDBUpdateFallbackPlanner.TryCreate(command, _capabilities, out var plan))
+            {
+                return AppendUpdateFallbackOperation(
+                    commandStringBuilder,
+                    plan,
+                    out requiresTransaction);
+            }
+
             return base.AppendUpdateOperation(commandStringBuilder, command, commandPosition, out requiresTransaction);
         }
 
@@ -151,7 +169,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             commandStringBuilder,
             command.TableName,
             command.Schema,
-            operations.Where(operation => operation.IsWrite).ToList(),
+            dualRolePlan.WriteOperations,
             [],
             operations.Where(operation => operation.IsCondition).ToList());
         // A capability-limited backend may not physically enforce EF's logical keys. If duplicate key rows exist,
@@ -159,6 +177,149 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         // Require a transaction so EF can roll the statement back before surfacing DbUpdateConcurrencyException.
         requiresTransaction = true;
         return ResultSetMapping.NoResults;
+    }
+
+    internal ResultSetMapping AppendUpdateFallbackOperation(
+        StringBuilder commandStringBuilder,
+        DuckDBUpdateFallbackPlan plan,
+        out bool requiresTransaction)
+    {
+        AppendUpdateCommand(
+            commandStringBuilder,
+            plan.TableName,
+            plan.Schema,
+            plan.WriteOperations,
+            [],
+            plan.ConditionOperations);
+
+        requiresTransaction = plan.ReadOperations.Count > 0 || plan.HasChangedForeignKeyWrites;
+        return ResultSetMapping.NoResults;
+    }
+
+    private ResultSetMapping AppendConditionalForeignKeyUpdateOperation(
+        StringBuilder commandStringBuilder,
+        DuckDBDualRoleUpdatePlan plan,
+        out bool requiresTransaction)
+    {
+        commandStringBuilder
+            .Append("UPDATE ")
+            .Append(SqlGenerationHelper.DelimitIdentifier(plan.Command.TableName, plan.Command.Schema))
+            .Append(" SET ");
+        for (var i = 0; i < plan.UnchangedForeignKeyWrites.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            var modification = plan.UnchangedForeignKeyWrites[i];
+            commandStringBuilder
+                .Append(SqlGenerationHelper.DelimitIdentifier(modification.ColumnName))
+                .Append(" = ");
+            AppendUpdateColumnValue(
+                SqlGenerationHelper,
+                modification,
+                commandStringBuilder,
+                plan.Command.TableName,
+                plan.Command.Schema);
+        }
+
+        var conditions = plan.Command.ColumnModifications
+            .Where(modification => modification.IsCondition)
+            .ToArray();
+        commandStringBuilder.AppendLine().Append("WHERE ");
+        AppendConditions(commandStringBuilder, conditions);
+        commandStringBuilder.Append(" AND (");
+        for (var i = 0; i < plan.UnchangedForeignKeyWrites.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(" OR ");
+            }
+
+            var modification = plan.UnchangedForeignKeyWrites[i];
+            commandStringBuilder
+                .Append(SqlGenerationHelper.DelimitIdentifier(modification.ColumnName))
+                .Append(" IS DISTINCT FROM ");
+            AppendUpdateColumnValue(
+                SqlGenerationHelper,
+                modification,
+                commandStringBuilder,
+                plan.Command.TableName,
+                plan.Command.Schema);
+        }
+
+        commandStringBuilder
+            .AppendLine(")" + SqlGenerationHelper.StatementTerminator)
+            .Append("SELECT CAST(COUNT(*) AS INTEGER)")
+            .AppendLine()
+            .Append("FROM ")
+            .Append(SqlGenerationHelper.DelimitIdentifier(plan.Command.TableName, plan.Command.Schema))
+            .AppendLine()
+            .Append("WHERE ");
+        AppendConditions(commandStringBuilder, conditions);
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
+
+        requiresTransaction = true;
+        return ResultSetMapping.LastInResultSet | ResultSetMapping.ResultSetWithRowsAffectedOnly;
+    }
+
+    private void AppendConditions(
+        StringBuilder commandStringBuilder,
+        IReadOnlyList<IColumnModification> conditions)
+    {
+        for (var i = 0; i < conditions.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(" AND ");
+            }
+
+            AppendWhereCondition(
+                commandStringBuilder,
+                conditions[i],
+                conditions[i].UseOriginalValueParameter);
+        }
+    }
+
+    internal void AppendUpdateFallbackReadbackCommand(
+        StringBuilder commandStringBuilder,
+        DuckDBUpdateFallbackPlan plan)
+    {
+        commandStringBuilder.Append("SELECT ");
+        for (var i = 0; i < plan.ReadOperations.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(", ");
+            }
+
+            commandStringBuilder.Append(
+                SqlGenerationHelper.DelimitIdentifier(plan.ReadOperations[i].ColumnName));
+        }
+
+        commandStringBuilder
+            .AppendLine()
+            .Append("FROM ")
+            .Append(SqlGenerationHelper.DelimitIdentifier(plan.TableName, plan.Schema))
+            .AppendLine()
+            .Append("WHERE ");
+
+        for (var i = 0; i < plan.KeyOperations.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandStringBuilder.Append(" AND ");
+            }
+
+            var keyOperation = plan.KeyOperations[i];
+            AppendWhereCondition(
+                commandStringBuilder,
+                keyOperation,
+                keyOperation.UseOriginalValueParameter);
+        }
+
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
     }
 
     /// <inheritdoc />
@@ -345,7 +506,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         out bool requiresTransaction)
         => AppendBulkUpdateOperation(
             commandStringBuilder,
-            DuckDBBulkUpdatePlanner.Create(modificationCommands),
+            DuckDBBulkUpdatePlanner.Create(modificationCommands, _capabilities),
             out requiresTransaction);
 
     internal ResultSetMapping AppendBulkUpdateOperation(

@@ -30,7 +30,7 @@ public class DuckDBSByteTypeMapping : SByteTypeMapping
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).RemoveDollarSign();
+        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
         base.ConfigureParameter(parameter);
     }
 }
