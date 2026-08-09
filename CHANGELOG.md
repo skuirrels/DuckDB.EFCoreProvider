@@ -4,9 +4,13 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 
 ## 1.18.0
 
+- Add `HasStructForeignKey` relationship mapping so scalar leaves inside STRUCT-mapped complex properties can
+  drive navigation joins without a duplicate scalar foreign-key column. This covers typed and untyped collection
+  relationships, one-to-one relationships, required and optional navigations, nullable leaves, and Parquet-backed
+  joins, with early validation for unsupported relationship shapes.
 - Reduce `SaveChanges` planning allocations by reusing immutable insert shapes and dual-role update plans, avoiding
   scalar-path candidate arrays and detached per-cell snapshots, and bounding wide batches with a 10,000-cell guard.
-  The corrected benchmark measured insert allocation at 7,771.36 KB versus the 12,040.59 KB baseline and update
+  The benchmark measured insert allocation at 7,771.36 KB versus the 12,040.59 KB baseline and update
   allocation at 4,976.05 KB versus 7,390.00 KB.
 - Reuse one temporary staging table per Upsert operation, share a compiled typed Appender writer with BulkInsert,
   increase the default batch size from 100 to 500, and cap staged work at 100,000 cells. The default Upsert benchmark
