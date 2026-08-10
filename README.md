@@ -399,10 +399,6 @@ The mapped leaf is reused as EF relationship plumbing; no duplicate scalar FK or
 - Raw SQL (`FromSqlRaw`) and composable raw SQL with struct columns work; mapped views with struct properties are rejected at model build time
 - Non-struct complex properties (scalar flattening) continue to work unchanged and are unaffected by this feature
 
-**Null checks on whole structs:** comparing an optional struct-mapped complex property to `null` (`c.Location == null` / `!= null`) translates to a single DuckDB struct-itself check (`"Location" IS NULL` / `IS NOT NULL`) instead of checking each struct field. This is correct on sparse STRUCTs whose physical key set is a subset of the mapped fields (per-field checks would reference missing keys and raise a Binder Error), and is faster because only one column is inspected. Nested struct members work the same way (`c.Location.Address == null` checks `"Location".address IS NULL`). Note that a struct whose fields are all `NULL` is still a present struct: a struct-itself `IS NOT NULL` check keeps such rows, whereas EF's per-field check would have excluded them.
-
-**Projecting a whole struct:** `Select(c => c.Location)` reads the entire DuckDB `STRUCT` column as a single value instead of emitting one `struct."field"` projection per declared member. This is what makes sparse STRUCTs safe to project: when a C# member has no backing field in the underlying struct, per-field extraction would raise a Binder Error, whereas reading the struct column as one value materializes the missing members as `null`. It is also faster because only the struct column is read and no per-field null handling is needed. Single-field projections (`Select(c => c.Location.City)`) are unaffected and still select only that field. Nested structs work the same way: projecting a struct that contains another struct materializes the nested members through the same client-side extraction.
-
 **Convention Inference:**
 The `DuckDBStructFieldConvention` automatically infers struct mapping metadata at model finalization:
 - Complex property name becomes the struct column name (e.g., `Location` → physical column `"Location"`)
