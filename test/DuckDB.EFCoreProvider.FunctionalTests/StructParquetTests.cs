@@ -713,8 +713,8 @@ public sealed class StructParquetTests : DuckDBTestBase
             Assert.Contains("\"Location\"", sql, StringComparison.Ordinal);
             Assert.DoesNotContain("\"Location\".city", sql, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("\"Location\".country", sql, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("CROSS JOIN LATERAL", sql, StringComparison.OrdinalIgnoreCase);
-            Assert.Equal(1, sql.Split("\"Location\"", StringSplitOptions.None).Length - 1);
+            Assert.DoesNotContain("CROSS JOIN LATERAL", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(2, sql.Split("\"Location\"", StringSplitOptions.None).Length - 1);
         }
         finally
         {

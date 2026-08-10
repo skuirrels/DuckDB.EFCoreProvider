@@ -46,8 +46,8 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
                 Visit(shapedQueryExpression.ShaperExpression)!);
         }
 
-        var rewritePlan = CollectReplacements(shapedQueryExpression.ShaperExpression, selectExpression);
-        if (rewritePlan.Replacements.Count == 0)
+        var replacements = CollectReplacements(shapedQueryExpression.ShaperExpression, selectExpression);
+        if (replacements.Count == 0)
         {
             return shapedQueryExpression.Update(
                 Visit(shapedQueryExpression.QueryExpression)!,
@@ -59,16 +59,13 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
         {
             var projection = selectExpression.Projection[i];
             visitedProjections.Add(
-                rewritePlan.Replacements.TryGetValue(i, out var replacement)
+                replacements.TryGetValue(i, out var replacement)
                     ? new ProjectionExpression(replacement, projection.Alias)
                     : (ProjectionExpression)Visit(projection)!);
         }
 
         var updatedSelect = selectExpression.Update(
-            selectExpression.Tables
-                .Concat(rewritePlan.Tables)
-                .Select(t => (TableExpressionBase)Visit(t)!)
-                .ToList(),
+            selectExpression.Tables.Select(t => (TableExpressionBase)Visit(t)!).ToList(),
             (SqlExpression?)Visit(selectExpression.Predicate)!,
             selectExpression.GroupBy.Select(g => (SqlExpression)Visit(g)!).ToList(),
             (SqlExpression?)Visit(selectExpression.Having)!,
@@ -82,16 +79,11 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
             Visit(shapedQueryExpression.ShaperExpression)!);
     }
 
-    private static StructProjectionRewritePlan CollectReplacements(
+    private static Dictionary<int, SqlExpression> CollectReplacements(
         Expression shaperExpression,
         SelectExpression selectExpression)
     {
         var replacements = new Dictionary<int, SqlExpression>();
-        var roots = new List<StructProjectionRoot>();
-        var usedAliases = selectExpression.Tables
-            .SelectMany(GetTableAliases)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var aliasNumber = 0;
         var bindingFinder = new ProjectionBindingFindingVisitor();
         bindingFinder.Visit(shaperExpression);
 
@@ -123,85 +115,16 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
                     continue;
                 }
 
-                var root = roots.FirstOrDefault(candidate => candidate.Source.Equals(structField.Source));
-                if (root is null)
-                {
-                    string alias;
-                    do
-                    {
-                        alias = $"__duckdb_struct_{aliasNumber++}";
-                    }
-                    while (!usedAliases.Add(alias));
-
-                    root = new StructProjectionRoot(
-                        structField.Source,
-                        alias);
-                    roots.Add(root);
-                }
-
                 var leafTypeMapping = leafProperty.GetRelationalTypeMapping();
                 replacements[index] = new DuckDBWholeStructExpression(
-                    new ColumnExpression(
-                        root.ColumnName,
-                        root.Alias,
-                        typeof(object),
-                        typeMapping: null,
-                        nullable: true),
+                    structField.Source,
                     structField.FieldPath,
                     new DuckDBStructKeyTypeMapping(leafTypeMapping, structField.FieldPath));
             }
         }
 
-        foreach (var root in roots)
-        {
-            root.Table = new CrossApplyExpression(
-                new ValuesExpression(
-                    root.Alias,
-                    [new RowValueExpression([root.Source])],
-                    [root.ColumnName]));
-        }
-
-        return new StructProjectionRewritePlan(
-            replacements,
-            roots.Select(root => root.Table!).ToArray());
-
-        static IEnumerable<string> GetTableAliases(TableExpressionBase table)
-        {
-            if (table.Alias is { } alias)
-            {
-                yield return alias;
-            }
-
-            if (table is JoinExpressionBase join)
-            {
-                foreach (var nestedAlias in GetTableAliases(join.Table))
-                {
-                    yield return nestedAlias;
-                }
-            }
-        }
+        return replacements;
     }
-
-    private sealed class StructProjectionRoot
-    {
-        public StructProjectionRoot(SqlExpression source, string alias)
-        {
-            Source = source;
-            Alias = alias;
-        }
-
-        public SqlExpression Source { get; }
-
-        public string Alias { get; }
-
-        public string ColumnName { get; } = "value";
-
-        public CrossApplyExpression? Table { get; set; }
-    }
-
-    private sealed record StructProjectionRewritePlan(
-        IReadOnlyDictionary<int, SqlExpression> Replacements,
-        IReadOnlyList<TableExpressionBase> Tables);
 
     private sealed class ProjectionBindingFindingVisitor : ExpressionVisitor
     {
