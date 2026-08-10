@@ -35,6 +35,7 @@ public sealed class StructParquetTests : DuckDBTestBase
 
             Assert.Equal(["LDN", "NYC"], cities);
         }
+
         finally
         {
             File.Delete(path);
@@ -663,6 +664,32 @@ public sealed class StructParquetTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Whole_struct_projection_applies_leaf_value_converter_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'db:NYC', 'country': 'US'})
+                """);
+
+            using var context = CreateConvertedCustomerContext<WholeStructConverterTag>(path);
+            var result = context.Customers
+                .Select(c => c.Location)
+                .Single();
+
+            Assert.Equal("NYC", result.City.Value);
+            Assert.Equal("US", result.Country);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
     public void Whole_struct_projection_selects_struct_column_not_each_field_from_parquet()
     {
         var path = ParquetPath();
@@ -686,6 +713,8 @@ public sealed class StructParquetTests : DuckDBTestBase
             Assert.Contains("\"Location\"", sql, StringComparison.Ordinal);
             Assert.DoesNotContain("\"Location\".city", sql, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("\"Location\".country", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("CROSS JOIN LATERAL", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(1, sql.Split("\"Location\"", StringSplitOptions.None).Length - 1);
         }
         finally
         {
@@ -814,6 +843,16 @@ public sealed class StructParquetTests : DuckDBTestBase
         return new CustomerContext<TTag>(options, parquetPath);
     }
 
+    private ConvertedCustomerContext<TTag> CreateConvertedCustomerContext<TTag>(string parquetPath)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<ConvertedCustomerContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new ConvertedCustomerContext<TTag>(options, parquetPath);
+    }
+
     private AccountContext<TTag> CreateAccountContext<TTag>(string parquetPath)
         where TTag : class
     {
@@ -907,6 +946,7 @@ public sealed class StructParquetTests : DuckDBTestBase
     private sealed class WholeStructSparseTag;
     private sealed class WholeStructNullableTag;
     private sealed class WholeStructNestedTag;
+    private sealed class WholeStructConverterTag;
     private sealed class RequiredRelationshipTag;
     private sealed class OptionalRelationshipTag;
     private sealed class RequiredOverrideTag;
@@ -922,6 +962,30 @@ public sealed class StructParquetTests : DuckDBTestBase
             {
                 e.FromParquet(parquetPath);
                 e.ComplexProperty(c => c.Location).UseStructMapping();
+            });
+        }
+    }
+
+    private sealed class ConvertedCustomerContext<TTag>(
+        DbContextOptions<ConvertedCustomerContext<TTag>> options,
+        string parquetPath)
+        : DbContext(options)
+    {
+        public DbSet<ConvertedCustomer> Customers => Set<ConvertedCustomer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ConvertedCustomer>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.ComplexProperty(customer => customer.Location, location =>
+                {
+                    location.UseStructMapping();
+                    location.Property(value => value.City)
+                        .HasConversion(
+                            city => "db:" + city.Value,
+                            value => new ConvertedCity(value.Substring(3)));
+                });
             });
         }
     }
@@ -1087,6 +1151,26 @@ public sealed class StructParquetTests : DuckDBTestBase
         public int Id { get; set; }
         [UseStructMapping]
         public required Address Location { get; set; }
+    }
+
+    private sealed class ConvertedCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public required ConvertedAddress Location { get; set; }
+    }
+
+    private sealed class ConvertedAddress
+    {
+        public required ConvertedCity City { get; set; }
+        public required string Country { get; set; }
+    }
+
+    private sealed class ConvertedCity
+    {
+        public ConvertedCity(string value) => Value = value;
+
+        public string Value { get; }
     }
 
     private sealed class Account

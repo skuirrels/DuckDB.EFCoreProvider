@@ -46,8 +46,8 @@ internal sealed class DuckDBStructItselfNullCheckRewritingExpressionVisitor : Ex
         if (!TryFindResolvedStructField(presenceCheck.CheckedExpression, out var structField))
         {
             // No struct-mapped leaf was resolved (for example the leaf lives in a subquery
-            // projection); keep EF's narrowed per-leaf comparison unchanged.
-            return presenceCheck;
+            // projection); restore the narrowed comparison unchanged.
+            return presenceCheck.CheckedExpression;
         }
 
         var source = structField!.Source;

@@ -1,4 +1,6 @@
+using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -23,39 +25,85 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
 
     private readonly Type _leafClrType;
     private readonly IReadOnlyList<string> _fieldPath;
+    private readonly ValueConverter? _converter;
 
     public DuckDBStructKeyTypeMapping(
         string storeType,
         Type leafClrType,
         IReadOnlyList<string> fieldPath)
+        : this(storeType, leafClrType, fieldPath, null)
+    {
+    }
+
+    internal DuckDBStructKeyTypeMapping(
+        RelationalTypeMapping leafTypeMapping,
+        IReadOnlyList<string> fieldPath)
+        : this(
+            leafTypeMapping.StoreType,
+            leafTypeMapping.ClrType,
+            fieldPath,
+            leafTypeMapping.Converter)
+    {
+    }
+
+    private DuckDBStructKeyTypeMapping(
+        string storeType,
+        Type leafClrType,
+        IReadOnlyList<string> fieldPath,
+        ValueConverter? converter)
         : base(new RelationalTypeMappingParameters(
             new CoreTypeMappingParameters(typeof(Dictionary<string, object>)),
             storeType: storeType ?? "STRUCT"))
     {
         _leafClrType = leafClrType;
         _fieldPath = fieldPath.ToArray();
+        _converter = converter;
     }
 
     private DuckDBStructKeyTypeMapping(
         RelationalTypeMappingParameters parameters,
         Type leafClrType,
-        IReadOnlyList<string> fieldPath)
+        IReadOnlyList<string> fieldPath,
+        ValueConverter? converter)
         : base(parameters)
     {
         _leafClrType = leafClrType;
         _fieldPath = fieldPath;
+        _converter = converter;
     }
 
     /// <inheritdoc />
     protected override RelationalTypeMapping Clone(RelationalTypeMappingParameters parameters)
-        => new DuckDBStructKeyTypeMapping(parameters, _leafClrType, _fieldPath);
+        => new DuckDBStructKeyTypeMapping(parameters, _leafClrType, _fieldPath, _converter);
 
     /// <inheritdoc />
     public override Expression CustomizeDataReaderExpression(Expression expression)
-        => Expression.Call(
-            ReadStructKeyMethod.MakeGenericMethod(_leafClrType),
+        => CreateReadExpression(expression, _leafClrType, _fieldPath, _converter);
+
+    internal static Expression CreateReadExpression(
+        Expression expression,
+        Type leafClrType,
+        IReadOnlyList<string> fieldPath,
+        ValueConverter? converter = null)
+    {
+        var providerType = converter?.ProviderClrType ?? leafClrType;
+        Expression valueExpression = Expression.Call(
+            ReadStructKeyMethod.MakeGenericMethod(providerType),
             expression,
-            Expression.Constant(_fieldPath.ToArray()));
+            Expression.Constant(fieldPath.ToArray()));
+
+        if (converter is not null)
+        {
+            valueExpression = ReplacingExpressionVisitor.Replace(
+                converter.ConvertFromProviderExpression.Parameters.Single(),
+                valueExpression,
+                converter.ConvertFromProviderExpression.Body);
+        }
+
+        return valueExpression.Type == leafClrType
+            ? valueExpression
+            : Expression.Convert(valueExpression, leafClrType);
+    }
 
     /// <inheritdoc />
     public override string GenerateSqlLiteral(object? value)
@@ -66,8 +114,13 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
         object? current = dict;
         for (var i = 0; i < path.Length; i++)
         {
-            if (current is not Dictionary<string, object> level
-                || !level.TryGetValue(path[i], out var value))
+            if (current is not Dictionary<string, object> level)
+            {
+                return default!;
+            }
+
+            if (!level.TryGetValue(path[i], out var value)
+                && !TryGetValueIgnoreCase(level, path[i], out value))
             {
                 return default!;
             }
@@ -81,6 +134,24 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
         }
 
         return (T)ConvertToClr(current, typeof(T))!;
+    }
+
+    private static bool TryGetValueIgnoreCase(
+        Dictionary<string, object> dictionary,
+        string key,
+        out object? value)
+    {
+        foreach (var pair in dictionary)
+        {
+            if (string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = pair.Value;
+                return true;
+            }
+        }
+
+        value = null;
+        return false;
     }
 
     private static object? ConvertToClr(object value, Type targetType)

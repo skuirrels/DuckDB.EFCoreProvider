@@ -4,6 +4,7 @@ using DuckDB.EFCoreProvider.Metadata.Internal;
 using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using System.Data;
 using System.Linq.Expressions;
 using Xunit;
@@ -196,6 +197,22 @@ public class DuckDBStructFieldConventionTest
         Assert.Equal(expression.StructFieldInfo.NestedFieldNames, recreated.StructFieldInfo.NestedFieldNames);
         Assert.Equal(expression.StructFieldInfo.LeafFieldName, recreated.StructFieldInfo.LeafFieldName);
         Assert.Equal(expression.Type, recreated.Type);
+    }
+
+    [Fact]
+    public void Struct_presence_check_quote_recreates_expression()
+    {
+        var expression = new DuckDBStructPresenceCheckExpression(
+            ExpressionType.Equal,
+            new SqlConstantExpression(1, typeof(int), typeMapping: null),
+            depth: 2);
+
+        var quoted = expression.Quote();
+        var recreated = Expression.Lambda<Func<DuckDBStructPresenceCheckExpression>>(quoted).Compile()();
+
+        Assert.Equal(expression.OperatorType, recreated.OperatorType);
+        Assert.Equal(expression.Depth, recreated.Depth);
+        Assert.Equal(expression.CheckedExpression, recreated.CheckedExpression);
     }
 
     [Fact]

@@ -40,7 +40,7 @@ public sealed class DuckDBStructPresenceCheckExpression : SqlExpression, IEquata
     {
     }
 
-    private DuckDBStructPresenceCheckExpression(
+    public DuckDBStructPresenceCheckExpression(
         ExpressionType operatorType,
         SqlExpression checkedExpression,
         int depth,
