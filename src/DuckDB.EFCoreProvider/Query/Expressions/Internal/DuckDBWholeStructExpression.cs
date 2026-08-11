@@ -25,17 +25,21 @@ public sealed class DuckDBWholeStructExpression : SqlExpression, IEquatable<Duck
     public DuckDBWholeStructExpression(
         SqlExpression source,
         IReadOnlyList<string> fieldPath,
-        RelationalTypeMapping? typeMapping = null)
+        RelationalTypeMapping? typeMapping = null,
+        bool suppressSource = false,
+        RelationalTypeMapping? extractionTypeMapping = null)
         : base(typeof(object), typeMapping)
     {
         ArgumentNullException.ThrowIfNull(source);
-        if (fieldPath.Count == 0 || fieldPath.Any(string.IsNullOrWhiteSpace))
+        if (fieldPath.Any(string.IsNullOrWhiteSpace))
         {
             throw new ArgumentException("A STRUCT field path must contain non-empty names.", nameof(fieldPath));
         }
 
         Source = source;
         _fieldPath = fieldPath.ToImmutableArray();
+        SuppressSource = suppressSource;
+        ExtractionTypeMapping = extractionTypeMapping;
     }
 
     /// <summary>The resolved STRUCT source expression, normally a physical root column.</summary>
@@ -47,10 +51,27 @@ public sealed class DuckDBWholeStructExpression : SqlExpression, IEquatable<Duck
     /// </summary>
     public IReadOnlyList<string> FieldPath => _fieldPath;
 
+    /// <summary>
+    ///     Indicates that this entry is a client-side placeholder and should not render its
+    ///     source STRUCT a second time in the SQL projection.
+    /// </summary>
+    public bool SuppressSource { get; }
+
+    /// <summary>
+    ///     The leaf mapping used when the root STRUCT value is extracted after relational
+    ///     shaper processing. This is kept separate from the placeholder's scalar mapping.
+    /// </summary>
+    public RelationalTypeMapping? ExtractionTypeMapping { get; }
+
     public DuckDBWholeStructExpression Update(SqlExpression source)
         => ReferenceEquals(source, Source)
             ? this
-            : new DuckDBWholeStructExpression(source, _fieldPath, TypeMapping);
+            : new DuckDBWholeStructExpression(
+                source,
+                _fieldPath,
+                TypeMapping,
+                SuppressSource,
+                ExtractionTypeMapping);
 
     protected override Expression VisitChildren(ExpressionVisitor visitor)
         => Update((SqlExpression)visitor.Visit(Source)!);
@@ -61,13 +82,17 @@ public sealed class DuckDBWholeStructExpression : SqlExpression, IEquatable<Duck
                 [
                     typeof(SqlExpression),
                     typeof(string[]),
+                    typeof(RelationalTypeMapping),
+                    typeof(bool),
                     typeof(RelationalTypeMapping)
                 ])!,
             Source.Quote(),
             NewArrayInit(
                 typeof(string),
                 _fieldPath.Select(field => (Expression)Constant(field)).ToArray()),
-            RelationalExpressionQuotingUtilities.QuoteTypeMapping(TypeMapping));
+            RelationalExpressionQuotingUtilities.QuoteTypeMapping(TypeMapping),
+            Constant(SuppressSource),
+            RelationalExpressionQuotingUtilities.QuoteTypeMapping(ExtractionTypeMapping));
 
     protected override void Print(ExpressionPrinter expressionPrinter)
         => expressionPrinter.Visit(Source);
@@ -88,6 +113,8 @@ public sealed class DuckDBWholeStructExpression : SqlExpression, IEquatable<Duck
         => other is not null
             && base.Equals(other)
             && Source.Equals(other.Source)
+            && SuppressSource == other.SuppressSource
+            && Equals(ExtractionTypeMapping, other.ExtractionTypeMapping)
             && _fieldPath.SequenceEqual(other._fieldPath, StringComparer.Ordinal);
 
     public override bool Equals(object? obj)
@@ -98,6 +125,8 @@ public sealed class DuckDBWholeStructExpression : SqlExpression, IEquatable<Duck
         var hash = new HashCode();
         hash.Add(base.GetHashCode());
         hash.Add(Source);
+        hash.Add(SuppressSource);
+        hash.Add(ExtractionTypeMapping);
         foreach (var field in _fieldPath)
         {
             hash.Add(field, StringComparer.Ordinal);

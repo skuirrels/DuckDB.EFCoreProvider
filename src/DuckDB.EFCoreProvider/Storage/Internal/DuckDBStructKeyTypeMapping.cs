@@ -23,9 +23,18 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
     private static readonly MethodInfo ReadStructKeyMethod = typeof(DuckDBStructKeyTypeMapping).GetMethod(
         nameof(ReadStructKey), BindingFlags.NonPublic | BindingFlags.Static)!;
 
+    private static readonly MethodInfo HasStructKeyMethod = typeof(DuckDBStructKeyTypeMapping).GetMethod(
+        nameof(HasStructKey), BindingFlags.NonPublic | BindingFlags.Static)!;
+
     private readonly Type _leafClrType;
     private readonly IReadOnlyList<string> _fieldPath;
     private readonly ValueConverter? _converter;
+
+    internal Type LeafClrType => _leafClrType;
+
+    internal IReadOnlyList<string> FieldPath => _fieldPath;
+
+    internal ValueConverter? LeafConverter => _converter;
 
     public DuckDBStructKeyTypeMapping(
         string storeType,
@@ -94,10 +103,18 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
 
         if (converter is not null)
         {
-            valueExpression = ReplacingExpressionVisitor.Replace(
+            var convertedValueExpression = ReplacingExpressionVisitor.Replace(
                 converter.ConvertFromProviderExpression.Parameters.Single(),
                 valueExpression,
                 converter.ConvertFromProviderExpression.Body);
+
+            valueExpression = Expression.Condition(
+                Expression.Call(
+                    HasStructKeyMethod,
+                    expression,
+                    Expression.Constant(fieldPath.ToArray())),
+                convertedValueExpression,
+                Expression.Default(leafClrType));
         }
 
         return valueExpression.Type == leafClrType
@@ -109,9 +126,9 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
     public override string GenerateSqlLiteral(object? value)
         => throw new NotSupportedException("A whole-struct extraction mapping cannot be used for SQL literals.");
 
-    private static T ReadStructKey<T>(Dictionary<string, object>? dict, string[] path)
+    private static T ReadStructKey<T>(object? value, string[] path)
     {
-        object? current = dict;
+        object? current = value is DBNull ? null : value;
         for (var i = 0; i < path.Length; i++)
         {
             if (current is not Dictionary<string, object> level)
@@ -119,21 +136,39 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
                 return default!;
             }
 
-            if (!level.TryGetValue(path[i], out var value)
-                && !TryGetValueIgnoreCase(level, path[i], out value))
+            if (!level.TryGetValue(path[i], out var foundValue)
+                && !TryGetValueIgnoreCase(level, path[i], out foundValue))
             {
                 return default!;
             }
 
-            current = value;
+            current = foundValue;
         }
 
-        if (current is null)
+        if (current is null or DBNull)
         {
             return default!;
         }
 
         return (T)ConvertToClr(current, typeof(T))!;
+    }
+
+    private static bool HasStructKey(object? value, string[] path)
+    {
+        object? current = value;
+        for (var i = 0; i < path.Length; i++)
+        {
+            if (current is not Dictionary<string, object> level
+                || (!level.TryGetValue(path[i], out var foundValue)
+                    && !TryGetValueIgnoreCase(level, path[i], out foundValue)))
+            {
+                return false;
+            }
+
+            current = foundValue;
+        }
+
+        return current is not null and not DBNull;
     }
 
     private static bool TryGetValueIgnoreCase(

@@ -690,6 +690,58 @@ public sealed class StructParquetTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Whole_struct_projection_skips_converter_for_missing_leaf_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'country': 'US'})
+                """);
+
+            using var context = CreateConvertedCustomerContext<WholeStructConverterMissingTag>(path);
+            var result = context.Customers
+                .Select(c => c.Location)
+                .Single();
+
+            Assert.Null(result.City);
+            Assert.Equal("US", result.Country);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_skips_converter_for_null_leaf_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': NULL, 'country': 'US'});
+                """);
+
+            using var context = CreateConvertedCustomerContext<WholeStructConverterNullTag>(path);
+            var result = context.Customers
+                .Select(c => c.Location)
+                .Single();
+
+            Assert.Null(result.City);
+            Assert.Equal("US", result.Country);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
     public void Whole_struct_projection_selects_struct_column_not_each_field_from_parquet()
     {
         var path = ParquetPath();
@@ -714,7 +766,7 @@ public sealed class StructParquetTests : DuckDBTestBase
             Assert.DoesNotContain("\"Location\".city", sql, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("\"Location\".country", sql, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("CROSS JOIN LATERAL", sql, StringComparison.OrdinalIgnoreCase);
-            Assert.Equal(2, sql.Split("\"Location\"", StringSplitOptions.None).Length - 1);
+            Assert.Equal(1, sql.Split("\"Location\"", StringSplitOptions.None).Length - 1);
         }
         finally
         {
@@ -947,6 +999,8 @@ public sealed class StructParquetTests : DuckDBTestBase
     private sealed class WholeStructNullableTag;
     private sealed class WholeStructNestedTag;
     private sealed class WholeStructConverterTag;
+    private sealed class WholeStructConverterMissingTag;
+    private sealed class WholeStructConverterNullTag;
     private sealed class RequiredRelationshipTag;
     private sealed class OptionalRelationshipTag;
     private sealed class RequiredOverrideTag;

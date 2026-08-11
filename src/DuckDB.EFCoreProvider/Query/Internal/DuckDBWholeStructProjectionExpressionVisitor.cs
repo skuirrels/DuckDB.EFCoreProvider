@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 
@@ -46,8 +47,8 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
                 Visit(shapedQueryExpression.ShaperExpression)!);
         }
 
-        var replacements = CollectReplacements(shapedQueryExpression.ShaperExpression, selectExpression);
-        if (replacements.Count == 0)
+        var rewrite = CollectReplacements(shapedQueryExpression.ShaperExpression, selectExpression);
+        if (rewrite.Replacements.Count == 0)
         {
             return shapedQueryExpression.Update(
                 Visit(shapedQueryExpression.QueryExpression)!,
@@ -59,10 +60,14 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
         {
             var projection = selectExpression.Projection[i];
             visitedProjections.Add(
-                replacements.TryGetValue(i, out var replacement)
+                rewrite.Replacements.TryGetValue(i, out var replacement)
                     ? new ProjectionExpression(replacement, projection.Alias)
                     : (ProjectionExpression)Visit(projection)!);
         }
+
+        visitedProjections.AddRange(
+            rewrite.Roots.Select(
+                (root, index) => new ProjectionExpression(root, $"struct_root_{selectExpression.Projection.Count + index}")));
 
         var updatedSelect = selectExpression.Update(
             selectExpression.Tables.Select(t => (TableExpressionBase)Visit(t)!).ToList(),
@@ -76,28 +81,21 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
 
         return shapedQueryExpression.Update(
             updatedSelect,
-            Visit(shapedQueryExpression.ShaperExpression)!);
+            new ProjectionBindingRewritingVisitor(updatedSelect)
+                .Visit(shapedQueryExpression.ShaperExpression)!);
     }
 
-    private static Dictionary<int, SqlExpression> CollectReplacements(
+    private static StructProjectionRewrite CollectReplacements(
         Expression shaperExpression,
         SelectExpression selectExpression)
     {
-        var replacements = new Dictionary<int, SqlExpression>();
+        var groups = new List<StructProjectionGroup>();
         var bindingFinder = new ProjectionBindingFindingVisitor();
         bindingFinder.Visit(shaperExpression);
 
         foreach (var binding in bindingFinder.Bindings)
         {
-            Expression resolved;
-            try
-            {
-                resolved = selectExpression.GetProjection(binding);
-            }
-            catch
-            {
-                continue;
-            }
+            var resolved = selectExpression.GetProjection(binding);
 
             if (resolved is not ConstantExpression { Value: Dictionary<IPropertyBase, int> propertyIndexes })
             {
@@ -116,15 +114,71 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
                 }
 
                 var leafTypeMapping = leafProperty.GetRelationalTypeMapping();
-                replacements[index] = new DuckDBWholeStructExpression(
-                    structField.Source,
-                    structField.FieldPath,
-                    new DuckDBStructKeyTypeMapping(leafTypeMapping, structField.FieldPath));
+                var group = groups.FirstOrDefault(candidate => AreSameStructSource(candidate.Source, structField.Source));
+                if (group is null)
+                {
+                    group = new StructProjectionGroup(structField.Source);
+                    groups.Add(group);
+                }
+
+                group.Leaves.Add(
+                    new StructProjectionLeaf(
+                        index,
+                        structField.FieldPath,
+                        leafTypeMapping,
+                        new DuckDBStructKeyTypeMapping(leafTypeMapping, structField.FieldPath)));
             }
         }
 
-        return replacements;
+        var replacements = new Dictionary<int, SqlExpression>();
+        var roots = new List<SqlExpression>();
+        foreach (var group in groups)
+        {
+            roots.Add(new DuckDBWholeStructExpression(
+                group.Source,
+                [],
+                new DuckDBStructKeyTypeMapping(
+                    "STRUCT",
+                    typeof(Dictionary<string, object>),
+                    [])));
+
+            foreach (var leaf in group.Leaves)
+            {
+                replacements[leaf.Index] = new DuckDBWholeStructExpression(
+                    group.Source,
+                    leaf.FieldPath,
+                    leaf.ScalarTypeMapping,
+                    suppressSource: true,
+                    extractionTypeMapping: leaf.ExtractionTypeMapping);
+            }
+        }
+
+        return new StructProjectionRewrite(replacements, roots);
     }
+
+    private sealed record StructProjectionRewrite(
+        Dictionary<int, SqlExpression> Replacements,
+        IReadOnlyList<SqlExpression> Roots);
+
+    private static bool AreSameStructSource(SqlExpression left, SqlExpression right)
+        => left is ColumnExpression leftColumn
+            && right is ColumnExpression rightColumn
+            && string.Equals(leftColumn.TableAlias, rightColumn.TableAlias, StringComparison.Ordinal)
+            && string.Equals(leftColumn.Name, rightColumn.Name, StringComparison.Ordinal)
+            || left.Equals(right);
+
+    private sealed class StructProjectionGroup(SqlExpression source)
+    {
+        public SqlExpression Source { get; } = source;
+
+        public List<StructProjectionLeaf> Leaves { get; } = [];
+    }
+
+    private sealed record StructProjectionLeaf(
+        int Index,
+        IReadOnlyList<string> FieldPath,
+        RelationalTypeMapping ScalarTypeMapping,
+        DuckDBStructKeyTypeMapping ExtractionTypeMapping);
 
     private sealed class ProjectionBindingFindingVisitor : ExpressionVisitor
     {
@@ -146,6 +200,22 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
                 default:
                     return base.Visit(node);
             }
+        }
+    }
+
+    private sealed class ProjectionBindingRewritingVisitor(
+        SelectExpression updatedSelect) : ExpressionVisitor
+    {
+        public override Expression? Visit(Expression? node)
+        {
+            return node switch
+            {
+                ShapedQueryExpression => node,
+                ProjectionBindingExpression binding => binding.ProjectionMember is { } projectionMember
+                    ? new ProjectionBindingExpression(updatedSelect, projectionMember, binding.Type)
+                    : new ProjectionBindingExpression(updatedSelect, binding.Index!.Value, binding.Type),
+                _ => base.Visit(node)
+            };
         }
     }
 }

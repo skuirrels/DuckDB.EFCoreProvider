@@ -59,7 +59,16 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
     /// </summary>
     protected virtual Expression VisitWholeStruct(DuckDBWholeStructExpression wholeStructExpression)
     {
-        Visit(wholeStructExpression.Source);
+        if (wholeStructExpression.SuppressSource)
+        {
+            // Keep EF's complex-materializer null sentinel non-null without repeating the STRUCT payload.
+            Sql.Append("''");
+        }
+        else
+        {
+            Visit(wholeStructExpression.Source);
+        }
+
         return wholeStructExpression;
     }
 
