@@ -891,13 +891,16 @@ var inserted = context.BulkInsert(rows);
 
 ### Upsert
 
-`Upsert` / `UpsertAsync` insert the supplied entities and update any whose primary key already exists. Each
-batch is staged into a temporary table with DuckDB's appender API, then merged into the target table with a
-set-based `INSERT ... ON CONFLICT (key) DO UPDATE`. This replaces the usual read-then-insert-or-update
-pattern — it removes the existence-check round-trip and batches the writes, running roughly an order of
-magnitude faster in local measurements. The conflict target is the entity's primary key (whose values you
-supply), and all mapped non-key columns are overwritten from the supplied values; an entity with only key
-columns becomes `ON CONFLICT DO NOTHING`.
+`Upsert` and the default `UpsertAsync` overload insert the supplied entities and update any whose primary key
+already exists. `UpsertAsync` also has an overload that accepts a typed conflict-target selector. The selector
+must match a primary key, alternate key, or unique index and may contain one property or a composite shape such
+as `entity => new { entity.TenantId, entity.ExternalId }`.
+
+Each batch is staged into a temporary table with DuckDB's appender API, then merged into the target table with
+a set-based `INSERT ... ON CONFLICT (key) DO UPDATE` or DuckLake `MERGE`. This replaces the usual
+read-then-insert-or-update pattern: it removes the existence-check operation and batches the writes, running
+roughly an order of magnitude faster in local measurements. All staged non-key and non-conflict columns are
+overwritten from the supplied values; an entity with no updateable columns does nothing on conflict.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
@@ -915,9 +918,29 @@ var processed = context.Upsert(rows);
 // batch size is configurable: context.Upsert(rows, batchSize: 200);
 ```
 
+For a model with a sequence-generated `Id` primary key and a unique `ExternalId`, select the external key:
+
+```csharp
+var processed = await context.UpsertAsync(
+    events,
+    entity => entity.ExternalId,
+    batchSize: 500,
+    cancellationToken);
+```
+
+The alternate-target overload omits sequence-, default-, and auto-increment-backed `ValueGenerated.OnAdd`
+columns from staging and insert SQL, so DuckDB applies their defaults for new rows. Existing primary keys are
+preserved during conflict updates. Generated values are not populated back into the supplied entities.
+
+The provider intentionally does not impose an application-specific winner when the input contains the same
+conflict-target value more than once; deduplicate each input batch according to the caller's business rule. Each
+staged batch is applied separately, so wrap the call in an explicit database transaction if the whole input must
+commit atomically.
+
 Like `BulkInsert`, this is a raw fast path: it bypasses the change tracker, concurrency checks, and EF command
-interceptors, requires primary-key values (store-generated keys are not supported), and does not support shadow or
-database-computed columns. Structured provider diagnostics cover the complete upsert rather than every staging command.
+interceptors and does not support shadow or database-computed columns. The default PK-target overload still
+requires supplied primary-key values. Structured provider diagnostics cover the complete upsert rather than every
+staging command.
 
 ### JSON, owned JSON, and arrays
 
@@ -1142,7 +1165,7 @@ scripts/test-suite.sh full-project
 
 **`UseDuckDB` / `BulkInsert` / `UseAutoIncrement` not found.** Add `using DuckDB.EFCoreProvider.Extensions;`.
 
-**`BulkInsert` or `Upsert` throws about a missing key or column.** Both are raw fast paths that bypass change tracking and store-generated values: supply primary-key values yourself (configure the key as `ValueGeneratedNever()`), provide a value for every mapped column, and ensure the target table already exists. See [Bulk insert](#bulk-insert) and [Upsert](#upsert).
+**`BulkInsert` or `Upsert` throws about a missing key or column.** Both are raw fast paths that bypass change tracking. `BulkInsert` and PK-targeted `Upsert` require supplied primary-key values (configure the key as `ValueGeneratedNever()`). For a sequence-generated primary key, use the alternate-target `UpsertAsync` overload with a declared alternate key or unique index. Ensure the target table already exists; generated values are not copied back into the supplied entities. See [Bulk insert](#bulk-insert) and [Upsert](#upsert).
 
 **Migrations.** For the `dotnet ef` workflow, generated keys, and the DuckDB-specific `ALTER TABLE`/index limitations, see the [migrations guide](docs/MIGRATIONS.md).
 

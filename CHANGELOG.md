@@ -2,6 +2,12 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.19.0
+
+- Add an `UpsertAsync` overload with a typed primary-key, alternate-key, or unique-index conflict selector. For
+  alternate targets, sequence/default-backed `ValueGenerated.OnAdd` columns are omitted so DuckDB generates
+  inserted values while conflict updates preserve existing primary keys.
+
 ## 1.18.0
 
 - Add `HasStructForeignKey` relationship mapping so scalar leaves inside STRUCT-mapped complex properties can

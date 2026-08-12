@@ -155,17 +155,198 @@ public class UpsertTests : DuckDBTestBase
         }
     }
 
+    [ConditionalFact]
+    public async Task UpsertAsync_can_conflict_on_alternate_key_and_use_store_generated_values()
+    {
+        var externalId = Guid.NewGuid();
+        var inserted = new GeneratedItem
+        {
+            Id = 999,
+            ExternalId = externalId,
+            Name = "inserted",
+            GeneratedValue = -1,
+            GeneratedSqlValue = -1,
+        };
+
+        await using (var context = CreateContext())
+        {
+            await context.Database.EnsureCreatedAsync();
+            Assert.Equal(1, await context.UpsertAsync([inserted], item => item.ExternalId));
+        }
+
+        Assert.Equal(999, inserted.Id);
+        Assert.Equal(-1, inserted.GeneratedValue);
+        Assert.Equal(-1, inserted.GeneratedSqlValue);
+
+        long generatedId;
+        await using (var context = CreateContext())
+        {
+            var stored = await context.GeneratedItems.AsNoTracking().SingleAsync();
+            generatedId = stored.Id;
+            Assert.NotEqual(inserted.Id, stored.Id);
+            Assert.Equal(42, stored.GeneratedValue);
+            Assert.Equal(43, stored.GeneratedSqlValue);
+        }
+
+        await using (var context = CreateContext())
+        {
+            Assert.Equal(
+                2,
+                await context.UpsertAsync(
+                [
+                    new GeneratedItem
+                    {
+                        Id = 1_000,
+                        ExternalId = externalId,
+                        Name = "updated",
+                        GeneratedValue = -2,
+                        GeneratedSqlValue = -2,
+                    },
+                    new GeneratedItem
+                    {
+                        Id = 1_001,
+                        ExternalId = Guid.NewGuid(),
+                        Name = "second",
+                        GeneratedValue = -3,
+                        GeneratedSqlValue = -3,
+                    },
+                ],
+                item => item.ExternalId));
+        }
+
+        await using (var context = CreateContext())
+        {
+            var stored = await context.GeneratedItems.AsNoTracking().OrderBy(item => item.Id).ToListAsync();
+            Assert.Equal(2, stored.Count);
+            Assert.Equal(generatedId, stored.Single(item => item.ExternalId == externalId).Id);
+            Assert.Equal("updated", stored.Single(item => item.ExternalId == externalId).Name);
+            Assert.All(stored, item => Assert.Equal(42, item.GeneratedValue));
+            Assert.All(stored, item => Assert.Equal(43, item.GeneratedSqlValue));
+        }
+    }
+
+    [ConditionalFact]
+    public async Task UpsertAsync_accepts_composite_unique_index_as_conflict_target()
+    {
+        await using (var context = CreateContext())
+        {
+            await context.Database.EnsureCreatedAsync();
+            await context.UpsertAsync(
+            [
+                new CompositeConflictItem { Id = 1, TenantId = 7, ExternalId = "A", Name = "first" }
+            ],
+                item => new { item.TenantId, item.ExternalId });
+        }
+
+        await using (var context = CreateContext())
+        {
+            await context.UpsertAsync(
+            [
+                new CompositeConflictItem { Id = 2, TenantId = 7, ExternalId = "A", Name = "updated" }
+            ],
+                item => new { item.TenantId, item.ExternalId });
+
+            var stored = await context.CompositeConflictItems.AsNoTracking().SingleAsync();
+            Assert.Equal(1, stored.Id);
+            Assert.Equal("updated", stored.Name);
+        }
+    }
+
+    [ConditionalFact]
+    public async Task UpsertAsync_keeps_client_generated_OnAdd_primary_keys_in_the_insert()
+    {
+        var originalId = Guid.NewGuid();
+        var externalId = new EventKey(Guid.NewGuid());
+
+        await using (var context = CreateContext())
+        {
+            await context.Database.EnsureCreatedAsync();
+            Assert.Equal(
+                1,
+                await context.UpsertAsync(
+                [
+                    new ClientGeneratedItem
+                    {
+                        Id = originalId,
+                        ExternalId = externalId,
+                        Name = "inserted",
+                    }
+                ],
+                    item => item.ExternalId));
+        }
+
+        await using (var context = CreateContext())
+        {
+            Assert.Equal(
+                1,
+                await context.UpsertAsync(
+                [
+                    new ClientGeneratedItem
+                    {
+                        Id = Guid.NewGuid(),
+                        ExternalId = externalId,
+                        Name = "updated",
+                    }
+                ],
+                    item => item.ExternalId));
+
+            var stored = await context.ClientGeneratedItems.AsNoTracking().SingleAsync();
+            Assert.Equal(originalId, stored.Id);
+            Assert.Equal(externalId, stored.ExternalId);
+            Assert.Equal("updated", stored.Name);
+        }
+    }
+
+    [ConditionalFact]
+    public async Task UpsertAsync_rejects_non_unique_conflict_target()
+    {
+        await using var context = CreateContext();
+        await context.Database.EnsureCreatedAsync();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => context.UpsertAsync(
+        [
+            new GeneratedItem { ExternalId = Guid.NewGuid(), Name = "not-unique" }
+        ],
+            item => item.Name));
+
+        Assert.Contains("primary key, alternate key, or unique index", exception.Message);
+    }
+
     private sealed class UpsertContext(DbContextOptions<UpsertContext> options) : DbContext(options)
     {
         public DbSet<Item> Items => Set<Item>();
         public DbSet<CompositeItem> CompositeItems => Set<CompositeItem>();
         public DbSet<KeyOnly> KeyOnlies => Set<KeyOnly>();
+        public DbSet<GeneratedItem> GeneratedItems => Set<GeneratedItem>();
+        public DbSet<CompositeConflictItem> CompositeConflictItems => Set<CompositeConflictItem>();
+        public DbSet<ClientGeneratedItem> ClientGeneratedItems => Set<ClientGeneratedItem>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<Item>().Property(e => e.Id).ValueGeneratedNever();
             modelBuilder.Entity<CompositeItem>().HasKey(e => new { e.KeyA, e.KeyB });
             modelBuilder.Entity<KeyOnly>().Property(e => e.Id).ValueGeneratedNever();
+            modelBuilder.Entity<GeneratedItem>(entity =>
+            {
+                entity.Property(item => item.Id).UseAutoIncrement();
+                entity.HasAlternateKey(item => item.ExternalId);
+                entity.Property(item => item.ExternalId).HasColumnName("external_event_id");
+                entity.Property(item => item.GeneratedValue).HasDefaultValue(42).ValueGeneratedOnAdd();
+                entity.Property(item => item.GeneratedSqlValue).HasDefaultValueSql("43").ValueGeneratedOnAdd();
+            });
+            modelBuilder.Entity<CompositeConflictItem>(entity =>
+            {
+                entity.Property(item => item.Id).ValueGeneratedNever();
+                entity.HasIndex(item => new { item.TenantId, item.ExternalId }).IsUnique();
+            });
+            modelBuilder.Entity<ClientGeneratedItem>(entity =>
+            {
+                entity.Property(item => item.Id).ValueGeneratedOnAdd();
+                entity.Property(item => item.ExternalId)
+                    .HasConversion(value => value.Value, value => new EventKey(value))
+                    .HasColumnName("external_event_id");
+                entity.HasAlternateKey(item => item.ExternalId);
+            });
         }
     }
 
@@ -187,4 +368,30 @@ public class UpsertTests : DuckDBTestBase
     {
         public int Id { get; set; }
     }
+
+    private sealed class GeneratedItem
+    {
+        public long Id { get; set; }
+        public Guid ExternalId { get; set; }
+        public string Name { get; set; } = "";
+        public int GeneratedValue { get; set; }
+        public int GeneratedSqlValue { get; set; }
+    }
+
+    private sealed class CompositeConflictItem
+    {
+        public int Id { get; set; }
+        public int TenantId { get; set; }
+        public string ExternalId { get; set; } = "";
+        public string Name { get; set; } = "";
+    }
+
+    private sealed class ClientGeneratedItem
+    {
+        public Guid Id { get; set; }
+        public EventKey ExternalId { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    private readonly record struct EventKey(Guid Value);
 }
