@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using Microsoft.EntityFrameworkCore;
@@ -428,43 +429,7 @@ public static class DuckDBTieredStoreExtensions
     }
 
     internal static IReadOnlyList<string> GetPropertyNames<TEntity>(Expression<Func<TEntity, object?>> expression)
-    {
-        ArgumentNullException.ThrowIfNull(expression);
-        var body = UnwrapConvert(expression.Body);
-        MemberExpression[] members = body switch
-        {
-            MemberExpression member => [member],
-            NewExpression @new => @new.Arguments.Select(UnwrapConvert).OfType<MemberExpression>().ToArray(),
-            _ => [],
-        };
-
-        if (members.Length == 0
-            || body is NewExpression newExpression && members.Length != newExpression.Arguments.Count
-            || members.Any(member => member.Expression is not ParameterExpression))
-        {
-            throw new ArgumentException(
-                "The match-key selector must contain direct property accesses, for example "
-                + "'e => e.ExternalId' or 'e => new { e.ParentId, e.Sequence }'.",
-                nameof(expression));
-        }
-
-        var names = members.Select(member => member.Member.Name).ToArray();
-        if (names.Distinct(StringComparer.Ordinal).Count() != names.Length)
-        {
-            throw new ArgumentException("A match-key property can only be selected once.", nameof(expression));
-        }
-
-        return names;
-    }
-
-    private static Expression UnwrapConvert(Expression expression)
-        => expression is UnaryExpression
-        {
-            NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked,
-            Operand: var operand,
-        }
-            ? operand
-            : expression;
+        => DuckDBPropertySelector.GetPropertyNames(expression, "match-key", nameof(expression));
 
     private static TieredStoreBinding? GetSingleTieredStoreBinding(this IReadOnlyEntityType entityType)
     {

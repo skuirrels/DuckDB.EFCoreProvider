@@ -1,6 +1,8 @@
 using DuckDB.EFCoreProvider.Diagnostics.Internal;
 using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Metadata;
+using DuckDB.EFCoreProvider.Metadata.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -8,6 +10,8 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Collections.Concurrent;
 using System.Data;
+using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace DuckDB.EFCoreProvider.Extensions;
@@ -17,8 +21,9 @@ namespace DuckDB.EFCoreProvider.Extensions;
 /// </summary>
 /// <remarks>
 ///     <para>
-///         <see cref="Upsert{TEntity}" /> / <see cref="UpsertAsync{TEntity}" /> insert the supplied entities,
-///         updating any rows whose primary key already exists. Chunks are appended through one temporary staging
+///         <see cref="Upsert{TEntity}" /> and the default <c>UpsertAsync</c> overload insert the supplied entities,
+///         updating any rows whose primary key already exists. The alternate <c>UpsertAsync</c> overload can target
+///         a primary key, alternate key, or unique index selected by the caller. Chunks are appended through one temporary staging
 ///         table per operation and then merged into the target table with a set-based
 ///         <c>INSERT ... ON CONFLICT</c> (native DuckDB) or <c>MERGE INTO</c> (DuckLake). This is roughly an order of magnitude faster than the usual
 ///         read-then-insert-or-update pattern because it removes the existence-check round-trip and batches
@@ -30,9 +35,12 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///     <list type="bullet">
 ///         <item><description>no change tracking, concurrency checks, or EF command interceptors; provider lifecycle
 ///             diagnostics are emitted for the complete upsert operation;</description></item>
-///         <item><description>the conflict target is the entity's primary key, whose values must be supplied
-///             (store-generated keys are not supported — conflict detection needs the key);</description></item>
-///         <item><description>all mapped non-key columns are overwritten from the supplied values;</description></item>
+///         <item><description>the default conflict target is the entity's primary key, whose values must be supplied;
+///             the alternate-target overload permits store-generated-on-add columns and does not populate their generated
+///             values back into the supplied entities;</description></item>
+///         <item><description>all staged non-key and non-conflict columns are overwritten from the supplied values;</description></item>
+///         <item><description>callers own duplicate conflict-target handling within an input batch and can wrap the
+///             operation in an explicit transaction when all batches must commit atomically;</description></item>
 ///         <item><description>EF column mappings and value converters are applied; shadow properties and
 ///             database-computed columns are not supported.</description></item>
 ///     </list>
@@ -43,9 +51,10 @@ public static class DuckDBUpsertExtensions
     private const int DefaultBatchSize = 500;
     private const int MaxStagedCellCount = 100_000;
 
-    private static readonly ConcurrentDictionary<
-        (IEntityType EntityType, string? Schema, string Table, DuckDBUpsertStrategy Strategy),
-        UpsertPlan> PlanCache = new();
+    private static readonly ConditionalWeakTable<
+        IEntityType,
+        ConcurrentDictionary<(string? Schema, string Table, DuckDBUpsertStrategy Strategy, object ConflictTarget), UpsertPlan>>
+        PlanCaches = new();
 
     /// <summary>
     ///     Inserts the supplied entities, updating any whose primary key already exists, using appender-staged
@@ -134,11 +143,54 @@ public static class DuckDBUpsertExtensions
     ///     appender-staged batches and set-based native-DuckDB <c>INSERT ... ON CONFLICT</c> or DuckLake <c>MERGE INTO</c> statements.
     /// </summary>
     /// <returns>The number of rows processed.</returns>
-    public static async Task<int> UpsertAsync<TEntity>(
+    public static Task<int> UpsertAsync<TEntity>(
         this DbContext context,
         IEnumerable<TEntity> entities,
         int batchSize = DefaultBatchSize,
         CancellationToken cancellationToken = default)
+        where TEntity : class
+        => UpsertAsyncCore(
+            context,
+            entities,
+            conflictPropertyNames: null,
+            batchSize,
+            cancellationToken);
+
+    /// <summary>
+    ///     Asynchronously inserts the supplied entities, updating rows that match the selected primary key,
+    ///     alternate key, or unique index. Store-generated-on-add columns are omitted when the selector is not
+    ///     the primary key, allowing DuckDB defaults such as sequences to generate their values for inserted rows.
+    /// </summary>
+    /// <remarks>
+    ///     This raw fast path does not populate store-generated values back into the supplied entities. The
+    ///     selector must contain direct property accesses, for example <c>entity =&gt; entity.ExternalId</c> or
+    ///     <c>entity =&gt; new { entity.ParentId, entity.Sequence }</c>. Callers should resolve duplicate selected-key
+    ///     values before invoking this method.
+    /// </remarks>
+    /// <returns>The number of rows processed.</returns>
+    public static Task<int> UpsertAsync<TEntity>(
+        this DbContext context,
+        IEnumerable<TEntity> entities,
+        Expression<Func<TEntity, object?>> conflictTarget,
+        int batchSize = DefaultBatchSize,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
+    {
+        ArgumentNullException.ThrowIfNull(conflictTarget);
+        var conflictPropertyNames = DuckDBPropertySelector.GetPropertyNames(
+            conflictTarget,
+            "conflict-target",
+            nameof(conflictTarget));
+
+        return UpsertAsyncCore(context, entities, conflictPropertyNames, batchSize, cancellationToken);
+    }
+
+    private static async Task<int> UpsertAsyncCore<TEntity>(
+        DbContext context,
+        IEnumerable<TEntity> entities,
+        IReadOnlyList<string>? conflictPropertyNames,
+        int batchSize,
+        CancellationToken cancellationToken)
         where TEntity : class
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -153,7 +205,7 @@ public static class DuckDBUpsertExtensions
 
         try
         {
-            var plan = GetPlan(context, typeof(TEntity));
+            var plan = GetPlan(context, typeof(TEntity), conflictPropertyNames);
             var connection = (DuckDBConnection)context.Database.GetDbConnection();
             var openedHere = connection.State != ConnectionState.Open;
 
@@ -287,7 +339,10 @@ public static class DuckDBUpsertExtensions
     private static string DelimitTemporaryIdentifier(string identifier)
         => "\"" + identifier.Replace("\"", "\"\"") + "\"";
 
-    private static UpsertPlan GetPlan(DbContext context, Type clrType)
+    private static UpsertPlan GetPlan(
+        DbContext context,
+        Type clrType,
+        IReadOnlyList<string>? conflictPropertyNames = null)
     {
         var entityType = context.Model.FindEntityType(clrType)
             ?? throw new InvalidOperationException($"'{clrType.Name}' is not part of the model.");
@@ -296,9 +351,54 @@ public static class DuckDBUpsertExtensions
             ?? throw new InvalidOperationException($"'{clrType.Name}' is not mapped to a table; upsert is not supported.");
         var schema = entityType.GetSchema();
         var strategy = context.GetService<IDuckDBEngineCapabilities>().UpsertStrategy;
-        var cacheKey = (entityType, schema, table, strategy);
+        var conflictTarget = ResolveConflictTarget(entityType, conflictPropertyNames);
+        var planCache = PlanCaches.GetValue(entityType, static _ => new());
+        var cacheKey = (schema, table, strategy, conflictTarget.MetadataIdentity);
 
-        return PlanCache.GetOrAdd(cacheKey, _ => BuildPlan(context, entityType, table, schema, strategy));
+        return planCache.GetOrAdd(
+            cacheKey,
+            static (_, state) => BuildPlan(
+                state.Context,
+                state.EntityType,
+                state.Table,
+                state.Schema,
+                state.Strategy,
+                state.ConflictTarget),
+            (Context: context, EntityType: entityType, Table: table, Schema: schema, Strategy: strategy, ConflictTarget: conflictTarget));
+    }
+
+    private static UpsertConflictTarget ResolveConflictTarget(
+        IEntityType entityType,
+        IReadOnlyList<string>? conflictPropertyNames)
+    {
+        var primaryKey = entityType.FindPrimaryKey()
+            ?? throw new InvalidOperationException($"'{entityType.ClrType.Name}' has no primary key; upsert requires a primary key.");
+
+        if (conflictPropertyNames is null)
+        {
+            return new UpsertConflictTarget(primaryKey.Properties, primaryKey, UsesPrimaryKey: true);
+        }
+
+        var properties = conflictPropertyNames.Select(name => entityType.FindProperty(name)
+            ?? throw new InvalidOperationException(
+                $"Conflict-target property '{entityType.DisplayName()}.{name}' is not a mapped scalar property."))
+            .ToArray();
+
+        var key = entityType.GetKeys().FirstOrDefault(candidate => candidate.Properties.SequenceEqual(properties));
+        if (key is not null)
+        {
+            return new UpsertConflictTarget(key.Properties, key, key.IsPrimaryKey());
+        }
+
+        var index = entityType.GetIndexes()
+            .FirstOrDefault(candidate => candidate.IsUnique && candidate.Properties.SequenceEqual(properties));
+        if (index is not null)
+        {
+            return new UpsertConflictTarget(index.Properties, index, UsesPrimaryKey: false);
+        }
+
+        throw new InvalidOperationException(
+            $"The conflict target for '{entityType.DisplayName()}' must be a primary key, alternate key, or unique index.");
     }
 
     private static UpsertPlan BuildPlan(
@@ -306,7 +406,8 @@ public static class DuckDBUpsertExtensions
         IEntityType entityType,
         string table,
         string? schema,
-        DuckDBUpsertStrategy strategy)
+        DuckDBUpsertStrategy strategy,
+        UpsertConflictTarget conflictTarget)
     {
         var helper = context.GetService<ISqlGenerationHelper>();
         var storeObject = StoreObjectIdentifier.Table(table, schema);
@@ -321,7 +422,8 @@ public static class DuckDBUpsertExtensions
 
         var primaryKey = entityType.FindPrimaryKey()
             ?? throw new InvalidOperationException(
-                $"'{entityType.ClrType.Name}' has no primary key; upsert requires a primary key as the conflict target.");
+                $"'{entityType.ClrType.Name}' has no primary key; upsert requires a primary key.");
+        var conflictProperties = conflictTarget.Properties;
 
         var keyColumns = new HashSet<string>(StringComparer.Ordinal);
         foreach (var keyProperty in primaryKey.Properties)
@@ -330,6 +432,15 @@ public static class DuckDBUpsertExtensions
                 ?? throw new InvalidOperationException(
                     $"Key property '{keyProperty.Name}' on '{entityType.ClrType.Name}' is not mapped to a column.");
             keyColumns.Add(keyColumn);
+        }
+
+        var conflictColumns = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var conflictProperty in conflictProperties)
+        {
+            var conflictColumn = conflictProperty.GetColumnName(storeObject)
+                ?? throw new InvalidOperationException(
+                    $"Conflict-target property '{conflictProperty.Name}' on '{entityType.ClrType.Name}' is not mapped to table '{table}'.");
+            conflictColumns.Add(conflictColumn);
         }
 
         var insertColumns = new List<string>();
@@ -350,9 +461,17 @@ public static class DuckDBUpsertExtensions
                     $"Upsert does not support shadow property '{property.Name}' on '{entityType.ClrType.Name}'. Use SaveChanges instead.");
             }
 
-            if (property.GetComputedColumnSql() is not null)
+            if (property.GetComputedColumnSql(storeObject) is not null)
             {
                 // Database-computed columns cannot be inserted or assigned.
+                continue;
+            }
+
+            if (!conflictTarget.UsesPrimaryKey
+                && !conflictColumns.Contains(columnName)
+                && IsStoreGeneratedOnAdd(property, storeObject))
+            {
+                // Omit sequence/default-backed columns from staging and INSERT so DuckDB applies DEFAULT.
                 continue;
             }
 
@@ -360,7 +479,7 @@ public static class DuckDBUpsertExtensions
 
             writableProperties.Add(property);
 
-            if (!keyColumns.Contains(columnName))
+            if (!keyColumns.Contains(columnName) && !conflictColumns.Contains(columnName))
             {
                 updateColumns.Add(columnName);
             }
@@ -377,7 +496,7 @@ public static class DuckDBUpsertExtensions
 
         if (strategy == DuckDBUpsertStrategy.Merge)
         {
-            var keyPredicates = primaryKey.Properties.Select(property =>
+            var keyPredicates = conflictProperties.Select(property =>
             {
                 var column = helper.DelimitIdentifier(property.GetColumnName(storeObject)!);
                 return $"target.{column} = source.{column}";
@@ -422,7 +541,7 @@ public static class DuckDBUpsertExtensions
         // there is nothing to update, so do nothing.
         var conflictSuffix = new StringBuilder()
             .Append(" ON CONFLICT (")
-            .AppendJoin(", ", primaryKey.Properties.Select(p => helper.DelimitIdentifier(p.GetColumnName(storeObject)!)))
+            .AppendJoin(", ", conflictProperties.Select(p => helper.DelimitIdentifier(p.GetColumnName(storeObject)!)))
             .Append(')')
             .Append(updateColumns.Count == 0
                 ? " DO NOTHING"
@@ -439,6 +558,23 @@ public static class DuckDBUpsertExtensions
             writableProperties.Count,
             DuckDBCompiledAppenderRowWriter.Create(entityType.ClrType, writableProperties));
     }
+
+    private static bool IsStoreGeneratedOnAdd(IProperty property, in StoreObjectIdentifier storeObject)
+        => property.ValueGenerated == ValueGenerated.OnAdd
+           && (UsesAutoIncrement(property, storeObject)
+               || property.TryGetDefaultValue(storeObject, out _)
+               || property.GetDefaultValueSql(storeObject) is not null);
+
+    private static bool UsesAutoIncrement(IProperty property, in StoreObjectIdentifier storeObject)
+        => property.FindOverrides(storeObject)
+                ?.FindAnnotation(DuckDBAnnotationNames.ValueGenerationStrategy)
+                ?.Value is DuckDBValueGenerationStrategy.AutoIncrement
+           || property.GetValueGenerationStrategy() == DuckDBValueGenerationStrategy.AutoIncrement;
+
+    private readonly record struct UpsertConflictTarget(
+        IReadOnlyList<IProperty> Properties,
+        object MetadataIdentity,
+        bool UsesPrimaryKey);
 
     private sealed record UpsertPlan(
         string TargetTable,

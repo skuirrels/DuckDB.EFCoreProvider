@@ -21,7 +21,7 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 # provider allocation, adaptive width, connection, Upsert, and tier-query regressions
 dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter \
   '*AllocationBenchmarks*' '*HotPathReviewBenchmarks*' '*SaveChangesWidthBenchmarks*' \
-  '*ConnectionInitializationBenchmarks*' '*UpsertBatchSizeBenchmarks*' \
+  '*ConnectionInitializationBenchmarks*' '*UpsertBatchSizeBenchmarks*' '*UpsertConflictTargetBenchmarks*' \
   '*TieredCatalogueScaleBenchmarks*'
 ```
 
@@ -35,6 +35,8 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 - `SaveChangesWidthBenchmarks` — narrow and wide SaveChanges workloads for adaptive cell-limit coverage.
 - `ConnectionInitializationBenchmarks` — default and multi-setting connection-open paths.
 - `UpsertBatchSizeBenchmarks` — controlled staging-table reuse across batch sizes 25 through 1,000.
+- `UpsertConflictTargetBenchmarks` — supplied-primary-key staging versus an alternate key that lets DuckDB generate
+  the identifier for the same 1,000-row input.
 - `TieredCatalogueScaleBenchmarks` — tier catalogue, regeneration, pruning, and scoped-query costs.
 - `CommandPlanExtractionBenchmarks`, `ParameterPathBenchmarks`, `SaveChangesParameterBenchmarks`, and
   `SqlGenerationPathBenchmarks` — regression coverage for scalar terminal command extraction, provider command-plan
@@ -42,6 +44,32 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 
 The implementation comparison for these provider improvements is recorded in
 [`PROVIDER-PERFORMANCE-IMPROVEMENTS-2026-08.md`](PROVIDER-PERFORMANCE-IMPROVEMENTS-2026-08.md).
+
+## Alternate conflict-target review
+
+The alternate-target implementation was measured on the same model and 1,000-row input as the primary-key path,
+with 500 matching rows preloaded. The alternate path stages two columns because DuckDB generates the identifier;
+the primary-key path stages all three. This is an end-to-end use-case comparison, not a claim that selector parsing
+is intrinsically faster. Results use three warmups and ten requested measurements through the in-process toolchain;
+BenchmarkDotNet removed two primary-key outliers and no alternate-key samples. Lower is better.
+
+| Measure | v1.19.0 reviewed PK target | v1.19.0 reviewed alternate-key target | Winner |
+|---|---:|---:|---|
+| Mean latency | 9.013 ± 0.253 ms | 7.772 ± 0.314 ms | Alternate-key target |
+| Managed allocation | 129.60 KB | 133.09 KB | PK target |
+
+The 3.49 KB per-operation allocation difference includes construction and validation of the typed expression tree;
+it is fixed per call rather than per row. Plan caching uses the resolved EF key/index metadata and no longer builds
+a serialized conflict-target string on each call. Per-model caches use weak keys so applications with custom dynamic
+model-cache keys are not permanently rooted by this fast path.
+
+Reproduce the comparison with:
+
+```bash
+dotnet run -c Release --no-restore --project test/DuckDB.EFCoreProvider.Benchmarks -- \
+  --filter '*UpsertConflictTargetBenchmarks*' --inProcess \
+  --warmupCount 3 --iterationCount 10 --launchCount 1 --iterationTime 250
+```
 
 ## LINQ provider follow-up regression guard
 

@@ -840,6 +840,65 @@ public sealed class DuckLakeCompatibilityTests
     }
 
     [Fact]
+    public async Task Async_upsert_can_match_DuckLake_rows_by_alternate_key()
+    {
+        var root = CreateDirectories(out var metadataPath, out var dataPath);
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<DuckLakeAlternateUpsertContext>()
+                .UseDuckLake(metadataPath, duckLake => duckLake.DataPath(dataPath))
+                .Options;
+            var originalId = Guid.NewGuid();
+            var externalId = Guid.NewGuid();
+
+            await using (var context = new DuckLakeAlternateUpsertContext(options))
+            {
+                Assert.True(await context.Database.EnsureCreatedAsync());
+                Assert.Equal(
+                    1,
+                    await context.UpsertAsync(
+                    [
+                        new DuckLakeAlternateUpsertItem
+                        {
+                            Id = originalId,
+                            ExternalId = externalId,
+                            Name = "inserted",
+                        }
+                    ],
+                        item => item.ExternalId));
+            }
+
+            await using (var context = new DuckLakeAlternateUpsertContext(options))
+            {
+                Assert.Equal(
+                    1,
+                    await context.UpsertAsync(
+                    [
+                        new DuckLakeAlternateUpsertItem
+                        {
+                            Id = Guid.NewGuid(),
+                            ExternalId = externalId,
+                            Name = "updated",
+                        }
+                    ],
+                        item => item.ExternalId));
+
+                var stored = await context.Items.AsNoTracking().SingleAsync();
+                Assert.Equal(originalId, stored.Id);
+                Assert.Equal("updated", stored.Name);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void Multi_command_SaveChanges_rolls_back_as_one_transaction()
     {
         var root = CreateDirectories(out var metadataPath, out var dataPath);
@@ -1045,6 +1104,31 @@ public sealed class DuckLakeCompatibilityTests
     private sealed class SharedUpsertItem
     {
         public int Id { get; set; }
+        public string Name { get; set; } = null!;
+    }
+
+    private sealed class DuckLakeAlternateUpsertContext(
+        DbContextOptions<DuckLakeAlternateUpsertContext> options) : DbContext(options)
+    {
+        public DbSet<DuckLakeAlternateUpsertItem> Items => Set<DuckLakeAlternateUpsertItem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DuckLakeAlternateUpsertItem>(entity =>
+            {
+                entity.ToTable("alternate_upsert_items");
+                entity.HasKey(item => item.Id);
+                entity.Property(item => item.Id).ValueGeneratedNever();
+                entity.HasAlternateKey(item => item.ExternalId);
+                entity.Property(item => item.Name).IsRequired();
+            });
+        }
+    }
+
+    private sealed class DuckLakeAlternateUpsertItem
+    {
+        public Guid Id { get; set; }
+        public Guid ExternalId { get; set; }
         public string Name { get; set; } = null!;
     }
 

@@ -112,6 +112,88 @@ public class UpsertBatchSizeBenchmarks
     }
 }
 
+/// <summary>Compares primary-key staging with an alternate key that lets DuckDB generate the identifier.</summary>
+[MemoryDiagnoser]
+public class UpsertConflictTargetBenchmarks
+{
+    private const int RowCount = 1_000;
+    private List<ConflictTargetRow> _rows = [];
+    private string _dbPath = "";
+
+    [GlobalSetup]
+    public void GlobalSetup()
+        => _rows = Enumerable.Range(1, RowCount)
+            .Select(i => new ConflictTargetRow
+            {
+                Id = 100_000 + i,
+                ExternalId = "event-" + i,
+                Quantity = i,
+            })
+            .ToList();
+
+    [IterationSetup(Target = nameof(PrimaryKeyAsync))]
+    public async Task SetupPrimaryKeyAsync()
+        => await CreateAndSeedAsync(useAlternateTarget: false);
+
+    [IterationSetup(Target = nameof(AlternateKeyAsync))]
+    public async Task SetupAlternateKeyAsync()
+        => await CreateAndSeedAsync(useAlternateTarget: true);
+
+    [IterationCleanup]
+    public void IterationCleanup()
+        => BenchmarkFiles.DeleteDb(_dbPath);
+
+    [Benchmark(Baseline = true)]
+    public async Task<int> PrimaryKeyAsync()
+    {
+        await using var context = new ConflictTargetContext(_dbPath);
+        return await context.UpsertAsync(_rows);
+    }
+
+    [Benchmark]
+    public async Task<int> AlternateKeyAsync()
+    {
+        await using var context = new ConflictTargetContext(_dbPath);
+        return await context.UpsertAsync(_rows, row => row.ExternalId);
+    }
+
+    private async Task CreateAndSeedAsync(bool useAlternateTarget)
+    {
+        _dbPath = BenchmarkFiles.NewDbPath("upsert_conflict_target");
+        await using var context = new ConflictTargetContext(_dbPath);
+        await context.Database.EnsureCreatedAsync();
+
+        var seedRows = _rows.Take(RowCount / 2);
+        if (useAlternateTarget)
+        {
+            await context.UpsertAsync(seedRows, row => row.ExternalId);
+        }
+        else
+        {
+            await context.UpsertAsync(seedRows);
+        }
+    }
+
+    private sealed class ConflictTargetContext(string dbPath) : DbContext
+    {
+        protected override void OnConfiguring(DbContextOptionsBuilder options)
+            => options.UseDuckDB("DataSource=" + dbPath);
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ConflictTargetRow>().Property(row => row.Id).UseAutoIncrement();
+            modelBuilder.Entity<ConflictTargetRow>().HasAlternateKey(row => row.ExternalId);
+        }
+    }
+
+    private sealed class ConflictTargetRow
+    {
+        public long Id { get; set; }
+        public string ExternalId { get; set; } = "";
+        public int Quantity { get; set; }
+    }
+}
+
 /// <summary>Guards adaptive SaveChanges batching across narrow and wide entity shapes.</summary>
 [MemoryDiagnoser]
 public class SaveChangesWidthBenchmarks
