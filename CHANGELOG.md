@@ -2,6 +2,15 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.19.1
+
+- Improve alternate-key Upsert throughput with width-aware batches bounded by the existing 100,000-cell staging
+  limit, while preserving explicit smaller batch sizes and generated-key behavior. In the deterministic one-million-row
+  mixed update/insert benchmark, v1.19.1 completed in 636.266 ms versus 11.221 s for v1.19.0: 17.64x faster with
+  94.33% lower latency.
+- Reuse DuckDB.NET's managed Appender row during staging. The same benchmark allocated 463.83 KB versus 65.87 MB
+  for v1.19.0, a 99.31% reduction, with no observed Gen0 collections.
+
 ## 1.19.0
 
 - Add an `UpsertAsync` overload with a typed primary-key, alternate-key, or unique-index conflict selector. For

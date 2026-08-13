@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -7,6 +8,55 @@ public class UpsertTests : DuckDBTestBase
 {
     private UpsertContext CreateContext()
         => new(FileOptions<UpsertContext>());
+
+    [Theory]
+    [InlineData(3, 500, 500)]
+    [InlineData(3, 100_000, 33_333)]
+    [InlineData(50, 100_000, 2_000)]
+    [InlineData(100_001, 100_000, 1)]
+    public void Upsert_batching_honors_explicit_limits_and_the_staged_cell_budget(
+        int columnCount,
+        int requestedBatchSize,
+        int expectedBatchSize)
+        => Assert.Equal(
+            expectedBatchSize,
+            DuckDBUpsertBatching.EffectiveBatchSize(columnCount, requestedBatchSize));
+
+    [Fact]
+    public void Upsert_default_batch_request_uses_the_width_aware_cell_budget()
+        => Assert.Equal(
+            DuckDBUpsertBatching.MaxStagedCellCount,
+            DuckDBUpsertBatching.DefaultRequestedBatchSize);
+
+    [Fact]
+    public void Upsert_public_overloads_expose_the_width_aware_default()
+    {
+        var batchParameters = typeof(DuckDBUpsertExtensions)
+            .GetMethods()
+            .Where(method => method.Name is nameof(DuckDBUpsertExtensions.Upsert) or nameof(DuckDBUpsertExtensions.UpsertAsync))
+            .SelectMany(method => method.GetParameters())
+            .Where(parameter => parameter.Name == "batchSize")
+            .ToArray();
+
+        Assert.Equal(3, batchParameters.Length);
+        Assert.All(
+            batchParameters,
+            parameter => Assert.Equal(DuckDBUpsertBatching.DefaultRequestedBatchSize, parameter.DefaultValue));
+    }
+
+    [Theory]
+    [InlineData(33_333, 10_000, 10_000)]
+    [InlineData(33_333, 100_000, 33_333)]
+    [InlineData(33_333, 0, 0)]
+    [InlineData(33_333, null, DuckDBUpsertBatching.StreamingInitialBatchCapacity)]
+    [InlineData(100, null, 100)]
+    public void Upsert_batch_capacity_uses_known_input_size_without_overallocating(
+        int effectiveBatchSize,
+        int? sourceCount,
+        int expectedCapacity)
+        => Assert.Equal(
+            expectedCapacity,
+            DuckDBUpsertBatching.InitialBatchCapacity(effectiveBatchSize, sourceCount));
 
     [ConditionalFact]
     public void Upsert_inserts_new_and_updates_existing()
