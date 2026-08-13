@@ -22,6 +22,7 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter \
   '*AllocationBenchmarks*' '*HotPathReviewBenchmarks*' '*SaveChangesWidthBenchmarks*' \
   '*ConnectionInitializationBenchmarks*' '*UpsertBatchSizeBenchmarks*' '*UpsertConflictTargetBenchmarks*' \
+  '*UpsertTargetScaleBenchmarks*' '*UpsertMillionRowBenchmarks*' \
   '*TieredCatalogueScaleBenchmarks*'
 ```
 
@@ -37,6 +38,10 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 - `UpsertBatchSizeBenchmarks` — controlled staging-table reuse across batch sizes 25 through 1,000.
 - `UpsertConflictTargetBenchmarks` — supplied-primary-key staging versus an alternate key that lets DuckDB generate
   the identifier for the same 1,000-row input.
+- `UpsertTargetScaleBenchmarks` — the released 500-row Upsert chunk versus the width-aware default as the indexed
+  target grows from 10,000 to 1,000,000 rows.
+- `UpsertMillionRowBenchmarks` — one million alternate-key Upsert inputs against a one-million-row indexed target,
+  with deterministic setup, database cloning, and result verification outside the timed operation.
 - `TieredCatalogueScaleBenchmarks` — tier catalogue, regeneration, pruning, and scoped-query costs.
 - `CommandPlanExtractionBenchmarks`, `ParameterPathBenchmarks`, `SaveChangesParameterBenchmarks`, and
   `SqlGenerationPathBenchmarks` — regression coverage for scalar terminal command extraction, provider command-plan
@@ -44,6 +49,42 @@ dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filte
 
 The implementation comparison for these provider improvements is recorded in
 [`PROVIDER-PERFORMANCE-IMPROVEMENTS-2026-08.md`](PROVIDER-PERFORMANCE-IMPROVEMENTS-2026-08.md).
+
+## Upsert performance in v1.19.1
+
+The alternate-key Upsert target retains its uniqueness semantics. DuckDB automatically creates an Adaptive Radix
+Tree (ART) index for primary-key and unique constraints, and its documentation notes that such indexes make writes
+slower and may consume significant memory. The provider cannot generically remove that index without changing the
+EF model's correctness contract. v1.19.1 avoids amplifying the indexed-write cost by applying width-aware set-based
+batches and reusing DuckDB.NET's managed Appender row. See DuckDB's
+[indexing guide](https://duckdb.org/docs/current/guides/performance/indexing) and
+[index documentation](https://duckdb.org/docs/current/sql/indexes).
+
+The matched comparison uses one million incoming rows against a one-million-row indexed target: 800,000 rows
+update existing alternate UUID keys and 200,000 rows insert with sequence-generated primary keys. Both versions use
+identical deterministic input and database contents. A checkpointed baseline database is cloned before every
+iteration, and cleanup verifies the final row count and all one million applied values outside the timed operation.
+
+Both provider binaries were built from their exact provider source: release tag `v1.19.0` and the `v1.19.1` source.
+The identical benchmark fixture was used for both. Results use two warmups and five requested measurements through
+BenchmarkDotNet's in-process toolchain. BenchmarkDotNet removed one v1.19.0 outlier; all five v1.19.1 measurements
+were retained. Lower is better for latency and allocation.
+
+| Measure | v1.19.0 | v1.19.1 | Change | Winner |
+|---|---:|---:|---:|---|
+| Mean latency | 11.221 ± 0.106 s | 636.266 ± 39.522 ms | 94.33% lower; 17.64x faster | v1.19.1 |
+| Median latency | 11.222 s | 632.758 ms | 94.36% lower; 17.73x faster | v1.19.1 |
+| Derived throughput | 89,119 rows/s | 1,571,670 rows/s | 17.64x higher | v1.19.1 |
+| Managed allocation | 65.87 MB | 463.83 KB | 99.31% lower; 145.4x less allocation | v1.19.1 |
+| Gen0 collections per operation | 8 | 0 observed | 8 eliminated | v1.19.1 |
+
+Reproduce the benchmark with:
+
+```bash
+dotnet run -c Release --no-build --project test/DuckDB.EFCoreProvider.Benchmarks -- \
+  --filter '*UpsertMillionRowBenchmarks*' --inProcess \
+  --warmupCount 2 --iterationCount 5 --launchCount 1 --iterationTime 1000
+```
 
 ## Alternate conflict-target review
 

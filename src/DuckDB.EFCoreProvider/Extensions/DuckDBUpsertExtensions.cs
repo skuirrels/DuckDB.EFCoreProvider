@@ -30,6 +30,11 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///         the writes.
 ///     </para>
 ///     <para>
+///         The default batch size adapts to the insert shape, using the largest row count that stays within a
+///         100,000 staged-cell budget. An explicit <c>batchSize</c> remains a maximum row count and can reduce
+///         per-statement work when required.
+///     </para>
+///     <para>
 ///         Like <see cref="DuckDBBulkExtensions.BulkInsert{TEntity}" />, this is a raw fast path:
 ///     </para>
 ///     <list type="bullet">
@@ -47,10 +52,6 @@ namespace DuckDB.EFCoreProvider.Extensions;
 /// </remarks>
 public static class DuckDBUpsertExtensions
 {
-    /// <summary>Default number of rows staged into one temporary table before a set-based upsert.</summary>
-    private const int DefaultBatchSize = 500;
-    private const int MaxStagedCellCount = 100_000;
-
     private static readonly ConditionalWeakTable<
         IEntityType,
         ConcurrentDictionary<(string? Schema, string Table, DuckDBUpsertStrategy Strategy, object ConflictTarget), UpsertPlan>>
@@ -61,7 +62,10 @@ public static class DuckDBUpsertExtensions
     ///     batches and set-based native-DuckDB <c>INSERT ... ON CONFLICT</c> or DuckLake <c>MERGE INTO</c> statements.
     /// </summary>
     /// <returns>The number of rows processed.</returns>
-    public static int Upsert<TEntity>(this DbContext context, IEnumerable<TEntity> entities, int batchSize = DefaultBatchSize)
+    public static int Upsert<TEntity>(
+        this DbContext context,
+        IEnumerable<TEntity> entities,
+        int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize)
         where TEntity : class
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -90,7 +94,7 @@ public static class DuckDBUpsertExtensions
             try
             {
                 var effectiveBatchSize = EffectiveBatchSize(plan, batchSize);
-                var batch = new List<TEntity>(effectiveBatchSize);
+                var batch = new List<TEntity>(InitialBatchCapacity(entities, effectiveBatchSize));
                 foreach (var entity in entities)
                 {
                     batch.Add(entity);
@@ -146,7 +150,7 @@ public static class DuckDBUpsertExtensions
     public static Task<int> UpsertAsync<TEntity>(
         this DbContext context,
         IEnumerable<TEntity> entities,
-        int batchSize = DefaultBatchSize,
+        int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize,
         CancellationToken cancellationToken = default)
         where TEntity : class
         => UpsertAsyncCore(
@@ -172,7 +176,7 @@ public static class DuckDBUpsertExtensions
         this DbContext context,
         IEnumerable<TEntity> entities,
         Expression<Func<TEntity, object?>> conflictTarget,
-        int batchSize = DefaultBatchSize,
+        int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize,
         CancellationToken cancellationToken = default)
         where TEntity : class
     {
@@ -219,7 +223,7 @@ public static class DuckDBUpsertExtensions
             try
             {
                 var effectiveBatchSize = EffectiveBatchSize(plan, batchSize);
-                var batch = new List<TEntity>(effectiveBatchSize);
+                var batch = new List<TEntity>(InitialBatchCapacity(entities, effectiveBatchSize));
                 foreach (var entity in entities)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -299,7 +303,12 @@ public static class DuckDBUpsertExtensions
     }
 
     private static int EffectiveBatchSize(UpsertPlan plan, int requestedBatchSize)
-        => Math.Max(1, Math.Min(requestedBatchSize, MaxStagedCellCount / plan.ColumnCount));
+        => DuckDBUpsertBatching.EffectiveBatchSize(plan.ColumnCount, requestedBatchSize);
+
+    private static int InitialBatchCapacity<TEntity>(IEnumerable<TEntity> entities, int effectiveBatchSize)
+        => DuckDBUpsertBatching.InitialBatchCapacity(
+            effectiveBatchSize,
+            entities.TryGetNonEnumeratedCount(out var sourceCount) ? sourceCount : null);
 
     private static string CreateTemporaryTable(DuckDBConnection connection, UpsertPlan plan)
     {
@@ -323,9 +332,9 @@ public static class DuckDBUpsertExtensions
         {
             cancellationToken?.ThrowIfCancellationRequested();
 
-            var row = appender.CreateRow();
-            plan.WriteRow(row, entity!);
-            row.EndRow();
+            // AppendRow reuses DuckDB.NET's managed row wrapper and owns EndRow/error finalization.
+            // Calling CreateRow directly here allocates one wrapper per entity.
+            appender.AppendRow<object>(entity, plan.WriteRow);
         }
     }
 

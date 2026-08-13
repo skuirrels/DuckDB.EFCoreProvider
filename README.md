@@ -902,6 +902,12 @@ read-then-insert-or-update pattern: it removes the existence-check operation and
 roughly an order of magnitude faster in local measurements. All staged non-key and non-conflict columns are
 overwritten from the supplied values; an entity with no updateable columns does nothing on conflict.
 
+By default, Upsert chooses the largest row chunk that stays within a 100,000 staged-cell budget. For example,
+an insert shape containing four mapped columns uses chunks of up to 25,000 rows. This avoids repeatedly applying
+small conflict statements against a growing target index while bounding wide-entity staging. Pass a smaller
+`batchSize` explicitly when lower per-statement work or smaller individual statements are more important than
+maximum throughput.
+
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
 
@@ -924,8 +930,7 @@ For a model with a sequence-generated `Id` primary key and a unique `ExternalId`
 var processed = await context.UpsertAsync(
     events,
     entity => entity.ExternalId,
-    batchSize: 500,
-    cancellationToken);
+    cancellationToken: cancellationToken);
 ```
 
 The alternate-target overload omits sequence-, default-, and auto-increment-backed `ValueGenerated.OnAdd`

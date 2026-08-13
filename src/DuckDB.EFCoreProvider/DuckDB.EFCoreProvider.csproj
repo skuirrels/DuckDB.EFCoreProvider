@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.19.0</PackageVersion>
-    <FileVersion>1.19.0.0</FileVersion>
-    <Version>1.19.0</Version>
+    <PackageVersion>1.19.1</PackageVersion>
+    <FileVersion>1.19.1.0</FileVersion>
+    <Version>1.19.1</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,12 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.18.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.19.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.19.1
+- Improve alternate-key Upsert throughput with width-aware batches bounded by the existing 100,000-cell staging limit, while preserving explicit smaller batch sizes and generated-key behavior. In the deterministic one-million-row mixed update/insert benchmark, v1.19.1 completed in 636.266 ms versus 11.221 s for v1.19.0: 17.64x faster with 94.33% lower latency.
+- Reuse DuckDB.NET's managed Appender row during staging. The same benchmark allocated 463.83 KB versus 65.87 MB for v1.19.0, a 99.31% reduction, with no observed Gen0 collections.
+
 1.19.0
 - Add an UpsertAsync overload with a typed primary-key, alternate-key, or unique-index conflict selector. For alternate targets, sequence/default-backed ValueGenerated.OnAdd columns are omitted so DuckDB generates inserted values while conflict updates preserve existing primary keys.
 
