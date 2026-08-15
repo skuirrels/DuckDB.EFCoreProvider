@@ -2,6 +2,19 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.20.0
+
+- Add the explicitly opt-in experimental `UseQuack(...)` profile. It supports remote LINQ, tracked `SaveChanges`,
+  generated values, explicit transactions, command-plan replay, typed `BulkInsert`, server-side `Upsert`, and
+  provider-managed server lifecycle and diagnostics without changing native DuckDB or DuckLake contexts.
+- Support remote schema provisioning through `EnsureCreated`; database deletion and EF migrations remain
+  server-owned. Physical foreign-key catalog import requires duckdb-quack PR #248 (`f5c04bb`) or a later build until
+  that upstream fix is released.
+- Preserve v1.19.1's width-aware Upsert batching and reusable DuckDB.NET Appender row while separating immutable
+  metadata planning from capability-aware SQL rendering for native DuckDB, DuckLake, and Quack.
+- Reject a DuckLake upsert batch before mutation when one staged conflict key matches multiple existing rows,
+  preserving the cardinality error inside explicit transactions.
+
 ## 1.19.1
 
 - Improve alternate-key Upsert throughput with width-aware batches bounded by the existing 100,000-cell staging

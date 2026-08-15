@@ -87,6 +87,8 @@ Opening the raw connection does not itself attach DuckLake; initialization occur
   index definitions are omitted from the generated DuckLake DDL while remaining logical EF model metadata.
 - `BulkInsert`/`BulkInsertAsync` through the DuckDB appender.
 - `Upsert`/`UpsertAsync` through DuckLake-compatible `MERGE INTO`.
+  A staged conflict key that matches multiple existing rows fails its batch before that batch is mutated instead of
+  updating every match. Earlier batches remain applied unless the caller wraps the operation in an explicit transaction.
 - read-only profiles and named-secret profiles.
 - streaming unknown-shape SQL through `SqlQueryDynamicRawAsync` / `SqlQueryDynamicAsync`.
 - typed snapshot and physical-file maintenance through `Database.DuckLake()`.
@@ -102,7 +104,8 @@ assumptions:
 - Primary keys, foreign keys, unique constraints, indexes, and check constraints are not physically enforced.
   EF still uses configured keys for identity resolution, relationships, update predicates, and `MERGE`, but the
   application is responsible for uniqueness and referential integrity. Concurrent writers can create duplicate
-  logical keys because DuckLake has no unique constraint to arbitrate a race.
+  logical keys because DuckLake has no unique constraint to arbitrate a race. Upsert detects pre-existing duplicate
+  target matches for the staged batch, but this does not replace application-level coordination for concurrent inserts.
 - Sequences, auto-increment values, generated columns, and SQL default expressions are rejected at model
   validation. Use client-assigned `Guid` values, configure numeric keys with `ValueGeneratedNever()`, or supply
   an explicit client-side generator with `HasValueGenerator(...)`. DuckLake can store literal defaults, but a

@@ -16,4 +16,7 @@ public interface IDuckDBSingletonOptions : ISingletonOptions
     ///     Whether simple string searches use case-insensitive DuckDB matching.
     /// </summary>
     bool CaseInsensitiveStringSearchesEnabled => false;
+
+    /// <summary>Whether commands execute against a remote DuckDB server through Quack.</summary>
+    bool IsQuack => false;
 }

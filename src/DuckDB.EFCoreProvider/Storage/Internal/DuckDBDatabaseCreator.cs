@@ -1,5 +1,6 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -21,23 +22,44 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     private readonly IDuckDBRelationalConnection _connection;
     private readonly IRawSqlCommandBuilder _rawSqlCommandBuilder;
     private readonly DuckLakeOptions? _duckLakeOptions;
+    private readonly bool _supportsSchemaManagement;
+    private readonly bool _supportsDatabaseDeletion;
     private bool _duckLakeCatalogReadyForEnsureCreated;
 
     public DuckDBDatabaseCreator(
         RelationalDatabaseCreatorDependencies dependencies,
         IDuckDBRelationalConnection connection,
         IRawSqlCommandBuilder rawSqlCommandBuilder)
+        : this(
+            dependencies,
+            connection,
+            rawSqlCommandBuilder,
+            DuckDBEngineCapabilities.FromOptions(
+                dependencies.CurrentContext.Context.GetService<IDbContextOptions>()))
+    {
+    }
+
+    public DuckDBDatabaseCreator(
+        RelationalDatabaseCreatorDependencies dependencies,
+        IDuckDBRelationalConnection connection,
+        IRawSqlCommandBuilder rawSqlCommandBuilder,
+        IDuckDBEngineCapabilities engineCapabilities)
         : base(dependencies)
     {
         _connection = connection;
         _rawSqlCommandBuilder = rawSqlCommandBuilder;
-        _duckLakeOptions = dependencies.CurrentContext.Context.GetService<IDbContextOptions>()
-            .FindExtension<DuckDBOptionsExtension>()?.DuckLakeOptions;
+        var contextOptions = dependencies.CurrentContext.Context.GetService<IDbContextOptions>();
+        var providerOptions = contextOptions.FindExtension<DuckDBOptionsExtension>();
+        _duckLakeOptions = providerOptions?.DuckLakeOptions;
+        var capabilities = engineCapabilities ?? throw new ArgumentNullException(nameof(engineCapabilities));
+        _supportsSchemaManagement = capabilities.SupportsSchemaManagement;
+        _supportsDatabaseDeletion = capabilities.SupportsDatabaseDeletion;
     }
 
     /// <inheritdoc />
     public override bool EnsureCreated()
     {
+        ThrowIfSchemaProvisioningUnsupported();
         if (_duckLakeOptions is null)
         {
             return base.EnsureCreated();
@@ -61,6 +83,7 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     /// <inheritdoc />
     public override async Task<bool> EnsureCreatedAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfSchemaProvisioningUnsupported();
         if (_duckLakeOptions is null)
         {
             return await base.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
@@ -249,6 +272,13 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
                 + "remote metadata and object storage. Delete the catalog and data path explicitly with storage-specific tooling.");
         }
 
+        if (!_supportsDatabaseDeletion)
+        {
+            throw new NotSupportedException(
+                "Database.EnsureDeleted() is intentionally disabled for the configured remote profile because the database "
+                + "is owned by the server. Delete it explicitly on the server.");
+        }
+
         string? path = null;
 
         Dependencies.Connection.Open();
@@ -274,6 +304,15 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         {
             dbConnection.Close();
             dbConnection.Open();
+        }
+    }
+
+    private void ThrowIfSchemaProvisioningUnsupported()
+    {
+        if (!_supportsSchemaManagement)
+        {
+            throw new NotSupportedException(
+                "Database.EnsureCreated is not supported by the configured DuckDB engine capabilities.");
         }
     }
 }

@@ -73,4 +73,16 @@ internal static class DuckDBOperationDiagnostics
             operation,
             operationName,
             target);
+
+    internal static DuckDBOperationScope<DbLoggerCategory.Infrastructure> StartInfrastructure(
+        DbContext context,
+        DuckDBProviderOperation operation,
+        string operationName,
+        string target)
+        => DuckDBOperationScope<DbLoggerCategory.Infrastructure>.Start(
+            context.GetService<IDiagnosticsLogger<DbLoggerCategory.Infrastructure>>(),
+            context,
+            operation,
+            operationName,
+            target);
 }

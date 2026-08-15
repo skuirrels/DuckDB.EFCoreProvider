@@ -424,7 +424,7 @@ public class DuckDBModelValidator : RelationalModelValidator
                 }
 
                 if (property.FindAnnotation(RelationalAnnotationNames.DefaultValue) is not null
-                    && !capabilities.SupportsReturning
+                    && !capabilities.SupportsStoreGeneratedValues
                     && property.ValueGenerated != ValueGenerated.Never)
                 {
                     throw new InvalidOperationException(
@@ -432,7 +432,7 @@ public class DuckDBModelValidator : RelationalModelValidator
                             propertyName));
                 }
 
-                if (!capabilities.SupportsReturning
+                if (!capabilities.SupportsStoreGeneratedValues
                     && property.ValueGenerated is ValueGenerated.OnUpdate or ValueGenerated.OnAddOrUpdate)
                 {
                     throw new InvalidOperationException(

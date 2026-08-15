@@ -508,6 +508,9 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.Equal(supported, capabilities.SupportsSchemaConstraints);
         Assert.Equal(supported, capabilities.SupportsTieredStorage);
         Assert.Equal(supported, capabilities.SupportsEfMigrations);
+        Assert.True(capabilities.SupportsSchemaManagement);
+        Assert.Equal(supported, capabilities.SupportsDatabaseDeletion);
+        Assert.True(capabilities.SupportsMultipleStatementsPerCommand);
         Assert.Equal(
             supported ? DuckDBUpsertStrategy.InsertOnConflict : DuckDBUpsertStrategy.Merge,
             capabilities.UpsertStrategy);

@@ -15,13 +15,14 @@
 | Capability | Support |
 |---|---|
 | Application persistence | LINQ, `SaveChanges`, transactions, migrations, scaffolding, and optimistic concurrency |
-| High-throughput ingestion | Write batching, appender-backed `BulkInsert`, and primary-key `Upsert` |
+| High-throughput ingestion | Write batching, appender-backed `BulkInsert`, and selectable-key `Upsert` |
 | Open-format analytics | Direct Parquet, CSV, and JSON queries, plus typed Parquet export |
 | Lakehouse persistence | First-class DuckLake profile with tracked writes, transactions, appender ingestion, and `MERGE` upsert |
 | Data lifecycle | Hot DuckDB tables with relational aggregates archived to partitioned Parquet |
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
 | Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings |
 | Query tooling | Non-executing command plans, exact named-parameter replay, and structured store-type inspection |
+| Experimental remote access | Opt-in Quack LINQ, writes, generated values, transactions, bulk insert/upsert, server lifecycle, and diagnostics |
 
 > **Workload scope:** DuckDB is a single-writer, embedded analytical engine. This provider is intended for analytics, reporting, embedded or edge stores, and Parquet-backed querying. It is not a replacement for a high-concurrency OLTP server database. See [Compatibility](#compatibility) and the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
@@ -146,6 +147,25 @@ DuckLake reads can scale across separate read-only contexts and connections atta
 metadata backend supports the required client concurrency. Use one `DbContext` per concurrent operation; a context
 is not thread-safe. PostgreSQL metadata supports multiple local or remote clients, while a DuckDB metadata file is a
 single-client profile. `ReadOnly()` controls one attachment and does not create a replica or add application locking.
+
+## Experimental Quack profile
+
+`UseQuack(...)` is an explicitly opt-in remote profile for DuckDB's experimental Quack protocol. It supports LINQ,
+tracked writes with sequence, default, and computed values, explicit remote transactions, optional SaveChanges batching,
+command-plan replay, typed `BulkInsert`, server-side `Upsert`, and provider-managed server health/diagnostics without
+changing the normal `UseDuckDB` or `UseDuckLake` paths.
+
+```csharp
+options.UseQuack(
+    "quack:analytics.internal:9494",
+    configuration["Quack:Token"]!);
+```
+
+Remote `EnsureCreated` can provision an empty server schema; `EnsureDeleted` and EF migrations remain server-owned.
+Fresh-client import of schemas with physical foreign keys requires
+[duckdb-quack PR #248](https://github.com/duckdb/duckdb-quack/pull/248) (`f5c04bb`) or a later build until that fix is
+released. Current stock builds can still serve schemas without physical foreign keys; EF relationships and navigations
+remain supported. See the complete [Quack configuration, security, architecture, and limitations guide](docs/QUACK.md).
 
 ## Configuration and connection strings
 
@@ -942,10 +962,15 @@ conflict-target value more than once; deduplicate each input batch according to 
 staged batch is applied separately, so wrap the call in an explicit database transaction if the whole input must
 commit atomically.
 
-Like `BulkInsert`, this is a raw fast path: it bypasses the change tracker, concurrency checks, and EF command
-interceptors and does not support shadow or database-computed columns. The default PK-target overload still
-requires supplied primary-key values. Structured provider diagnostics cover the complete upsert rather than every
-staging command.
+DuckLake keys and unique indexes are logical metadata rather than physical constraints. Its `MERGE` path fails
+before mutating a batch when any staged conflict-target value matches multiple existing rows. This protects against
+silently updating several corrupt/duplicate target rows, but it cannot arbitrate concurrent inserts of the same new
+logical key; applications with multiple writers must still provide their own uniqueness guarantee.
+
+Like `BulkInsert`, this is a raw fast path: it bypasses the change tracker, EF optimistic-concurrency checks, and EF
+command interceptors and does not support shadow or database-computed columns. The default PK-target overload
+still requires supplied primary-key values. Structured provider diagnostics cover the complete upsert rather than
+every staging command.
 
 ### JSON, owned JSON, and arrays
 

@@ -3,6 +3,7 @@ using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using System.Collections.Concurrent;
+using System.Data.Common;
 
 namespace DuckDB.EFCoreProvider.Extensions.Internal;
 
@@ -12,16 +13,20 @@ internal sealed class DuckDBBulkInsertPlan<TEntity>
     internal DuckDBBulkInsertPlan(
         string table,
         string schema,
+        IReadOnlyList<string> columns,
         Action<IDuckDBAppenderRow, TEntity> writeRow)
     {
         Table = table;
         Schema = schema;
+        Columns = columns;
         WriteRow = writeRow;
     }
 
     internal string Table { get; }
 
     internal string Schema { get; }
+
+    internal IReadOnlyList<string> Columns { get; }
 
     internal Action<IDuckDBAppenderRow, TEntity> WriteRow { get; }
 }
@@ -30,14 +35,15 @@ internal static class DuckDBBulkInsertPlanner<TEntity>
     where TEntity : class
 {
     private static readonly ConcurrentDictionary<
-        (IEntityType EntityType, string Schema, string Table),
+        (IEntityType EntityType, string? Database, string Schema, string Table),
         DuckDBBulkInsertPlan<TEntity>> PlanCache = new();
 
     internal static DuckDBBulkInsertPlan<TEntity> GetOrCreate(
-        DuckDBConnection connection,
+        DbConnection connection,
         IEntityType entityType,
         string table,
-        string schema)
+        string schema,
+        string? database = null)
     {
         if (entityType.GetStructMetadata() is not null)
         {
@@ -46,7 +52,7 @@ internal static class DuckDBBulkInsertPlanner<TEntity>
                 + "Use SaveChanges instead.");
         }
 
-        var cacheKey = (entityType, schema, table);
+        var cacheKey = (entityType, database, schema, table);
         if (PlanCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
@@ -55,7 +61,7 @@ internal static class DuckDBBulkInsertPlanner<TEntity>
         var columnMap = BuildColumnMap(entityType, table);
         var ordered = new List<IProperty>();
 
-        foreach (var columnName in GetColumnOrder(connection, table, schema))
+        foreach (var columnName in GetColumnOrder(connection, table, schema, database))
         {
             if (!columnMap.TryGetValue(columnName, out var property))
             {
@@ -75,6 +81,7 @@ internal static class DuckDBBulkInsertPlanner<TEntity>
         var plan = new DuckDBBulkInsertPlan<TEntity>(
             table,
             schema,
+            ordered.Select(property => property.GetColumnName(StoreObjectIdentifier.Table(table, entityType.GetSchema()))!).ToArray(),
             DuckDBCompiledAppenderRowWriter.Create<TEntity>(ordered));
         return PlanCache.GetOrAdd(cacheKey, plan);
     }
@@ -105,12 +112,21 @@ internal static class DuckDBBulkInsertPlanner<TEntity>
         return columns;
     }
 
-    private static List<string> GetColumnOrder(DuckDBConnection connection, string table, string schema)
+    private static List<string> GetColumnOrder(
+        DbConnection connection,
+        string table,
+        string schema,
+        string? database)
     {
         using var command = connection.CreateCommand();
         command.CommandText =
             "SELECT column_name FROM duckdb_columns() "
-            + "WHERE database_name = current_database() AND table_name = $t AND schema_name = $s ORDER BY column_index";
+            + (database is null ? "WHERE database_name = current_database() " : "WHERE database_name = $d ")
+            + "AND table_name = $t AND schema_name = $s ORDER BY column_index";
+        if (database is not null)
+        {
+            command.Parameters.Add(new DuckDBParameter("d", database));
+        }
         command.Parameters.Add(new DuckDBParameter("t", table));
         command.Parameters.Add(new DuckDBParameter("s", schema));
 

@@ -104,6 +104,16 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     public override bool TryAddCommand(IReadOnlyModificationCommand modificationCommand)
     {
         var dualRolePlan = DuckDBDualRoleUpdatePlanner.Create(modificationCommand, _capabilities);
+        // Some transports expose only one result stream for a submitted SQL command. They may still use
+        // batching when every EF command is folded into the same set-based statement, but incompatible shapes
+        // must be split before SQL generation rather than appended as multiple statements.
+        if (!_capabilities.SupportsMultipleStatementsPerCommand
+            && ModificationCommands.Count > 0
+            && !CanAppendToPendingSingleStatement(modificationCommand, dualRolePlan))
+        {
+            return false;
+        }
+
         var requiresSpecialExecution = dualRolePlan.RequiresConditionalForeignKeyUpdate
             || RequiresUpdateFallbackExecution(modificationCommand, dualRolePlan);
         if (_requiresUpdateFallbackExecution
@@ -153,6 +163,31 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
             _commandBeingAdded = null;
             _commandBeingAddedPlan = null;
         }
+    }
+
+    private bool CanAppendToPendingSingleStatement(
+        IReadOnlyModificationCommand modificationCommand,
+        DuckDBDualRoleUpdatePlan dualRolePlan)
+    {
+        if (_pendingBulkInsertCommands.Count > 0)
+        {
+            return _insertBatching
+                   && DuckDBBulkInsertPlanner.CanAppend(_pendingBulkInsertShape!, modificationCommand);
+        }
+
+        if (_pendingBulkUpdateCommands.Count > 0)
+        {
+            return CanUseBulkUpdate(modificationCommand, dualRolePlan)
+                   && DuckDBBulkUpdatePlanner.CanAppend(
+                       _pendingBulkUpdateCommands[0],
+                       _pendingBulkUpdatePlans[0],
+                       modificationCommand,
+                       dualRolePlan);
+        }
+
+        return _pendingBulkDeleteCommands.Count > 0
+               && _deleteBatching
+               && DuckDBBulkDeletePlanner.CanAppend(_pendingBulkDeleteCommands[0], modificationCommand);
     }
 
     /// <inheritdoc />

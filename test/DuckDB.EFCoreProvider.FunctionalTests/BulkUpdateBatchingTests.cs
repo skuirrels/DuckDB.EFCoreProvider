@@ -3,6 +3,7 @@ using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Update.Internal;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 using System.Data.Common;
 using Xunit;
 
@@ -154,6 +155,44 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Single_statement_capability_splits_incompatible_update_shapes_into_separate_commands()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Item { Id = 1, Name = "one", Value = 10 },
+                new Item { Id = 2, Name = "two", Value = 20 });
+            context.SaveChanges();
+        }
+
+        using var serviceProvider = new ServiceCollection()
+            .AddEntityFrameworkDuckDB()
+            .AddSingleton<IDuckDBEngineCapabilities, SingleStatementCapabilities>()
+            .BuildServiceProvider(validateScopes: true);
+        var interceptor = new CommandCaptureInterceptor();
+        var options = new DbContextOptionsBuilder<UpdateContext>(
+                FileOptions<UpdateContext>(duckdb => duckdb.EnableBulkUpdateBatching()))
+            .UseInternalServiceProvider(serviceProvider)
+            .AddInterceptors(interceptor)
+            .Options;
+
+        using (var context = new UpdateContext(options))
+        {
+            var items = context.Items.OrderBy(item => item.Id).ToArray();
+            items[0].Name = "one-updated";
+            items[1].Value = 200;
+            context.SaveChanges();
+        }
+
+        var updateCommands = interceptor.CommandTexts
+            .Where(commandText => commandText.StartsWith("UPDATE ", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, updateCommands.Length);
+        Assert.All(updateCommands, sql => Assert.Equal(1, sql.Split("UPDATE ", StringSplitOptions.None).Length - 1));
+    }
+
+    [ConditionalFact]
     public void SaveChanges_with_update_batching_handles_composite_keys()
     {
         using (var context = CreateContext())
@@ -287,6 +326,21 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
         public int KeyA { get; set; }
         public int KeyB { get; set; }
         public string Name { get; set; } = "";
+    }
+
+    private sealed class SingleStatementCapabilities : IDuckDBEngineCapabilities
+    {
+        public bool SupportsReturning => true;
+        public bool SupportsSaveChangesBatching => true;
+        public bool SupportsSequences => true;
+        public bool SupportsGeneratedColumns => true;
+        public bool SupportsSqlDefaultExpressions => true;
+        public bool SupportsIndexes => true;
+        public bool SupportsSchemaConstraints => true;
+        public bool SupportsTieredStorage => true;
+        public bool SupportsEfMigrations => true;
+        public bool SupportsMultipleStatementsPerCommand => false;
+        public DuckDBUpsertStrategy UpsertStrategy => DuckDBUpsertStrategy.InsertOnConflict;
     }
 
     private sealed class CommandCaptureInterceptor : DbCommandInterceptor

@@ -1,9 +1,13 @@
 using DuckDB.EFCoreProvider.Diagnostics.Internal;
 using DuckDB.EFCoreProvider.Extensions.Internal;
+using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
+using System.Data.Common;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -51,8 +55,8 @@ public static class DuckDBBulkExtensions
         try
         {
             var (entityType, table, schema) = ResolveTarget(context, typeof(TEntity));
-            var connection = (DuckDBConnection)context.Database.GetDbConnection();
-            var openedHere = connection.State != ConnectionState.Open;
+            var dbConnection = context.Database.GetDbConnection();
+            var openedHere = dbConnection.State != ConnectionState.Open;
 
             if (openedHere)
             {
@@ -62,8 +66,29 @@ public static class DuckDBBulkExtensions
             int count;
             try
             {
-                var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(connection, entityType, table, schema);
-                count = Append(connection, plan, entities);
+                if (dbConnection is QuackDbConnection
+                    {
+                        EngineCapabilities.SupportsRemoteBulkInsert: true
+                    } quackConnection)
+                {
+                    var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(
+                        quackConnection,
+                        entityType,
+                        table,
+                        schema);
+                    count = AppendRemote(
+                        quackConnection,
+                        plan,
+                        entities,
+                        context.GetService<ISqlGenerationHelper>());
+                }
+                else
+                {
+                    var connection = dbConnection as DuckDBConnection
+                        ?? throw UnexpectedConnection(dbConnection);
+                    var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(connection!, entityType, table, schema);
+                    count = Append(connection!, plan, entities);
+                }
             }
             finally
             {
@@ -105,8 +130,8 @@ public static class DuckDBBulkExtensions
         try
         {
             var (entityType, table, schema) = ResolveTarget(context, typeof(TEntity));
-            var connection = (DuckDBConnection)context.Database.GetDbConnection();
-            var openedHere = connection.State != ConnectionState.Open;
+            var dbConnection = context.Database.GetDbConnection();
+            var openedHere = dbConnection.State != ConnectionState.Open;
 
             if (openedHere)
             {
@@ -116,8 +141,29 @@ public static class DuckDBBulkExtensions
             int count;
             try
             {
-                var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(connection, entityType, table, schema);
-                count = Append(connection, plan, entities);
+                if (dbConnection is QuackDbConnection
+                    {
+                        EngineCapabilities.SupportsRemoteBulkInsert: true
+                    } quackConnection)
+                {
+                    var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(
+                        quackConnection,
+                        entityType,
+                        table,
+                        schema);
+                    count = AppendRemote(
+                        quackConnection,
+                        plan,
+                        entities,
+                        context.GetService<ISqlGenerationHelper>());
+                }
+                else
+                {
+                    var connection = dbConnection as DuckDBConnection
+                        ?? throw UnexpectedConnection(dbConnection);
+                    var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(connection!, entityType, table, schema);
+                    count = Append(connection!, plan, entities);
+                }
             }
             finally
             {
@@ -153,6 +199,72 @@ public static class DuckDBBulkExtensions
         }
 
         return count;
+    }
+
+    private static NotSupportedException UnexpectedConnection(DbConnection connection)
+        => new(
+            $"BulkInsert requires the connection selected by the configured DuckDB engine capabilities, " +
+            $"but found '{connection.GetType().Name}'.");
+
+    private static int AppendRemote<TEntity>(
+        QuackDbConnection connection,
+        DuckDBBulkInsertPlan<TEntity> plan,
+        IEnumerable<TEntity> entities,
+        ISqlGenerationHelper sqlGenerationHelper)
+        where TEntity : class
+    {
+        var temporaryTable = $"__duckdb_quack_bulk_{Guid.NewGuid():N}";
+        var delimitedTemporaryTable = sqlGenerationHelper.DelimitIdentifier(temporaryTable);
+        var delimitedTarget = string.Join(
+            ".",
+            sqlGenerationHelper.DelimitIdentifier(connection.RemoteCatalogName),
+            sqlGenerationHelper.DelimitIdentifier(plan.Schema),
+            sqlGenerationHelper.DelimitIdentifier(plan.Table));
+        var columns = string.Join(", ", plan.Columns.Select(sqlGenerationHelper.DelimitIdentifier));
+
+        var failed = true;
+        try
+        {
+            ExecuteDirect(
+                connection.InnerConnection,
+                $"CREATE TEMPORARY TABLE {delimitedTemporaryTable} AS SELECT {columns} FROM {delimitedTarget} WHERE false;");
+
+            var count = 0;
+            using (var appender = connection.InnerConnection.CreateAppender(temporaryTable))
+            {
+                foreach (var entity in entities)
+                {
+                    appender.AppendRow(entity, plan.WriteRow);
+                    count++;
+                }
+            }
+
+            ExecuteDirect(
+                connection.InnerConnection,
+                $"INSERT INTO {delimitedTarget} ({columns}) SELECT {columns} FROM {delimitedTemporaryTable};");
+            failed = false;
+            return count;
+        }
+        finally
+        {
+            ExecuteDirect(
+                connection.InnerConnection,
+                $"DROP TABLE IF EXISTS {delimitedTemporaryTable};",
+                suppressFailure: failed);
+        }
+    }
+
+    private static void ExecuteDirect(DuckDBConnection connection, string commandText, bool suppressFailure = false)
+    {
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = commandText;
+            command.ExecuteNonQuery();
+        }
+        catch when (suppressFailure)
+        {
+        }
     }
 
     private static (IEntityType EntityType, string Table, string Schema) ResolveTarget(DbContext context, Type clrType)

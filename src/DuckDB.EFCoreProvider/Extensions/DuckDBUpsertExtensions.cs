@@ -1,23 +1,18 @@
 using DuckDB.EFCoreProvider.Diagnostics.Internal;
 using DuckDB.EFCoreProvider.Extensions.Internal;
-using DuckDB.EFCoreProvider.Infrastructure.Internal;
-using DuckDB.EFCoreProvider.Metadata;
-using DuckDB.EFCoreProvider.Metadata.Internal;
+using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
-using System.Collections.Concurrent;
 using System.Data;
+using System.Data.Common;
 using System.Linq.Expressions;
-using System.Runtime.CompilerServices;
-using System.Text;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
 /// <summary>
-///     High-throughput upsert helpers built on DuckDB's appender API plus a set-based native-DuckDB or DuckLake merge.
+///     High-throughput upsert helpers built on staged set-based native-DuckDB, DuckLake, or Quack commands.
 /// </summary>
 /// <remarks>
 ///     <para>
@@ -38,25 +33,22 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///         Like <see cref="DuckDBBulkExtensions.BulkInsert{TEntity}" />, this is a raw fast path:
 ///     </para>
 ///     <list type="bullet">
-///         <item><description>no change tracking, concurrency checks, or EF command interceptors; provider lifecycle
-///             diagnostics are emitted for the complete upsert operation;</description></item>
+///         <item><description>no change tracking, EF optimistic-concurrency checks, or EF command interceptors;
+///             provider lifecycle diagnostics are emitted for the complete upsert operation;</description></item>
 ///         <item><description>the default conflict target is the entity's primary key, whose values must be supplied;
 ///             the alternate-target overload permits store-generated-on-add columns and does not populate their generated
 ///             values back into the supplied entities;</description></item>
 ///         <item><description>all staged non-key and non-conflict columns are overwritten from the supplied values;</description></item>
 ///         <item><description>callers own duplicate conflict-target handling within an input batch and can wrap the
 ///             operation in an explicit transaction when all batches must commit atomically;</description></item>
+///         <item><description>DuckLake rejects the affected staged batch before mutation when a key matches multiple
+///             existing rows because its logical keys are not physically enforced;</description></item>
 ///         <item><description>EF column mappings and value converters are applied; shadow properties and
 ///             database-computed columns are not supported.</description></item>
 ///     </list>
 /// </remarks>
 public static class DuckDBUpsertExtensions
 {
-    private static readonly ConditionalWeakTable<
-        IEntityType,
-        ConcurrentDictionary<(string? Schema, string Table, DuckDBUpsertStrategy Strategy, object ConflictTarget), UpsertPlan>>
-        PlanCaches = new();
-
     /// <summary>
     ///     Inserts the supplied entities, updating any whose primary key already exists, using appender-staged
     ///     batches and set-based native-DuckDB <c>INSERT ... ON CONFLICT</c> or DuckLake <c>MERGE INTO</c> statements.
@@ -80,17 +72,48 @@ public static class DuckDBUpsertExtensions
 
         try
         {
-            var plan = GetPlan(context, typeof(TEntity));
-            var connection = (DuckDBConnection)context.Database.GetDbConnection();
-            var openedHere = connection.State != ConnectionState.Open;
+            var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity));
+            var sqlRenderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
+            var dbConnection = context.Database.GetDbConnection();
+            var openedHere = dbConnection.State != ConnectionState.Open;
 
             if (openedHere)
             {
                 context.Database.OpenConnection();
             }
 
+            if (dbConnection is QuackDbConnection
+                {
+                    EngineCapabilities.SupportsRemoteCommandExecution: true
+                } quackConnection)
+            {
+                try
+                {
+                    var remoteCount = UpsertRemote(
+                        quackConnection,
+                        plan,
+                        sqlRenderer,
+                        entities,
+                        batchSize);
+                    operation.Complete(remoteCount);
+                    return remoteCount;
+                }
+                finally
+                {
+                    if (openedHere)
+                    {
+                        context.Database.CloseConnection();
+                    }
+                }
+            }
+
+            var connection = dbConnection as DuckDBConnection
+                ?? throw new NotSupportedException(
+                    $"Upsert requires a DuckDB or Quack connection, but found '{dbConnection.GetType().Name}'.");
+
             var count = 0;
             string? tempTable = null;
+            var upsertFailed = false;
             try
             {
                 var effectiveBatchSize = EffectiveBatchSize(plan, batchSize);
@@ -100,8 +123,8 @@ public static class DuckDBUpsertExtensions
                     batch.Add(entity);
                     if (batch.Count == effectiveBatchSize)
                     {
-                        tempTable ??= CreateTemporaryTable(connection, plan);
-                        UpsertBatch(connection, plan, tempTable, batch);
+                        tempTable ??= CreateTemporaryTable(connection, plan, sqlRenderer);
+                        UpsertBatch(connection, plan, sqlRenderer, tempTable, batch);
                         count += batch.Count;
                         batch.Clear();
                     }
@@ -109,10 +132,15 @@ public static class DuckDBUpsertExtensions
 
                 if (batch.Count > 0)
                 {
-                    tempTable ??= CreateTemporaryTable(connection, plan);
-                    UpsertBatch(connection, plan, tempTable, batch);
+                    tempTable ??= CreateTemporaryTable(connection, plan, sqlRenderer);
+                    UpsertBatch(connection, plan, sqlRenderer, tempTable, batch);
                     count += batch.Count;
                 }
+            }
+            catch
+            {
+                upsertFailed = true;
+                throw;
             }
             finally
             {
@@ -120,7 +148,7 @@ public static class DuckDBUpsertExtensions
                 {
                     if (tempTable is not null)
                     {
-                        DropTemporaryTable(connection, tempTable);
+                        DropTemporaryTable(connection, sqlRenderer, tempTable, suppressFailure: upsertFailed);
                     }
                 }
                 finally
@@ -169,7 +197,8 @@ public static class DuckDBUpsertExtensions
     ///     This raw fast path does not populate store-generated values back into the supplied entities. The
     ///     selector must contain direct property accesses, for example <c>entity =&gt; entity.ExternalId</c> or
     ///     <c>entity =&gt; new { entity.ParentId, entity.Sequence }</c>. Callers should resolve duplicate selected-key
-    ///     values before invoking this method.
+    ///     values before invoking this method. DuckLake rejects the current batch before mutating it when a staged key
+    ///     matches multiple existing rows, but callers remain responsible for preventing concurrent duplicate inserts.
     /// </remarks>
     /// <returns>The number of rows processed.</returns>
     public static Task<int> UpsertAsync<TEntity>(
@@ -209,17 +238,49 @@ public static class DuckDBUpsertExtensions
 
         try
         {
-            var plan = GetPlan(context, typeof(TEntity), conflictPropertyNames);
-            var connection = (DuckDBConnection)context.Database.GetDbConnection();
-            var openedHere = connection.State != ConnectionState.Open;
+            var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity), conflictPropertyNames);
+            var sqlRenderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
+            var dbConnection = context.Database.GetDbConnection();
+            var openedHere = dbConnection.State != ConnectionState.Open;
 
             if (openedHere)
             {
                 await context.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            if (dbConnection is QuackDbConnection
+                {
+                    EngineCapabilities.SupportsRemoteCommandExecution: true
+                } quackConnection)
+            {
+                try
+                {
+                    var remoteCount = await UpsertRemoteAsync(
+                        quackConnection,
+                        plan,
+                        sqlRenderer,
+                        entities,
+                        batchSize,
+                        cancellationToken).ConfigureAwait(false);
+                    operation.Complete(remoteCount);
+                    return remoteCount;
+                }
+                finally
+                {
+                    if (openedHere)
+                    {
+                        await context.Database.CloseConnectionAsync().ConfigureAwait(false);
+                    }
+                }
+            }
+
+            var connection = dbConnection as DuckDBConnection
+                ?? throw new NotSupportedException(
+                    $"Upsert requires a DuckDB or Quack connection, but found '{dbConnection.GetType().Name}'.");
+
             var count = 0;
             string? tempTable = null;
+            var upsertFailed = false;
             try
             {
                 var effectiveBatchSize = EffectiveBatchSize(plan, batchSize);
@@ -231,8 +292,8 @@ public static class DuckDBUpsertExtensions
                     batch.Add(entity);
                     if (batch.Count == effectiveBatchSize)
                     {
-                        tempTable ??= CreateTemporaryTable(connection, plan);
-                        await UpsertBatchAsync(connection, plan, tempTable, batch, cancellationToken).ConfigureAwait(false);
+                        tempTable ??= CreateTemporaryTable(connection, plan, sqlRenderer);
+                        await UpsertBatchAsync(connection, plan, sqlRenderer, tempTable, batch, cancellationToken).ConfigureAwait(false);
                         count += batch.Count;
                         batch.Clear();
                     }
@@ -240,10 +301,15 @@ public static class DuckDBUpsertExtensions
 
                 if (batch.Count > 0)
                 {
-                    tempTable ??= CreateTemporaryTable(connection, plan);
-                    await UpsertBatchAsync(connection, plan, tempTable, batch, cancellationToken).ConfigureAwait(false);
+                    tempTable ??= CreateTemporaryTable(connection, plan, sqlRenderer);
+                    await UpsertBatchAsync(connection, plan, sqlRenderer, tempTable, batch, cancellationToken).ConfigureAwait(false);
                     count += batch.Count;
                 }
+            }
+            catch
+            {
+                upsertFailed = true;
+                throw;
             }
             finally
             {
@@ -251,7 +317,7 @@ public static class DuckDBUpsertExtensions
                 {
                     if (tempTable is not null)
                     {
-                        DropTemporaryTable(connection, tempTable);
+                        DropTemporaryTable(connection, sqlRenderer, tempTable, suppressFailure: upsertFailed);
                     }
                 }
                 finally
@@ -273,23 +339,307 @@ public static class DuckDBUpsertExtensions
         }
     }
 
+    private static int UpsertRemote<TEntity>(
+        QuackDbConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        IEnumerable<TEntity> entities,
+        int batchSize)
+        where TEntity : class
+    {
+        RemoteStagingTables? staging = null;
+        var failed = false;
+        try
+        {
+            var count = 0;
+            var effectiveBatchSize = EffectiveBatchSize(plan, batchSize);
+            var batch = new List<TEntity>(InitialBatchCapacity(entities, effectiveBatchSize));
+            foreach (var entity in entities)
+            {
+                batch.Add(entity);
+                if (batch.Count == effectiveBatchSize)
+                {
+                    staging ??= CreateRemoteStagingTables(connection, plan, sqlRenderer);
+                    UpsertRemoteBatch(connection, plan, sqlRenderer, staging, batch, cancellationToken: null);
+                    count += batch.Count;
+                    batch.Clear();
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                staging ??= CreateRemoteStagingTables(connection, plan, sqlRenderer);
+                UpsertRemoteBatch(connection, plan, sqlRenderer, staging, batch, cancellationToken: null);
+                count += batch.Count;
+            }
+
+            return count;
+        }
+        catch
+        {
+            failed = true;
+            throw;
+        }
+        finally
+        {
+            if (staging is not null)
+            {
+                DropRemoteStagingTables(connection, sqlRenderer, staging, suppressFailure: failed);
+            }
+        }
+    }
+
+    private static async Task<int> UpsertRemoteAsync<TEntity>(
+        QuackDbConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        IEnumerable<TEntity> entities,
+        int batchSize,
+        CancellationToken cancellationToken)
+        where TEntity : class
+    {
+        RemoteStagingTables? staging = null;
+        var failed = false;
+        try
+        {
+            var count = 0;
+            var effectiveBatchSize = EffectiveBatchSize(plan, batchSize);
+            var batch = new List<TEntity>(InitialBatchCapacity(entities, effectiveBatchSize));
+            foreach (var entity in entities)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                batch.Add(entity);
+                if (batch.Count == effectiveBatchSize)
+                {
+                    staging ??= await CreateRemoteStagingTablesAsync(
+                        connection,
+                        plan,
+                        sqlRenderer,
+                        cancellationToken).ConfigureAwait(false);
+                    await UpsertRemoteBatchAsync(
+                        connection,
+                        plan,
+                        sqlRenderer,
+                        staging,
+                        batch,
+                        cancellationToken).ConfigureAwait(false);
+                    count += batch.Count;
+                    batch.Clear();
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                staging ??= await CreateRemoteStagingTablesAsync(
+                    connection,
+                    plan,
+                    sqlRenderer,
+                    cancellationToken).ConfigureAwait(false);
+                await UpsertRemoteBatchAsync(
+                    connection,
+                    plan,
+                    sqlRenderer,
+                    staging,
+                    batch,
+                    cancellationToken).ConfigureAwait(false);
+                count += batch.Count;
+            }
+
+            return count;
+        }
+        catch
+        {
+            failed = true;
+            throw;
+        }
+        finally
+        {
+            if (staging is not null)
+            {
+                await DropRemoteStagingTablesAsync(connection, sqlRenderer, staging, suppressFailure: failed)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static RemoteStagingTables CreateRemoteStagingTables(
+        QuackDbConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer)
+    {
+        var staging = BuildRemoteStagingTables(plan);
+        try
+        {
+            ExecuteCommand(
+                connection,
+                sqlRenderer.RenderCreateStagingTable(
+                    plan,
+                    staging.RemoteTable,
+                    temporary: false,
+                    staging.RemoteSchema));
+            return staging;
+        }
+        catch
+        {
+            DropRemoteStagingTables(connection, sqlRenderer, staging, suppressFailure: true);
+            throw;
+        }
+    }
+
+    private static async Task<RemoteStagingTables> CreateRemoteStagingTablesAsync(
+        QuackDbConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        CancellationToken cancellationToken)
+    {
+        var staging = BuildRemoteStagingTables(plan);
+        try
+        {
+            await ExecuteCommandAsync(
+                connection,
+                sqlRenderer.RenderCreateStagingTable(
+                    plan,
+                    staging.RemoteTable,
+                    temporary: false,
+                    staging.RemoteSchema),
+                cancellationToken).ConfigureAwait(false);
+            return staging;
+        }
+        catch
+        {
+            await DropRemoteStagingTablesAsync(connection, sqlRenderer, staging, suppressFailure: true)
+                .ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static RemoteStagingTables BuildRemoteStagingTables(DuckDBUpsertPlan plan)
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var remoteTable = "__duckdb_upsert_" + suffix;
+        var schema = plan.Schema ?? "main";
+        return new RemoteStagingTables(
+            remoteTable,
+            schema);
+    }
+
+    private static void UpsertRemoteBatch<TEntity>(
+        QuackDbConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        RemoteStagingTables staging,
+        List<TEntity> batch,
+        CancellationToken? cancellationToken)
+        where TEntity : class
+    {
+        cancellationToken?.ThrowIfCancellationRequested();
+        ExecuteCommand(
+            connection,
+            sqlRenderer.RenderInsertValues(plan, staging.RemoteTable, staging.RemoteSchema, batch));
+        ExecuteCommand(
+            connection,
+            sqlRenderer.RenderUpsertBatch(plan, staging.RemoteTable, staging.RemoteSchema));
+    }
+
+    private static async Task UpsertRemoteBatchAsync<TEntity>(
+        QuackDbConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        RemoteStagingTables staging,
+        List<TEntity> batch,
+        CancellationToken cancellationToken)
+        where TEntity : class
+    {
+        await ExecuteCommandAsync(
+            connection,
+            sqlRenderer.RenderInsertValues(plan, staging.RemoteTable, staging.RemoteSchema, batch),
+            cancellationToken).ConfigureAwait(false);
+        await ExecuteCommandAsync(
+            connection,
+            sqlRenderer.RenderUpsertBatch(plan, staging.RemoteTable, staging.RemoteSchema),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void DropRemoteStagingTables(
+        QuackDbConnection connection,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        RemoteStagingTables staging,
+        bool suppressFailure)
+    {
+        try
+        {
+            ExecuteCommand(
+                connection,
+                sqlRenderer.RenderDropTemporaryTable(staging.RemoteTable, staging.RemoteSchema));
+        }
+        catch (Exception) when (suppressFailure)
+        {
+        }
+    }
+
+    private static async Task DropRemoteStagingTablesAsync(
+        QuackDbConnection connection,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        RemoteStagingTables staging,
+        bool suppressFailure)
+    {
+        try
+        {
+            await ExecuteCommandAsync(
+                connection,
+                sqlRenderer.RenderDropTemporaryTable(staging.RemoteTable, staging.RemoteSchema),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception) when (suppressFailure)
+        {
+        }
+    }
+
+    private static void ExecuteCommand(DbConnection connection, string sql, bool suppressFailure = false)
+    {
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
+        catch when (suppressFailure)
+        {
+        }
+    }
+
+    private static async Task ExecuteCommandAsync(
+        DbConnection connection,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private sealed record RemoteStagingTables(
+        string RemoteTable,
+        string RemoteSchema);
+
     private static void UpsertBatch<TEntity>(
         DuckDBConnection connection,
-        UpsertPlan plan,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
         string tempTable,
         List<TEntity> batch)
         where TEntity : class
     {
         AppendTemporaryRows(connection, plan, tempTable, batch, cancellationToken: null);
         using var command = connection.CreateCommand();
-        command.CommandText = plan.UpsertFromTemporaryTableSql(tempTable)
-                              + $" DELETE FROM {DelimitTemporaryIdentifier(tempTable)};";
+        command.CommandText = sqlRenderer.RenderUpsertBatch(plan, tempTable);
         command.ExecuteNonQuery();
     }
 
     private static async Task UpsertBatchAsync<TEntity>(
         DuckDBConnection connection,
-        UpsertPlan plan,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
         string tempTable,
         List<TEntity> batch,
         CancellationToken cancellationToken)
@@ -297,12 +647,11 @@ public static class DuckDBUpsertExtensions
     {
         AppendTemporaryRows(connection, plan, tempTable, batch, cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = plan.UpsertFromTemporaryTableSql(tempTable)
-                              + $" DELETE FROM {DelimitTemporaryIdentifier(tempTable)};";
+        command.CommandText = sqlRenderer.RenderUpsertBatch(plan, tempTable);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static int EffectiveBatchSize(UpsertPlan plan, int requestedBatchSize)
+    private static int EffectiveBatchSize(DuckDBUpsertPlan plan, int requestedBatchSize)
         => DuckDBUpsertBatching.EffectiveBatchSize(plan.ColumnCount, requestedBatchSize);
 
     private static int InitialBatchCapacity<TEntity>(IEnumerable<TEntity> entities, int effectiveBatchSize)
@@ -310,23 +659,28 @@ public static class DuckDBUpsertExtensions
             effectiveBatchSize,
             entities.TryGetNonEnumeratedCount(out var sourceCount) ? sourceCount : null);
 
-    private static string CreateTemporaryTable(DuckDBConnection connection, UpsertPlan plan)
+    private static string CreateTemporaryTable(
+        DuckDBConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer)
     {
         var tempTable = "__duckdb_upsert_" + Guid.NewGuid().ToString("N");
         using var command = connection.CreateCommand();
-        command.CommandText = plan.CreateTemporaryTableSql(tempTable);
+        command.CommandText = sqlRenderer.RenderCreateTemporaryTable(plan, tempTable);
         command.ExecuteNonQuery();
         return tempTable;
     }
 
     private static void AppendTemporaryRows<TEntity>(
         DuckDBConnection connection,
-        UpsertPlan plan,
+        DuckDBUpsertPlan plan,
         string tempTable,
         List<TEntity> batch,
         CancellationToken? cancellationToken)
         where TEntity : class
     {
+        var writeRow = plan.WriteRow
+            ?? throw new InvalidOperationException("The configured upsert plan does not contain an appender writer.");
         using var appender = connection.CreateAppender(tempTable);
         foreach (var entity in batch)
         {
@@ -334,271 +688,26 @@ public static class DuckDBUpsertExtensions
 
             // AppendRow reuses DuckDB.NET's managed row wrapper and owns EndRow/error finalization.
             // Calling CreateRow directly here allocates one wrapper per entity.
-            appender.AppendRow<object>(entity, plan.WriteRow);
+            appender.AppendRow<object>(entity, writeRow);
         }
     }
 
-    private static void DropTemporaryTable(DuckDBConnection connection, string tempTable)
+    private static void DropTemporaryTable(
+        DuckDBConnection connection,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        string tempTable,
+        bool suppressFailure)
     {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"DROP TABLE IF EXISTS {DelimitTemporaryIdentifier(tempTable)};";
-        command.ExecuteNonQuery();
-    }
-
-    private static string DelimitTemporaryIdentifier(string identifier)
-        => "\"" + identifier.Replace("\"", "\"\"") + "\"";
-
-    private static UpsertPlan GetPlan(
-        DbContext context,
-        Type clrType,
-        IReadOnlyList<string>? conflictPropertyNames = null)
-    {
-        var entityType = context.Model.FindEntityType(clrType)
-            ?? throw new InvalidOperationException($"'{clrType.Name}' is not part of the model.");
-
-        var table = entityType.GetTableName()
-            ?? throw new InvalidOperationException($"'{clrType.Name}' is not mapped to a table; upsert is not supported.");
-        var schema = entityType.GetSchema();
-        var strategy = context.GetService<IDuckDBEngineCapabilities>().UpsertStrategy;
-        var conflictTarget = ResolveConflictTarget(entityType, conflictPropertyNames);
-        var planCache = PlanCaches.GetValue(entityType, static _ => new());
-        var cacheKey = (schema, table, strategy, conflictTarget.MetadataIdentity);
-
-        return planCache.GetOrAdd(
-            cacheKey,
-            static (_, state) => BuildPlan(
-                state.Context,
-                state.EntityType,
-                state.Table,
-                state.Schema,
-                state.Strategy,
-                state.ConflictTarget),
-            (Context: context, EntityType: entityType, Table: table, Schema: schema, Strategy: strategy, ConflictTarget: conflictTarget));
-    }
-
-    private static UpsertConflictTarget ResolveConflictTarget(
-        IEntityType entityType,
-        IReadOnlyList<string>? conflictPropertyNames)
-    {
-        var primaryKey = entityType.FindPrimaryKey()
-            ?? throw new InvalidOperationException($"'{entityType.ClrType.Name}' has no primary key; upsert requires a primary key.");
-
-        if (conflictPropertyNames is null)
+        try
         {
-            return new UpsertConflictTarget(primaryKey.Properties, primaryKey, UsesPrimaryKey: true);
+            using var command = connection.CreateCommand();
+            command.CommandText = sqlRenderer.RenderDropTemporaryTable(tempTable);
+            command.ExecuteNonQuery();
         }
-
-        var properties = conflictPropertyNames.Select(name => entityType.FindProperty(name)
-            ?? throw new InvalidOperationException(
-                $"Conflict-target property '{entityType.DisplayName()}.{name}' is not a mapped scalar property."))
-            .ToArray();
-
-        var key = entityType.GetKeys().FirstOrDefault(candidate => candidate.Properties.SequenceEqual(properties));
-        if (key is not null)
+        catch when (suppressFailure)
         {
-            return new UpsertConflictTarget(key.Properties, key, key.IsPrimaryKey());
+            // A statement error aborts an explicit DuckDB transaction until rollback. Preserve the actionable
+            // upsert exception; rolling back the transaction also removes its temporary staging table.
         }
-
-        var index = entityType.GetIndexes()
-            .FirstOrDefault(candidate => candidate.IsUnique && candidate.Properties.SequenceEqual(properties));
-        if (index is not null)
-        {
-            return new UpsertConflictTarget(index.Properties, index, UsesPrimaryKey: false);
-        }
-
-        throw new InvalidOperationException(
-            $"The conflict target for '{entityType.DisplayName()}' must be a primary key, alternate key, or unique index.");
-    }
-
-    private static UpsertPlan BuildPlan(
-        DbContext context,
-        IEntityType entityType,
-        string table,
-        string? schema,
-        DuckDBUpsertStrategy strategy,
-        UpsertConflictTarget conflictTarget)
-    {
-        var helper = context.GetService<ISqlGenerationHelper>();
-        var storeObject = StoreObjectIdentifier.Table(table, schema);
-
-        if (entityType.GetStructMetadata() is not null)
-        {
-            throw new NotSupportedException(
-                $"Upsert does not support entity '{entityType.ClrType.Name}' because it contains struct-mapped complex properties. "
-                + "STRUCT columns are consolidated at the physical layer and cannot be staged via the DuckDB Appender API. "
-                + "Use SaveChanges instead.");
-        }
-
-        var primaryKey = entityType.FindPrimaryKey()
-            ?? throw new InvalidOperationException(
-                $"'{entityType.ClrType.Name}' has no primary key; upsert requires a primary key.");
-        var conflictProperties = conflictTarget.Properties;
-
-        var keyColumns = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var keyProperty in primaryKey.Properties)
-        {
-            var keyColumn = keyProperty.GetColumnName(storeObject)
-                ?? throw new InvalidOperationException(
-                    $"Key property '{keyProperty.Name}' on '{entityType.ClrType.Name}' is not mapped to a column.");
-            keyColumns.Add(keyColumn);
-        }
-
-        var conflictColumns = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var conflictProperty in conflictProperties)
-        {
-            var conflictColumn = conflictProperty.GetColumnName(storeObject)
-                ?? throw new InvalidOperationException(
-                    $"Conflict-target property '{conflictProperty.Name}' on '{entityType.ClrType.Name}' is not mapped to table '{table}'.");
-            conflictColumns.Add(conflictColumn);
-        }
-
-        var insertColumns = new List<string>();
-        var updateColumns = new List<string>();
-        var writableProperties = new List<IProperty>();
-
-        foreach (var property in entityType.GetProperties())
-        {
-            var columnName = property.GetColumnName(storeObject);
-            if (columnName is null)
-            {
-                continue;
-            }
-
-            if (property.IsShadowProperty())
-            {
-                throw new NotSupportedException(
-                    $"Upsert does not support shadow property '{property.Name}' on '{entityType.ClrType.Name}'. Use SaveChanges instead.");
-            }
-
-            if (property.GetComputedColumnSql(storeObject) is not null)
-            {
-                // Database-computed columns cannot be inserted or assigned.
-                continue;
-            }
-
-            if (!conflictTarget.UsesPrimaryKey
-                && !conflictColumns.Contains(columnName)
-                && IsStoreGeneratedOnAdd(property, storeObject))
-            {
-                // Omit sequence/default-backed columns from staging and INSERT so DuckDB applies DEFAULT.
-                continue;
-            }
-
-            insertColumns.Add(columnName);
-
-            writableProperties.Add(property);
-
-            if (!keyColumns.Contains(columnName) && !conflictColumns.Contains(columnName))
-            {
-                updateColumns.Add(columnName);
-            }
-        }
-
-        if (insertColumns.Count == 0)
-        {
-            throw new InvalidOperationException($"No writable columns were found for table '{table}'.");
-        }
-
-        var delimitedInsertColumns = insertColumns.Select(helper.DelimitIdentifier).ToArray();
-        var insertColumnList = string.Join(", ", delimitedInsertColumns);
-        var targetTable = helper.DelimitIdentifier(table, schema);
-
-        if (strategy == DuckDBUpsertStrategy.Merge)
-        {
-            var keyPredicates = conflictProperties.Select(property =>
-            {
-                var column = helper.DelimitIdentifier(property.GetColumnName(storeObject)!);
-                return $"target.{column} = source.{column}";
-            });
-            var updateAssignments = updateColumns.Select(column =>
-            {
-                var delimited = helper.DelimitIdentifier(column);
-                return $"{delimited} = source.{delimited}";
-            });
-            var sourceValues = delimitedInsertColumns.Select(column => $"source.{column}");
-
-            var mergeSuffix = new StringBuilder()
-                .Append(" ON ")
-                .AppendJoin(" AND ", keyPredicates);
-            if (updateColumns.Count > 0)
-            {
-                mergeSuffix.Append(" WHEN MATCHED THEN UPDATE SET ").AppendJoin(", ", updateAssignments);
-            }
-
-            mergeSuffix
-                .Append(" WHEN NOT MATCHED THEN INSERT (")
-                .Append(insertColumnList)
-                .Append(") VALUES (")
-                .AppendJoin(", ", sourceValues)
-                .Append(')');
-
-            return new UpsertPlan(
-                targetTable,
-                insertColumnList,
-                null,
-                mergeSuffix.ToString(),
-                writableProperties.Count,
-                DuckDBCompiledAppenderRowWriter.Create(entityType.ClrType, writableProperties));
-        }
-
-        if (strategy != DuckDBUpsertStrategy.InsertOnConflict)
-        {
-            throw new NotSupportedException($"DuckDB upsert strategy '{strategy}' is not supported.");
-        }
-
-        // On a key conflict, overwrite the non-key columns from the proposed row; if the entity is all-key,
-        // there is nothing to update, so do nothing.
-        var conflictSuffix = new StringBuilder()
-            .Append(" ON CONFLICT (")
-            .AppendJoin(", ", conflictProperties.Select(p => helper.DelimitIdentifier(p.GetColumnName(storeObject)!)))
-            .Append(')')
-            .Append(updateColumns.Count == 0
-                ? " DO NOTHING"
-                : " DO UPDATE SET " + string.Join(
-                    ", ",
-                    updateColumns.Select(c => $"{helper.DelimitIdentifier(c)} = excluded.{helper.DelimitIdentifier(c)}")))
-            .ToString();
-
-        return new UpsertPlan(
-            targetTable,
-            insertColumnList,
-            conflictSuffix,
-            null,
-            writableProperties.Count,
-            DuckDBCompiledAppenderRowWriter.Create(entityType.ClrType, writableProperties));
-    }
-
-    private static bool IsStoreGeneratedOnAdd(IProperty property, in StoreObjectIdentifier storeObject)
-        => property.ValueGenerated == ValueGenerated.OnAdd
-           && (UsesAutoIncrement(property, storeObject)
-               || property.TryGetDefaultValue(storeObject, out _)
-               || property.GetDefaultValueSql(storeObject) is not null);
-
-    private static bool UsesAutoIncrement(IProperty property, in StoreObjectIdentifier storeObject)
-        => property.FindOverrides(storeObject)
-                ?.FindAnnotation(DuckDBAnnotationNames.ValueGenerationStrategy)
-                ?.Value is DuckDBValueGenerationStrategy.AutoIncrement
-           || property.GetValueGenerationStrategy() == DuckDBValueGenerationStrategy.AutoIncrement;
-
-    private readonly record struct UpsertConflictTarget(
-        IReadOnlyList<IProperty> Properties,
-        object MetadataIdentity,
-        bool UsesPrimaryKey);
-
-    private sealed record UpsertPlan(
-        string TargetTable,
-        string InsertColumnList,
-        string? ConflictSuffix,
-        string? MergeSuffix,
-        int ColumnCount,
-        Action<IDuckDBAppenderRow, object> WriteRow)
-    {
-        public string CreateTemporaryTableSql(string tempTable)
-            => $"CREATE TEMPORARY TABLE {DelimitTemporaryIdentifier(tempTable)} AS SELECT {InsertColumnList} FROM {TargetTable} WHERE false;";
-
-        public string UpsertFromTemporaryTableSql(string tempTable)
-            => MergeSuffix is null
-                ? $"INSERT INTO {TargetTable} ({InsertColumnList}) SELECT {InsertColumnList} FROM {DelimitTemporaryIdentifier(tempTable)}{ConflictSuffix};"
-                : $"MERGE INTO {TargetTable} AS target USING {DelimitTemporaryIdentifier(tempTable)} AS source{MergeSuffix};";
     }
 }

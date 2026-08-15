@@ -209,6 +209,8 @@ public static class DuckDBLoggerExtensions
             DuckDBProviderOperation.TieredStorage => DuckDBEventId.TieredStorageOperationStarting,
             DuckDBProviderOperation.ExtensionLoad => DuckDBEventId.ExtensionLoadStarting,
             DuckDBProviderOperation.DuckLakeAttachment => DuckDBEventId.DuckLakeAttachmentStarting,
+            DuckDBProviderOperation.QuackServer => DuckDBEventId.QuackServerStarting,
+            DuckDBProviderOperation.QuackDiagnostics => DuckDBEventId.QuackDiagnosticsStarting,
             _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, null),
         };
 
@@ -221,6 +223,8 @@ public static class DuckDBLoggerExtensions
             DuckDBProviderOperation.TieredStorage => DuckDBEventId.TieredStorageOperationCompleted,
             DuckDBProviderOperation.ExtensionLoad => DuckDBEventId.ExtensionLoadCompleted,
             DuckDBProviderOperation.DuckLakeAttachment => DuckDBEventId.DuckLakeAttachmentCompleted,
+            DuckDBProviderOperation.QuackServer => DuckDBEventId.QuackServerCompleted,
+            DuckDBProviderOperation.QuackDiagnostics => DuckDBEventId.QuackDiagnosticsCompleted,
             _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, null),
         };
 
@@ -233,6 +237,8 @@ public static class DuckDBLoggerExtensions
             DuckDBProviderOperation.TieredStorage => DuckDBEventId.TieredStorageOperationFailed,
             DuckDBProviderOperation.ExtensionLoad => DuckDBEventId.ExtensionLoadFailed,
             DuckDBProviderOperation.DuckLakeAttachment => DuckDBEventId.DuckLakeAttachmentFailed,
+            DuckDBProviderOperation.QuackServer => DuckDBEventId.QuackServerFailed,
+            DuckDBProviderOperation.QuackDiagnostics => DuckDBEventId.QuackDiagnosticsFailed,
             _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, null),
         };
 

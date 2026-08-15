@@ -8,5 +8,7 @@ internal enum DuckDBProviderOperation
     TieredStorage,
     ExtensionLoad,
     DuckLakeAttachment,
+    QuackServer,
+    QuackDiagnostics,
     Count,
 }

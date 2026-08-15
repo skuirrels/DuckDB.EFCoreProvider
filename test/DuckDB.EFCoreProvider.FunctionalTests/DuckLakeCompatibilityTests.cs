@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
@@ -6,6 +7,7 @@ using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.ValueGeneration;
 using System.Data;
 using Xunit;
@@ -888,6 +890,85 @@ public sealed class DuckLakeCompatibilityTests
                 Assert.Equal(originalId, stored.Id);
                 Assert.Equal("updated", stored.Name);
             }
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Upsert_in_explicit_transaction_preserves_multiple_DuckLake_match_error(bool async)
+    {
+        var root = CreateDirectories(out var metadataPath, out var dataPath);
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<DuckLakeAlternateUpsertContext>()
+                .UseDuckLake(metadataPath, duckLake => duckLake.DataPath(dataPath))
+                .Options;
+            var id = Guid.NewGuid();
+            var externalId = Guid.NewGuid();
+
+            await using var context = new DuckLakeAlternateUpsertContext(options);
+            Assert.True(await context.Database.EnsureCreatedAsync());
+            Assert.Equal(
+                1,
+                await context.Database.ExecuteSqlInterpolatedAsync(
+                    $"INSERT INTO alternate_upsert_items VALUES ({id}, {externalId}, {"first"})"));
+            Assert.Equal(
+                1,
+                await context.Database.ExecuteSqlInterpolatedAsync(
+                    $"INSERT INTO alternate_upsert_items VALUES ({id}, {externalId}, {"second"})"));
+
+            var plan = DuckDBUpsertPlanner.GetOrCreate(
+                context,
+                typeof(DuckLakeAlternateUpsertItem),
+                [nameof(DuckLakeAlternateUpsertItem.ExternalId)]);
+            Assert.True(plan.RequiresTargetCardinalityValidation);
+
+            var renderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
+            var sql = renderer.RenderUpsertFromTemporaryTable(plan, "temporary_upsert_rows");
+            Assert.Contains("SELECT count(*)", sql);
+            Assert.Contains("error('DuckLake upsert conflict target matched multiple existing rows", sql);
+
+            await using var transaction = await context.Database.BeginTransactionAsync();
+            var input = new DuckLakeAlternateUpsertItem
+            {
+                Id = id,
+                ExternalId = externalId,
+                Name = "should-not-update",
+            };
+            DuckDBException exception;
+            if (async)
+            {
+                exception = await Assert.ThrowsAsync<DuckDBException>(
+                    () => context.UpsertAsync([input], item => item.ExternalId));
+            }
+            else
+            {
+                exception = Assert.Throws<DuckDBException>(() => context.Upsert([input]));
+            }
+
+            Assert.Contains(
+                "DuckLake upsert conflict target matched multiple existing rows",
+                exception.ToString());
+            Assert.DoesNotContain("Current transaction is aborted", exception.ToString());
+            await transaction.RollbackAsync();
+
+            var stored = await context.Items.AsNoTracking().OrderBy(item => item.Name).ToListAsync();
+            Assert.Equal(["first", "second"], stored.Select(item => item.Name));
+
+            await context.Database.OpenConnectionAsync();
+            await using var command = context.Database.GetDbConnection().CreateCommand();
+            command.CommandText =
+                "SELECT count(*) FROM duckdb_tables() WHERE starts_with(table_name, '__duckdb_upsert_')";
+            Assert.Equal(0L, await command.ExecuteScalarAsync());
         }
         finally
         {
