@@ -107,6 +107,28 @@ public static class DuckDBDatabaseFacadeExtensions
             .ExecutePlanAsync(plan, cancellationToken);
     }
 
+    /// <summary>Replays a previously extracted provider command plan through an opt-in Quack profile.</summary>
+    /// <remarks>
+    ///     The plan's parameter values are rendered as supported DuckDB literals because Quack has no independent
+    ///     bind message. This method rejects in-process profiles so an explicit remote replay cannot silently execute
+    ///     against the wrong database.
+    /// </remarks>
+    public static Task<DuckDBDynamicQueryResult> ReplayQuackCommandAsync(
+        this DatabaseFacade database,
+        DuckDBCommandPlan plan,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(plan);
+        if (!database.GetService<IDuckDBEngineCapabilities>().SupportsRemoteCommandExecution)
+        {
+            throw new InvalidOperationException("ReplayQuackCommandAsync requires a DbContext configured with UseQuack.");
+        }
+
+        return database.GetService<DuckDBDynamicCommandExecutor>()
+            .ExecutePlanAsync(plan, cancellationToken);
+    }
+
     /// <summary>Extracts the single database command generated for a query without opening its connection.</summary>
     /// <remarks>
     ///     The plan describes the server command and parameters only; it does not represent EF's client-side

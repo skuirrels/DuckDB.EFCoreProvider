@@ -11,6 +11,46 @@ namespace DuckDB.EFCoreProvider.Extensions;
 /// </summary>
 public static class DuckDBDbContextOptionsBuilderExtensions
 {
+    /// <summary>Configures a context to execute LINQ, SaveChanges, generated values, transactions, and provider commands remotely over Quack.</summary>
+    /// <remarks>
+    ///     This profile is opt-in and experimental because Quack remains experimental in DuckDB 1.5.x.
+    ///     The authentication token is retained in the context options but is excluded from EF logging and cache keys.
+    /// </remarks>
+    public static DbContextOptionsBuilder UseQuack(
+        this DbContextOptionsBuilder optionsBuilder,
+        string endpoint,
+        string token,
+        Action<QuackDbContextOptionsBuilder>? quackOptionsAction = null,
+        Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
+    {
+        ArgumentNullException.ThrowIfNull(optionsBuilder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+
+        return optionsBuilder.UseDuckDB(
+            "Data Source=:memory:",
+            duckDB =>
+            {
+                duckDBOptionsAction?.Invoke(duckDB);
+                duckDB.UseQuack(endpoint, token, quackOptionsAction);
+            });
+    }
+
+    /// <summary>Configures a typed context to execute against a remote DuckDB server over Quack.</summary>
+    public static DbContextOptionsBuilder<TContext> UseQuack<TContext>(
+        this DbContextOptionsBuilder<TContext> optionsBuilder,
+        string endpoint,
+        string token,
+        Action<QuackDbContextOptionsBuilder>? quackOptionsAction = null,
+        Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
+        where TContext : DbContext
+        => (DbContextOptionsBuilder<TContext>)UseQuack(
+            (DbContextOptionsBuilder)optionsBuilder,
+            endpoint,
+            token,
+            quackOptionsAction,
+            duckDBOptionsAction);
+
     /// <summary>
     ///     Configures the context to use a DuckLake catalog backed by a local metadata file.
     /// </summary>

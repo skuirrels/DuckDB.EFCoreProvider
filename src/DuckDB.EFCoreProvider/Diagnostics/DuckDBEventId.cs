@@ -29,6 +29,9 @@ public static class DuckDBEventId
         TieredStorageOperationStarting,
         TieredStorageOperationCompleted,
         TieredStorageOperationFailed,
+        QuackDiagnosticsStarting,
+        QuackDiagnosticsCompleted,
+        QuackDiagnosticsFailed,
 
         ExtensionLoadStarting = CoreEventId.ProviderBaseId + 100,
         ExtensionLoadCompleted,
@@ -36,6 +39,9 @@ public static class DuckDBEventId
         DuckLakeAttachmentStarting,
         DuckLakeAttachmentCompleted,
         DuckLakeAttachmentFailed,
+        QuackServerStarting,
+        QuackServerCompleted,
+        QuackServerFailed,
 
         SaveChangesBatch = CoreEventId.ProviderBaseId + 200,
     }
@@ -85,6 +91,15 @@ public static class DuckDBEventId
     /// <summary>A tiered-storage operation failed.</summary>
     public static readonly EventId TieredStorageOperationFailed = MakeCommandId(Id.TieredStorageOperationFailed);
 
+    /// <summary>A Quack health and diagnostics probe is starting.</summary>
+    public static readonly EventId QuackDiagnosticsStarting = MakeCommandId(Id.QuackDiagnosticsStarting);
+
+    /// <summary>A Quack health and diagnostics probe completed.</summary>
+    public static readonly EventId QuackDiagnosticsCompleted = MakeCommandId(Id.QuackDiagnosticsCompleted);
+
+    /// <summary>A Quack health and diagnostics probe failed.</summary>
+    public static readonly EventId QuackDiagnosticsFailed = MakeCommandId(Id.QuackDiagnosticsFailed);
+
     /// <summary>A configured DuckDB extension is being loaded.</summary>
     public static readonly EventId ExtensionLoadStarting = MakeInfrastructureId(Id.ExtensionLoadStarting);
 
@@ -102,6 +117,15 @@ public static class DuckDBEventId
 
     /// <summary>A DuckLake catalog attachment failed.</summary>
     public static readonly EventId DuckLakeAttachmentFailed = MakeInfrastructureId(Id.DuckLakeAttachmentFailed);
+
+    /// <summary>A provider-managed Quack server operation is starting.</summary>
+    public static readonly EventId QuackServerStarting = MakeInfrastructureId(Id.QuackServerStarting);
+
+    /// <summary>A provider-managed Quack server operation completed.</summary>
+    public static readonly EventId QuackServerCompleted = MakeInfrastructureId(Id.QuackServerCompleted);
+
+    /// <summary>A provider-managed Quack server operation failed.</summary>
+    public static readonly EventId QuackServerFailed = MakeInfrastructureId(Id.QuackServerFailed);
 
     /// <summary>A SaveChanges batch was flushed or rejected by a provider batching guard.</summary>
     public static readonly EventId SaveChangesBatch = MakeCommandId(Id.SaveChangesBatch);

@@ -8,25 +8,31 @@ namespace DuckDB.EFCoreProvider.Internal;
 /// </summary>
 internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
 {
-    internal static IDuckDBEngineCapabilities Native { get; } = new DuckDBEngineCapabilities(false);
+    internal static IDuckDBEngineCapabilities Native { get; } = new DuckDBEngineCapabilities(false, false);
 
-    public DuckDBEngineCapabilities(IDuckLakeSingletonOptions duckLakeOptions)
-        : this(duckLakeOptions.IsDuckLake)
+    public DuckDBEngineCapabilities(IDuckLakeSingletonOptions duckLakeOptions, IDuckDBSingletonOptions duckDbOptions)
+        : this(duckLakeOptions.IsDuckLake, duckDbOptions.IsQuack)
     {
     }
 
     internal static IDuckDBEngineCapabilities FromDuckLakeProfile(bool isDuckLake)
-        => isDuckLake ? new DuckDBEngineCapabilities(true) : Native;
+        => isDuckLake ? new DuckDBEngineCapabilities(true, false) : Native;
 
     internal static IDuckDBEngineCapabilities FromDuckLakeOptions(IDuckLakeSingletonOptions? options)
         => FromDuckLakeProfile(options?.IsDuckLake == true);
 
     internal static IDuckDBEngineCapabilities FromOptions(IDbContextOptions options)
-        => FromDuckLakeProfile(options.FindExtension<DuckDBOptionsExtension>()?.DuckLakeOptions is not null);
+    {
+        var extension = options.FindExtension<DuckDBOptionsExtension>();
+        return extension?.QuackOptions is not null
+            ? new DuckDBEngineCapabilities(false, true)
+            : FromDuckLakeProfile(extension?.DuckLakeOptions is not null);
+    }
 
-    internal DuckDBEngineCapabilities(bool isDuckLake)
+    internal DuckDBEngineCapabilities(bool isDuckLake, bool isQuack)
     {
         SupportsReturning = !isDuckLake;
+        SupportsStoreGeneratedValues = !isDuckLake;
         SupportsReturningOnReferencedTableUpdates = false;
         SupportsReferencedTableForeignKeyUpdates = isDuckLake;
         SupportsSaveChangesBatching = !isDuckLake;
@@ -35,14 +41,21 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
         SupportsSqlDefaultExpressions = !isDuckLake;
         SupportsIndexes = !isDuckLake;
         SupportsSchemaConstraints = !isDuckLake;
-        SupportsTieredStorage = !isDuckLake;
-        SupportsEfMigrations = !isDuckLake;
+        SupportsTieredStorage = !isDuckLake && !isQuack;
+        SupportsEfMigrations = !isDuckLake && !isQuack;
+        SupportsSchemaManagement = true;
+        SupportsDatabaseDeletion = !isDuckLake && !isQuack;
+        SupportsRemoteCommandExecution = isQuack;
+        SupportsRemoteBulkInsert = isQuack;
+        SupportsMultipleStatementsPerCommand = !isQuack;
         UpsertStrategy = isDuckLake
             ? DuckDBUpsertStrategy.Merge
             : DuckDBUpsertStrategy.InsertOnConflict;
     }
 
     public bool SupportsReturning { get; }
+
+    public bool SupportsStoreGeneratedValues { get; }
 
     public bool SupportsReturningOnReferencedTableUpdates { get; }
 
@@ -63,6 +76,16 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
     public bool SupportsTieredStorage { get; }
 
     public bool SupportsEfMigrations { get; }
+
+    public bool SupportsSchemaManagement { get; }
+
+    public bool SupportsDatabaseDeletion { get; }
+
+    public bool SupportsRemoteCommandExecution { get; }
+
+    public bool SupportsRemoteBulkInsert { get; }
+
+    public bool SupportsMultipleStatementsPerCommand { get; }
 
     public DuckDBUpsertStrategy UpsertStrategy { get; }
 }

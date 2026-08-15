@@ -1,5 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Extensions.Internal;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -360,6 +362,28 @@ public class UpsertTests : DuckDBTestBase
             item => item.Name));
 
         Assert.Contains("primary key, alternate key, or unique index", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Alternate_target_plan_omits_store_generated_columns_and_renders_native_conflict_sql()
+    {
+        using var context = CreateContext();
+        var plan = DuckDBUpsertPlanner.GetOrCreate(
+            context,
+            typeof(GeneratedItem),
+            [nameof(GeneratedItem.ExternalId)]);
+
+        Assert.Equal<string>(["external_event_id", "Name"], plan.InsertColumns);
+        Assert.Equal<string>(["Name"], plan.UpdateColumns);
+        Assert.Equal<string>(["external_event_id"], plan.ConflictColumns);
+        Assert.False(plan.RequiresTargetCardinalityValidation);
+
+        var renderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
+        var sql = renderer.RenderUpsertFromTemporaryTable(plan, "temporary_upsert_rows");
+
+        Assert.Contains("ON CONFLICT (external_event_id)", sql);
+        Assert.Contains("\"Name\" = excluded.\"Name\"", sql);
+        Assert.DoesNotContain("error(", sql);
     }
 
     private sealed class UpsertContext(DbContextOptions<UpsertContext> options) : DbContext(options)

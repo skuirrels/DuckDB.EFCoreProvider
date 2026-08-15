@@ -22,6 +22,9 @@ public interface IDuckDBEngineCapabilities
 {
     bool SupportsReturning { get; }
 
+    /// <summary>Whether the configured profile can bind and read store-generated schema values.</summary>
+    bool SupportsStoreGeneratedValues => SupportsReturning;
+
     /// <summary>
     ///     Indicates whether tracked updates to tables with inbound foreign keys can safely use
     ///     <c>UPDATE ... RETURNING</c>.
@@ -49,6 +52,21 @@ public interface IDuckDBEngineCapabilities
     bool SupportsTieredStorage { get; }
 
     bool SupportsEfMigrations { get; }
+
+    /// <summary>Whether EF can provision the configured database schema.</summary>
+    bool SupportsSchemaManagement => true;
+
+    /// <summary>Whether EF can delete the configured database.</summary>
+    bool SupportsDatabaseDeletion => true;
+
+    /// <summary>Whether commands are replayed against a remote DuckDB session.</summary>
+    bool SupportsRemoteCommandExecution => false;
+
+    /// <summary>Whether the remote transport supports typed chunk append.</summary>
+    bool SupportsRemoteBulkInsert => false;
+
+    /// <summary>Whether one provider command can expose result sets from multiple SQL statements.</summary>
+    bool SupportsMultipleStatementsPerCommand => true;
 
     DuckDBUpsertStrategy UpsertStrategy { get; }
 }

@@ -62,6 +62,35 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
         return this;
     }
 
+    /// <summary>Configures an experimental remote DuckDB profile over the Quack protocol.</summary>
+    /// <param name="endpoint">The <c>quack:</c> endpoint.</param>
+    /// <param name="token">The server authentication token. It is not included in EF log or debug fragments.</param>
+    /// <param name="quackOptionsAction">Optional transport configuration.</param>
+    public virtual DuckDBDbContextOptionsBuilder UseQuack(
+        string endpoint,
+        string token,
+        Action<QuackDbContextOptionsBuilder>? quackOptionsAction = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+        if (token.Length < 4)
+        {
+            throw new ArgumentException("A Quack authentication token must contain at least four characters.", nameof(token));
+        }
+
+        var infrastructure = (IDbContextOptionsBuilderInfrastructure)OptionsBuilder;
+        var extension = OptionsBuilder.Options.FindExtension<DuckDBOptionsExtension>()
+            ?? throw new InvalidOperationException("Configure DuckDB before configuring Quack.");
+        infrastructure.AddOrUpdateExtension(extension.WithQuackOptions(new QuackOptions
+        {
+            Endpoint = endpoint,
+            Token = token
+        }));
+
+        quackOptionsAction?.Invoke(new QuackDbContextOptionsBuilder(OptionsBuilder));
+        return this;
+    }
+
     /// <summary>
     ///     Appends NULLS FIRST to all ORDER BY clauses. This is important for the tests which were written
     ///     for SQL Server. Note that to fully implement null-first ordering indexes also need to be generated

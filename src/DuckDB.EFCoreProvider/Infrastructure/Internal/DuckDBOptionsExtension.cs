@@ -30,6 +30,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions = [];
     private Action<DuckDBConnection>? _connectionInitializer;
     private DuckLakeOptions? _duckLakeOptions;
+    private QuackOptions? _quackOptions;
 
     public DuckDBOptionsExtension()
     {
@@ -52,6 +53,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _configuredExtensions = copyFrom._configuredExtensions;
         _connectionInitializer = copyFrom._connectionInitializer;
         _duckLakeOptions = copyFrom._duckLakeOptions;
+        _quackOptions = copyFrom._quackOptions;
     }
 
     /// <summary>
@@ -167,6 +169,9 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
 
     /// <summary>The attached DuckLake catalog profile, or <see langword="null" /> for native DuckDB mode.</summary>
     internal virtual DuckLakeOptions? DuckLakeOptions => _duckLakeOptions;
+
+    /// <summary>The experimental Quack remote profile, or <see langword="null" /> for an in-process profile.</summary>
+    internal virtual QuackOptions? QuackOptions => _quackOptions;
 
     protected override RelationalOptionsExtension Clone()
     {
@@ -344,10 +349,56 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         return clone;
     }
 
+    /// <summary>Returns a copy configured to execute provider commands through Quack.</summary>
+    internal virtual DuckDBOptionsExtension WithQuackOptions(QuackOptions options)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+        clone._quackOptions = options;
+        return clone;
+    }
+
     /// <inheritdoc />
     public override void Validate(IDbContextOptions options)
     {
         base.Validate(options);
+
+        if (_duckLakeOptions is not null && _quackOptions is not null)
+        {
+            throw new InvalidOperationException("UseQuack and UseDuckLake cannot be combined on the same DbContext.");
+        }
+
+        if (_quackOptions is not null)
+        {
+            if (Connection is not null)
+            {
+                throw new InvalidOperationException(
+                    "UseQuack cannot be combined with a caller-supplied DbConnection because the provider must "
+                    + "own the local DuckDB transport connection and attach the remote Quack catalog.");
+            }
+
+            if (!_quackOptions.Endpoint.StartsWith("quack:", StringComparison.OrdinalIgnoreCase)
+                || _quackOptions.Endpoint.Length == "quack:".Length)
+            {
+                throw new InvalidOperationException("A Quack endpoint must use the quack: URI scheme and include a host.");
+            }
+
+            if (_quackOptions.Token.Length < 4)
+            {
+                throw new InvalidOperationException("A Quack authentication token must contain at least four characters.");
+            }
+
+            if (_connectionInitializer is not null)
+            {
+                throw new InvalidOperationException(
+                    "ConfigureConnection accepts an in-process DuckDBConnection and cannot be used with UseQuack. "
+                    + "Configure server-side extensions and secrets on the Quack server instead.");
+            }
+
+            if (!Enum.IsDefined(_quackOptions.ExtensionLoadMode))
+            {
+                throw new InvalidOperationException("The configured Quack extension load mode is invalid.");
+            }
+        }
 
         if (_duckLakeOptions is null)
         {
@@ -434,7 +485,8 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             => other is ExtensionInfo otherInfo
                && Extension.ReverseNullOrdering == otherInfo.Extension.ReverseNullOrdering
                && Extension.CaseInsensitiveStringSearches == otherInfo.Extension.CaseInsensitiveStringSearches
-               && (Extension.DuckLakeOptions is null) == (otherInfo.Extension.DuckLakeOptions is null);
+               && (Extension.DuckLakeOptions is null) == (otherInfo.Extension.DuckLakeOptions is null)
+               && (Extension.QuackOptions is null) == (otherInfo.Extension.QuackOptions is null);
 
         public override string LogFragment
         {
@@ -461,6 +513,11 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                         builder.Append("DuckLake ");
                     }
 
+                    if (Extension.QuackOptions is not null)
+                    {
+                        builder.Append("Quack ");
+                    }
+
                     _logFragment = builder.ToString();
                 }
 
@@ -477,6 +534,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                 hashCode.Add(Extension.ReverseNullOrdering);
                 hashCode.Add(Extension.CaseInsensitiveStringSearches);
                 hashCode.Add(Extension.DuckLakeOptions is not null);
+                hashCode.Add(Extension.QuackOptions is not null);
 
                 _serviceProviderHash = hashCode.ToHashCode();
             }
@@ -492,6 +550,8 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             debugInfo["DuckDB.EFCoreProvider:" + nameof(CaseInsensitiveStringSearches)] = Extension.CaseInsensitiveStringSearches
                 .GetHashCode().ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:DuckLake"] = (Extension.DuckLakeOptions is not null).GetHashCode()
+                .ToString(CultureInfo.InvariantCulture);
+            debugInfo["DuckDB.EFCoreProvider:Quack"] = (Extension.QuackOptions is not null).GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);
         }
     }

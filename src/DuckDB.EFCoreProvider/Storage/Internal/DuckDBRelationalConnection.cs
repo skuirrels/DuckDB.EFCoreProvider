@@ -1,6 +1,7 @@
 ﻿using DuckDB.EFCoreProvider.Diagnostics.Internal;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -33,6 +34,8 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions;
     private readonly Action<DuckDBConnection>? _connectionInitializer;
     private readonly DuckLakeOptions? _duckLakeOptions;
+    private readonly QuackOptions? _quackOptions;
+    private readonly IDuckDBEngineCapabilities _engineCapabilities;
     private DuckDBConnection? _initializedDuckLakeConnection;
     private DuckDBConnection? _initializingDuckLakeConnection;
     private DuckDBConnection? _observedDuckLakeConnection;
@@ -41,6 +44,19 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         RelationalConnectionDependencies dependencies,
         IRawSqlCommandBuilder rawSqlCommandBuilder,
         IDiagnosticsLogger<DbLoggerCategory.Infrastructure> logger)
+        : this(
+            dependencies,
+            rawSqlCommandBuilder,
+            logger,
+            DuckDBEngineCapabilities.FromOptions(dependencies.ContextOptions))
+    {
+    }
+
+    public DuckDBRelationalConnection(
+        RelationalConnectionDependencies dependencies,
+        IRawSqlCommandBuilder rawSqlCommandBuilder,
+        IDiagnosticsLogger<DbLoggerCategory.Infrastructure> logger,
+        IDuckDBEngineCapabilities engineCapabilities)
         : base(dependencies)
     {
         _rawSqlCommandBuilder = rawSqlCommandBuilder;
@@ -55,6 +71,8 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         _configuredExtensions = optionsExtension?.ConfiguredExtensions ?? [];
         _connectionInitializer = optionsExtension?.ConnectionInitializer;
         _duckLakeOptions = optionsExtension?.DuckLakeOptions;
+        _quackOptions = optionsExtension?.QuackOptions;
+        _engineCapabilities = engineCapabilities ?? throw new ArgumentNullException(nameof(engineCapabilities));
     }
 
     // DuckDB.NET only supports IsolationLevel.Unspecified and IsolationLevel.Snapshot.
@@ -65,9 +83,9 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     /// <inheritdoc />
     protected override DbConnection CreateDbConnection()
     {
-        var connection = new DuckDBConnection(GetValidatedConnectionString());
-
-        return connection;
+        return _quackOptions is null
+            ? new DuckDBConnection(GetValidatedConnectionString())
+            : new QuackDbConnection(GetValidatedConnectionString(), _quackOptions, _engineCapabilities);
     }
 
     /// <inheritdoc />
@@ -155,6 +173,13 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     public virtual IDuckDBRelationalConnection CreateReadOnlyConnection()
     {
+        if (_quackOptions is not null)
+        {
+            throw new NotSupportedException(
+                "A Quack profile cannot create an independently enforced read-only connection. "
+                + "Use a server-side read-only authorization policy and a separate UseQuack context.");
+        }
+
         var connectionStringBuilder = new DuckDBConnectionStringBuilder()
         {
             ConnectionString = GetValidatedConnectionString()
@@ -237,7 +262,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     protected override void CloseDbConnection()
     {
-        var connection = (DuckDBConnection)DbConnection;
+        var connection = DbConnection;
 
         if (connection.State != ConnectionState.Closed)
         {
@@ -247,7 +272,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     protected override async Task CloseDbConnectionAsync()
     {
-        var connection = (DuckDBConnection)DbConnection;
+        var connection = DbConnection;
 
         if (connection.State != ConnectionState.Closed)
         {
@@ -257,12 +282,19 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     protected override void OpenDbConnection(bool errorsExpected)
     {
-        var connection = (DuckDBConnection)DbConnection;
+        var connection = DbConnection;
 
         connection.Open();
         try
         {
-            InitializeOpenConnection(connection);
+            if (connection is DuckDBConnection duckDbConnection)
+            {
+                InitializeOpenConnection(duckDbConnection);
+            }
+            else
+            {
+                InitializeOpenQuackConnection();
+            }
         }
         catch
         {
@@ -273,18 +305,39 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     protected override async Task OpenDbConnectionAsync(bool errorsExpected, CancellationToken cancellationToken)
     {
-        var connection = (DuckDBConnection)DbConnection;
+        var connection = DbConnection;
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await InitializeOpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            if (connection is DuckDBConnection duckDbConnection)
+            {
+                await InitializeOpenConnectionAsync(duckDbConnection, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await InitializeOpenQuackConnectionAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
         catch
         {
             await connection.CloseAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    private void InitializeOpenQuackConnection()
+    {
+        ApplyConfigurationIfNeeded();
+        LoadSpatialExtensionIfNeeded();
+        LoadConfiguredExtensions();
+    }
+
+    private async Task InitializeOpenQuackConnectionAsync(CancellationToken cancellationToken)
+    {
+        await ApplyConfigurationIfNeededAsync(cancellationToken).ConfigureAwait(false);
+        await LoadSpatialExtensionIfNeededAsync(cancellationToken).ConfigureAwait(false);
+        await LoadConfiguredExtensionsAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private void InitializeOpenConnection(DuckDBConnection connection)
