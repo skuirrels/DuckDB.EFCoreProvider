@@ -21,7 +21,7 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.20.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.21.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
 1.21.0
 - Add an opt-in DuckDBUpsertMatchMode.LogicalKeyMerge for the conflict-target UpsertAsync overload: a set-based MERGE INTO on the selected properties as a logical key, without requiring or maintaining a physical unique constraint. Avoids the ART-index write cost and memory footprint that grow with target table size under sustained ingest; a staged batch fails before mutation when one staged key matches multiple existing rows.
