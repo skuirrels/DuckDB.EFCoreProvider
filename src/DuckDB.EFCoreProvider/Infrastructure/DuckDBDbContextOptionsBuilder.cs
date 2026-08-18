@@ -233,6 +233,31 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     }
 
     /// <summary>
+    ///     Sets DuckDB's <c>checkpoint_threshold</c> — the WAL size at which DuckDB triggers an automatic
+    ///     checkpoint — applied when a connection opens.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         DuckDB's default is 16 MB. Automatic checkpoints re-serialize the in-memory ART indexes that back
+    ///         primary keys, alternate keys, and unique indexes, so on large indexed tables frequent checkpoints
+    ///         dominate sustained ingest cost and grow with table size. Raising the threshold defers that work;
+    ///         pair it with an explicit <c>CHECKPOINT</c> statement at ingest boundaries to bound WAL size and
+    ///         crash-recovery time.
+    ///     </para>
+    ///     <para>
+    ///         Like <c>memory_limit</c>, this is a global setting for the DuckDB instance; the last connection to
+    ///         open with a configured value wins. The value uses DuckDB's size syntax, for example <c>"1GB"</c>.
+    ///     </para>
+    /// </remarks>
+    /// <param name="checkpointThreshold">The WAL size threshold (for example <c>"1GB"</c>).</param>
+    public virtual DuckDBDbContextOptionsBuilder CheckpointThreshold(string checkpointThreshold)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(checkpointThreshold);
+
+        return WithOption(e => e.WithCheckpointThreshold(checkpointThreshold));
+    }
+
+    /// <summary>
     ///     Sets DuckDB's <c>file_search_path</c> — one or more comma-separated directories that relative file
     ///     paths are resolved against — applied when a connection opens.
     /// </summary>

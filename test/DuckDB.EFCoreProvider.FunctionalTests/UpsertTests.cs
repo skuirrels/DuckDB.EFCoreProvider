@@ -1,5 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Extensions.Internal;
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Xunit;
@@ -40,7 +42,7 @@ public class UpsertTests : DuckDBTestBase
             .Where(parameter => parameter.Name == "batchSize")
             .ToArray();
 
-        Assert.Equal(3, batchParameters.Length);
+        Assert.Equal(4, batchParameters.Length);
         Assert.All(
             batchParameters,
             parameter => Assert.Equal(DuckDBUpsertBatching.DefaultRequestedBatchSize, parameter.DefaultValue));
@@ -445,6 +447,130 @@ public class UpsertTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public async Task UpsertAsync_logical_key_merge_inserts_and_updates_without_a_unique_constraint()
+    {
+        var matched = Guid.NewGuid();
+        var untouched = Guid.NewGuid();
+        var added = Guid.NewGuid();
+
+        await using (var context = CreateContext())
+        {
+            await context.Database.EnsureCreatedAsync();
+            Assert.Equal(
+                2,
+                await context.UpsertAsync(
+                [
+                    new LogicalItem { ExternalId = matched, Name = "first", Quantity = 1 },
+                    new LogicalItem { ExternalId = untouched, Name = "other", Quantity = 2 },
+                ],
+                item => item.ExternalId,
+                DuckDBUpsertMatchMode.LogicalKeyMerge));
+        }
+
+        long matchedId;
+        await using (var context = CreateContext())
+        {
+            matchedId = (await context.LogicalItems.AsNoTracking().SingleAsync(item => item.ExternalId == matched)).Id;
+            Assert.Equal(
+                2,
+                await context.UpsertAsync(
+                [
+                    new LogicalItem { ExternalId = matched, Name = "updated", Quantity = 10 },
+                    new LogicalItem { ExternalId = added, Name = "inserted", Quantity = 3 },
+                ],
+                item => item.ExternalId,
+                DuckDBUpsertMatchMode.LogicalKeyMerge));
+        }
+
+        await using (var context = CreateContext())
+        {
+            var stored = await context.LogicalItems.AsNoTracking().ToListAsync();
+            Assert.Equal(3, stored.Count);
+            var updated = stored.Single(item => item.ExternalId == matched);
+            Assert.Equal(matchedId, updated.Id);
+            Assert.Equal(("updated", 10), (updated.Name, updated.Quantity));
+            Assert.Equal("other", stored.Single(item => item.ExternalId == untouched).Name);
+            Assert.Equal("inserted", stored.Single(item => item.ExternalId == added).Name);
+        }
+    }
+
+    [ConditionalFact]
+    public async Task UpsertAsync_logical_key_merge_fails_before_mutation_when_a_key_matches_multiple_rows()
+    {
+        var duplicated = Guid.NewGuid();
+
+        await using (var context = CreateContext())
+        {
+            await context.Database.EnsureCreatedAsync();
+            // No physical constraint exists on ExternalId, so duplicate logical keys can be stored.
+            context.AddRange(
+                new LogicalItem { ExternalId = duplicated, Name = "first", Quantity = 1 },
+                new LogicalItem { ExternalId = duplicated, Name = "second", Quantity = 2 });
+            await context.SaveChangesAsync();
+        }
+
+        await using (var context = CreateContext())
+        {
+            var exception = await Assert.ThrowsAsync<DuckDBException>(() => context.UpsertAsync(
+            [
+                new LogicalItem { ExternalId = duplicated, Name = "should-not-update", Quantity = 3 }
+            ],
+                item => item.ExternalId,
+                DuckDBUpsertMatchMode.LogicalKeyMerge));
+
+            Assert.Contains("The upsert conflict target matched multiple existing rows", exception.ToString());
+        }
+
+        await using (var context = CreateContext())
+        {
+            var stored = await context.LogicalItems.AsNoTracking().OrderBy(item => item.Name).ToListAsync();
+            Assert.Equal(["first", "second"], stored.Select(item => item.Name));
+        }
+    }
+
+    [ConditionalFact]
+    public void Logical_key_merge_plan_renders_validated_merge_sql_and_omits_generated_columns()
+    {
+        using var context = CreateContext();
+        var plan = DuckDBUpsertPlanner.GetOrCreate(
+            context,
+            typeof(LogicalItem),
+            [nameof(LogicalItem.ExternalId)],
+            DuckDBUpsertMatchMode.LogicalKeyMerge);
+
+        Assert.Equal(DuckDBUpsertStrategy.Merge, plan.Strategy);
+        Assert.True(plan.RequiresTargetCardinalityValidation);
+        Assert.DoesNotContain("Id", plan.InsertColumns);
+
+        var renderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
+        var sql = renderer.RenderUpsertFromTemporaryTable(plan, "temporary_upsert_rows");
+
+        Assert.Contains("MERGE INTO", sql);
+        Assert.Contains("error(", sql);
+        Assert.DoesNotContain("ON CONFLICT", sql);
+    }
+
+    [ConditionalFact]
+    public void Logical_key_merge_on_a_physically_unique_target_skips_cardinality_validation()
+    {
+        using var context = CreateContext();
+        var plan = DuckDBUpsertPlanner.GetOrCreate(
+            context,
+            typeof(GeneratedItem),
+            [nameof(GeneratedItem.ExternalId)],
+            DuckDBUpsertMatchMode.LogicalKeyMerge);
+
+        Assert.Equal(DuckDBUpsertStrategy.Merge, plan.Strategy);
+        Assert.False(plan.RequiresTargetCardinalityValidation);
+
+        var renderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
+        var sql = renderer.RenderUpsertFromTemporaryTable(plan, "temporary_upsert_rows");
+
+        Assert.Contains("MERGE INTO", sql);
+        Assert.DoesNotContain("error(", sql);
+    }
+
+    [ConditionalFact]
     public void Alternate_target_plan_omits_store_generated_columns_and_renders_native_conflict_sql()
     {
         using var context = CreateContext();
@@ -490,9 +616,11 @@ public class UpsertTests : DuckDBTestBase
         public DbSet<GeneratedItem> GeneratedItems => Set<GeneratedItem>();
         public DbSet<CompositeConflictItem> CompositeConflictItems => Set<CompositeConflictItem>();
         public DbSet<ClientGeneratedItem> ClientGeneratedItems => Set<ClientGeneratedItem>();
+        public DbSet<LogicalItem> LogicalItems => Set<LogicalItem>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            modelBuilder.Entity<LogicalItem>(entity => entity.Property(item => item.Id).UseAutoIncrement());
             modelBuilder.Entity<Item>().Property(e => e.Id).ValueGeneratedNever();
             modelBuilder.Entity<CompositeItem>().HasKey(e => new { e.KeyA, e.KeyB });
             modelBuilder.Entity<KeyOnly>().Property(e => e.Id).ValueGeneratedNever();
@@ -561,6 +689,14 @@ public class UpsertTests : DuckDBTestBase
         public Guid Id { get; set; }
         public EventKey ExternalId { get; set; }
         public string Name { get; set; } = "";
+    }
+
+    private sealed class LogicalItem
+    {
+        public long Id { get; set; }
+        public Guid ExternalId { get; set; }
+        public string Name { get; set; } = "";
+        public int Quantity { get; set; }
     }
 
     private readonly record struct EventKey(Guid Value);

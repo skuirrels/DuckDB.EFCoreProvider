@@ -935,7 +935,7 @@ public sealed class DuckLakeCompatibilityTests
             var renderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
             var sql = renderer.RenderUpsertFromTemporaryTable(plan, "temporary_upsert_rows");
             Assert.Contains("SELECT count(*)", sql);
-            Assert.Contains("error('DuckLake upsert conflict target matched multiple existing rows", sql);
+            Assert.Contains("error('The upsert conflict target matched multiple existing rows", sql);
 
             await using var transaction = await context.Database.BeginTransactionAsync();
             var input = new DuckLakeAlternateUpsertItem
@@ -956,7 +956,7 @@ public sealed class DuckLakeCompatibilityTests
             }
 
             Assert.Contains(
-                "DuckLake upsert conflict target matched multiple existing rows",
+                "The upsert conflict target matched multiple existing rows",
                 exception.ToString());
             Assert.DoesNotContain("Current transaction is aborted", exception.ToString());
             await transaction.RollbackAsync();

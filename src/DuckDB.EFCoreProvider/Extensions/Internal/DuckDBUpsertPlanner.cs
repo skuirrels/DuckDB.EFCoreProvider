@@ -34,7 +34,8 @@ internal static class DuckDBUpsertPlanner
     internal static DuckDBUpsertPlan GetOrCreate(
         DbContext context,
         Type clrType,
-        IReadOnlyList<string>? conflictPropertyNames = null)
+        IReadOnlyList<string>? conflictPropertyNames = null,
+        DuckDBUpsertMatchMode matchMode = DuckDBUpsertMatchMode.UniqueConflictTarget)
     {
         var entityType = context.Model.FindEntityType(clrType)
             ?? throw new InvalidOperationException($"'{clrType.Name}' is not part of the model.");
@@ -43,15 +44,18 @@ internal static class DuckDBUpsertPlanner
             ?? throw new InvalidOperationException($"'{clrType.Name}' is not mapped to a table; upsert is not supported.");
         var schema = entityType.GetSchema();
         var capabilities = context.GetService<IDuckDBEngineCapabilities>();
-        var conflictTarget = ResolveConflictTarget(entityType, conflictPropertyNames);
-        var requiresTargetCardinalityValidation = capabilities.UpsertStrategy == DuckDBUpsertStrategy.Merge
-            && !capabilities.SupportsSchemaConstraints;
+        var conflictTarget = ResolveConflictTarget(entityType, conflictPropertyNames, matchMode);
+        var strategy = matchMode == DuckDBUpsertMatchMode.LogicalKeyMerge
+            ? DuckDBUpsertStrategy.Merge
+            : capabilities.UpsertStrategy;
+        var requiresTargetCardinalityValidation = strategy == DuckDBUpsertStrategy.Merge
+            && !(capabilities.SupportsSchemaConstraints && conflictTarget.IsPhysicallyEnforced);
         var usesRemoteValueRendering = capabilities.SupportsRemoteCommandExecution;
         var planCache = PlanCaches.GetValue(entityType, static _ => new());
         var cacheKey = new UpsertPlanCacheKey(
             schema,
             table,
-            capabilities.UpsertStrategy,
+            strategy,
             requiresTargetCardinalityValidation,
             usesRemoteValueRendering,
             conflictTarget.MetadataIdentity);
@@ -69,7 +73,7 @@ internal static class DuckDBUpsertPlanner
             (EntityType: entityType,
                 Table: table,
                 Schema: schema,
-                Strategy: capabilities.UpsertStrategy,
+                Strategy: strategy,
                 RequiresTargetCardinalityValidation: requiresTargetCardinalityValidation,
                 UsesRemoteValueRendering: usesRemoteValueRendering,
                 ConflictTarget: conflictTarget));
@@ -77,14 +81,15 @@ internal static class DuckDBUpsertPlanner
 
     private static UpsertConflictTarget ResolveConflictTarget(
         IEntityType entityType,
-        IReadOnlyList<string>? conflictPropertyNames)
+        IReadOnlyList<string>? conflictPropertyNames,
+        DuckDBUpsertMatchMode matchMode)
     {
         var primaryKey = entityType.FindPrimaryKey()
             ?? throw new InvalidOperationException($"'{entityType.ClrType.Name}' has no primary key; upsert requires a primary key.");
 
         if (conflictPropertyNames is null)
         {
-            return new UpsertConflictTarget(primaryKey.Properties, primaryKey, UsesPrimaryKey: true);
+            return new UpsertConflictTarget(primaryKey.Properties, primaryKey, UsesPrimaryKey: true, IsPhysicallyEnforced: true);
         }
 
         var properties = conflictPropertyNames.Select(name => entityType.FindProperty(name)
@@ -95,18 +100,28 @@ internal static class DuckDBUpsertPlanner
         var key = entityType.GetKeys().FirstOrDefault(candidate => candidate.Properties.SequenceEqual(properties));
         if (key is not null)
         {
-            return new UpsertConflictTarget(key.Properties, key, key.IsPrimaryKey());
+            return new UpsertConflictTarget(key.Properties, key, key.IsPrimaryKey(), IsPhysicallyEnforced: true);
         }
 
         var index = entityType.GetIndexes()
             .FirstOrDefault(candidate => candidate.IsUnique && candidate.Properties.SequenceEqual(properties));
         if (index is not null)
         {
-            return new UpsertConflictTarget(index.Properties, index, UsesPrimaryKey: false);
+            return new UpsertConflictTarget(index.Properties, index, UsesPrimaryKey: false, IsPhysicallyEnforced: true);
+        }
+
+        if (matchMode == DuckDBUpsertMatchMode.LogicalKeyMerge)
+        {
+            return new UpsertConflictTarget(
+                properties,
+                string.Join("\n", conflictPropertyNames),
+                UsesPrimaryKey: false,
+                IsPhysicallyEnforced: false);
         }
 
         throw new InvalidOperationException(
-            $"The conflict target for '{entityType.DisplayName()}' must be a primary key, alternate key, or unique index.");
+            $"The conflict target for '{entityType.DisplayName()}' must be a primary key, alternate key, or unique index. "
+            + $"To match on properties without a physical unique constraint, pass {nameof(DuckDBUpsertMatchMode)}.{nameof(DuckDBUpsertMatchMode.LogicalKeyMerge)}.");
     }
 
     private static DuckDBUpsertPlan BuildPlan(
@@ -231,7 +246,8 @@ internal static class DuckDBUpsertPlanner
     private readonly record struct UpsertConflictTarget(
         IReadOnlyList<IProperty> Properties,
         object MetadataIdentity,
-        bool UsesPrimaryKey);
+        bool UsesPrimaryKey,
+        bool IsPhysicallyEnforced);
 }
 
 internal sealed record DuckDBUpsertValueAccessor(

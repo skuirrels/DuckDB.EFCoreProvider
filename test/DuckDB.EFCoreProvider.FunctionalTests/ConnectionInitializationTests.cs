@@ -76,18 +76,32 @@ public sealed class ConnectionInitializationTests : DuckDBTestBase
         var commandText = DuckDBRelationalConnection.BuildConfigurationCommandText(
             "256MiB",
             2,
-            "/tmp/duckdb-provider-settings");
+            "/tmp/duckdb-provider-settings",
+            "1GiB");
 
         Assert.NotNull(commandText);
-        Assert.Equal(3, commandText!.Count(character => character == ';'));
+        Assert.Equal(4, commandText!.Count(character => character == ';'));
         Assert.Contains("SET memory_limit", commandText);
         Assert.Contains("SET threads = 2", commandText);
         Assert.Contains("SET file_search_path", commandText);
+        Assert.Contains("SET checkpoint_threshold", commandText);
     }
 
     [ConditionalFact]
     public void Unconfigured_settings_do_not_create_a_command()
-        => Assert.Null(DuckDBRelationalConnection.BuildConfigurationCommandText(null, null, null));
+        => Assert.Null(DuckDBRelationalConnection.BuildConfigurationCommandText(null, null, null, null));
+
+    [ConditionalFact]
+    public void CheckpointThreshold_is_applied_when_the_connection_opens()
+    {
+        using var context = new InitContext(FileOptions<InitContext>(options => options.CheckpointThreshold("1GiB")));
+
+        context.Database.OpenConnection();
+
+        using var command = context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = "SELECT current_setting('checkpoint_threshold')";
+        Assert.Equal("1.0 GiB", command.ExecuteScalar());
+    }
 
     private sealed class InitContext(DbContextOptions<InitContext> options) : DbContext(options);
 }

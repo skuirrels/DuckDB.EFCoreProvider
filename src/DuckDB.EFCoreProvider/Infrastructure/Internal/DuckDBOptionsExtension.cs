@@ -23,6 +23,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private bool _bulkDeleteBatching;
     private string? _memoryLimit;
     private int? _threads;
+    private string? _checkpointThreshold;
     private string? _fileSearchPath;
     private TimeSpan? _migrationLockTimeout;
     private bool _migrationTableRebuilds;
@@ -46,6 +47,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _bulkDeleteBatching = copyFrom._bulkDeleteBatching;
         _memoryLimit = copyFrom._memoryLimit;
         _threads = copyFrom._threads;
+        _checkpointThreshold = copyFrom._checkpointThreshold;
         _fileSearchPath = copyFrom._fileSearchPath;
         _migrationLockTimeout = copyFrom._migrationLockTimeout;
         _migrationTableRebuilds = copyFrom._migrationTableRebuilds;
@@ -129,6 +131,13 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     ///     <see langword="null" /> to leave DuckDB's default in place.
     /// </summary>
     public virtual int? Threads => _threads;
+
+    /// <summary>
+    ///     The value applied to DuckDB's <c>checkpoint_threshold</c> setting when a connection opens (for example
+    ///     <c>"4GB"</c>) — the WAL size at which DuckDB triggers an automatic checkpoint — or
+    ///     <see langword="null" /> to leave DuckDB's default (16 MB) in place.
+    /// </summary>
+    public virtual string? CheckpointThreshold => _checkpointThreshold;
 
     /// <summary>
     ///     The value applied to DuckDB's <c>file_search_path</c> setting when a connection opens — one or more
@@ -253,6 +262,19 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         var clone = (DuckDBOptionsExtension)Clone();
 
         clone._threads = threads;
+
+        return clone;
+    }
+
+    /// <summary>
+    ///     Returns a copy configured with the specified DuckDB <c>checkpoint_threshold</c> value (for example
+    ///     <c>"4GB"</c>), or <see langword="null" /> to leave DuckDB's default in place.
+    /// </summary>
+    public virtual DuckDBOptionsExtension WithCheckpointThreshold(string? checkpointThreshold)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+
+        clone._checkpointThreshold = checkpointThreshold;
 
         return clone;
     }

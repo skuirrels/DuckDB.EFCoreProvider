@@ -2,6 +2,20 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.21.0
+
+- Add an opt-in `DuckDBUpsertMatchMode.LogicalKeyMerge` for the conflict-target `UpsertAsync` overload. It merges
+  on the selected properties as a logical key through a set-based `MERGE INTO` without requiring — or maintaining —
+  a physical unique constraint, avoiding the ART-index write cost and memory footprint that grow with target table
+  size under sustained ingest. A staged batch fails before mutation when one staged key matches multiple existing
+  rows; targets backed by a physical unique constraint skip that per-batch validation. The pre-mutation cardinality
+  error message is now engine-neutral because it applies beyond DuckLake.
+- Add `UseDuckDB(o => o.CheckpointThreshold("1GB"))`: configures DuckDB's `checkpoint_threshold` when a connection
+  opens. DuckDB's default 16 MB WAL threshold makes automatic checkpoints — which re-serialize in-memory ART
+  indexes — dominate sustained indexed ingest; raising it and issuing explicit `CHECKPOINT` statements at ingest
+  boundaries removes that growth term. In a controlled 3M-row random-GUID reproduction, per-batch growth fell from
+  +178% to +32% with a raised threshold, and an index-free `LogicalKeyMerge` lane measured ~5x faster still.
+
 ## 1.20.1
 
 - Resolve duplicate conflict-target values within one `Upsert` input to the last occurrence in input order. The
