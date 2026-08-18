@@ -110,7 +110,29 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
             .ToString();
 
         return $"INSERT INTO {Delimit(plan.Table, plan.Schema)} ({insertColumnList}) "
-               + $"SELECT {insertColumnList} FROM {Delimit(temporaryTable, temporarySchema)}{conflictSuffix};";
+               + $"SELECT {insertColumnList} FROM {RenderStagedSource(plan, temporaryTable, temporarySchema)}{conflictSuffix};";
+    }
+
+    // ON CONFLICT DO UPDATE and MERGE apply only one staged row per conflict key, and which duplicate
+    // they pick is engine-defined. Keeping only the greatest rowid per key — appended rows keep input
+    // order — pins the outcome to the last occurrence, matching what sequential per-row upserts produce.
+    // Key-only DO NOTHING shapes keep the first inserted row per key either way and skip the window scan.
+    private string RenderStagedSource(
+        DuckDBUpsertPlan plan,
+        string temporaryTable,
+        string? temporarySchema)
+    {
+        if (plan.UpdateColumns.Length == 0)
+        {
+            return Delimit(temporaryTable, temporarySchema);
+        }
+
+        var insertColumnList = RenderColumnList(plan.InsertColumns);
+        var rowNumber = Delimit("__duckdb_upsert_row_number");
+        return $"(SELECT {insertColumnList} FROM (SELECT {insertColumnList}, "
+               + $"row_number() OVER (PARTITION BY {RenderColumnList(plan.ConflictColumns)} ORDER BY rowid DESC) AS {rowNumber} "
+               + $"FROM {Delimit(temporaryTable, temporarySchema)}) AS {Delimit("__duckdb_upsert_ranked")} "
+               + $"WHERE {rowNumber} = 1)";
     }
 
     private string RenderMerge(DuckDBUpsertPlan plan, string temporaryTable, string? temporarySchema)
@@ -118,9 +140,10 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
         var targetAlias = Delimit("target");
         var sourceAlias = Delimit("source");
         var insertColumnList = RenderColumnList(plan.InsertColumns);
+        var stagedSource = RenderStagedSource(plan, temporaryTable, temporarySchema);
         var source = plan.RequiresTargetCardinalityValidation
-            ? RenderCardinalityValidatedSource(plan, temporaryTable, temporarySchema)
-            : Delimit(temporaryTable, temporarySchema);
+            ? RenderCardinalityValidatedSource(plan, stagedSource)
+            : stagedSource;
         var matchPredicates = plan.ConflictColumns.Select(
             column => $"{Qualify(targetAlias, column)} = {Qualify(sourceAlias, column)}");
         var updateAssignments = plan.UpdateColumns.Select(
@@ -153,10 +176,7 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
             .ToString();
     }
 
-    private string RenderCardinalityValidatedSource(
-        DuckDBUpsertPlan plan,
-        string temporaryTable,
-        string? temporarySchema)
+    private string RenderCardinalityValidatedSource(DuckDBUpsertPlan plan, string stagedSource)
     {
         var incomingAlias = Delimit("__duckdb_upsert_incoming");
         var existingAlias = Delimit("__duckdb_upsert_existing");
@@ -167,7 +187,7 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
             .Append("(SELECT ")
             .Append(incomingAlias)
             .Append(".* FROM ")
-            .Append(Delimit(temporaryTable, temporarySchema))
+            .Append(stagedSource)
             .Append(" AS ")
             .Append(incomingAlias)
             .Append(" WHERE CASE WHEN (SELECT count(*) FROM ")

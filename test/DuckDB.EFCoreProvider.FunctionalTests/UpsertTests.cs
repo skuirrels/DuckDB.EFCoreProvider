@@ -131,6 +131,86 @@ public class UpsertTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Upsert_resolves_duplicate_conflict_keys_to_the_last_occurrence()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new Item { Id = 1, Name = "orig", Quantity = 1 });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            // Id 1 (existing) and Id 2 (new) each appear several times, both adjacent and spaced
+            // further apart than the pre-v1.19.1 500-row chunk. The width-aware default stages the
+            // whole input in one chunk; the last occurrence of each key must win without an error.
+            var rows = new List<Item> { new() { Id = 1, Name = "first", Quantity = 10 } };
+            rows.AddRange(Enumerable.Range(3, 600).Select(i => new Item { Id = i, Name = $"n{i}", Quantity = i }));
+            rows.Add(new Item { Id = 2, Name = "ins-first", Quantity = 20 });
+            rows.Add(new Item { Id = 1, Name = "mid", Quantity = 11 });
+            rows.Add(new Item { Id = 2, Name = "ins-last", Quantity = 22 });
+            rows.Add(new Item { Id = 1, Name = "last", Quantity = 12 });
+
+            Assert.Equal(rows.Count, context.Upsert(rows));
+        }
+
+        using (var context = CreateContext())
+        {
+            Assert.Equal(602, context.Items.Count());
+            var one = context.Items.Single(x => x.Id == 1);
+            Assert.Equal(("last", 12), (one.Name, one.Quantity));
+            var two = context.Items.Single(x => x.Id == 2);
+            Assert.Equal(("ins-last", 22), (two.Name, two.Quantity));
+        }
+    }
+
+    [ConditionalFact]
+    public async Task UpsertAsync_resolves_duplicate_alternate_keys_to_the_last_occurrence()
+    {
+        var externalId = Guid.NewGuid();
+
+        await using (var context = CreateContext())
+        {
+            await context.Database.EnsureCreatedAsync();
+            Assert.Equal(
+                3,
+                await context.UpsertAsync(
+                [
+                    new GeneratedItem { ExternalId = externalId, Name = "first" },
+                    new GeneratedItem { ExternalId = Guid.NewGuid(), Name = "other" },
+                    new GeneratedItem { ExternalId = externalId, Name = "last" },
+                ],
+                item => item.ExternalId));
+        }
+
+        await using (var context = CreateContext())
+        {
+            var stored = await context.GeneratedItems.AsNoTracking().ToListAsync();
+            Assert.Equal(2, stored.Count);
+            Assert.Equal("last", stored.Single(item => item.ExternalId == externalId).Name);
+        }
+    }
+
+    [ConditionalFact]
+    public void Upsert_with_only_key_columns_ignores_duplicate_keys_within_a_batch()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            // Id 1 twice in one staged chunk plus Id 2: DO NOTHING keeps the first insert per key.
+            Assert.Equal(
+                3,
+                context.Upsert(new[] { new KeyOnly { Id = 1 }, new KeyOnly { Id = 1 }, new KeyOnly { Id = 2 } }));
+        }
+
+        using (var context = CreateContext())
+        {
+            Assert.Equal(2, context.KeyOnlies.Count());
+        }
+    }
+
+    [ConditionalFact]
     public void Upsert_handles_composite_keys()
     {
         using (var context = CreateContext())
@@ -384,6 +464,22 @@ public class UpsertTests : DuckDBTestBase
         Assert.Contains("ON CONFLICT (external_event_id)", sql);
         Assert.Contains("\"Name\" = excluded.\"Name\"", sql);
         Assert.DoesNotContain("error(", sql);
+    }
+
+    [ConditionalFact]
+    public void Updating_conflict_sql_deduplicates_staged_rows_keeping_the_last_occurrence()
+    {
+        using var context = CreateContext();
+        var renderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
+
+        var updatingPlan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(Item));
+        var updatingSql = renderer.RenderUpsertFromTemporaryTable(updatingPlan, "temporary_upsert_rows");
+        Assert.Contains("row_number() OVER (PARTITION BY \"Id\" ORDER BY rowid DESC)", updatingSql);
+
+        var keyOnlyPlan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(KeyOnly));
+        var keyOnlySql = renderer.RenderUpsertFromTemporaryTable(keyOnlyPlan, "temporary_upsert_rows");
+        Assert.DoesNotContain("row_number", keyOnlySql);
+        Assert.Contains("DO NOTHING", keyOnlySql);
     }
 
     private sealed class UpsertContext(DbContextOptions<UpsertContext> options) : DbContext(options)

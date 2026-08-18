@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.20.0</PackageVersion>
-    <FileVersion>1.20.0.0</FileVersion>
-    <Version>1.20.0</Version>
+    <PackageVersion>1.20.1</PackageVersion>
+    <FileVersion>1.20.1.0</FileVersion>
+    <Version>1.20.1</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,12 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.19.1</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.20.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.20.1
+- Resolve duplicate conflict-target values within one Upsert input to the last occurrence in input order. The v1.19.1 width-aware chunks silently applied the first staged duplicate instead of the last one that v1.19.0's 500-row chunks applied across chunk boundaries; staged chunks now deduplicate per conflict key before merging, so the outcome is deterministic for any duplicate spacing. Key-only DO NOTHING shapes still keep the first inserted row.
+- No measurable latency change: the one-million-row mixed update/insert benchmark measured 600.5 +/- 13.8 ms / 565.08 KB versus 627.7 +/- 10.1 ms / 503.08 KB for v1.20.0 (overlapping confidence intervals; ~62 KB more allocation per one-million-row operation from the larger per-batch SQL text).
+
 1.20.0
 - Add an explicitly opt-in experimental Quack profile for remote LINQ, SaveChanges, transactions, generated values, command replay, BulkInsert, Upsert, server lifecycle, and diagnostics.
 - Add remote EnsureCreated schema provisioning while keeping deletion and EF migrations server-owned.
