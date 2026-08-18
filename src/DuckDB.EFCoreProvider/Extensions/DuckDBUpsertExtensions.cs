@@ -39,8 +39,9 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///             the alternate-target overload permits store-generated-on-add columns and does not populate their generated
 ///             values back into the supplied entities;</description></item>
 ///         <item><description>all staged non-key and non-conflict columns are overwritten from the supplied values;</description></item>
-///         <item><description>callers own duplicate conflict-target handling within an input batch and can wrap the
-///             operation in an explicit transaction when all batches must commit atomically;</description></item>
+///         <item><description>duplicate conflict-target values within the input resolve to the last occurrence in
+///             input order when updateable columns exist (key-only shapes keep the first inserted row); callers can
+///             wrap the operation in an explicit transaction when all batches must commit atomically;</description></item>
 ///         <item><description>DuckLake rejects the affected staged batch before mutation when a key matches multiple
 ///             existing rows because its logical keys are not physically enforced;</description></item>
 ///         <item><description>EF column mappings and value converters are applied; shadow properties and
@@ -196,8 +197,8 @@ public static class DuckDBUpsertExtensions
     /// <remarks>
     ///     This raw fast path does not populate store-generated values back into the supplied entities. The
     ///     selector must contain direct property accesses, for example <c>entity =&gt; entity.ExternalId</c> or
-    ///     <c>entity =&gt; new { entity.ParentId, entity.Sequence }</c>. Callers should resolve duplicate selected-key
-    ///     values before invoking this method. DuckLake rejects the current batch before mutating it when a staged key
+    ///     <c>entity =&gt; new { entity.ParentId, entity.Sequence }</c>. Duplicate selected-key values resolve to the
+    ///     last occurrence in input order. DuckLake rejects the current batch before mutating it when a staged key
     ///     matches multiple existing rows, but callers remain responsible for preventing concurrent duplicate inserts.
     /// </remarks>
     /// <returns>The number of rows processed.</returns>

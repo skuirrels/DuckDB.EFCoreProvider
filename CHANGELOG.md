@@ -2,6 +2,18 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.20.1
+
+- Resolve duplicate conflict-target values within one `Upsert` input to the last occurrence in input order. The
+  v1.19.1 width-aware chunks silently applied the first staged duplicate, whereas v1.19.0's 500-row chunks applied
+  the last occurrence whenever duplicates crossed a chunk boundary. Staged chunks now deduplicate per conflict key
+  before the conflict statement runs, so the outcome is deterministic for any duplicate spacing and matches what
+  sequential per-row upserts would produce. Key-only `DO NOTHING` shapes still keep the first inserted row per key.
+- The staged deduplication window adds no measurable latency: the deterministic one-million-row mixed
+  update/insert benchmark measured 600.5 ± 13.8 ms and 565.08 KB allocated versus 627.7 ± 10.1 ms and 503.08 KB
+  for v1.20.0 on the same machine — overlapping confidence intervals, with ~62 KB more allocation per
+  one-million-row operation from the larger per-batch SQL text.
+
 ## 1.20.0
 
 - Add the explicitly opt-in experimental `UseQuack(...)` profile. It supports remote LINQ, tracked `SaveChanges`,

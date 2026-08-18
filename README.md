@@ -957,10 +957,10 @@ The alternate-target overload omits sequence-, default-, and auto-increment-back
 columns from staging and insert SQL, so DuckDB applies their defaults for new rows. Existing primary keys are
 preserved during conflict updates. Generated values are not populated back into the supplied entities.
 
-The provider intentionally does not impose an application-specific winner when the input contains the same
-conflict-target value more than once; deduplicate each input batch according to the caller's business rule. Each
-staged batch is applied separately, so wrap the call in an explicit database transaction if the whole input must
-commit atomically.
+When the input contains the same conflict-target value more than once, the last occurrence in input order wins,
+matching what sequential per-row upserts would produce. Key-only shapes with no updateable columns keep the first
+inserted row per key instead. Each staged batch is applied separately, so wrap the call in an explicit database
+transaction if the whole input must commit atomically.
 
 DuckLake keys and unique indexes are logical metadata rather than physical constraints. Its `MERGE` path fails
 before mutating a batch when any staged conflict-target value matches multiple existing rows. This protects against
