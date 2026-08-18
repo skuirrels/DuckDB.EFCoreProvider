@@ -42,8 +42,9 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///         <item><description>duplicate conflict-target values within the input resolve to the last occurrence in
 ///             input order when updateable columns exist (key-only shapes keep the first inserted row); callers can
 ///             wrap the operation in an explicit transaction when all batches must commit atomically;</description></item>
-///         <item><description>DuckLake rejects the affected staged batch before mutation when a key matches multiple
-///             existing rows because its logical keys are not physically enforced;</description></item>
+///         <item><description>DuckLake — and <see cref="DuckDBUpsertMatchMode.LogicalKeyMerge" /> on native DuckDB —
+///             rejects the affected staged batch before mutation when a key matches multiple existing rows because
+///             logical keys are not physically enforced;</description></item>
 ///         <item><description>EF column mappings and value converters are applied; shadow properties and
 ///             database-computed columns are not supported.</description></item>
 ///     </list>
@@ -186,6 +187,7 @@ public static class DuckDBUpsertExtensions
             context,
             entities,
             conflictPropertyNames: null,
+            DuckDBUpsertMatchMode.UniqueConflictTarget,
             batchSize,
             cancellationToken);
 
@@ -209,6 +211,43 @@ public static class DuckDBUpsertExtensions
         int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize,
         CancellationToken cancellationToken = default)
         where TEntity : class
+        => UpsertAsync(
+            context,
+            entities,
+            conflictTarget,
+            DuckDBUpsertMatchMode.UniqueConflictTarget,
+            batchSize,
+            cancellationToken);
+
+    /// <summary>
+    ///     Asynchronously inserts the supplied entities, updating rows that match the selected conflict target
+    ///     under the requested <see cref="DuckDBUpsertMatchMode" />. With
+    ///     <see cref="DuckDBUpsertMatchMode.LogicalKeyMerge" />, the selected properties are matched as a logical
+    ///     key through a set-based <c>MERGE INTO</c> and no physical unique constraint or index is required.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <see cref="DuckDBUpsertMatchMode.LogicalKeyMerge" /> avoids maintaining a unique ART index, whose
+    ///         per-row write cost and memory footprint grow with target table size under sustained ingest. Each
+    ///         staged batch instead joins against the target table. Uniqueness of the logical key is validated per
+    ///         staged batch — the batch fails before mutation when one staged key matches multiple existing rows —
+    ///         but is not enforced by the engine between calls.
+    ///     </para>
+    ///     <para>
+    ///         Other behavior matches the unique-target overload: store-generated-on-add columns are omitted for
+    ///         non-primary-key targets, generated values are not populated back, and duplicate selected-key values
+    ///         within the input resolve to the last occurrence in input order.
+    ///     </para>
+    /// </remarks>
+    /// <returns>The number of rows processed.</returns>
+    public static Task<int> UpsertAsync<TEntity>(
+        this DbContext context,
+        IEnumerable<TEntity> entities,
+        Expression<Func<TEntity, object?>> conflictTarget,
+        DuckDBUpsertMatchMode matchMode,
+        int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
     {
         ArgumentNullException.ThrowIfNull(conflictTarget);
         var conflictPropertyNames = DuckDBPropertySelector.GetPropertyNames(
@@ -216,13 +255,14 @@ public static class DuckDBUpsertExtensions
             "conflict-target",
             nameof(conflictTarget));
 
-        return UpsertAsyncCore(context, entities, conflictPropertyNames, batchSize, cancellationToken);
+        return UpsertAsyncCore(context, entities, conflictPropertyNames, matchMode, batchSize, cancellationToken);
     }
 
     private static async Task<int> UpsertAsyncCore<TEntity>(
         DbContext context,
         IEnumerable<TEntity> entities,
         IReadOnlyList<string>? conflictPropertyNames,
+        DuckDBUpsertMatchMode matchMode,
         int batchSize,
         CancellationToken cancellationToken)
         where TEntity : class
@@ -239,7 +279,7 @@ public static class DuckDBUpsertExtensions
 
         try
         {
-            var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity), conflictPropertyNames);
+            var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity), conflictPropertyNames, matchMode);
             var sqlRenderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
             var dbConnection = context.Database.GetDbConnection();
             var openedHere = dbConnection.State != ConnectionState.Open;

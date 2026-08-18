@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.20.1</PackageVersion>
-    <FileVersion>1.20.1.0</FileVersion>
-    <Version>1.20.1</Version>
+    <PackageVersion>1.21.0</PackageVersion>
+    <FileVersion>1.21.0.0</FileVersion>
+    <Version>1.21.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -23,6 +23,10 @@
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
     <PackageValidationBaselineVersion>1.20.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.21.0
+- Add an opt-in DuckDBUpsertMatchMode.LogicalKeyMerge for the conflict-target UpsertAsync overload: a set-based MERGE INTO on the selected properties as a logical key, without requiring or maintaining a physical unique constraint. Avoids the ART-index write cost and memory footprint that grow with target table size under sustained ingest; a staged batch fails before mutation when one staged key matches multiple existing rows.
+- Add UseDuckDB(o => o.CheckpointThreshold("1GB")): configures DuckDB's checkpoint_threshold when a connection opens. Raising the default 16 MB WAL threshold defers automatic checkpoints that re-serialize in-memory ART indexes and dominate sustained indexed ingest; pair with explicit CHECKPOINT statements at ingest boundaries.
+
 1.20.1
 - Resolve duplicate conflict-target values within one Upsert input to the last occurrence in input order. The v1.19.1 width-aware chunks silently applied the first staged duplicate instead of the last one that v1.19.0's 500-row chunks applied across chunk boundaries; staged chunks now deduplicate per conflict key before merging, so the outcome is deterministic for any duplicate spacing. Key-only DO NOTHING shapes still keep the first inserted row.
 - No measurable latency change: the one-million-row mixed update/insert benchmark measured 600.5 +/- 13.8 ms / 565.08 KB versus 627.7 +/- 10.1 ms / 503.08 KB for v1.20.0 (overlapping confidence intervals; ~62 KB more allocation per one-million-row operation from the larger per-batch SQL text).

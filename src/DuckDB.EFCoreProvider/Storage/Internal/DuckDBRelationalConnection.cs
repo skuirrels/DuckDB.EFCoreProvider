@@ -30,6 +30,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly bool _loadSpatial;
     private readonly string? _memoryLimit;
     private readonly int? _threads;
+    private readonly string? _checkpointThreshold;
     private readonly string? _fileSearchPath;
     private readonly IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions;
     private readonly Action<DuckDBConnection>? _connectionInitializer;
@@ -67,6 +68,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         _loadSpatial = optionsExtension?.LoadSpatialite == true;
         _memoryLimit = optionsExtension?.MemoryLimit;
         _threads = optionsExtension?.Threads;
+        _checkpointThreshold = optionsExtension?.CheckpointThreshold;
         _fileSearchPath = optionsExtension?.FileSearchPath;
         _configuredExtensions = optionsExtension?.ConfiguredExtensions ?? [];
         _connectionInitializer = optionsExtension?.ConnectionInitializer;
@@ -196,6 +198,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             {
                 if (_memoryLimit is not null) options.MemoryLimit(_memoryLimit);
                 if (_threads is not null) options.Threads(_threads.Value);
+                if (_checkpointThreshold is not null) options.CheckpointThreshold(_checkpointThreshold);
                 if (_fileSearchPath is not null) options.FileSearchPath(_fileSearchPath);
                 foreach (var extension in _configuredExtensions)
                 {
@@ -416,7 +419,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     private void ApplyConfigurationIfNeeded()
     {
-        var commandText = BuildConfigurationCommandText(_memoryLimit, _threads, _fileSearchPath);
+        var commandText = BuildConfigurationCommandText(_memoryLimit, _threads, _fileSearchPath, _checkpointThreshold);
         if (commandText is null)
         {
             return;
@@ -428,7 +431,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     private async Task ApplyConfigurationIfNeededAsync(CancellationToken cancellationToken)
     {
-        var commandText = BuildConfigurationCommandText(_memoryLimit, _threads, _fileSearchPath);
+        var commandText = BuildConfigurationCommandText(_memoryLimit, _threads, _fileSearchPath, _checkpointThreshold);
         if (commandText is null)
         {
             return;
@@ -447,11 +450,13 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     internal static string? BuildConfigurationCommandText(
         string? memoryLimit,
         int? threads,
-        string? fileSearchPath)
+        string? fileSearchPath,
+        string? checkpointThreshold = null)
     {
         if (string.IsNullOrWhiteSpace(memoryLimit)
             && threads is null
-            && string.IsNullOrWhiteSpace(fileSearchPath))
+            && string.IsNullOrWhiteSpace(fileSearchPath)
+            && string.IsNullOrWhiteSpace(checkpointThreshold))
         {
             return null;
         }
@@ -471,6 +476,11 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         if (!string.IsNullOrWhiteSpace(fileSearchPath))
         {
             statements.Add($"SET file_search_path = '{fileSearchPath.Replace("'", "''")}'");
+        }
+
+        if (!string.IsNullOrWhiteSpace(checkpointThreshold))
+        {
+            statements.Add($"SET checkpoint_threshold = '{checkpointThreshold.Replace("'", "''")}'");
         }
 
         return statements.Count == 0

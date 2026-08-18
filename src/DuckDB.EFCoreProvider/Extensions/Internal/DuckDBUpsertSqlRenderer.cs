@@ -7,7 +7,7 @@ namespace DuckDB.EFCoreProvider.Extensions.Internal;
 internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGenerationHelper)
 {
     private const string CardinalityError =
-        "DuckLake upsert conflict target matched multiple existing rows; logical key uniqueness is required.";
+        "The upsert conflict target matched multiple existing rows; logical key uniqueness is required.";
 
     internal string RenderCreateTemporaryTable(DuckDBUpsertPlan plan, string temporaryTable)
         => RenderCreateStagingTable(plan, temporaryTable, temporary: true);

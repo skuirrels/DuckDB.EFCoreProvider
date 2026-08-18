@@ -189,6 +189,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.UseCaseInsensitiveStringSearches()` | Make simple `StartsWith`, `Contains`, and `EndsWith` queries case-insensitive for this context; literal `%` and `_` remain literals. | off |
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
 | `.Threads(4)` | Set the global thread count used by DuckDB query execution when the connection opens. | DuckDB default |
+| `.CheckpointThreshold("1GB")` | Raise the WAL size that triggers automatic checkpoints; defers ART-index re-serialization during sustained ingest. Pair with explicit `CHECKPOINT` statements at ingest boundaries. | 16 MB |
 | `.FileSearchPath("/data")` | Base directory (or comma-separated directories) for resolving relative file paths. | DuckDB default |
 | `.MigrationLockTimeout(TimeSpan.FromMinutes(10))` | Maximum wait for the migrations lock before failing with guidance (use `Timeout.InfiniteTimeSpan` to wait forever). | 5 minutes |
 | `.EnableMigrationTableRebuilds()` | Opt in to rebuilding tables for constraint changes DuckDB cannot apply in place. | off |
@@ -956,6 +957,28 @@ var processed = await context.UpsertAsync(
 The alternate-target overload omits sequence-, default-, and auto-increment-backed `ValueGenerated.OnAdd`
 columns from staging and insert SQL, so DuckDB applies their defaults for new rows. Existing primary keys are
 preserved during conflict updates. Generated values are not populated back into the supplied entities.
+
+By default the conflict target must be backed by a declared primary key, alternate key, or unique index. On native
+DuckDB that unique constraint is an in-memory ART index whose per-row write cost and memory footprint grow with
+table size under sustained ingest. When the model does not declare a physical unique constraint for the matching
+properties, opt into a logical-key merge instead:
+
+```csharp
+var processed = await context.UpsertAsync(
+    events,
+    entity => entity.ExternalId,
+    DuckDBUpsertMatchMode.LogicalKeyMerge,
+    cancellationToken: cancellationToken);
+```
+
+`LogicalKeyMerge` executes a set-based `MERGE INTO` that joins each staged batch against the target table, so no
+ART index is maintained for the matching properties. Uniqueness becomes a logical contract: each staged batch
+fails before mutation when one staged key matches multiple existing rows (the same protection DuckLake applies),
+but the engine does not arbitrate concurrent inserts of the same new key. Because every batch scans the target,
+prefer the default unique-target mode for small, frequent upserts against very large tables; prefer
+`LogicalKeyMerge` for sustained batch ingest where index maintenance dominates. When the selected properties are
+backed by a physical unique constraint, `LogicalKeyMerge` still merges but skips the per-batch uniqueness
+validation because the engine enforces it.
 
 When the input contains the same conflict-target value more than once, the last occurrence in input order wins,
 matching what sequential per-row upserts would produce. Key-only shapes with no updateable columns keep the first
