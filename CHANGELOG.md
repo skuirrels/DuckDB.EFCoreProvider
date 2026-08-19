@@ -2,6 +2,39 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.22.0
+
+- Add `UseEncryptedDuckDB(path, keyProvider)` and `UseDuckDB(o => o.UseEncryptedDatabase(path, keyProvider))`:
+  store a context's data in a DuckDB file encrypted with AES-256-GCM. DuckDB accepts an encryption key only as an
+  `ATTACH` parameter, so the provider hosts the encrypted file on a shared in-memory database, attaches it with the
+  application-supplied key, and selects it as the default catalog; entities, migrations, and the migrations history
+  and lock tables are created inside the encrypted file. The key provider is invoked once per attachment, and the
+  `ATTACH` statement runs outside EF Core's command pipeline, so keys reach neither the options nor EF logs,
+  diagnostics, or interceptors. `EnsureCreated`, `EnsureDeleted` (which detaches before deleting the file and any
+  leftover WAL), and existence checks are catalog-aware. Configuration covers the catalog alias, a read-only
+  attachment, and DuckDB's `temp_file_encryption`, which the provider enables by default because a spilling query
+  over an encrypted database otherwise writes row data to the temporary directory in the clear. See
+  [docs/ENCRYPTION.md](docs/ENCRYPTION.md).
+  Attachment is idempotent, so contexts that open concurrently share one attachment rather than racing, and the
+  provider confirms the attached database is the configured file — resolving symbolic links in every path
+  segment, including a symlinked database file — and that a joining context's key matches the attaching key
+  (verified against an in-memory SHA-256 fingerprint, so a wrong or rotated-away key cannot inherit another
+  context's access). `EnsureDeleted` detaches through the provider connection so a context holding an open
+  connection re-attaches on the next use instead of silently writing to the in-memory host, and tiered-storage
+  operations attach the encrypted catalog even when the application opened the raw connection itself. A
+  connection string applied after `UseEncryptedDatabase` must keep the shared in-memory host; a plain
+  `:memory:` source is rejected because it would give each connection its own instance and an independent
+  writable attachment of the same file. `CreateReadOnlyConnection()` is refused for an
+  encrypted database because its access mode belongs to the attachment that every context on the host instance
+  shares; configure a read-only context with `ReadOnly()` instead.
+- Add `DuckDBEventId.EncryptedDatabaseAttachmentStarting`, `…Completed`, and `…Failed` for attachment diagnostics.
+- Scope the migrations-history existence probe to the current catalog. `duckdb_tables()` spans every attached
+  database, so a host instance holding another context's history table under the same name could otherwise be
+  mistaken for this context's own.
+- Resolve symbolic links when comparing an attached database's path with the configured one, so a catalog reached
+  through a linked directory (macOS temporary directories under `/var`) is recognized as already attached instead
+  of reported as a different database.
+
 ## 1.21.0
 
 - Add an opt-in `DuckDBUpsertMatchMode.LogicalKeyMerge` for the conflict-target `UpsertAsync` overload. It merges

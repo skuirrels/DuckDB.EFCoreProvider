@@ -42,6 +42,7 @@ This document is the published capability matrix for the provider. It serves two
 | Spatial (NetTopologySuite) | `UseNetTopologySuite()`; native DuckDB `GEOMETRY` columns (WKT is only the driver wire format) |
 | Raw SQL | EF Core relational raw-SQL APIs |
 | Resource settings | `MemoryLimit(...)` and `Threads(...)` apply DuckDB's global instance settings when a connection opens |
+| Encryption at rest | `UseEncryptedDuckDB(path, keyProvider)` / `UseEncryptedDatabase(...)`: AES-256-GCM database and WAL encryption with keys resolved per attachment, plus DuckDB's `temp_file_encryption` for spilled query files. Not combinable with DuckLake or Quack, whose storage is encrypted by its own backend. See [ENCRYPTION.md](ENCRYPTION.md) |
 | Database-first scaffolding | `dotnet ef dbcontext scaffold` (tables, columns, keys, indexes, sequences, FKs) |
 
 ### DuckLake backend profile

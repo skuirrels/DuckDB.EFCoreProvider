@@ -30,6 +30,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private bool _caseInsensitiveStringSearches;
     private IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions = [];
     private Action<DuckDBConnection>? _connectionInitializer;
+    private DuckDBEncryptedDatabaseOptions? _encryptedDatabase;
     private DuckLakeOptions? _duckLakeOptions;
     private QuackOptions? _quackOptions;
 
@@ -54,6 +55,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _caseInsensitiveStringSearches = copyFrom._caseInsensitiveStringSearches;
         _configuredExtensions = copyFrom._configuredExtensions;
         _connectionInitializer = copyFrom._connectionInitializer;
+        _encryptedDatabase = copyFrom._encryptedDatabase;
         _duckLakeOptions = copyFrom._duckLakeOptions;
         _quackOptions = copyFrom._quackOptions;
     }
@@ -175,6 +177,9 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
 
     /// <summary>An optional provider-owned connection initializer invoked after extensions are loaded.</summary>
     public virtual Action<DuckDBConnection>? ConnectionInitializer => _connectionInitializer;
+
+    /// <summary>The attached encrypted database profile, or <see langword="null" /> when the database is not encrypted.</summary>
+    internal virtual DuckDBEncryptedDatabaseOptions? EncryptedDatabase => _encryptedDatabase;
 
     /// <summary>The attached DuckLake catalog profile, or <see langword="null" /> for native DuckDB mode.</summary>
     internal virtual DuckLakeOptions? DuckLakeOptions => _duckLakeOptions;
@@ -353,6 +358,58 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         return clone;
     }
 
+    /// <summary>
+    ///     Returns a copy configured with an attached encrypted database, hosted by a shared in-memory DuckDB
+    ///     instance because DuckDB accepts an encryption key only as an <c>ATTACH</c> parameter.
+    /// </summary>
+    internal virtual DuckDBOptionsExtension WithEncryptedDatabase(DuckDBEncryptedDatabaseOptions options)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+        clone._encryptedDatabase = options;
+
+        if (Connection is not null)
+        {
+            return clone;
+        }
+
+        var hostConnectionString = BuildEncryptedHostConnectionString(ConnectionString);
+        return string.Equals(hostConnectionString, ConnectionString, StringComparison.Ordinal)
+            ? clone
+            : (DuckDBOptionsExtension)clone.WithConnectionString(hostConnectionString);
+    }
+
+    /// <summary>
+    ///     Returns the host connection string for an encrypted database, defaulting an unset or plain in-memory
+    ///     data source to the shared in-memory instance so every context connection attaches the same file once.
+    /// </summary>
+    internal static string BuildEncryptedHostConnectionString(string? connectionString)
+    {
+        var builder = new DuckDBConnectionStringBuilder();
+        if (!string.IsNullOrWhiteSpace(connectionString))
+        {
+            builder.ConnectionString = connectionString;
+        }
+
+        if (!IsInMemoryDataSource(builder.DataSource))
+        {
+            throw new InvalidOperationException(
+                $"UseEncryptedDatabase cannot be combined with the file data source '{builder.DataSource}'. DuckDB "
+                + "accepts an encryption key only when a database is attached, so the provider hosts the encrypted "
+                + "file on an in-memory database. Pass the encrypted file to UseEncryptedDatabase and leave the "
+                + "connection string's data source unset or ':memory:?cache=shared'.");
+        }
+
+        builder.DataSource = DuckDBConnectionStringBuilder.InMemorySharedDataSource;
+        return builder.ToString();
+    }
+
+    /// <summary>
+    ///     <see langword="true" /> when the data source is unset or an in-memory database, shared or not.
+    /// </summary>
+    internal static bool IsInMemoryDataSource(string? dataSource)
+        => string.IsNullOrWhiteSpace(dataSource)
+           || dataSource.StartsWith(DuckDBConnectionStringBuilder.InMemoryDataSource, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Returns a copy configured with an attached DuckLake catalog.</summary>
     internal virtual DuckDBOptionsExtension WithDuckLakeOptions(DuckLakeOptions options)
     {
@@ -422,6 +479,11 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             }
         }
 
+        if (_encryptedDatabase is not null)
+        {
+            ValidateEncryptedDatabase();
+        }
+
         if (_duckLakeOptions is null)
         {
             return;
@@ -442,6 +504,54 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             }
 
             ValidateDuckLakeProfile(profile);
+        }
+    }
+
+    private void ValidateEncryptedDatabase()
+    {
+        if (_quackOptions is not null)
+        {
+            throw new InvalidOperationException(
+                "UseQuack and UseEncryptedDatabase cannot be combined on the same DbContext because the remote "
+                + "server owns its database files. Configure encryption at rest on the Quack server instead.");
+        }
+
+        if (_duckLakeOptions is not null)
+        {
+            throw new InvalidOperationException(
+                "UseDuckLake and UseEncryptedDatabase cannot be combined on the same DbContext because a DuckLake "
+                + "catalog stores its data outside the attached DuckDB file. Encrypt DuckLake storage with the "
+                + "metadata backend's and object store's own encryption.");
+        }
+
+        if (Connection is not null)
+        {
+            throw new InvalidOperationException(
+                "UseEncryptedDatabase cannot be combined with a caller-supplied DbConnection because the provider "
+                + "must own the host connection to attach the encrypted database with its key. Configure the "
+                + "encrypted file through UseEncryptedDatabase and let the provider create the connection.");
+        }
+
+        var dataSource = new DuckDBConnectionStringBuilder { ConnectionString = ConnectionString }.DataSource;
+        if (!IsInMemoryDataSource(dataSource))
+        {
+            throw new InvalidOperationException(
+                "An encrypted database is attached to an in-memory DuckDB host, so the connection string's data "
+                + "source must be unset or an in-memory database. Pass the encrypted file to UseEncryptedDatabase.");
+        }
+
+        // UseEncryptedDatabase normalizes the data source it sees, but a connection string applied afterwards
+        // replaces it. A plain in-memory source gives every connection its own DuckDB instance, and each
+        // instance would attach the encrypted file independently — including two writable attachments of the
+        // same file at once — so only shared in-memory hosts are accepted.
+        if (!string.IsNullOrWhiteSpace(dataSource)
+            && !dataSource.Contains("?cache=shared", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"An encrypted database requires a shared in-memory host so every connection reaches the same "
+                + $"attachment, but the connection string's data source is '{dataSource}'. Use "
+                + $"'{DuckDBConnectionStringBuilder.InMemorySharedDataSource}', or leave the data source unset "
+                + "and let the provider supply it.");
         }
     }
 
@@ -507,6 +617,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             => other is ExtensionInfo otherInfo
                && Extension.ReverseNullOrdering == otherInfo.Extension.ReverseNullOrdering
                && Extension.CaseInsensitiveStringSearches == otherInfo.Extension.CaseInsensitiveStringSearches
+               && (Extension.EncryptedDatabase is null) == (otherInfo.Extension.EncryptedDatabase is null)
                && (Extension.DuckLakeOptions is null) == (otherInfo.Extension.DuckLakeOptions is null)
                && (Extension.QuackOptions is null) == (otherInfo.Extension.QuackOptions is null);
 
@@ -528,6 +639,11 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                     if (Extension.CaseInsensitiveStringSearches)
                     {
                         builder.Append(nameof(Extension.CaseInsensitiveStringSearches)).Append(' ');
+                    }
+
+                    if (Extension.EncryptedDatabase is not null)
+                    {
+                        builder.Append("EncryptedDatabase ");
                     }
 
                     if (Extension.DuckLakeOptions is not null)
@@ -555,6 +671,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
 
                 hashCode.Add(Extension.ReverseNullOrdering);
                 hashCode.Add(Extension.CaseInsensitiveStringSearches);
+                hashCode.Add(Extension.EncryptedDatabase is not null);
                 hashCode.Add(Extension.DuckLakeOptions is not null);
                 hashCode.Add(Extension.QuackOptions is not null);
 
@@ -571,6 +688,8 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                 .ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:" + nameof(CaseInsensitiveStringSearches)] = Extension.CaseInsensitiveStringSearches
                 .GetHashCode().ToString(CultureInfo.InvariantCulture);
+            debugInfo["DuckDB.EFCoreProvider:EncryptedDatabase"] = (Extension.EncryptedDatabase is not null).GetHashCode()
+                .ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:DuckLake"] = (Extension.DuckLakeOptions is not null).GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:Quack"] = (Extension.QuackOptions is not null).GetHashCode()

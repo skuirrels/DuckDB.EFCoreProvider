@@ -1,5 +1,6 @@
 ﻿using DuckDB.EFCoreProvider.Infrastructure;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using System.Data.Common;
@@ -146,6 +147,64 @@ public static class DuckDBDbContextOptionsBuilderExtensions
         => (DbContextOptionsBuilder<TContext>)UseDuckLake(
             (DbContextOptionsBuilder)optionsBuilder,
             duckLakeOptionsAction,
+            duckDBOptionsAction);
+
+    /// <summary>
+    ///     Configures the context to store its data in an encrypted DuckDB database file.
+    /// </summary>
+    /// <remarks>
+    ///     The provider hosts the encrypted file on a shared in-memory DuckDB database, attaches it with the key
+    ///     returned by <paramref name="keyProvider" />, and selects it as the default catalog, so entities,
+    ///     migrations, and the migrations history table all live inside the encrypted file. See
+    ///     <see cref="DuckDBDbContextOptionsBuilder.UseEncryptedDatabase" /> for the key-handling and coverage
+    ///     details.
+    /// </remarks>
+    /// <param name="optionsBuilder">The builder being used to configure the context.</param>
+    /// <param name="path">The encrypted DuckDB database file. It is created on first attachment if missing.</param>
+    /// <param name="keyProvider">Resolves the encryption key. It is invoked whenever the database is attached or an existing attachment is verified against this context's key.</param>
+    /// <param name="encryptedDatabaseOptionsAction">Optional catalog alias, access-mode, and temporary-file configuration.</param>
+    /// <param name="duckDBOptionsAction">Optional host DuckDB configuration, including extension and secret setup.</param>
+    /// <returns>The options builder so that further configuration can be chained.</returns>
+    public static DbContextOptionsBuilder UseEncryptedDuckDB(
+        this DbContextOptionsBuilder optionsBuilder,
+        string path,
+        Func<string> keyProvider,
+        Action<DuckDBEncryptedDatabaseOptionsBuilder>? encryptedDatabaseOptionsAction = null,
+        Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
+    {
+        ArgumentNullException.ThrowIfNull(optionsBuilder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(keyProvider);
+
+        return optionsBuilder.UseDuckDB(
+            DuckDBConnectionStringBuilder.InMemorySharedConnectionString,
+            duckDB =>
+            {
+                duckDBOptionsAction?.Invoke(duckDB);
+                duckDB.UseEncryptedDatabase(path, keyProvider, encryptedDatabaseOptionsAction);
+            });
+    }
+
+    /// <summary>Configures a typed context to store its data in an encrypted DuckDB database file.</summary>
+    /// <param name="optionsBuilder">The builder being used to configure the context.</param>
+    /// <param name="path">The encrypted DuckDB database file. It is created on first attachment if missing.</param>
+    /// <param name="keyProvider">Resolves the encryption key. It is invoked whenever the database is attached or an existing attachment is verified against this context's key.</param>
+    /// <param name="encryptedDatabaseOptionsAction">Optional catalog alias, access-mode, and temporary-file configuration.</param>
+    /// <param name="duckDBOptionsAction">Optional host DuckDB configuration, including extension and secret setup.</param>
+    /// <typeparam name="TContext">The context type being configured.</typeparam>
+    /// <returns>The typed options builder so that further configuration can be chained.</returns>
+    public static DbContextOptionsBuilder<TContext> UseEncryptedDuckDB<TContext>(
+        this DbContextOptionsBuilder<TContext> optionsBuilder,
+        string path,
+        Func<string> keyProvider,
+        Action<DuckDBEncryptedDatabaseOptionsBuilder>? encryptedDatabaseOptionsAction = null,
+        Action<DuckDBDbContextOptionsBuilder>? duckDBOptionsAction = null)
+        where TContext : DbContext
+        => (DbContextOptionsBuilder<TContext>)UseEncryptedDuckDB(
+            (DbContextOptionsBuilder)optionsBuilder,
+            path,
+            keyProvider,
+            encryptedDatabaseOptionsAction,
             duckDBOptionsAction);
 
     /// <summary>

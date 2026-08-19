@@ -11,4 +11,15 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 public interface IDuckDBRelationalConnection : IRelationalConnection
 {
     IDuckDBRelationalConnection CreateReadOnlyConnection();
+
+    /// <summary>
+    ///     Detaches the configured encrypted database from the host instance and invalidates the connection's
+    ///     attachment state, so the next open re-attaches instead of assuming the catalog is still selected.
+    /// </summary>
+    /// <remarks>
+    ///     The default implementation throws: it exists so adding this member does not break external
+    ///     implementations of this internal-API interface, which package validation would otherwise reject.
+    /// </remarks>
+    void DetachEncryptedDatabase()
+        => throw new NotSupportedException("This connection implementation does not support encrypted databases.");
 }

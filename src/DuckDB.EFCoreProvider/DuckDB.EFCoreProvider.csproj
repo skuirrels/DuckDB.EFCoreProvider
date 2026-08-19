@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.21.0</PackageVersion>
-    <FileVersion>1.21.0.0</FileVersion>
-    <Version>1.21.0</Version>
+    <PackageVersion>1.22.0</PackageVersion>
+    <FileVersion>1.22.0.0</FileVersion>
+    <Version>1.22.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -23,6 +23,12 @@
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
     <PackageValidationBaselineVersion>1.21.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.22.0
+- Add UseEncryptedDuckDB(path, keyProvider) and UseDuckDB(o => o.UseEncryptedDatabase(path, keyProvider)): store a context's data in a DuckDB file encrypted with AES-256-GCM. The provider hosts the encrypted file on a shared in-memory database, attaches it with the application-supplied key, and selects it as the default catalog, so entities, migrations, and the migrations history and lock tables live inside the encrypted file. The key provider is invoked once per attachment and the ATTACH statement runs outside EF Core's command pipeline, so keys reach neither the options nor EF logs, diagnostics, or interceptors. Configurable catalog alias, read-only attachment, and DuckDB's temp_file_encryption, which is enabled by default so spilling queries do not write row data to the temporary directory in the clear.
+- Encrypted attachment is idempotent, so contexts opening concurrently share one attachment; a joining context's key is verified against a fingerprint of the attaching key, symbolic links are resolved in every path segment including the database file, EnsureDeleted invalidates the connection's attachment state so later use re-attaches, tiered-storage operations attach the catalog even on caller-opened connections, and a non-shared in-memory data source applied after configuration is rejected. CreateReadOnlyConnection() is refused for an encrypted database because the access mode belongs to the shared attachment — configure a read-only context with ReadOnly() instead.
+- Add DuckDBEventId.EncryptedDatabaseAttachmentStarting, Completed, and Failed for attachment diagnostics.
+- Scope the migrations-history existence probe to the current catalog, and resolve symbolic links when comparing an attached database's path with the configured one.
+
 1.21.0
 - Add an opt-in DuckDBUpsertMatchMode.LogicalKeyMerge for the conflict-target UpsertAsync overload: a set-based MERGE INTO on the selected properties as a logical key, without requiring or maintaining a physical unique constraint. Avoids the ART-index write cost and memory footprint that grow with target table size under sustained ingest; a staged batch fails before mutation when one staged key matches multiple existing rows.
 - Add UseDuckDB(o => o.CheckpointThreshold("1GB")): configures DuckDB's checkpoint_threshold when a connection opens. Raising the default 16 MB WAL threshold defers automatic checkpoints that re-serialize in-memory ART indexes and dominate sustained indexed ingest; pair with explicit CHECKPOINT statements at ingest boundaries.

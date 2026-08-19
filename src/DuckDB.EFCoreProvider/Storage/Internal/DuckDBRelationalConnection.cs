@@ -6,9 +6,11 @@ using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
+using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
@@ -22,6 +24,18 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationalConnection
 {
     private const string AccessModeConfigurationKey = "access_mode";
+
+    /// <summary>Bounds the symbolic-link hops taken while comparing attached database paths.</summary>
+    private const int MaximumLinkDepth = 64;
+
+    /// <summary>
+    ///     Fingerprints of the keys the provider attached encrypted databases with, by canonical file path.
+    ///     DuckDB cannot check a key against a live attachment — the file handle is unique per instance, so a
+    ///     probing re-attach is impossible — and without this a context whose key is wrong or rotated away
+    ///     would silently inherit full access from whichever context attached the database first.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, byte[]> AttachedKeyFingerprints =
+        new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private const string ReadOnlyAccessMode = "READ_ONLY";
 
     private readonly IRawSqlCommandBuilder _rawSqlCommandBuilder;
@@ -34,12 +48,13 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly string? _fileSearchPath;
     private readonly IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions;
     private readonly Action<DuckDBConnection>? _connectionInitializer;
+    private readonly DuckDBEncryptedDatabaseOptions? _encryptedDatabase;
     private readonly DuckLakeOptions? _duckLakeOptions;
     private readonly QuackOptions? _quackOptions;
     private readonly IDuckDBEngineCapabilities _engineCapabilities;
-    private DuckDBConnection? _initializedDuckLakeConnection;
-    private DuckDBConnection? _initializingDuckLakeConnection;
-    private DuckDBConnection? _observedDuckLakeConnection;
+    private DuckDBConnection? _initializedCatalogConnection;
+    private DuckDBConnection? _initializingCatalogConnection;
+    private DuckDBConnection? _observedCatalogConnection;
 
     public DuckDBRelationalConnection(
         RelationalConnectionDependencies dependencies,
@@ -72,10 +87,18 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         _fileSearchPath = optionsExtension?.FileSearchPath;
         _configuredExtensions = optionsExtension?.ConfiguredExtensions ?? [];
         _connectionInitializer = optionsExtension?.ConnectionInitializer;
+        _encryptedDatabase = optionsExtension?.EncryptedDatabase;
         _duckLakeOptions = optionsExtension?.DuckLakeOptions;
         _quackOptions = optionsExtension?.QuackOptions;
         _engineCapabilities = engineCapabilities ?? throw new ArgumentNullException(nameof(engineCapabilities));
     }
+
+    /// <summary>
+    ///     <see langword="true" /> for the profiles whose data lives in a catalog attached to the connection
+    ///     rather than in the connection's own data source. They need initialization to run for a connection the
+    ///     caller opened, and to run only once per open connection because it invokes the caller's initializer.
+    /// </summary>
+    private bool UsesAttachedCatalog => _duckLakeOptions is not null || _encryptedDatabase is not null;
 
     // DuckDB.NET only supports IsolationLevel.Unspecified and IsolationLevel.Snapshot.
     // We expose IsolationLevel.Snapshot to callers so that EF Core's interception infrastructure
@@ -93,7 +116,9 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     /// <inheritdoc />
     public override bool Open(bool errorsExpected = false)
     {
-        if (_duckLakeOptions is not null && DbConnection.State == ConnectionState.Open)
+        // A caller that opened the underlying connection itself never reaches OpenDbConnection, so the catalog
+        // would otherwise stay unattached and the context would silently run against the empty host database.
+        if (UsesAttachedCatalog && DbConnection.State == ConnectionState.Open)
         {
             InitializeOpenConnection((DuckDBConnection)DbConnection);
         }
@@ -104,7 +129,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     /// <inheritdoc />
     public override async Task<bool> OpenAsync(CancellationToken cancellationToken, bool errorsExpected = false)
     {
-        if (_duckLakeOptions is not null && DbConnection.State == ConnectionState.Open)
+        if (UsesAttachedCatalog && DbConnection.State == ConnectionState.Open)
         {
             await InitializeOpenConnectionAsync((DuckDBConnection)DbConnection, cancellationToken).ConfigureAwait(false);
         }
@@ -175,6 +200,16 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     public virtual IDuckDBRelationalConnection CreateReadOnlyConnection()
     {
+        if (_encryptedDatabase is not null)
+        {
+            throw new NotSupportedException(
+                "An encrypted database cannot back an independently enforced read-only connection. Its access "
+                + "mode belongs to the attachment, which every connection on the shared DuckDB host instance "
+                + "sees, so a clone can neither re-attach it read-only while it is attached writable nor stop "
+                + "the writable context from using it. Configure a separate read-only context with "
+                + "UseEncryptedDatabase(..., encrypted => encrypted.ReadOnly()) instead.");
+        }
+
         if (_quackOptions is not null)
         {
             throw new NotSupportedException(
@@ -345,16 +380,16 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     private void InitializeOpenConnection(DuckDBConnection connection)
     {
-        if (_duckLakeOptions is not null)
+        if (UsesAttachedCatalog)
         {
-            ObserveDuckLakeConnection(connection);
-            if (ReferenceEquals(_initializedDuckLakeConnection, connection)
-                || ReferenceEquals(_initializingDuckLakeConnection, connection))
+            ObserveCatalogConnection(connection);
+            if (ReferenceEquals(_initializedCatalogConnection, connection)
+                || ReferenceEquals(_initializingCatalogConnection, connection))
             {
                 return;
             }
 
-            _initializingDuckLakeConnection = connection;
+            _initializingCatalogConnection = connection;
         }
 
         try
@@ -362,19 +397,20 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             ApplyConfigurationIfNeeded();
             LoadSpatialExtensionIfNeeded();
             LoadConfiguredExtensions();
+            AttachOrSelectEncryptedDatabase();
             _connectionInitializer?.Invoke(connection);
             AttachOrSelectDuckLakeCatalog();
 
-            if (_duckLakeOptions is not null)
+            if (UsesAttachedCatalog)
             {
-                _initializedDuckLakeConnection = connection;
+                _initializedCatalogConnection = connection;
             }
         }
         finally
         {
-            if (ReferenceEquals(_initializingDuckLakeConnection, connection))
+            if (ReferenceEquals(_initializingCatalogConnection, connection))
             {
-                _initializingDuckLakeConnection = null;
+                _initializingCatalogConnection = null;
             }
         }
     }
@@ -383,16 +419,16 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         DuckDBConnection connection,
         CancellationToken cancellationToken)
     {
-        if (_duckLakeOptions is not null)
+        if (UsesAttachedCatalog)
         {
-            ObserveDuckLakeConnection(connection);
-            if (ReferenceEquals(_initializedDuckLakeConnection, connection)
-                || ReferenceEquals(_initializingDuckLakeConnection, connection))
+            ObserveCatalogConnection(connection);
+            if (ReferenceEquals(_initializedCatalogConnection, connection)
+                || ReferenceEquals(_initializingCatalogConnection, connection))
             {
                 return;
             }
 
-            _initializingDuckLakeConnection = connection;
+            _initializingCatalogConnection = connection;
         }
 
         try
@@ -400,19 +436,20 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             await ApplyConfigurationIfNeededAsync(cancellationToken).ConfigureAwait(false);
             await LoadSpatialExtensionIfNeededAsync(cancellationToken).ConfigureAwait(false);
             await LoadConfiguredExtensionsAsync(cancellationToken).ConfigureAwait(false);
+            await AttachOrSelectEncryptedDatabaseAsync(cancellationToken).ConfigureAwait(false);
             _connectionInitializer?.Invoke(connection);
             await AttachOrSelectDuckLakeCatalogAsync(cancellationToken).ConfigureAwait(false);
 
-            if (_duckLakeOptions is not null)
+            if (UsesAttachedCatalog)
             {
-                _initializedDuckLakeConnection = connection;
+                _initializedCatalogConnection = connection;
             }
         }
         finally
         {
-            if (ReferenceEquals(_initializingDuckLakeConnection, connection))
+            if (ReferenceEquals(_initializingCatalogConnection, connection))
             {
-                _initializingDuckLakeConnection = null;
+                _initializingCatalogConnection = null;
             }
         }
     }
@@ -581,6 +618,281 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    ///     Detaching mutates catalog state that this connection caches: the once-per-open-connection guard and,
+    ///     when the caller holds an outer open scope, the connection's current catalog. Both must be reset here —
+    ///     the <see cref="DbConnection.StateChange" /> reset only fires when the connection physically closes, so
+    ///     an <c>EnsureDeleted</c> under an open connection would otherwise leave the guard set and the next
+    ///     open would silently run against the unencrypted in-memory host instead of re-attaching.
+    /// </remarks>
+    public virtual void DetachEncryptedDatabase()
+    {
+        if (_encryptedDatabase is null)
+        {
+            throw new InvalidOperationException("No encrypted database is configured for this connection.");
+        }
+
+        using (var command = DbConnection.CreateCommand())
+        {
+            command.CommandText = DuckDBEncryptedAttachCommandBuilder.BuildDetach(_encryptedDatabase);
+            command.ExecuteNonQuery();
+        }
+
+        _initializedCatalogConnection = null;
+        AttachedKeyFingerprints.TryRemove(ResolvePath(Path.GetFullPath(_encryptedDatabase.Path)), out _);
+    }
+
+    private void AttachOrSelectEncryptedDatabase()
+    {
+        if (_encryptedDatabase is null)
+        {
+            return;
+        }
+
+        var operation = DuckDBOperationScope<DbLoggerCategory.Infrastructure>.Start(
+            _logger,
+            _context,
+            DuckDBProviderOperation.EncryptedDatabaseAttachment,
+            "EncryptedDatabaseAttachment",
+            _encryptedDatabase.CatalogName);
+
+        var key = string.Empty;
+
+        try
+        {
+            var attachedDatabase = GetAttachedDatabase(_encryptedDatabase.CatalogName);
+            EnsureCompatibleEncryptedDatabase(_encryptedDatabase, attachedDatabase);
+
+            key = _encryptedDatabase.ResolveKey();
+            var canonicalPath = ResolvePath(Path.GetFullPath(_encryptedDatabase.Path));
+
+            if (attachedDatabase is not null)
+            {
+                // The database is already attached, so this context's ATTACH becomes a no-op and its key would
+                // never be checked. Prove the key against the fingerprint the attaching context recorded.
+                VerifyKeyMatchesAttachment(canonicalPath, key);
+            }
+            else
+            {
+                // No attachment exists, so any recorded fingerprint is stale — e.g. the host instance died and
+                // the file was re-encrypted with a rotated key before this attach.
+                AttachedKeyFingerprints.TryRemove(canonicalPath, out _);
+            }
+
+            using (var command = DbConnection.CreateCommand())
+            {
+                command.CommandText = BuildEncryptedDatabaseCommandText(attachedDatabase is null, key);
+                command.ExecuteNonQuery();
+            }
+
+            if (attachedDatabase is null)
+            {
+                // Nothing serializes the check above with the attachment itself, so a connection that raced
+                // this one may have attached a different database under the alias. ATTACH IF NOT EXISTS
+                // matches on the alias and would have silently kept theirs.
+                EnsureCompatibleEncryptedDatabase(
+                    _encryptedDatabase,
+                    GetAttachedDatabase(_encryptedDatabase.CatalogName));
+                RecordKeyFingerprint(canonicalPath, key);
+            }
+        }
+        catch (Exception exception)
+        {
+            var sanitized = SanitizeEncryptedDatabaseFailure(exception, key);
+            operation.Fail(sanitized);
+            throw sanitized;
+        }
+
+        operation.Complete();
+    }
+
+    private async Task AttachOrSelectEncryptedDatabaseAsync(CancellationToken cancellationToken)
+    {
+        if (_encryptedDatabase is null)
+        {
+            return;
+        }
+
+        var operation = DuckDBOperationScope<DbLoggerCategory.Infrastructure>.Start(
+            _logger,
+            _context,
+            DuckDBProviderOperation.EncryptedDatabaseAttachment,
+            "EncryptedDatabaseAttachment",
+            _encryptedDatabase.CatalogName);
+
+        var key = string.Empty;
+
+        try
+        {
+            var attachedDatabase = await GetAttachedDatabaseAsync(_encryptedDatabase.CatalogName, cancellationToken)
+                .ConfigureAwait(false);
+            EnsureCompatibleEncryptedDatabase(_encryptedDatabase, attachedDatabase);
+
+            key = _encryptedDatabase.ResolveKey();
+            var canonicalPath = ResolvePath(Path.GetFullPath(_encryptedDatabase.Path));
+
+            if (attachedDatabase is not null)
+            {
+                VerifyKeyMatchesAttachment(canonicalPath, key);
+            }
+            else
+            {
+                AttachedKeyFingerprints.TryRemove(canonicalPath, out _);
+            }
+
+            await using (var command = DbConnection.CreateCommand())
+            {
+                command.CommandText = BuildEncryptedDatabaseCommandText(attachedDatabase is null, key);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (attachedDatabase is null)
+            {
+                EnsureCompatibleEncryptedDatabase(
+                    _encryptedDatabase,
+                    await GetAttachedDatabaseAsync(_encryptedDatabase.CatalogName, cancellationToken)
+                        .ConfigureAwait(false));
+                RecordKeyFingerprint(canonicalPath, key);
+            }
+        }
+        catch (Exception exception)
+        {
+            var sanitized = SanitizeEncryptedDatabaseFailure(exception, key);
+            operation.Fail(sanitized);
+            throw sanitized;
+        }
+
+        operation.Complete();
+    }
+
+    /// <summary>
+    ///     Builds the statements that make the encrypted database usable on this connection: the temporary-file
+    ///     setting, the attachment when the host instance does not already hold it, and the catalog selection.
+    ///     The attachment is only needed once per DuckDB instance, but <c>USE</c> is per connection.
+    /// </summary>
+    private string BuildEncryptedDatabaseCommandText(bool attach, string key)
+    {
+        var commandText = new StringBuilder();
+
+        if (_encryptedDatabase!.EncryptTemporaryFiles)
+        {
+            commandText.Append(DuckDBEncryptedAttachCommandBuilder.BuildTemporaryFileEncryption()).Append(' ');
+        }
+
+        if (attach)
+        {
+            commandText
+                .Append(DuckDBEncryptedAttachCommandBuilder.BuildAttachment(_encryptedDatabase, key))
+                .Append(' ');
+        }
+
+        return commandText.Append(DuckDBEncryptedAttachCommandBuilder.BuildUse(_encryptedDatabase)).ToString();
+    }
+
+    /// <summary>
+    ///     Proves this context's key against the fingerprint recorded when the database was attached. A missing
+    ///     entry means the attachment was made outside the provider (caller-issued SQL); there is nothing to
+    ///     verify against, and rejecting it would break deployments that pre-attach with their own tooling.
+    /// </summary>
+    private void VerifyKeyMatchesAttachment(string canonicalPath, string key)
+    {
+        if (AttachedKeyFingerprints.TryGetValue(canonicalPath, out var recorded)
+            && !CryptographicOperations.FixedTimeEquals(ComputeKeyFingerprint(key), recorded))
+        {
+            throw new InvalidOperationException(
+                $"The encrypted database '{_encryptedDatabase!.CatalogName}' is attached with a different "
+                + "encryption key than this context resolved. The attachment is shared by every context on the "
+                + "DuckDB host instance, so a context whose key no longer matches must not inherit it. Align "
+                + "the key providers, or rotate the database file to the new key.");
+        }
+    }
+
+    /// <summary>
+    ///     Records the attaching key's fingerprint. When a racing connection recorded first, this context's key
+    ///     is verified against that record instead — failing closed if the two keys differ.
+    /// </summary>
+    private void RecordKeyFingerprint(string canonicalPath, string key)
+    {
+        var fingerprint = ComputeKeyFingerprint(key);
+        if (!AttachedKeyFingerprints.TryAdd(canonicalPath, fingerprint))
+        {
+            VerifyKeyMatchesAttachment(canonicalPath, key);
+        }
+    }
+
+    private static byte[] ComputeKeyFingerprint(string key)
+        => SHA256.HashData(Encoding.UTF8.GetBytes(key));
+
+    /// <summary>
+    ///     Returns the failure to report for an attachment. DuckDB quotes the failing statement in some parse and
+    ///     binder errors, so the key literal the attachment wrote is redacted before the message is logged or
+    ///     propagated. Only that literal is rewritten: replacing every occurrence of the key's characters would
+    ///     corrupt unrelated text, since a short key also matches paths, aliases, and ordinary words. A message
+    ///     that still contains the key outside the literal is dropped entirely rather than leaked, as is the
+    ///     original exception whenever anything was redacted, because chaining it would carry the key along.
+    /// </summary>
+    internal static Exception SanitizeEncryptedDatabaseFailure(Exception exception, string key)
+    {
+        if (key.Length == 0)
+        {
+            return exception;
+        }
+
+        var redacted = exception.Message.Replace(
+            DuckDBEncryptedAttachCommandBuilder.KeyLiteral(key),
+            DuckDBEncryptedAttachCommandBuilder.KeyLiteral("***"),
+            StringComparison.Ordinal);
+
+        if (redacted.Contains(key, StringComparison.Ordinal))
+        {
+            return new InvalidOperationException(
+                $"Attaching the encrypted database failed with {exception.GetType().Name}. Its message was "
+                + "suppressed because it contains the encryption key outside the redacted attachment literal. "
+                + "A longer, higher-entropy key avoids the incidental matches that cause this.");
+        }
+
+        return string.Equals(redacted, exception.Message, StringComparison.Ordinal)
+            ? exception
+            : new InvalidOperationException(
+                $"Attaching the encrypted database failed with {exception.GetType().Name}: {redacted}");
+    }
+
+    private static void EnsureCompatibleEncryptedDatabase(
+        DuckDBEncryptedDatabaseOptions options,
+        AttachedDatabase? attachedDatabase)
+    {
+        if (attachedDatabase is null)
+        {
+            return;
+        }
+
+        if (attachedDatabase.Path is null || !PathsEqual(attachedDatabase.Path, options.Path))
+        {
+            throw new InvalidOperationException(
+                $"Catalog alias '{options.CatalogName}' is already attached to a different database file. Contexts "
+                + "in one process share a single DuckDB host instance, so give each encrypted database its own "
+                + "alias with UseEncryptedDatabase(..., encrypted => encrypted.CatalogName(...)).");
+        }
+
+        if (!attachedDatabase.IsEncrypted)
+        {
+            throw new InvalidOperationException(
+                $"The database attached as '{options.CatalogName}' is not encrypted. Attach an encrypted database "
+                + "file, or create an encrypted copy of the existing one before configuring UseEncryptedDatabase.");
+        }
+
+        if (attachedDatabase.IsReadOnly != options.IsReadOnly)
+        {
+            var configuredMode = options.IsReadOnly ? "read-only" : "writable";
+            var attachedMode = attachedDatabase.IsReadOnly ? "read-only" : "writable";
+            throw new InvalidOperationException(
+                $"The encrypted database attached as '{options.CatalogName}' is {attachedMode}, but this context "
+                + $"requires a {configuredMode} attachment. The access mode belongs to the attachment, which is "
+                + "shared by every context using the same DuckDB host instance and catalog alias.");
+        }
+    }
+
     private void AttachOrSelectDuckLakeCatalog()
     {
         if (_duckLakeOptions is null)
@@ -668,14 +980,15 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     {
         using var command = DbConnection.CreateCommand();
         command.CommandText =
-            "SELECT type, path, readonly FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
+            "SELECT type, path, readonly, encrypted FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
         command.Parameters.Add(new DuckDBParameter("catalog_name", catalogName));
         using var reader = command.ExecuteReader();
         return reader.Read()
             ? new AttachedDatabase(
                 reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetString(1),
-                reader.GetBoolean(2))
+                reader.GetBoolean(2),
+                reader.GetBoolean(3))
             : null;
     }
 
@@ -685,14 +998,15 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     {
         await using var command = DbConnection.CreateCommand();
         command.CommandText =
-            "SELECT type, path, readonly FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
+            "SELECT type, path, readonly, encrypted FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
         command.Parameters.Add(new DuckDBParameter("catalog_name", catalogName));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? new AttachedDatabase(
                 reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetString(1),
-                reader.GetBoolean(2))
+                reader.GetBoolean(2),
+                reader.GetBoolean(3))
             : null;
     }
 
@@ -736,44 +1050,108 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     }
 
     private static bool PathsEqual(string left, string right)
-        => string.Equals(
-            Path.GetFullPath(left),
-            Path.GetFullPath(right),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
-
-    private sealed record AttachedDatabase(string Type, string? Path, bool IsReadOnly);
-
-    private void ObserveDuckLakeConnection(DuckDBConnection connection)
     {
-        if (ReferenceEquals(_observedDuckLakeConnection, connection))
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var leftFull = Path.GetFullPath(left);
+        var rightFull = Path.GetFullPath(right);
+
+        // The textual comparison decides the common case without touching the filesystem, and keeps two
+        // identical strings equal even when link resolution fails for one of them.
+        return string.Equals(leftFull, rightFull, comparison)
+            || string.Equals(ResolvePath(leftFull), ResolvePath(rightFull), comparison);
+    }
+
+    /// <summary>
+    ///     Resolves a full path to the form DuckDB reports for an attached database. DuckDB canonicalizes
+    ///     symbolic links in every segment, including the database file itself, which
+    ///     <see cref="Path.GetFullPath(string)" /> does not — so a configured path through a linked directory
+    ///     (macOS reaches its temporary directories through <c>/var</c>) or a linked file (a blue/green
+    ///     <c>current.duckdb</c>) would otherwise compare unequal to the same file already attached.
+    /// </summary>
+    private static string ResolvePath(string fullPath)
+    {
+        var remainingLinkHops = MaximumLinkDepth;
+
+        try
+        {
+            if (File.Exists(fullPath)
+                && new FileInfo(fullPath).ResolveLinkTarget(returnFinalTarget: true) is { } fileTarget)
+            {
+                fullPath = fileTarget.FullName;
+                remainingLinkHops--;
+            }
+
+            var directory = Path.GetDirectoryName(fullPath);
+            return string.IsNullOrEmpty(directory)
+                ? fullPath
+                : Path.Combine(
+                    ResolveDirectory(new DirectoryInfo(directory), ref remainingLinkHops),
+                    Path.GetFileName(fullPath));
+        }
+        catch (IOException)
+        {
+            return fullPath;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return fullPath;
+        }
+    }
+
+    /// <summary>
+    ///     Resolves a directory and each of its parents, because <see cref="FileSystemInfo.ResolveLinkTarget" />
+    ///     only follows a link in the final path segment. The budget is spent only on link hops — never on the
+    ///     parent walk, which is bounded by the path's own depth — so a deep but link-free path always resolves
+    ///     completely instead of returning a half-resolved prefix that would fail the comparison.
+    /// </summary>
+    private static string ResolveDirectory(DirectoryInfo directory, ref int remainingLinkHops)
+    {
+        if (remainingLinkHops > 0
+            && directory.Exists
+            && directory.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+        {
+            remainingLinkHops--;
+            return ResolveDirectory(new DirectoryInfo(target.FullName), ref remainingLinkHops);
+        }
+
+        return directory.Parent is { } parent
+            ? Path.Combine(ResolveDirectory(parent, ref remainingLinkHops), directory.Name)
+            : directory.FullName;
+    }
+
+    private sealed record AttachedDatabase(string Type, string? Path, bool IsReadOnly, bool IsEncrypted);
+
+    private void ObserveCatalogConnection(DuckDBConnection connection)
+    {
+        if (ReferenceEquals(_observedCatalogConnection, connection))
         {
             return;
         }
 
-        StopObservingDuckLakeConnection();
-        _observedDuckLakeConnection = connection;
-        _observedDuckLakeConnection.StateChange += DuckLakeConnectionStateChanged;
+        StopObservingCatalogConnection();
+        _observedCatalogConnection = connection;
+        _observedCatalogConnection.StateChange += CatalogConnectionStateChanged;
     }
 
-    private void DuckLakeConnectionStateChanged(object? sender, StateChangeEventArgs eventArgs)
+    private void CatalogConnectionStateChanged(object? sender, StateChangeEventArgs eventArgs)
     {
         if (eventArgs.CurrentState != ConnectionState.Open
-            && ReferenceEquals(sender, _initializedDuckLakeConnection))
+            && ReferenceEquals(sender, _initializedCatalogConnection))
         {
-            _initializedDuckLakeConnection = null;
+            _initializedCatalogConnection = null;
         }
     }
 
-    private void StopObservingDuckLakeConnection()
+    private void StopObservingCatalogConnection()
     {
-        if (_observedDuckLakeConnection is not null)
+        if (_observedCatalogConnection is not null)
         {
-            _observedDuckLakeConnection.StateChange -= DuckLakeConnectionStateChanged;
+            _observedCatalogConnection.StateChange -= CatalogConnectionStateChanged;
         }
 
-        _observedDuckLakeConnection = null;
-        _initializedDuckLakeConnection = null;
-        _initializingDuckLakeConnection = null;
+        _observedCatalogConnection = null;
+        _initializedCatalogConnection = null;
+        _initializingCatalogConnection = null;
     }
 
     /// <inheritdoc />
@@ -785,7 +1163,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         }
         finally
         {
-            StopObservingDuckLakeConnection();
+            StopObservingCatalogConnection();
         }
     }
 
@@ -798,7 +1176,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         }
         finally
         {
-            StopObservingDuckLakeConnection();
+            StopObservingCatalogConnection();
         }
     }
 }

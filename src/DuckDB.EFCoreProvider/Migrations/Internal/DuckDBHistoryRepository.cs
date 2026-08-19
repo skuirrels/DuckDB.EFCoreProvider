@@ -219,8 +219,13 @@ public class DuckDBHistoryRepository : HistoryRepository
     {
         var stringTypeMapping = Dependencies.TypeMappingSource.GetMapping(typeof(string));
 
+        // duckdb_tables() spans every attached catalog, so the probe is scoped to the one this context maps
+        // to. It matters for the attached-catalog profiles (DuckLake, an encrypted database), where the host
+        // instance can hold another context's history table under the same name.
         return $"""
-                SELECT coalesce(any_value(true), false) FROM duckdb_tables() WHERE "table_name" = {stringTypeMapping.GenerateSqlLiteral(tableName)};
+                SELECT coalesce(any_value(true), false) FROM duckdb_tables()
+                 WHERE "table_name" = {stringTypeMapping.GenerateSqlLiteral(tableName)}
+                   AND "database_name" = current_database();
                 """;
     }
 
