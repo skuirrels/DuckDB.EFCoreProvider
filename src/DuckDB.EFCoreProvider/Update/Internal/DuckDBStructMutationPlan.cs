@@ -71,7 +71,9 @@ internal sealed class DuckDBStructMutationPlan
                     ?? throw new InvalidOperationException(
                         $"STRUCT write column '{modification.ColumnName}' has no parameter name."),
                 ordinal,
-                ResolveFieldInfo(modification));
+                ResolveFieldInfo(modification),
+                modification.Column?.IsNullable,
+                modification.Value);
         }
 
         var collision = DuckDBStructPathCollision.Find(
@@ -92,7 +94,7 @@ internal sealed class DuckDBStructMutationPlan
             .GroupBy(entry => entry.FieldInfo!.StructColumnName, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
-                group => BuildTree(group),
+                group => (Tree: BuildTree(group), IsNull: IsNullRoot(group)),
                 StringComparer.OrdinalIgnoreCase);
 
         var entries = new List<DuckDBStructMutationEntry>(resolved.Length);
@@ -108,9 +110,11 @@ internal sealed class DuckDBStructMutationPlan
             }
             else if (emittedStructColumns.Add(entry.FieldInfo.StructColumnName))
             {
+                var (tree, isNull) = grouped[entry.FieldInfo.StructColumnName];
                 entries.Add(new DuckDBStructMutationGroup(
                     entry.FieldInfo.StructColumnName,
-                    grouped[entry.FieldInfo.StructColumnName]));
+                    tree,
+                    isNull));
             }
         }
 
@@ -154,11 +158,25 @@ internal sealed class DuckDBStructMutationPlan
                 as DuckDBStructFieldInfo
             ?? modification.Property?.GetStructFieldInfo();
 
+    /// <summary>
+    ///     Determines whether a whole struct root should be written as SQL <c>NULL</c> rather than a
+    ///     present struct literal. This is the case when the owning complex property is optional
+    ///     (every mapped leaf column is nullable) and every leaf is being written as <see langword="null" />.
+    /// </summary>
+    private static bool IsNullRoot(IEnumerable<ResolvedModification> group)
+    {
+        var entries = group.ToArray();
+        var rootIsNullable = entries.All(entry => entry.ColumnIsNullable == true);
+        return rootIsNullable && entries.All(entry => entry.Value is null);
+    }
+
     private sealed record ResolvedModification(
         string ColumnName,
         string ParameterName,
         int WriteOrdinal,
-        DuckDBStructFieldInfo? FieldInfo);
+        DuckDBStructFieldInfo? FieldInfo,
+        bool? ColumnIsNullable,
+        object? Value);
 
     private sealed class MutableNode(string? fieldName)
     {
@@ -231,7 +249,8 @@ internal sealed record DuckDBStandaloneMutationEntry(
 
 internal sealed record DuckDBStructMutationGroup(
     string StructColumnName,
-    DuckDBStructMutationNode Root)
+    DuckDBStructMutationNode Root,
+    bool IsNull)
     : DuckDBStructMutationEntry(StructColumnName)
 {
     public override bool HasSamePhysicalShape(DuckDBStructMutationEntry other)

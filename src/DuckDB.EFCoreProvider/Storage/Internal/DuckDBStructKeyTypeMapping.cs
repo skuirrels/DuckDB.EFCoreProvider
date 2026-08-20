@@ -29,12 +29,15 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
     private readonly Type _leafClrType;
     private readonly IReadOnlyList<string> _fieldPath;
     private readonly ValueConverter? _converter;
+    private readonly RelationalTypeMapping? _leafTypeMapping;
 
     internal Type LeafClrType => _leafClrType;
 
     internal IReadOnlyList<string> FieldPath => _fieldPath;
 
     internal ValueConverter? LeafConverter => _converter;
+
+    internal RelationalTypeMapping? LeafTypeMapping => _leafTypeMapping;
 
     public DuckDBStructKeyTypeMapping(
         string storeType,
@@ -51,7 +54,8 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
             leafTypeMapping.StoreType,
             leafTypeMapping.ClrType,
             fieldPath,
-            leafTypeMapping.Converter)
+            leafTypeMapping.Converter,
+            leafTypeMapping)
     {
     }
 
@@ -59,7 +63,8 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
         string storeType,
         Type leafClrType,
         IReadOnlyList<string> fieldPath,
-        ValueConverter? converter)
+        ValueConverter? converter,
+        RelationalTypeMapping? leafTypeMapping = null)
         : base(new RelationalTypeMappingParameters(
             new CoreTypeMappingParameters(typeof(Dictionary<string, object>)),
             storeType: storeType ?? "STRUCT"))
@@ -67,27 +72,89 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
         _leafClrType = leafClrType;
         _fieldPath = fieldPath.ToArray();
         _converter = converter;
+        _leafTypeMapping = leafTypeMapping;
     }
 
     private DuckDBStructKeyTypeMapping(
         RelationalTypeMappingParameters parameters,
         Type leafClrType,
         IReadOnlyList<string> fieldPath,
-        ValueConverter? converter)
+        ValueConverter? converter,
+        RelationalTypeMapping? leafTypeMapping)
         : base(parameters)
     {
         _leafClrType = leafClrType;
         _fieldPath = fieldPath;
         _converter = converter;
+        _leafTypeMapping = leafTypeMapping;
     }
 
     /// <inheritdoc />
     protected override RelationalTypeMapping Clone(RelationalTypeMappingParameters parameters)
-        => new DuckDBStructKeyTypeMapping(parameters, _leafClrType, _fieldPath, _converter);
+        => new DuckDBStructKeyTypeMapping(
+            parameters,
+            _leafClrType,
+            _fieldPath,
+            _converter,
+            _leafTypeMapping);
 
     /// <inheritdoc />
     public override Expression CustomizeDataReaderExpression(Expression expression)
-        => CreateReadExpression(expression, _leafClrType, _fieldPath, _converter);
+        => _leafTypeMapping is { } leafTypeMapping
+            ? CreateReadExpression(expression, leafTypeMapping, _fieldPath)
+            : CreateReadExpression(expression, _leafClrType, _fieldPath, _converter);
+
+    internal static Expression CreateReadExpression(
+        Expression expression,
+        RelationalTypeMapping leafTypeMapping,
+        IReadOnlyList<string> fieldPath)
+    {
+        Expression valueExpression = CreateProviderReadExpression(expression, leafTypeMapping, fieldPath);
+        valueExpression = leafTypeMapping.CustomizeDataReaderExpression(valueExpression);
+
+        if (leafTypeMapping.Converter is { } converter
+            && valueExpression.Type == converter.ProviderClrType)
+        {
+            valueExpression = ReplacingExpressionVisitor.Replace(
+                converter.ConvertFromProviderExpression.Parameters.Single(),
+                valueExpression,
+                converter.ConvertFromProviderExpression.Body);
+        }
+
+        var modelValueExpression = valueExpression.Type == leafTypeMapping.ClrType
+            ? valueExpression
+            : Expression.Convert(valueExpression, leafTypeMapping.ClrType);
+
+        return Expression.Condition(
+            Expression.Call(
+                HasStructKeyMethod,
+                expression,
+                Expression.Constant(fieldPath.ToArray())),
+            modelValueExpression,
+            Expression.Default(leafTypeMapping.ClrType));
+    }
+
+    internal static Expression CreateProviderReadExpression(
+        Expression expression,
+        RelationalTypeMapping leafTypeMapping,
+        IReadOnlyList<string> fieldPath)
+    {
+        var providerType = leafTypeMapping.Converter?.ProviderClrType
+            ?? leafTypeMapping.GetDataReaderMethod().ReturnType;
+        return Expression.Call(
+            ReadStructKeyMethod.MakeGenericMethod(providerType),
+            expression,
+            Expression.Constant(fieldPath.ToArray()));
+    }
+
+    internal static Expression CreateProviderReadExpression(
+        Expression expression,
+        Type leafClrType,
+        IReadOnlyList<string> fieldPath)
+        => Expression.Call(
+            ReadStructKeyMethod.MakeGenericMethod(leafClrType),
+            expression,
+            Expression.Constant(fieldPath.ToArray()));
 
     internal static Expression CreateReadExpression(
         Expression expression,
@@ -204,13 +271,13 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
             return Enum.ToObject(nonNullable, converted);
         }
 
-        try
+        if (value is IConvertible
+            && typeof(IConvertible).IsAssignableFrom(nonNullable))
         {
             return Convert.ChangeType(value, nonNullable, CultureInfo.InvariantCulture);
         }
-        catch
-        {
-            return value;
-        }
+
+        throw new InvalidCastException(
+            $"The STRUCT field value of type '{value.GetType().Name}' cannot be converted to '{targetType.Name}'.");
     }
 }

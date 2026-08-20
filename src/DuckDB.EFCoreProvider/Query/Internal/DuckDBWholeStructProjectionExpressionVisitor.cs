@@ -95,6 +95,14 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
 
         foreach (var binding in bindingFinder.Bindings)
         {
+            if (binding.ProjectionMember is null
+                && (binding.Index is not { } projectionIndex
+                    || projectionIndex < 0
+                    || projectionIndex >= selectExpression.Projection.Count))
+            {
+                continue;
+            }
+
             var resolved = selectExpression.GetProjection(binding);
 
             if (resolved is not ConstantExpression { Value: Dictionary<IPropertyBase, int> propertyIndexes })

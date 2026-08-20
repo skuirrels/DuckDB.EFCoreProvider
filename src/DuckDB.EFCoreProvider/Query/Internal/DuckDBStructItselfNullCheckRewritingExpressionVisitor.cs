@@ -50,10 +50,27 @@ internal sealed class DuckDBStructItselfNullCheckRewritingExpressionVisitor : Ex
             return presenceCheck.CheckedExpression;
         }
 
-        var source = structField!.Source;
-        var depth = presenceCheck.Depth;
-        var fieldPath = depth == 0 ? [] : structField.FieldPath.Take(depth).ToArray();
-        SqlExpression target = fieldPath.Length == 0
+        var leafSource = structField!.Source;
+        SqlExpression source;
+        if (presenceCheck.StructColumnName is { } structColumnName
+            && leafSource is ColumnExpression leafColumn)
+        {
+            // Target the complex property's configured struct root rather than an arbitrary
+            // overridden leaf root (see HasStructField). Keep the resolved leaf's table alias.
+            source = new ColumnExpression(
+                structColumnName,
+                leafColumn.TableAlias,
+                typeof(object),
+                typeMapping: null,
+                nullable: leafColumn.IsNullable);
+        }
+        else
+        {
+            source = leafSource;
+        }
+
+        var fieldPath = presenceCheck.FieldPath;
+        SqlExpression target = fieldPath.Count == 0
             ? source
             : new DuckDBStructFieldExpression(source, fieldPath, typeof(object));
 

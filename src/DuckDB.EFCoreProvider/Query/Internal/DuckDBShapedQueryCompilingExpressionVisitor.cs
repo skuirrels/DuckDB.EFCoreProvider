@@ -91,8 +91,9 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
         {
             if (node.Test is MethodCallExpression test
                 && TryGetReaderProjection(test, out var reader, out var projectionIndex)
+                && test.Method.Name == nameof(DbDataReader.IsDBNull)
                 && slots.TryGetValue(projectionIndex, out var slot)
-                && slot.ExtractionMapping.LeafConverter is not null)
+                && slot.ExtractionMapping.LeafTypeMapping is { } leafTypeMapping)
             {
                 var rootValue = Expression.Call(
                     reader,
@@ -100,9 +101,8 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
                     Expression.Constant(slot.RootProjectionIndex));
                 var extracted = DuckDBStructKeyTypeMapping.CreateReadExpression(
                     rootValue,
-                    slot.ExtractionMapping.LeafClrType,
-                    slot.ExtractionMapping.FieldPath,
-                    slot.ExtractionMapping.LeafConverter);
+                    leafTypeMapping,
+                    slot.ExtractionMapping.FieldPath);
 
                 return extracted.Type == node.Type
                     ? extracted
@@ -120,7 +120,9 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
             }
 
             if (!TryGetReaderProjection(node, out var reader, out var projectionIndex)
-                || !slots.TryGetValue(projectionIndex, out var slot))
+                || !slots.TryGetValue(projectionIndex, out var slot)
+                || slot.ExtractionMapping.LeafTypeMapping is not { } leafTypeMapping
+                || !ReaderMethodMatches(node.Method, leafTypeMapping.GetDataReaderMethod()))
             {
                 return base.VisitMethodCall(node);
             }
@@ -129,10 +131,9 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
                 reader,
                 GetValueMethod,
                 Expression.Constant(slot.RootProjectionIndex));
-            var converter = slot.ExtractionMapping.LeafConverter;
-            var extracted = DuckDBStructKeyTypeMapping.CreateReadExpression(
+            var extracted = DuckDBStructKeyTypeMapping.CreateProviderReadExpression(
                 rootValue,
-                converter?.ProviderClrType ?? slot.ExtractionMapping.LeafClrType,
+                leafTypeMapping,
                 slot.ExtractionMapping.FieldPath);
 
             return extracted.Type == node.Type
@@ -149,17 +150,8 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
             projectionIndex = 0;
             if (node.Object is not { Type: { } objectType }
                 || !typeof(DbDataReader).IsAssignableFrom(objectType)
-                || node.Arguments.Count == 0
-                || node.Arguments[^1] is not ConstantExpression { Value: int index })
-            {
-                return false;
-            }
-
-            if (node.Method.Name is not (nameof(DbDataReader.GetValue)
-                or nameof(DbDataReader.GetString)
-                or nameof(DbDataReader.GetInt32)
-                or nameof(DbDataReader.GetFieldValue)
-                or nameof(DbDataReader.IsDBNull)))
+                || node.Arguments.Count != 1
+                || node.Arguments[0] is not ConstantExpression { Value: int index })
             {
                 return false;
             }
@@ -167,6 +159,24 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
             reader = node.Object;
             projectionIndex = index;
             return true;
+        }
+
+        private static bool ReaderMethodMatches(MethodInfo actual, MethodInfo expected)
+        {
+            if (actual == expected)
+            {
+                return true;
+            }
+
+            if (actual.IsGenericMethod
+                && expected.IsGenericMethod
+                && actual.GetGenericMethodDefinition() == expected.GetGenericMethodDefinition()
+                && actual.GetGenericArguments().SequenceEqual(expected.GetGenericArguments()))
+            {
+                return true;
+            }
+
+            return actual.GetBaseDefinition() == expected.GetBaseDefinition();
         }
     }
 }

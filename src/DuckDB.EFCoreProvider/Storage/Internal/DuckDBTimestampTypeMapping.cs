@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Storage.Json;
 using System.Data;
 using System.Data.Common;
+using System.Linq.Expressions;
 using System.Reflection;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
@@ -20,9 +21,11 @@ public class DuckDBTimestampTypeMapping : RelationalTypeMapping
     private static readonly MethodInfo GetDateTime = typeof(DuckDBDataReader)
         .GetRuntimeMethod(nameof(DbDataReader.GetDateTime), [typeof(int)])!;
 
-    private static readonly MethodInfo GetDateTimeOffset = typeof(DuckDBDataReader)
-        .GetMethod(nameof(DuckDBDataReader.GetFieldValue), 1, [typeof(int)])!
-        .MakeGenericMethod(typeof(DateTimeOffset));
+    private static readonly MethodInfo ConvertDateTimeToDateTimeOffsetMethod
+        = typeof(DuckDBTimestampTypeMapping).GetMethod(
+            nameof(ConvertDateTimeToDateTimeOffset),
+            BindingFlags.NonPublic | BindingFlags.Static,
+            [typeof(DateTime)])!;
 
     private static readonly Dictionary<DuckDBType, string> Formats = new()
     {
@@ -103,10 +106,23 @@ public class DuckDBTimestampTypeMapping : RelationalTypeMapping
         return DbType switch
         {
             System.Data.DbType.DateTime => GetDateTime,
-            System.Data.DbType.DateTimeOffset => GetDateTimeOffset,
+            // DuckDB.NET exposes TIMESTAMPTZ through GetValue/GetDateTime as a UTC DateTime.
+            // Keep the raw reader type here and perform the provider-specific conversion in
+            // CustomizeDataReaderExpression so STRUCT extraction can use the same mapping path.
+            System.Data.DbType.DateTimeOffset => GetDateTime,
             _ => base.GetDataReaderMethod()
         };
     }
+
+    /// <inheritdoc />
+    public override Expression CustomizeDataReaderExpression(Expression expression)
+        => DbType == System.Data.DbType.DateTimeOffset
+            && expression.Type == typeof(DateTime)
+            ? Expression.Call(ConvertDateTimeToDateTimeOffsetMethod, expression)
+            : expression;
+
+    private static DateTimeOffset ConvertDateTimeToDateTimeOffset(DateTime value)
+        => new(DateTime.SpecifyKind(value, DateTimeKind.Utc), TimeSpan.Zero);
 
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)

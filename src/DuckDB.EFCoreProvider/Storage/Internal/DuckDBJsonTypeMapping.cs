@@ -85,6 +85,21 @@ public class DuckDBJsonTypeMapping : JsonTypeMapping
         typeof(JsonDocument).GetMethod(nameof(JsonDocument.Parse), [typeof(string), typeof(JsonDocumentOptions)])!;
 
     /// <inheritdoc />
+    public override Expression CustomizeDataReaderExpression(Expression expression)
+        => expression.Type == typeof(string)
+            ? ClrType switch
+            {
+                var type when type == typeof(JsonDocument)
+                    => Expression.Call(ParseMethod, expression, DefaultJsonDocumentOptions),
+                var type when type == typeof(JsonElement)
+                    => Expression.Property(
+                        Expression.Call(ParseMethod, expression, DefaultJsonDocumentOptions),
+                        nameof(JsonDocument.RootElement)),
+                _ => expression
+            }
+            : expression;
+
+    /// <inheritdoc />
     public override MethodInfo GetDataReaderMethod()
     {
         return GetDataReaderMethod(typeof(string));

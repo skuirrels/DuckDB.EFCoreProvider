@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -268,9 +269,94 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
         var operand = left is ConstantExpression { Value: null } ? right : left;
         var depth = GetComplexPropertyChainDepth(operand) - 1;
 
-        return depth < 0
-            ? null
-            : new DuckDBStructPresenceCheckExpression(binaryExpression.NodeType, visitedSql, depth);
+        if (depth < 0)
+        {
+            return null;
+        }
+
+        // Resolve the checked complex property's configured struct root so the rewrite targets
+        // that root rather than an arbitrary overridden leaf root (see HasStructField).
+        var (structColumnName, fieldPath) = ResolveStructRoot(operand, depth);
+        return new DuckDBStructPresenceCheckExpression(
+            binaryExpression.NodeType,
+            visitedSql,
+            depth,
+            structColumnName,
+            fieldPath);
+    }
+
+    /// <summary>
+    ///     Resolves the physical struct root column and the field path to the checked complex from
+    ///     the operand member chain, using the complex property's immutable struct mapping. Returns
+    ///     <see langword="null" /> root when the operand is not a struct-mapped complex-property
+    ///     access, in which case the rewrite keeps EF's narrowed comparison.
+    /// </summary>
+    private (string? StructColumnName, IReadOnlyList<string> FieldPath) ResolveStructRoot(
+        Expression operand,
+        int depth)
+    {
+        var members = new List<MemberExpression>();
+        var current = RemoveImplicitConvert(operand);
+        while (current is MemberExpression { Expression: { } inner } member)
+        {
+            members.Add(member);
+            current = RemoveImplicitConvert(inner);
+        }
+
+        // members is outermost-first; reverse to walk innermost-first.
+        members.Reverse();
+
+        ITypeBase? structuralType = current switch
+        {
+            ParameterExpression parameter => _model.FindEntityType(parameter.Type),
+            RelationalStructuralTypeShaperExpression shaper => shaper.StructuralType,
+            _ => null
+        };
+
+        if (structuralType is null)
+        {
+            return (null, []);
+        }
+
+        var complexProperties = new List<IReadOnlyComplexProperty>(members.Count);
+        foreach (var member in members)
+        {
+            var complexProperty = structuralType.FindComplexProperty(member.Member.Name);
+            if (complexProperty is null)
+            {
+                return (null, []);
+            }
+
+            complexProperties.Add(complexProperty);
+            structuralType = complexProperty.ComplexType;
+        }
+
+        if (complexProperties.Count == 0)
+        {
+            return (null, []);
+        }
+
+        var rootMapping = complexProperties[0].GetStructMapping();
+        if (rootMapping is null)
+        {
+            return (null, []);
+        }
+
+        // The field path to the checked complex is the struct field name of every complex below
+        // the root. The root itself contributes no path segment.
+        var fieldPath = new List<string>(depth);
+        for (var i = 1; i < complexProperties.Count; i++)
+        {
+            var nestedMapping = complexProperties[i].GetStructMapping();
+            if (nestedMapping?.FieldName is not { } fieldName)
+            {
+                return (null, []);
+            }
+
+            fieldPath.Add(fieldName);
+        }
+
+        return (rootMapping.StructColumnName, fieldPath);
     }
 
     /// <summary>

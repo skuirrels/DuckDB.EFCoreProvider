@@ -981,7 +981,14 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                         helper.GenerateParameterNamePlaceholder(standalone.ParameterName));
                     break;
                 case DuckDBStructMutationGroup structGroup:
-                    AppendStructLiteral(commandStringBuilder, structGroup.Root, helper);
+                    if (structGroup.IsNull)
+                    {
+                        commandStringBuilder.Append("NULL");
+                    }
+                    else
+                    {
+                        AppendStructLiteral(commandStringBuilder, structGroup.Root, helper);
+                    }
                     break;
             }
         }
@@ -1017,7 +1024,14 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                     break;
                 case DuckDBStructMutationGroup structGroup:
                     commandStringBuilder.Append(columnName).Append(" = ");
-                    AppendStructUpdate(commandStringBuilder, columnName, structGroup.Root, helper);
+                    if (structGroup.IsNull)
+                    {
+                        commandStringBuilder.Append("NULL");
+                    }
+                    else
+                    {
+                        AppendStructUpdate(commandStringBuilder, columnName, structGroup.Root, helper);
+                    }
                     break;
             }
         }
