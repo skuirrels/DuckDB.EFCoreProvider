@@ -42,6 +42,9 @@ public static class DuckDBEventId
         QuackServerStarting,
         QuackServerCompleted,
         QuackServerFailed,
+        EncryptedDatabaseAttachmentStarting,
+        EncryptedDatabaseAttachmentCompleted,
+        EncryptedDatabaseAttachmentFailed,
 
         SaveChangesBatch = CoreEventId.ProviderBaseId + 200,
     }
@@ -126,6 +129,18 @@ public static class DuckDBEventId
 
     /// <summary>A provider-managed Quack server operation failed.</summary>
     public static readonly EventId QuackServerFailed = MakeInfrastructureId(Id.QuackServerFailed);
+
+    /// <summary>An encrypted database attachment is starting.</summary>
+    public static readonly EventId EncryptedDatabaseAttachmentStarting =
+        MakeInfrastructureId(Id.EncryptedDatabaseAttachmentStarting);
+
+    /// <summary>An encrypted database attachment completed.</summary>
+    public static readonly EventId EncryptedDatabaseAttachmentCompleted =
+        MakeInfrastructureId(Id.EncryptedDatabaseAttachmentCompleted);
+
+    /// <summary>An encrypted database attachment failed.</summary>
+    public static readonly EventId EncryptedDatabaseAttachmentFailed =
+        MakeInfrastructureId(Id.EncryptedDatabaseAttachmentFailed);
 
     /// <summary>A SaveChanges batch was flushed or rejected by a provider batching guard.</summary>
     public static readonly EventId SaveChangesBatch = MakeCommandId(Id.SaveChangesBatch);

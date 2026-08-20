@@ -10,5 +10,6 @@ internal enum DuckDBProviderOperation
     DuckLakeAttachment,
     QuackServer,
     QuackDiagnostics,
+    EncryptedDatabaseAttachment,
     Count,
 }

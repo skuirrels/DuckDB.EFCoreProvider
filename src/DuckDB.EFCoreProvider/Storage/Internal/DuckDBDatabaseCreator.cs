@@ -22,6 +22,7 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     private readonly IDuckDBRelationalConnection _connection;
     private readonly IRawSqlCommandBuilder _rawSqlCommandBuilder;
     private readonly DuckLakeOptions? _duckLakeOptions;
+    private readonly DuckDBEncryptedDatabaseOptions? _encryptedDatabase;
     private readonly bool _supportsSchemaManagement;
     private readonly bool _supportsDatabaseDeletion;
     private bool _duckLakeCatalogReadyForEnsureCreated;
@@ -51,6 +52,7 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         var contextOptions = dependencies.CurrentContext.Context.GetService<IDbContextOptions>();
         var providerOptions = contextOptions.FindExtension<DuckDBOptionsExtension>();
         _duckLakeOptions = providerOptions?.DuckLakeOptions;
+        _encryptedDatabase = providerOptions?.EncryptedDatabase;
         var capabilities = engineCapabilities ?? throw new ArgumentNullException(nameof(engineCapabilities));
         _supportsSchemaManagement = capabilities.SupportsSchemaManagement;
         _supportsDatabaseDeletion = capabilities.SupportsDatabaseDeletion;
@@ -105,6 +107,13 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     /// <inheritdoc />
     public override bool Exists()
     {
+        // An encrypted database is a local file that ATTACH creates on demand, so its presence is the whole
+        // answer. Probing by attaching would create the file the caller is asking about.
+        if (_encryptedDatabase is not null)
+        {
+            return File.Exists(_encryptedDatabase.Path);
+        }
+
         if (_duckLakeOptions is not null)
         {
             if (_duckLakeCatalogReadyForEnsureCreated)
@@ -167,6 +176,11 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     /// <inheritdoc />
     public override async Task<bool> ExistsAsync(CancellationToken cancellationToken = default)
     {
+        if (_encryptedDatabase is not null)
+        {
+            return File.Exists(_encryptedDatabase.Path);
+        }
+
         if (_duckLakeOptions is null)
         {
             return await base.ExistsAsync(cancellationToken).ConfigureAwait(false);
@@ -194,7 +208,11 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     /// <inheritdoc />
     public override bool HasTables()
     {
-        var databasePredicate = _duckLakeOptions is null
+        // Attached-catalog profiles share the connection with the in-memory host and, for an encrypted
+        // database, with any other context in the same DuckDB instance, so the search is scoped to the catalog
+        // this context maps entities to.
+        var catalogName = _duckLakeOptions?.CatalogName ?? _encryptedDatabase?.CatalogName;
+        var databasePredicate = catalogName is null
             ? string.Empty
             : " AND database_name = $database_name";
         var parameters = new List<System.Data.Common.DbParameter>
@@ -202,9 +220,9 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
             new DuckDBParameter("default_table_name", HistoryRepository.DefaultTableName)
         };
 
-        if (_duckLakeOptions is not null)
+        if (catalogName is not null)
         {
-            parameters.Add(new DuckDBParameter("database_name", _duckLakeOptions.CatalogName));
+            parameters.Add(new DuckDBParameter("database_name", catalogName));
         }
 
         return (bool)_rawSqlCommandBuilder
@@ -279,6 +297,12 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
                 + "is owned by the server. Delete it explicitly on the server.");
         }
 
+        if (_encryptedDatabase is not null)
+        {
+            DeleteEncryptedDatabase();
+            return;
+        }
+
         string? path = null;
 
         Dependencies.Connection.Open();
@@ -304,6 +328,35 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         {
             dbConnection.Close();
             dbConnection.Open();
+        }
+    }
+
+    /// <summary>
+    ///     Detaches the encrypted database from the host instance before deleting it. The instance is shared,
+    ///     so it can outlive this context's connections whenever another context holds one open, and the
+    ///     attached file would otherwise stay open and, on Windows, locked. The detach goes through the
+    ///     provider connection so its attachment cache is invalidated with it.
+    /// </summary>
+    private void DeleteEncryptedDatabase()
+    {
+        Dependencies.Connection.Open();
+        try
+        {
+            _connection.DetachEncryptedDatabase();
+        }
+        finally
+        {
+            Dependencies.Connection.Close();
+        }
+
+        File.Delete(_encryptedDatabase!.Path);
+
+        // DuckDB checkpoints into the database file and removes the write-ahead log on detach, but a crashed
+        // process can leave one behind; it holds the same data and must not outlive the database.
+        var writeAheadLog = _encryptedDatabase.Path + ".wal";
+        if (File.Exists(writeAheadLog))
+        {
+            File.Delete(writeAheadLog);
         }
     }
 

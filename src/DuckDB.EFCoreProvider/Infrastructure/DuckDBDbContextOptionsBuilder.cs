@@ -92,6 +92,57 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     }
 
     /// <summary>
+    ///     Stores the context's data in an encrypted DuckDB database file, attached to an in-memory host
+    ///     database and selected as the default catalog.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         DuckDB encrypts the database file and its write-ahead log with AES-256-GCM. The key is accepted
+    ///         only as an <c>ATTACH</c> parameter, so the provider opens an in-memory host database and attaches
+    ///         <paramref name="path" /> to it; the connection string's data source must therefore be unset or an
+    ///         in-memory database, and the provider normalizes it to <c>:memory:?cache=shared</c> so every
+    ///         connection the context opens reaches the same attachment.
+    ///     </para>
+    ///     <para>
+    ///         The attach statement is executed directly on the DuckDB connection rather than through EF Core's
+    ///         command pipeline, so the key never reaches EF logs, diagnostics, or interceptors. Resolve it from a
+    ///         secret store inside <paramref name="keyProvider" /> rather than holding it in configuration; the
+    ///         provider stores only the callback. It is invoked whenever the database is attached, and again
+    ///         when a context finds the database already attached: the shared attachment is only reused after
+    ///         the context's key is proven against a fingerprint of the key that attached it, so a wrong or
+    ///         rotated-away key cannot inherit another context's access.
+    ///     </para>
+    ///     <para>
+    ///         Encryption covers the database file, its WAL, and — through
+    ///         <see cref="DuckDBEncryptedDatabaseOptionsBuilder.EncryptTemporaryFiles" />, which is enabled by
+    ///         default — the temporary files queries spill to disk. It does not cover Parquet, CSV, or JSON files
+    ///         written by exports or tiered storage.
+    ///     </para>
+    /// </remarks>
+    /// <param name="path">The encrypted DuckDB database file. It is created on first attachment if missing.</param>
+    /// <param name="keyProvider">Resolves the encryption key. It is invoked whenever the database is attached or an existing attachment is verified against this context's key.</param>
+    /// <param name="encryptedDatabaseOptionsAction">Optional catalog alias, access-mode, and temporary-file configuration.</param>
+    /// <returns>The DuckDB options builder so that further configuration can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder UseEncryptedDatabase(
+        string path,
+        Func<string> keyProvider,
+        Action<DuckDBEncryptedDatabaseOptionsBuilder>? encryptedDatabaseOptionsAction = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(keyProvider);
+
+        WithOption(e => e.WithEncryptedDatabase(new DuckDBEncryptedDatabaseOptions
+        {
+            Path = path,
+            KeyProvider = keyProvider,
+            CatalogName = DuckDBEncryptedDatabaseOptions.DeriveCatalogName(path)
+        }));
+
+        encryptedDatabaseOptionsAction?.Invoke(new DuckDBEncryptedDatabaseOptionsBuilder(OptionsBuilder));
+        return this;
+    }
+
+    /// <summary>
     ///     Appends NULLS FIRST to all ORDER BY clauses. This is important for the tests which were written
     ///     for SQL Server. Note that to fully implement null-first ordering indexes also need to be generated
     ///     accordingly, and since this isn't done this feature isn't publicly exposed.

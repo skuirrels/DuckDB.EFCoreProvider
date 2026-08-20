@@ -2658,13 +2658,12 @@ public static partial class DuckDBArchiveExtensions
     // (s3://, gcs://, azure://) credentials before the archive reads or writes remote Parquet.
     private static bool OpenTracked(DatabaseFacade database)
     {
-        if (database.GetDbConnection().State == ConnectionState.Open)
-        {
-            return false;
-        }
-
+        // Open even when the caller already opened the raw DbConnection: the provider's Open() is what
+        // attaches an encrypted database or DuckLake catalog on a caller-opened connection (and is a no-op
+        // otherwise), so short-circuiting here would run the tiered operation against the host catalog.
+        var wasOpen = database.GetDbConnection().State == ConnectionState.Open;
         database.OpenConnection();
-        return true;
+        return !wasOpen;
     }
 
     private static void CloseTracked(DatabaseFacade database, bool openedHere)
@@ -2677,13 +2676,9 @@ public static partial class DuckDBArchiveExtensions
 
     private static async Task<bool> OpenTrackedAsync(DatabaseFacade database, CancellationToken cancellationToken)
     {
-        if (database.GetDbConnection().State == ConnectionState.Open)
-        {
-            return false;
-        }
-
+        var wasOpen = database.GetDbConnection().State == ConnectionState.Open;
         await database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        return true;
+        return !wasOpen;
     }
 
     private static async Task CloseTrackedAsync(DatabaseFacade database, bool openedHere)

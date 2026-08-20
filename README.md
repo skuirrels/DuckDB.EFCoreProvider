@@ -19,6 +19,7 @@
 | Open-format analytics | Direct Parquet, CSV, and JSON queries, plus typed Parquet export |
 | Lakehouse persistence | First-class DuckLake profile with tracked writes, transactions, appender ingestion, and `MERGE` upsert |
 | Data lifecycle | Hot DuckDB tables with relational aggregates archived to partitioned Parquet |
+| Encryption at rest | AES-256-GCM database, WAL, and spilled-temporary-file encryption with application-supplied keys |
 | Operational controls | Memory limits, file search paths, extension loading, migration locking, and batch sizing |
 | Data types | Decimal, temporal, JSON, arrays, lists, STRUCT, GUID, binary, row-value, and optional spatial mappings |
 | Query tooling | Non-executing command plans, exact named-parameter replay, and structured store-type inspection |
@@ -167,6 +168,36 @@ Fresh-client import of schemas with physical foreign keys requires
 released. Current stock builds can still serve schemas without physical foreign keys; EF relationships and navigations
 remain supported. See the complete [Quack configuration, security, architecture, and limitations guide](docs/QUACK.md).
 
+## Encryption at rest
+
+`UseEncryptedDuckDB(...)` stores a context's data in a DuckDB file encrypted with AES-256-GCM. DuckDB accepts an
+encryption key only as an `ATTACH` parameter, so the provider hosts the encrypted file on an in-memory database,
+attaches it with the application-supplied key, and selects it as the default catalog. Entities, migrations, and the
+migrations history table therefore all live inside the encrypted file, and the rest of EF Core is unchanged.
+
+```csharp
+services.AddDbContext<AppContext>(options => options
+    .UseEncryptedDuckDB(
+        "/var/lib/app/secure.duckdb",
+        () => keyVault.GetSecret("app-db-key")));
+```
+
+The key provider is invoked once per attachment, so keys can be resolved from a vault at connect time rather than
+stored in configuration. The `ATTACH` statement runs outside EF Core's command pipeline, so the key never reaches
+EF logs, diagnostics, or interceptors. Encryption covers the database file, its WAL, and — because the provider
+enables DuckDB's `temp_file_encryption`, which is off by default — the temporary files spilling queries write to
+disk. It does not cover Parquet exports, tiered-storage cold files, or DuckLake data paths, which need their own
+encryption.
+
+```csharp
+options.UseEncryptedDuckDB(path, keyProvider, encrypted => encrypted.CatalogName("vault").ReadOnly());
+```
+
+The connection string's data source must be unset or in-memory; the provider normalizes it to
+`:memory:?cache=shared` so every connection reaches the same attachment. See the complete
+[encryption at rest guide](docs/ENCRYPTION.md) for key rotation, encrypting an existing database, backups, and the
+coverage boundaries.
+
 ## Configuration and connection strings
 
 The connection string follows DuckDB.NET's format. Most deployments require only `Data Source`, set to a file path or `:memory:`:
@@ -195,6 +226,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.EnableMigrationTableRebuilds()` | Opt in to rebuilding tables for constraint changes DuckDB cannot apply in place. | off |
 | `.LoadExtension("httpfs")` | Install and load a DuckDB extension whenever the connection opens. | none |
 | `.LoadExtension("httpfs", DuckDBExtensionLoadMode.LoadOnly)` | Load a preinstalled extension without downloading it; `CallerManaged` records the dependency without running SQL. | install and load |
+| `.UseEncryptedDatabase(path, keyProvider)` | Store the context's data in an AES-256-GCM encrypted DuckDB file, attached as the default catalog. | off |
 | `.ConfigureConnection(connection => …)` | Run provider-owned connection setup after extensions load; intended for `CREATE SECRET` and similar setup. | none |
 | `.UseNetTopologySuite()` | Enable spatial support (requires the `DuckDB.EFCoreProvider.NTS` package). | off |
 | `.MaxBatchSize(n)` | Tune the batching merge size (standard EF Core option). | 100 |
