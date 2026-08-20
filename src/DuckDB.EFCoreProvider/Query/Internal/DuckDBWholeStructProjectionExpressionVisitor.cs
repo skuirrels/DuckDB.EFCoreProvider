@@ -95,6 +95,14 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
 
         foreach (var binding in bindingFinder.Bindings)
         {
+            // Only resolve bindings that belong to this select expression. Split-query shapers
+            // reference child queries, and resolving those bindings against the outer projection
+            // list throws an out-of-range exception.
+            if (!ReferenceEquals(binding.QueryExpression, selectExpression))
+            {
+                continue;
+            }
+
             if (binding.ProjectionMember is null
                 && (binding.Index is not { } projectionIndex
                     || projectionIndex < 0
