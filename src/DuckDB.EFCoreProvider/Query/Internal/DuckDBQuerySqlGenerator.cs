@@ -53,6 +53,25 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         return structFieldExpression;
     }
 
+    /// <summary>
+    ///     Renders a whole-struct projection by visiting its source column and emitting no
+    ///     field-extraction suffix: <c>{rendered source}</c>. Field extraction happens client-side.
+    /// </summary>
+    protected virtual Expression VisitWholeStruct(DuckDBWholeStructExpression wholeStructExpression)
+    {
+        if (wholeStructExpression.SuppressSource)
+        {
+            // Keep EF's complex-materializer null sentinel non-null without repeating the STRUCT payload.
+            Sql.Append("''");
+        }
+        else
+        {
+            Visit(wholeStructExpression.Source);
+        }
+
+        return wholeStructExpression;
+    }
+
     /// <inheritdoc />
     protected override void GenerateLimitOffset(SelectExpression selectExpression)
     {
@@ -116,6 +135,7 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             DuckDBJsonEachExpression e => VisitJsonEach(e),
             DuckDBRowValueExpression e => VisitRowValue(e),
             DuckDBStructFieldExpression e => VisitStructField(e),
+            DuckDBWholeStructExpression e => VisitWholeStruct(e),
             _ => base.VisitExtension(extensionExpression)
         };
     }

@@ -1,6 +1,6 @@
-﻿using System.Diagnostics.CodeAnalysis;
-using Microsoft.EntityFrameworkCore.Query;
+﻿using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.Internal;
+using System.Diagnostics.CodeAnalysis;
 
 namespace DuckDB.EFCoreProvider.Query.Internal;
 
@@ -14,6 +14,7 @@ public class DuckDBQueryCompilationContextFactory : RelationalQueryCompilationCo
 {
     private readonly QueryCompilationContextDependencies _compilationContextDependencies;
     private readonly RelationalQueryCompilationContextDependencies _relationalQueryCompilationContextDependencies;
+    private readonly IShapedQueryCompilingExpressionVisitorFactory? _shapedQueryCompilingExpressionVisitorFactory;
 
     public DuckDBQueryCompilationContextFactory(
         QueryCompilationContextDependencies compilationContextDependencies,
@@ -24,11 +25,30 @@ public class DuckDBQueryCompilationContextFactory : RelationalQueryCompilationCo
         _relationalQueryCompilationContextDependencies = relationalQueryCompilationContextDependencies;
     }
 
+    public DuckDBQueryCompilationContextFactory(
+        QueryCompilationContextDependencies compilationContextDependencies,
+        RelationalQueryCompilationContextDependencies relationalQueryCompilationContextDependencies,
+        ShapedQueryCompilingExpressionVisitorDependencies shapedQueryCompilingExpressionVisitorDependencies,
+        RelationalShapedQueryCompilingExpressionVisitorDependencies relationalShapedQueryCompilingExpressionVisitorDependencies)
+        : base(compilationContextDependencies, relationalQueryCompilationContextDependencies)
+    {
+        _compilationContextDependencies = compilationContextDependencies;
+        _relationalQueryCompilationContextDependencies = relationalQueryCompilationContextDependencies;
+        _shapedQueryCompilingExpressionVisitorFactory = new DuckDBShapedQueryCompilingExpressionVisitorFactory(
+            shapedQueryCompilingExpressionVisitorDependencies,
+            relationalShapedQueryCompilingExpressionVisitorDependencies);
+    }
+
     /// <inheritdoc />
     public override QueryCompilationContext Create(bool async)
     {
         return new DuckDBQueryCompilationContext(
-            _compilationContextDependencies,
+            _shapedQueryCompilingExpressionVisitorFactory is null
+                ? _compilationContextDependencies
+                : _compilationContextDependencies with
+                {
+                    ShapedQueryCompilingExpressionVisitorFactory = _shapedQueryCompilingExpressionVisitorFactory
+                },
             _relationalQueryCompilationContextDependencies,
             async);
     }
@@ -38,7 +58,12 @@ public class DuckDBQueryCompilationContextFactory : RelationalQueryCompilationCo
     public override QueryCompilationContext CreatePrecompiled(bool async)
     {
         return new DuckDBQueryCompilationContext(
-            _compilationContextDependencies,
+            _shapedQueryCompilingExpressionVisitorFactory is null
+                ? _compilationContextDependencies
+                : _compilationContextDependencies with
+                {
+                    ShapedQueryCompilingExpressionVisitorFactory = _shapedQueryCompilingExpressionVisitorFactory
+                },
             _relationalQueryCompilationContextDependencies,
             async,
             precompiling: true);

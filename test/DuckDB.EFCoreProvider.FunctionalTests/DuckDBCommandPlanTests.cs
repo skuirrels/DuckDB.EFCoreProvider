@@ -313,6 +313,58 @@ public sealed class DuckDBCommandPlanTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Executes_split_query_without_projection_binding_failure()
+    {
+        using var context = new PlanContext(FileOptions<PlanContext>());
+        context.Database.EnsureCreated();
+        context.Entities.Add(
+            new PlanEntity
+            {
+                Id = 1,
+                Name = "parent",
+                Amount = 12.34m,
+                CapturedAt = new DateTime(2026, 8, 17),
+                Code = new PlanCode("parent"),
+                Children = [new PlanChild { Id = 2, ParentId = 1 }]
+            });
+        context.SaveChanges();
+
+        var entity = context.Entities
+            .Include(value => value.Children)
+            .AsSplitQuery()
+            .Single();
+
+        Assert.Single(entity.Children);
+        Assert.Equal(2, entity.Children[0].Id);
+    }
+
+    [ConditionalFact]
+    public async Task Executes_split_query_async_without_projection_binding_failure()
+    {
+        await using var context = new PlanContext(FileOptions<PlanContext>());
+        await context.Database.EnsureCreatedAsync();
+        context.Entities.Add(
+            new PlanEntity
+            {
+                Id = 1,
+                Name = "parent",
+                Amount = 12.34m,
+                CapturedAt = new DateTime(2026, 8, 17),
+                Code = new PlanCode("parent"),
+                Children = [new PlanChild { Id = 2, ParentId = 1 }]
+            });
+        await context.SaveChangesAsync();
+
+        var entity = await context.Entities
+            .Include(value => value.Children)
+            .AsSplitQuery()
+            .SingleAsync();
+
+        Assert.Single(entity.Children);
+        Assert.Equal(2, entity.Children[0].Id);
+    }
+
+    [ConditionalFact]
     public void DuckLake_profile_uses_the_same_non_executing_extraction_contract()
     {
         var metadataPath = Path.Combine(Path.GetTempPath(), $"plan_{Guid.NewGuid():N}.ducklake");

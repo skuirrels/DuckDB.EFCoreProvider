@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Update;
 using System.Collections.Immutable;
 
@@ -71,7 +72,8 @@ internal sealed class DuckDBStructMutationPlan
                     ?? throw new InvalidOperationException(
                         $"STRUCT write column '{modification.ColumnName}' has no parameter name."),
                 ordinal,
-                ResolveFieldInfo(modification));
+                ResolveFieldInfo(modification),
+                modification);
         }
 
         var collision = DuckDBStructPathCollision.Find(
@@ -92,7 +94,7 @@ internal sealed class DuckDBStructMutationPlan
             .GroupBy(entry => entry.FieldInfo!.StructColumnName, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
-                group => BuildTree(group),
+                group => (Tree: BuildTree(group), IsNull: IsNullRoot(group)),
                 StringComparer.OrdinalIgnoreCase);
 
         var entries = new List<DuckDBStructMutationEntry>(resolved.Length);
@@ -108,9 +110,11 @@ internal sealed class DuckDBStructMutationPlan
             }
             else if (emittedStructColumns.Add(entry.FieldInfo.StructColumnName))
             {
+                var (tree, isNull) = grouped[entry.FieldInfo.StructColumnName];
                 entries.Add(new DuckDBStructMutationGroup(
                     entry.FieldInfo.StructColumnName,
-                    grouped[entry.FieldInfo.StructColumnName]));
+                    tree,
+                    isNull));
             }
         }
 
@@ -154,11 +158,56 @@ internal sealed class DuckDBStructMutationPlan
                 as DuckDBStructFieldInfo
             ?? modification.Property?.GetStructFieldInfo();
 
+    private static bool IsNullRoot(IEnumerable<ResolvedModification> group)
+    {
+        var entries = group.ToArray();
+        var entryRoots = entries
+            .Select(entry => ResolveRootComplexProperty(entry.Modification))
+            .ToArray();
+        if (entryRoots.All(root => root is null))
+        {
+            return false;
+        }
+
+        if (entryRoots.Any(root => root is null))
+        {
+            throw new InvalidOperationException(
+                "A DuckDB STRUCT root cannot combine complex-property fields with standalone field mappings.");
+        }
+
+        var roots = entryRoots.Distinct().ToArray();
+        if (roots.Length > 1)
+        {
+            throw new InvalidOperationException(
+                "A DuckDB STRUCT root cannot combine fields from different complex properties.");
+        }
+
+        var root = roots[0]!;
+        return entries.All(entry => entry.Modification.Entry is { } updateEntry
+            && updateEntry.GetCurrentValue(root) is null);
+    }
+
+    private static IComplexProperty? ResolveRootComplexProperty(IColumnModification modification)
+    {
+        if (modification.Property?.DeclaringType is not IComplexType complexType)
+        {
+            return null;
+        }
+
+        while (complexType.ComplexProperty.DeclaringType is IComplexType parentComplexType)
+        {
+            complexType = parentComplexType;
+        }
+
+        return complexType.ComplexProperty;
+    }
+
     private sealed record ResolvedModification(
         string ColumnName,
         string ParameterName,
         int WriteOrdinal,
-        DuckDBStructFieldInfo? FieldInfo);
+        DuckDBStructFieldInfo? FieldInfo,
+        IColumnModification Modification);
 
     private sealed class MutableNode(string? fieldName)
     {
@@ -231,12 +280,14 @@ internal sealed record DuckDBStandaloneMutationEntry(
 
 internal sealed record DuckDBStructMutationGroup(
     string StructColumnName,
-    DuckDBStructMutationNode Root)
+    DuckDBStructMutationNode Root,
+    bool IsNull)
     : DuckDBStructMutationEntry(StructColumnName)
 {
     public override bool HasSamePhysicalShape(DuckDBStructMutationEntry other)
         => other is DuckDBStructMutationGroup group
             && string.Equals(StructColumnName, group.StructColumnName, StringComparison.OrdinalIgnoreCase)
+            && IsNull == group.IsNull
             && Root.HasSamePhysicalShape(group.Root);
 }
 

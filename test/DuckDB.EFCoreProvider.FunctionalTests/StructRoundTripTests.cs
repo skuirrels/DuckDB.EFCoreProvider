@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.NET.Data;
+using System.Text.Json;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -38,6 +39,149 @@ public class StructRoundTripTests : DuckDBTestBase
             Assert.Equal("NYC", customer.Location.City);
             Assert.Equal("US", customer.Location.Country);
         }
+    }
+
+    [ConditionalFact]
+    public void Struct_complex_property_materializes_mixed_leaf_types()
+    {
+        var timestamp = new DateTime(2026, 8, 17, 13, 25, 42, DateTimeKind.Unspecified);
+        var timestampWithTimeZone = new DateTimeOffset(timestamp, TimeSpan.Zero);
+        var identifier = Guid.NewGuid();
+
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new MixedTypeEntity
+            {
+                Id = 1,
+                Values = new MixedTypeValues
+                {
+                    Timestamp = timestamp,
+                    TimestampWithTimeZone = timestampWithTimeZone,
+                    Payload = [1, 2, 3, 4],
+                    Identifier = identifier,
+                    Amount = 123.45m,
+                    Date = new DateOnly(2026, 8, 17),
+                    Time = new TimeOnly(13, 25, 42),
+                    Numbers = [4, 8, 15]
+                }
+            });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var values = context.Set<MixedTypeEntity>()
+                .Select(entity => entity.Values)
+                .Single();
+
+            Assert.Equal(timestamp, values.Timestamp);
+            Assert.Equal(timestampWithTimeZone, values.TimestampWithTimeZone);
+            Assert.Equal([1, 2, 3, 4], values.Payload);
+            Assert.Equal(identifier, values.Identifier);
+            Assert.Equal(123.45m, values.Amount);
+            Assert.Equal(new DateOnly(2026, 8, 17), values.Date);
+            Assert.Equal(new TimeOnly(13, 25, 42), values.Time);
+            Assert.Equal([4, 8, 15], values.Numbers);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_complex_property_materializes_json_leaf_types()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+        context.Database.ExecuteSqlRaw("""
+            INSERT INTO "JsonTypeEntity" ("Id", "Details")
+            VALUES (
+                1,
+                STRUCT_PACK(
+                    Document := '{{"name":"document"}}'::JSON,
+                    Element := '{{"name":"element"}}'::JSON))
+            """);
+
+        var values = context.Set<JsonTypeEntity>()
+            .Select(entity => entity.Details)
+            .Single();
+
+        Assert.Equal("document", values.Document.RootElement.GetProperty("name").GetString());
+        Assert.Equal("element", values.Element.GetProperty("name").GetString());
+    }
+
+    [ConditionalFact]
+    public void Struct_complex_property_preserves_same_type_value_converter()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+        context.Database.ExecuteSqlRaw("""
+            INSERT INTO "ConvertedStringEntity" ("Id", "Details")
+            VALUES (1, STRUCT_PACK(City := 'db:NYC'))
+            """);
+
+        var values = context.Set<ConvertedStringEntity>()
+            .Select(entity => entity.Details)
+            .Single();
+
+        Assert.Equal("NYC", values.City);
+    }
+
+    [ConditionalFact]
+    public void Struct_complex_property_returns_defaults_for_null_customized_leaves()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+        context.Database.ExecuteSqlRaw("""
+            INSERT INTO "JsonTypeEntity" ("Id", "Details")
+            VALUES (
+                1,
+                STRUCT_PACK(
+                    Document := NULL::JSON,
+                    Element := NULL::JSON))
+            """);
+
+        var values = context.Set<JsonTypeEntity>()
+            .Select(entity => entity.Details)
+            .Single();
+
+        Assert.Null(values.Document);
+        Assert.Equal(JsonValueKind.Undefined, values.Element.ValueKind);
+    }
+
+    [ConditionalFact]
+    public void Optional_struct_root_null_round_trips_and_queries_as_null()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new OptionalRootEntity { Id = 1, Location = null });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            // The physical root is nullable and the write emits SQL NULL, so the whole-complex
+            // null check must match the saved row.
+            var count = context.Set<OptionalRootEntity>().Count(c => c.Location == null);
+            Assert.Equal(1, count);
+
+            var entity = context.Set<OptionalRootEntity>().Single(c => c.Id == 1);
+            Assert.Null(entity.Location);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_null_check_targets_configured_root_not_overridden_leaf_root()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+
+        var sql = context.Set<OverriddenRootEntity>()
+            .Where(c => c.Location == null)
+            .ToQueryString();
+
+        // The null check must target the configured "Location" root, not the overridden leaf root.
+        Assert.Contains("\"Location\" IS NULL", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\"CustomerLocation\" IS NULL", sql, StringComparison.OrdinalIgnoreCase);
     }
 
     [ConditionalFact]
@@ -173,6 +317,108 @@ public class StructRoundTripTests : DuckDBTestBase
             Assert.Equal("Boston", customer.Location.City);
             Assert.Equal("US", customer.Location.Country);
         }
+    }
+
+    [ConditionalFact]
+    public void Struct_partial_null_leaf_update_preserves_unchanged_siblings()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new NullableLeafCustomer
+            {
+                Id = 1,
+                Location = new NullableLeafAddress { City = "NYC", Country = "US" }
+            });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var customer = context.Set<NullableLeafCustomer>().Single();
+            customer.Location.City = null;
+            context.SaveChanges();
+        }
+
+        using var verificationContext = CreateContext();
+        var location = verificationContext.Set<NullableLeafCustomer>().Single().Location;
+        Assert.Null(location.City);
+        Assert.Equal("US", location.Country);
+    }
+
+    [ConditionalFact]
+    public void Struct_insert_distinguishes_null_root_from_present_all_null_root()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+        context.AddRange(
+            new OptionalCustomer { Id = 1, Location = null },
+            new OptionalCustomer { Id = 2, Location = new OptionalAddress { Marker = "present" } });
+        context.SaveChanges();
+        context.Database.OpenConnection();
+
+        using var command = context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = """
+            SELECT "Location" IS NULL, "Location".city IS NULL
+            FROM "OptionalCustomer"
+            ORDER BY "Id"
+            """;
+        using var reader = command.ExecuteReader();
+
+        Assert.True(reader.Read());
+        Assert.True(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.Read());
+        Assert.False(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+    }
+
+    [ConditionalFact]
+    public void Struct_bulk_update_separates_null_root_state()
+    {
+        using (var context = CreateBatchingContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new OptionalCustomer
+                {
+                    Id = 1,
+                    Location = new OptionalAddress { Marker = "present", City = "NYC", Country = "US" }
+                },
+                new OptionalCustomer
+                {
+                    Id = 2,
+                    Location = new OptionalAddress { Marker = "present", City = "LDN", Country = "UK" }
+                });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateBatchingContext())
+        {
+            var customers = context.Set<OptionalCustomer>().OrderBy(customer => customer.Id).ToArray();
+            customers[0].Location = new OptionalAddress { Marker = "present" };
+            customers[1].Location = null;
+            context.SaveChanges();
+        }
+
+        using var verificationContext = CreateContext();
+        verificationContext.Database.OpenConnection();
+        using var command = verificationContext.Database.GetDbConnection().CreateCommand();
+        command.CommandText = """
+            SELECT "Location" IS NULL, "Location".city IS NULL, "Location".country IS NULL
+            FROM "OptionalCustomer"
+            ORDER BY "Id"
+            """;
+        using var reader = command.ExecuteReader();
+
+        Assert.True(reader.Read());
+        Assert.False(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.GetBoolean(2));
+        Assert.True(reader.Read());
+        Assert.True(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.GetBoolean(2));
     }
 
     [ConditionalFact]
@@ -653,6 +899,18 @@ public class StructRoundTripTests : DuckDBTestBase
                 e.ComplexProperty(c => c.Contact);
             });
 
+            modelBuilder.Entity<NullableLeafCustomer>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Location);
+            });
+
+            modelBuilder.Entity<OptionalCustomer>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Location);
+            });
+
             modelBuilder.Entity<Account>(e =>
             {
                 e.Property(p => p.Id).ValueGeneratedNever();
@@ -664,6 +922,49 @@ public class StructRoundTripTests : DuckDBTestBase
             {
                 e.Property(p => p.Id).ValueGeneratedNever();
                 e.ComplexProperty(c => c.Shipping);
+            });
+
+            modelBuilder.Entity<MixedTypeEntity>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Values);
+            });
+
+            modelBuilder.Entity<JsonTypeEntity>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Details);
+            });
+
+            modelBuilder.Entity<ConvertedStringEntity>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Details, details =>
+                {
+                    details.Property(value => value.City)
+                        .HasConversion(
+                            value => "db:" + value,
+                            value => value.Substring(3));
+                });
+            });
+
+            modelBuilder.Entity<OptionalRootEntity>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Location, b => b.IsRequired(false));
+            });
+
+            modelBuilder.Entity<OverriddenRootEntity>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Location, b =>
+                {
+                    b.IsRequired(false);
+                    b.Property(a => a.Country)
+                        .HasColumnName("country")
+                        .HasStructField("CustomerLocation")
+                        .HasStructFieldName("country");
+                });
             });
 
             modelBuilder.Entity<LabeledItem>(e =>
@@ -712,6 +1013,33 @@ public class StructRoundTripTests : DuckDBTestBase
         public ContactInfo? Contact { get; set; }
     }
 
+    private sealed class NullableLeafCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public required NullableLeafAddress Location { get; set; }
+    }
+
+    private sealed class NullableLeafAddress
+    {
+        public string? City { get; set; }
+        public string? Country { get; set; }
+    }
+
+    private sealed class OptionalCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public OptionalAddress? Location { get; set; }
+    }
+
+    private sealed class OptionalAddress
+    {
+        public required string Marker { get; set; }
+        public string? City { get; set; }
+        public string? Country { get; set; }
+    }
+
     private sealed class Address
     {
         public required string City { get; set; }
@@ -739,6 +1067,81 @@ public class StructRoundTripTests : DuckDBTestBase
         public int CustomerId { get; set; }
         [UseStructMapping]
         public required Shipping Shipping { get; set; }
+    }
+
+    private sealed class MixedTypeEntity
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public required MixedTypeValues Values { get; set; }
+    }
+
+    private sealed class MixedTypeValues
+    {
+        public DateTime Timestamp { get; set; }
+        public DateTimeOffset TimestampWithTimeZone { get; set; }
+        public byte[] Payload { get; set; } = [];
+        public Guid Identifier { get; set; }
+        public decimal Amount { get; set; }
+        public DateOnly Date { get; set; }
+        public TimeOnly Time { get; set; }
+        public List<int> Numbers { get; set; } = [];
+    }
+
+    private sealed class JsonTypeEntity
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public required JsonTypeValues Details { get; set; }
+    }
+
+    private sealed class JsonTypeValues
+    {
+        public JsonDocument Document { get; set; } = null!;
+        public JsonElement Element { get; set; }
+    }
+
+    private sealed class ConvertedStringEntity
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public required ConvertedStringValues Details { get; set; }
+    }
+
+    private sealed class ConvertedStringValues
+    {
+        public string City { get; set; } = null!;
+    }
+
+    private sealed class OptionalRootEntity
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public OptionalRootAddress? Location { get; set; }
+    }
+
+    private sealed class OptionalRootAddress
+    {
+        public string City { get; set; } = null!;
+        public string Country { get; set; } = null!;
+    }
+
+    private sealed class OverriddenRootEntity
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public OverriddenAddress? Location { get; set; }
+    }
+
+    private sealed class OverriddenAddress
+    {
+        public string City { get; set; } = null!;
+        public string Country { get; set; } = null!;
     }
 
     private sealed class Shipping

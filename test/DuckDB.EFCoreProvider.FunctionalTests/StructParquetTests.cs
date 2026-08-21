@@ -35,6 +35,43 @@ public sealed class StructParquetTests : DuckDBTestBase
 
             Assert.Equal(["LDN", "NYC"], cities);
         }
+
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_sub_field_projection_selects_only_the_selected_field_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'country': 'US'}),
+                    (2, {'city': 'LDN', 'country': 'UK'})
+                """);
+
+            using var context = CreateCustomerContext<SingleFieldProjectionTag>(path);
+
+            // Projecting a single struct sub-field must emit only that field in the SELECT clause.
+            // The sibling fields must not be queried at all.
+            var sql = context.Customers
+                .Select(c => c.Location.City)
+                .ToQueryString();
+            Assert.Contains("\"Location\".city", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("country", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Country", sql, StringComparison.Ordinal);
+
+            var cities = context.Customers
+                .Select(c => c.Location.City)
+                .OrderBy(c => c)
+                .ToList();
+            Assert.Equal(["LDN", "NYC"], cities);
+        }
         finally
         {
             File.Delete(path);
@@ -448,6 +485,393 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
+    [ConditionalFact]
+    public void Struct_itself_null_check_on_sparse_struct_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            // The physical STRUCT only contains the shorttext key; city/country do not exist.
+            // A per-field null check on the struct would reference a missing key and throw
+            // Binder Error, so the whole-complex null comparison must be rewritten to a single
+            // struct-itself IS NULL / IS NOT NULL check.
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'hello'}),
+                    (2, NULL)
+                """);
+
+            using var context = CreateNullableCustomerContext<SparseNullTag>(path);
+
+            var notNullSql = context.Customers
+                .Where(c => c.Location != null)
+                .Select(c => c.Id)
+                .ToQueryString();
+            Assert.Contains("\"Location\" IS NOT NULL", notNullSql, StringComparison.Ordinal);
+            Assert.DoesNotContain("shorttext", notNullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("city", notNullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("country", notNullSql, StringComparison.OrdinalIgnoreCase);
+
+            var present = context.Customers
+                .Where(c => c.Location != null)
+                .Select(c => c.Id)
+                .OrderBy(c => c)
+                .ToList();
+            Assert.Equal([1], present);
+
+            var nullSql = context.Customers
+                .Where(c => c.Location == null)
+                .Select(c => c.Id)
+                .ToQueryString();
+            Assert.Contains("\"Location\" IS NULL", nullSql, StringComparison.Ordinal);
+            Assert.DoesNotContain("shorttext", nullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("city", nullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("country", nullSql, StringComparison.OrdinalIgnoreCase);
+
+            var absent = context.Customers
+                .Where(c => c.Location == null)
+                .Select(c => c.Id)
+                .ToList();
+            Assert.Equal([2], absent);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Struct_itself_null_check_distinguishes_null_struct_from_all_null_members()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'country': 'US'}),
+                    (2, {'city': NULL, 'country': NULL}),
+                    (3, NULL)
+                """);
+
+            using var context = CreateNullableCustomerContext<AllNullMembersTag>(path);
+
+            var present = context.Customers
+                .Where(c => c.Location != null)
+                .Select(c => c.Id)
+                .OrderBy(c => c)
+                .ToList();
+
+            // A struct whose members are all NULL is still a present (non-null) struct; only a
+            // NULL struct value itself should be excluded by a struct-itself IS NOT NULL check.
+            Assert.Equal([1, 2], present);
+
+            var absent = context.Customers
+                .Where(c => c.Location == null)
+                .Select(c => c.Id)
+                .ToList();
+            Assert.Equal([3], absent);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Nested_struct_itself_null_check_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, address STRUCT(street VARCHAR)));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'address': {'street': 'Main'}}),
+                    (2, {'city': 'LDN', 'address': NULL}),
+                    (3, NULL)
+                """);
+
+            using var context = CreateNullableNestedCustomerContext<NestedNullTag>(path);
+
+            var notNullSql = context.Customers
+                .Where(c => c.Location!.Address != null)
+                .Select(c => c.Id)
+                .ToQueryString();
+            Assert.Contains("\"Location\".address IS NOT NULL", notNullSql, StringComparison.Ordinal);
+            Assert.DoesNotContain("street", notNullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("city", notNullSql, StringComparison.OrdinalIgnoreCase);
+
+            var present = context.Customers
+                .Where(c => c.Location!.Address != null)
+                .Select(c => c.Id)
+                .OrderBy(c => c)
+                .ToList();
+            Assert.Equal([1], present);
+
+            var nullSql = context.Customers
+                .Where(c => c.Location!.Address == null)
+                .Select(c => c.Id)
+                .ToQueryString();
+            Assert.Contains("\"Location\".address IS NULL", nullSql, StringComparison.Ordinal);
+            Assert.DoesNotContain("street", nullSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("city", nullSql, StringComparison.OrdinalIgnoreCase);
+
+            var absent = context.Customers
+                .Where(c => c.Location!.Address == null)
+                .Select(c => c.Id)
+                .OrderBy(c => c)
+                .ToList();
+            // Both a NULL nested struct and a NULL whole struct count as "Address is null".
+            Assert.Equal([2, 3], absent);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'country': 'US'}),
+                    (2, {'city': 'LDN', 'country': 'UK'})
+                """);
+
+            using var context = CreateCustomerContext<WholeStructDenseTag>(path);
+            var results = context.Customers
+                .Select(c => new { c.Id, c.Location })
+                .OrderBy(x => x.Id)
+                .ToList();
+
+            Assert.Equal(2, results.Count);
+            Assert.Equal("NYC", results[0].Location.City);
+            Assert.Equal("US", results[0].Location.Country);
+            Assert.Equal("LDN", results[1].Location.City);
+            Assert.Equal("UK", results[1].Location.Country);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_applies_leaf_value_converter_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'db:NYC', 'country': 'US'})
+                """);
+
+            using var context = CreateConvertedCustomerContext<WholeStructConverterTag>(path);
+            var result = context.Customers
+                .Select(c => c.Location)
+                .Single();
+
+            Assert.Equal("NYC", result.City.Value);
+            Assert.Equal("US", result.Country);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_skips_converter_for_missing_leaf_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'country': 'US'})
+                """);
+
+            using var context = CreateConvertedCustomerContext<WholeStructConverterMissingTag>(path);
+            var result = context.Customers
+                .Select(c => c.Location)
+                .Single();
+
+            Assert.Null(result.City);
+            Assert.Equal("US", result.Country);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_skips_converter_for_null_leaf_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': NULL, 'country': 'US'});
+                """);
+
+            using var context = CreateConvertedCustomerContext<WholeStructConverterNullTag>(path);
+            var result = context.Customers
+                .Select(c => c.Location)
+                .Single();
+
+            Assert.Null(result.City);
+            Assert.Equal("US", result.Country);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_selects_struct_column_not_each_field_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'country': 'US'}),
+                    (2, {'city': 'LDN', 'country': 'UK'})
+                """);
+
+            using var context = CreateCustomerContext<WholeStructSqlShapeTag>(path);
+
+            // Projecting the whole struct must read the entire STRUCT column, not extract each
+            // physical field with struct."field". Extracting per-field would raise Binder Error
+            // on sparse STRUCTs and requires per-field null handling.
+            var sql = context.Customers
+                .Select(c => c.Location)
+                .ToQueryString();
+            Assert.Contains("\"Location\"", sql, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"Location\".city", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\"Location\".country", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("CROSS JOIN LATERAL", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(1, sql.Split("\"Location\"", StringSplitOptions.None).Length - 1);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_on_sparse_struct_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            // The physical STRUCT only contains the shorttext key; city/country do not exist.
+            // Projecting the whole struct must read the struct column as one value and must not
+            // raise Binder Error for the C# members that have no backing struct field.
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(shorttext VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'shorttext': 'hello'}),
+                    (2, {'shorttext': 'world'})
+                """);
+
+            using var context = CreateCustomerContext<WholeStructSparseTag>(path);
+            var results = context.Customers
+                .Select(c => new { c.Id, c.Location })
+                .OrderBy(x => x.Id)
+                .ToList();
+
+            Assert.Equal(2, results.Count);
+            Assert.Null(results[0].Location.City);
+            Assert.Null(results[0].Location.Country);
+            Assert.Null(results[1].Location.City);
+            Assert.Null(results[1].Location.Country);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_on_nullable_struct_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, country VARCHAR));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'country': 'US'}),
+                    (2, NULL)
+                """);
+
+            using var context = CreateNullableCustomerContext<WholeStructNullableTag>(path);
+            var results = context.Customers
+                .Select(c => new { c.Id, c.Location })
+                .OrderBy(x => x.Id)
+                .ToList();
+
+            Assert.Equal(2, results.Count);
+            Assert.NotNull(results[0].Location);
+            Assert.Equal("NYC", results[0].Location!.City);
+            Assert.Equal("US", results[0].Location!.Country);
+            Assert.Null(results[1].Location);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [ConditionalFact]
+    public void Whole_struct_projection_on_nested_struct_from_parquet()
+    {
+        var path = ParquetPath();
+        try
+        {
+            WriteStructParquet(path, """
+                CREATE TABLE t (Id INTEGER, Location STRUCT(city VARCHAR, address STRUCT(street VARCHAR)));
+                INSERT INTO t VALUES
+                    (1, {'city': 'NYC', 'address': {'street': 'Broadway'}}),
+                    (2, {'city': 'LDN', 'address': {'street': 'Baker St'}})
+                """);
+
+            using var context = CreateNullableNestedCustomerContext<WholeStructNestedTag>(path);
+            var results = context.Customers
+                .Select(c => new { c.Id, c.Location })
+                .OrderBy(x => x.Id)
+                .ToList();
+
+            Assert.Equal(2, results.Count);
+            Assert.NotNull(results[0].Location);
+            Assert.Equal("NYC", results[0].Location!.City);
+            Assert.NotNull(results[0].Location!.Address);
+            Assert.Equal("Broadway", results[0].Location!.Address!.Street);
+            Assert.Equal("LDN", results[1].Location!.City);
+            Assert.Equal("Baker St", results[1].Location!.Address!.Street);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string ParquetPath()
         => Path.Combine(Path.GetTempPath(), $"struct_parquet_{Guid.NewGuid():N}.parquet");
 
@@ -469,6 +893,16 @@ public sealed class StructParquetTests : DuckDBTestBase
             .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
             .Options;
         return new CustomerContext<TTag>(options, parquetPath);
+    }
+
+    private ConvertedCustomerContext<TTag> CreateConvertedCustomerContext<TTag>(string parquetPath)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<ConvertedCustomerContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new ConvertedCustomerContext<TTag>(options, parquetPath);
     }
 
     private AccountContext<TTag> CreateAccountContext<TTag>(string parquetPath)
@@ -501,6 +935,26 @@ public sealed class StructParquetTests : DuckDBTestBase
         return new ExplicitNamingContext<TTag>(options, parquetPath);
     }
 
+    private NullableCustomerContext<TTag> CreateNullableCustomerContext<TTag>(string parquetPath)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<NullableCustomerContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new NullableCustomerContext<TTag>(options, parquetPath);
+    }
+
+    private NullableNestedCustomerContext<TTag> CreateNullableNestedCustomerContext<TTag>(string parquetPath)
+        where TTag : class
+    {
+        var options = new DbContextOptionsBuilder<NullableNestedCustomerContext<TTag>>()
+            .UseDuckDB($"DataSource={DbPath}")
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
+            .Options;
+        return new NullableNestedCustomerContext<TTag>(options, parquetPath);
+    }
+
     private StructRelationshipContext<TTag> CreateStructRelationshipContext<TTag>(
         string principalsPath,
         string dependentsPath,
@@ -530,11 +984,23 @@ public sealed class StructParquetTests : DuckDBTestBase
     // Tag types give each test its own DbContext type so EF Core's model cache is not
     // shared across tests with different Parquet paths.
     private sealed class ProjectionTag;
+    private sealed class SingleFieldProjectionTag;
     private sealed class FilterTag;
     private sealed class OrderByTag;
     private sealed class DuplicateLeavesTag;
     private sealed class JoinTag;
     private sealed class ExplicitNamingTag;
+    private sealed class SparseNullTag;
+    private sealed class AllNullMembersTag;
+    private sealed class NestedNullTag;
+    private sealed class WholeStructDenseTag;
+    private sealed class WholeStructSqlShapeTag;
+    private sealed class WholeStructSparseTag;
+    private sealed class WholeStructNullableTag;
+    private sealed class WholeStructNestedTag;
+    private sealed class WholeStructConverterTag;
+    private sealed class WholeStructConverterMissingTag;
+    private sealed class WholeStructConverterNullTag;
     private sealed class RequiredRelationshipTag;
     private sealed class OptionalRelationshipTag;
     private sealed class RequiredOverrideTag;
@@ -550,6 +1016,30 @@ public sealed class StructParquetTests : DuckDBTestBase
             {
                 e.FromParquet(parquetPath);
                 e.ComplexProperty(c => c.Location).UseStructMapping();
+            });
+        }
+    }
+
+    private sealed class ConvertedCustomerContext<TTag>(
+        DbContextOptions<ConvertedCustomerContext<TTag>> options,
+        string parquetPath)
+        : DbContext(options)
+    {
+        public DbSet<ConvertedCustomer> Customers => Set<ConvertedCustomer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ConvertedCustomer>(entity =>
+            {
+                entity.FromParquet(parquetPath);
+                entity.ComplexProperty(customer => customer.Location, location =>
+                {
+                    location.UseStructMapping();
+                    location.Property(value => value.City)
+                        .HasConversion(
+                            city => "db:" + city.Value,
+                            value => new ConvertedCity(value.Substring(3)));
+                });
             });
         }
     }
@@ -606,6 +1096,20 @@ public sealed class StructParquetTests : DuckDBTestBase
         }
     }
 
+    private sealed class NullableCustomerContext<TTag>(DbContextOptions<NullableCustomerContext<TTag>> options, string parquetPath) : DbContext(options)
+    {
+        public DbSet<NullableCustomer> Customers => Set<NullableCustomer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NullableCustomer>(e =>
+            {
+                e.FromParquet(parquetPath);
+                e.ComplexProperty(c => c.Location).UseStructMapping();
+            });
+        }
+    }
+
     private sealed class StructRelationshipContext<TTag>(
         DbContextOptions<StructRelationshipContext<TTag>> options,
         string principalsPath,
@@ -640,6 +1144,20 @@ public sealed class StructParquetTests : DuckDBTestBase
                 {
                     relationship.IsRequired(r);
                 }
+            });
+        }
+    }
+
+    private sealed class NullableNestedCustomerContext<TTag>(DbContextOptions<NullableNestedCustomerContext<TTag>> options, string parquetPath) : DbContext(options)
+    {
+        public DbSet<NullableNestedCustomer> Customers => Set<NullableNestedCustomer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NullableNestedCustomer>(e =>
+            {
+                e.FromParquet(parquetPath);
+                e.ComplexProperty(c => c.Location).UseStructMapping();
             });
         }
     }
@@ -689,6 +1207,26 @@ public sealed class StructParquetTests : DuckDBTestBase
         public required Address Location { get; set; }
     }
 
+    private sealed class ConvertedCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public required ConvertedAddress Location { get; set; }
+    }
+
+    private sealed class ConvertedAddress
+    {
+        public required ConvertedCity City { get; set; }
+        public required string Country { get; set; }
+    }
+
+    private sealed class ConvertedCity
+    {
+        public ConvertedCity(string value) => Value = value;
+
+        public string Value { get; }
+    }
+
     private sealed class Account
     {
         public int Id { get; set; }
@@ -703,6 +1241,33 @@ public sealed class StructParquetTests : DuckDBTestBase
         public int Id { get; set; }
         [UseStructMapping]
         public required Address Location { get; set; }
+    }
+
+    private sealed class NestedAddress
+    {
+        public string Street { get; set; } = null!;
+    }
+
+    private sealed class NullableCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public Address? Location { get; set; }
+    }
+
+    private sealed class NullableNestedCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public NullableNestedLocation? Location { get; set; }
+    }
+
+    private sealed class NullableNestedLocation
+    {
+        // City stays required so the flattened-complex validation accepts the type; the nested
+        // Address member under test is the optional one whose presence is checked.
+        public string City { get; set; } = null!;
+        public NestedAddress? Address { get; set; }
     }
 
     private sealed class Address

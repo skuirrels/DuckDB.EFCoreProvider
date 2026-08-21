@@ -165,11 +165,21 @@ internal static class DuckDBStructSchemaPlanner
                 field.IsNullable);
         }
 
-        // Optional STRUCT roots are rejected during model validation, so physical roots are required.
+        var rootNullabilities = fieldArray
+            .Select(field => field.FieldInfo!.IsRootNullable)
+            .Where(nullable => nullable.HasValue)
+            .Distinct()
+            .ToArray();
+        if (rootNullabilities.Length > 1)
+        {
+            throw new InvalidOperationException(
+                $"DuckDB STRUCT root '{structColumnName}' has conflicting complex-property nullability.");
+        }
+
         return new DuckDBStructColumnPlan(
             fieldArray.Min(field => field.Ordinal),
             structColumnName,
-            isNullable: false,
+            rootNullabilities.SingleOrDefault() ?? false,
             root.Freeze());
     }
 

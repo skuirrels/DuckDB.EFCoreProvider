@@ -24,11 +24,24 @@ public sealed record DuckDBStructFieldInfo
         string structColumnName,
         string[] nestedFieldNames,
         string? leafFieldName = null)
+        : this(structColumnName, nestedFieldNames, leafFieldName, isRootNullable: null)
+    {
+    }
+
+    /// <summary>
+    ///     Creates a STRUCT field descriptor with the nullability of its owning complex-property root.
+    /// </summary>
+    public DuckDBStructFieldInfo(
+        string structColumnName,
+        string[] nestedFieldNames,
+        string? leafFieldName,
+        bool? isRootNullable)
     {
         StructColumnName = structColumnName;
         NestedFieldNames = nestedFieldNames ?? throw new ArgumentNullException(nameof(nestedFieldNames));
         LeafFieldName = leafFieldName;
         _relationalMetadata = new RelationalMetadata();
+        _relationalMetadata.IsRootNullable = isRootNullable;
     }
 
     internal DuckDBStructFieldInfo(
@@ -40,15 +53,35 @@ public sealed record DuckDBStructFieldInfo
         bool? isNullable)
         : this(
             structColumnName,
+            nestedFieldNames,
+            leafFieldName,
+            efColumnName,
+            storeType,
+            isNullable,
+            isRootNullable: null)
+    {
+    }
+
+    internal DuckDBStructFieldInfo(
+        string structColumnName,
+        IEnumerable<string> nestedFieldNames,
+        string? leafFieldName,
+        string? efColumnName,
+        string? storeType,
+        bool? isNullable,
+        bool? isRootNullable)
+        : this(
+            structColumnName,
             nestedFieldNames.ToArray(),
-            leafFieldName)
+            leafFieldName,
+            isRootNullable)
     {
         if (efColumnName is not null)
         {
             ValidateFieldName(efColumnName);
         }
 
-        _relationalMetadata.Set(efColumnName, storeType, isNullable);
+        _relationalMetadata.Set(efColumnName, storeType, isNullable, isRootNullable);
     }
 
     /// <summary>The physical DuckDB STRUCT column name.</summary>
@@ -89,6 +122,10 @@ public sealed record DuckDBStructFieldInfo
     /// <summary>The leaf nullability captured during model finalization.</summary>
     public bool? IsNullable
         => _relationalMetadata.IsNullable;
+
+    /// <summary>The owning complex-property root nullability captured during model finalization.</summary>
+    public bool? IsRootNullable
+        => _relationalMetadata.IsRootNullable;
 
     /// <summary>The complete immutable physical field path, including the leaf.</summary>
     public IReadOnlyList<string> FieldPath
@@ -144,11 +181,18 @@ public sealed record DuckDBStructFieldInfo
 
         internal bool? IsNullable { get; set; }
 
-        internal void Set(string? efColumnName, string? storeType, bool? nullable)
+        internal bool? IsRootNullable { get; set; }
+
+        internal void Set(
+            string? efColumnName,
+            string? storeType,
+            bool? nullable,
+            bool? isRootNullable)
         {
             EfColumnName = efColumnName;
             StoreType = storeType;
             IsNullable = nullable;
+            IsRootNullable = isRootNullable;
         }
 
         // These values are derived relational caches, not STRUCT field identity.

@@ -41,6 +41,9 @@ public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPos
             .Visit(result);
         result = new DuckDBUnnestPostprocessor().Visit(result);
         result = new DuckDBStructFieldRewritingExpressionVisitor().Visit(result);
+        result = new DuckDBWholeStructProjectionExpressionVisitor().Visit(result);
+        result = new DuckDBStructItselfNullCheckRewritingExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
+            .Visit(result);
         result = new DuckDBFileSourceQueryRootRewritingExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
             .Visit(result);
 

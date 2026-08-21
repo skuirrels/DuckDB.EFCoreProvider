@@ -37,6 +37,7 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                     physicalRootName,
                     complexProperty.Name,
                     [],
+                    complexProperty.IsNullable,
                     rootFields);
 
                 complexProperty.SetStructMapping(mapping, fromDataAnnotation: false);
@@ -68,7 +69,8 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                                 ?? ToCamelCase(property.Name),
                             efColumnName,
                             property.GetColumnType(),
-                            property.IsNullable);
+                            property.IsNullable,
+                            isRootNullable: null);
 
                 property.SetOrRemoveAnnotation(
                     DuckDBAnnotationNames.StructField,
@@ -250,6 +252,7 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
         string structColumnName,
         string rootPropertyName,
         IReadOnlyList<string> nestedPath,
+        bool? rootIsNullable,
         List<DuckDBStructFieldInfo> rootFields)
     {
         var children = new Dictionary<string, DuckDBStructChildMapping>(StringComparer.Ordinal);
@@ -261,7 +264,8 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                 property,
                 structColumnName,
                 rootPropertyName,
-                nestedPath);
+                nestedPath,
+                rootIsNullable);
             rootFields.Add(field);
             children[property.Name] = new DuckDBStructChildMapping(field.LeafFieldName!);
         }
@@ -278,6 +282,7 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
                 structColumnName,
                 rootPropertyName,
                 extendedPath,
+                rootIsNullable,
                 nestedFields);
             nestedComplexProperty.SetStructMapping(nestedMapping, fromDataAnnotation: false);
             rootFields.AddRange(nestedFields);
@@ -291,7 +296,8 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
         IConventionProperty property,
         string structColumnName,
         string rootPropertyName,
-        IReadOnlyList<string> nestedPath)
+        IReadOnlyList<string> nestedPath,
+        bool? rootIsNullable)
     {
         var configuredInfo = property.FindAnnotation(DuckDBAnnotationNames.StructField)?.Value
             as DuckDBStructFieldInfo;
@@ -319,7 +325,8 @@ public sealed class DuckDBStructFieldConvention : IModelFinalizingConvention
             leafFieldName,
             efColumnName,
             storeType: null,
-            property.IsNullable);
+            property.IsNullable,
+            rootIsNullable);
 
         property.SetOrRemoveAnnotation(
             DuckDBAnnotationNames.StructField,
