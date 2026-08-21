@@ -165,14 +165,21 @@ internal static class DuckDBStructSchemaPlanner
                 field.IsNullable);
         }
 
-        // The physical root nullability mirrors the owning complex property's nullability. An
-        // optional (nullable) complex property makes every mapped leaf nullable, so the root is
-        // nullable exactly when all of its leaves are nullable.
-        var isNullable = fieldArray.All(field => field.IsNullable);
+        var rootNullabilities = fieldArray
+            .Select(field => field.FieldInfo!.IsRootNullable)
+            .Where(nullable => nullable.HasValue)
+            .Distinct()
+            .ToArray();
+        if (rootNullabilities.Length > 1)
+        {
+            throw new InvalidOperationException(
+                $"DuckDB STRUCT root '{structColumnName}' has conflicting complex-property nullability.");
+        }
+
         return new DuckDBStructColumnPlan(
             fieldArray.Min(field => field.Ordinal),
             structColumnName,
-            isNullable,
+            rootNullabilities.SingleOrDefault() ?? false,
             root.Freeze());
     }
 

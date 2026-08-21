@@ -347,6 +347,81 @@ public class StructRoundTripTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_insert_distinguishes_null_root_from_present_all_null_root()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+        context.AddRange(
+            new OptionalCustomer { Id = 1, Location = null },
+            new OptionalCustomer { Id = 2, Location = new OptionalAddress { Marker = "present" } });
+        context.SaveChanges();
+        context.Database.OpenConnection();
+
+        using var command = context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = """
+            SELECT "Location" IS NULL, "Location".city IS NULL
+            FROM "OptionalCustomer"
+            ORDER BY "Id"
+            """;
+        using var reader = command.ExecuteReader();
+
+        Assert.True(reader.Read());
+        Assert.True(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.Read());
+        Assert.False(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+    }
+
+    [ConditionalFact]
+    public void Struct_bulk_update_separates_null_root_state()
+    {
+        using (var context = CreateBatchingContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new OptionalCustomer
+                {
+                    Id = 1,
+                    Location = new OptionalAddress { Marker = "present", City = "NYC", Country = "US" }
+                },
+                new OptionalCustomer
+                {
+                    Id = 2,
+                    Location = new OptionalAddress { Marker = "present", City = "LDN", Country = "UK" }
+                });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateBatchingContext())
+        {
+            var customers = context.Set<OptionalCustomer>().OrderBy(customer => customer.Id).ToArray();
+            customers[0].Location = new OptionalAddress { Marker = "present" };
+            customers[1].Location = null;
+            context.SaveChanges();
+        }
+
+        using var verificationContext = CreateContext();
+        verificationContext.Database.OpenConnection();
+        using var command = verificationContext.Database.GetDbConnection().CreateCommand();
+        command.CommandText = """
+            SELECT "Location" IS NULL, "Location".city IS NULL, "Location".country IS NULL
+            FROM "OptionalCustomer"
+            ORDER BY "Id"
+            """;
+        using var reader = command.ExecuteReader();
+
+        Assert.True(reader.Read());
+        Assert.False(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.GetBoolean(2));
+        Assert.True(reader.Read());
+        Assert.True(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.GetBoolean(2));
+    }
+
+    [ConditionalFact]
     public void Struct_bulk_update_batching_works()
     {
         using (var context = CreateBatchingContext())
@@ -830,6 +905,12 @@ public class StructRoundTripTests : DuckDBTestBase
                 e.ComplexProperty(c => c.Location);
             });
 
+            modelBuilder.Entity<OptionalCustomer>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Location);
+            });
+
             modelBuilder.Entity<Account>(e =>
             {
                 e.Property(p => p.Id).ValueGeneratedNever();
@@ -941,6 +1022,20 @@ public class StructRoundTripTests : DuckDBTestBase
 
     private sealed class NullableLeafAddress
     {
+        public string? City { get; set; }
+        public string? Country { get; set; }
+    }
+
+    private sealed class OptionalCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public OptionalAddress? Location { get; set; }
+    }
+
+    private sealed class OptionalAddress
+    {
+        public required string Marker { get; set; }
         public string? City { get; set; }
         public string? Country { get; set; }
     }
