@@ -79,10 +79,10 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
             (SqlExpression?)Visit(selectExpression.Offset)!,
             (SqlExpression?)Visit(selectExpression.Limit)!);
 
-        return shapedQueryExpression.Update(
-            updatedSelect,
-            new ProjectionBindingRewritingVisitor(updatedSelect)
-                .Visit(shapedQueryExpression.ShaperExpression)!);
+        // The shaper is intentionally left untouched: its member-based projection bindings keep
+        // resolving through their own select expression snapshot, whose projection order matches
+        // the updated one because Update preserves order.
+        return shapedQueryExpression.Update(updatedSelect, shapedQueryExpression.ShaperExpression);
     }
 
     private static StructProjectionRewrite CollectReplacements(
@@ -95,23 +95,18 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
 
         foreach (var binding in bindingFinder.Bindings)
         {
-            // Only resolve bindings that belong to this select expression. Split-query shapers
-            // reference child queries, and resolving those bindings against the outer projection
-            // list throws an out-of-range exception.
-            if (!ReferenceEquals(binding.QueryExpression, selectExpression))
+            // Resolve each binding against the select expression it was created against rather
+            // than the current one. Earlier postprocessors in the same pipeline clone the select
+            // expression without rebinding the shaper, so reference equality with the current
+            // instance cannot be assumed. Bindings that belong to nested or split-query child
+            // selects are never collected (the finder does not descend into nested shapers), so
+            // every collected binding belongs to this query's root select lineage.
+            if (binding.QueryExpression is not SelectExpression bindingSelect)
             {
                 continue;
             }
 
-            if (binding.ProjectionMember is null
-                && (binding.Index is not { } projectionIndex
-                    || projectionIndex < 0
-                    || projectionIndex >= selectExpression.Projection.Count))
-            {
-                continue;
-            }
-
-            var resolved = selectExpression.GetProjection(binding);
+            var resolved = bindingSelect.GetProjection(binding);
 
             if (resolved is not ConstantExpression { Value: Dictionary<IPropertyBase, int> propertyIndexes })
             {
@@ -216,22 +211,6 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
                 default:
                     return base.Visit(node);
             }
-        }
-    }
-
-    private sealed class ProjectionBindingRewritingVisitor(
-        SelectExpression updatedSelect) : ExpressionVisitor
-    {
-        public override Expression? Visit(Expression? node)
-        {
-            return node switch
-            {
-                ShapedQueryExpression => node,
-                ProjectionBindingExpression binding => binding.ProjectionMember is { } projectionMember
-                    ? new ProjectionBindingExpression(updatedSelect, projectionMember, binding.Type)
-                    : new ProjectionBindingExpression(updatedSelect, binding.Index!.Value, binding.Type),
-                _ => base.Visit(node)
-            };
         }
     }
 }
