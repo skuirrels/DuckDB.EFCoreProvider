@@ -596,7 +596,14 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                 case DuckDBStructMutationGroup structGroup:
                     var structColumn = helper.DelimitIdentifier(structGroup.StructColumnName);
                     commandStringBuilder.Append(structColumn).Append(" = ");
-                    AppendStructUpdateBulk(commandStringBuilder, structColumn, structGroup.Root, helper);
+                    if (structGroup.IsNull)
+                    {
+                        commandStringBuilder.Append("NULL");
+                    }
+                    else
+                    {
+                        AppendStructUpdateBulk(commandStringBuilder, structColumn, structGroup.Root, helper);
+                    }
                     break;
             }
         }

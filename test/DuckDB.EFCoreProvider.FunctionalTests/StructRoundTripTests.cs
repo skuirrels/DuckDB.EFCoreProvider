@@ -320,6 +320,33 @@ public class StructRoundTripTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_partial_null_leaf_update_preserves_unchanged_siblings()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new NullableLeafCustomer
+            {
+                Id = 1,
+                Location = new NullableLeafAddress { City = "NYC", Country = "US" }
+            });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var customer = context.Set<NullableLeafCustomer>().Single();
+            customer.Location.City = null;
+            context.SaveChanges();
+        }
+
+        using var verificationContext = CreateContext();
+        var location = verificationContext.Set<NullableLeafCustomer>().Single().Location;
+        Assert.Null(location.City);
+        Assert.Equal("US", location.Country);
+    }
+
+    [ConditionalFact]
     public void Struct_bulk_update_batching_works()
     {
         using (var context = CreateBatchingContext())
@@ -797,6 +824,12 @@ public class StructRoundTripTests : DuckDBTestBase
                 e.ComplexProperty(c => c.Contact);
             });
 
+            modelBuilder.Entity<NullableLeafCustomer>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Location);
+            });
+
             modelBuilder.Entity<Account>(e =>
             {
                 e.Property(p => p.Id).ValueGeneratedNever();
@@ -897,6 +930,19 @@ public class StructRoundTripTests : DuckDBTestBase
         [UseStructMapping]
         public required Address Location { get; set; }
         public ContactInfo? Contact { get; set; }
+    }
+
+    private sealed class NullableLeafCustomer
+    {
+        public int Id { get; set; }
+        [UseStructMapping]
+        public required NullableLeafAddress Location { get; set; }
+    }
+
+    private sealed class NullableLeafAddress
+    {
+        public string? City { get; set; }
+        public string? Country { get; set; }
     }
 
     private sealed class Address

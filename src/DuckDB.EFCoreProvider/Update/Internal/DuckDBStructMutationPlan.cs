@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Update;
 using System.Collections.Immutable;
 
@@ -72,8 +73,7 @@ internal sealed class DuckDBStructMutationPlan
                         $"STRUCT write column '{modification.ColumnName}' has no parameter name."),
                 ordinal,
                 ResolveFieldInfo(modification),
-                modification.Column?.IsNullable,
-                modification.Value);
+                modification);
         }
 
         var collision = DuckDBStructPathCollision.Find(
@@ -158,16 +158,48 @@ internal sealed class DuckDBStructMutationPlan
                 as DuckDBStructFieldInfo
             ?? modification.Property?.GetStructFieldInfo();
 
-    /// <summary>
-    ///     Determines whether a whole struct root should be written as SQL <c>NULL</c> rather than a
-    ///     present struct literal. This is the case when the owning complex property is optional
-    ///     (every mapped leaf column is nullable) and every leaf is being written as <see langword="null" />.
-    /// </summary>
     private static bool IsNullRoot(IEnumerable<ResolvedModification> group)
     {
         var entries = group.ToArray();
-        var rootIsNullable = entries.All(entry => entry.ColumnIsNullable == true);
-        return rootIsNullable && entries.All(entry => entry.Value is null);
+        var entryRoots = entries
+            .Select(entry => ResolveRootComplexProperty(entry.Modification))
+            .ToArray();
+        if (entryRoots.All(root => root is null))
+        {
+            return false;
+        }
+
+        if (entryRoots.Any(root => root is null))
+        {
+            throw new InvalidOperationException(
+                "A DuckDB STRUCT root cannot combine complex-property fields with standalone field mappings.");
+        }
+
+        var roots = entryRoots.Distinct().ToArray();
+        if (roots.Length > 1)
+        {
+            throw new InvalidOperationException(
+                "A DuckDB STRUCT root cannot combine fields from different complex properties.");
+        }
+
+        var root = roots[0]!;
+        return entries.All(entry => entry.Modification.Entry is { } updateEntry
+            && updateEntry.GetCurrentValue(root) is null);
+    }
+
+    private static IComplexProperty? ResolveRootComplexProperty(IColumnModification modification)
+    {
+        if (modification.Property?.DeclaringType is not IComplexType complexType)
+        {
+            return null;
+        }
+
+        while (complexType.ComplexProperty.DeclaringType is IComplexType parentComplexType)
+        {
+            complexType = parentComplexType;
+        }
+
+        return complexType.ComplexProperty;
     }
 
     private sealed record ResolvedModification(
@@ -175,8 +207,7 @@ internal sealed class DuckDBStructMutationPlan
         string ParameterName,
         int WriteOrdinal,
         DuckDBStructFieldInfo? FieldInfo,
-        bool? ColumnIsNullable,
-        object? Value);
+        IColumnModification Modification);
 
     private sealed class MutableNode(string? fieldName)
     {
@@ -256,6 +287,7 @@ internal sealed record DuckDBStructMutationGroup(
     public override bool HasSamePhysicalShape(DuckDBStructMutationEntry other)
         => other is DuckDBStructMutationGroup group
             && string.Equals(StructColumnName, group.StructColumnName, StringComparison.OrdinalIgnoreCase)
+            && IsNull == group.IsNull
             && Root.HasSamePhysicalShape(group.Root);
 }
 
