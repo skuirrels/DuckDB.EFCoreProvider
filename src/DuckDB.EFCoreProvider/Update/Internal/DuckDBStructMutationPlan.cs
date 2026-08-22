@@ -183,8 +183,21 @@ internal sealed class DuckDBStructMutationPlan
         }
 
         var root = roots[0]!;
-        return entries.All(entry => entry.Modification.Entry is { } updateEntry
-            && updateEntry.GetCurrentValue(root) is null);
+        foreach (var entry in entries)
+        {
+            if (entry.Modification.Entry is not { } updateEntry)
+            {
+                throw new InvalidOperationException(
+                    "A DuckDB STRUCT root cannot be evaluated because a write has no owning entity entry.");
+            }
+
+            if (updateEntry.GetCurrentValue(root) is not null)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static IComplexProperty? ResolveRootComplexProperty(IColumnModification modification)

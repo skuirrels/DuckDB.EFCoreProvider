@@ -106,6 +106,13 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
                 continue;
             }
 
+            // Leaf indices resolve against the snapshot the binding was created against, so they can
+            // only be applied to the current projection list while both snapshots agree positionally.
+            if (bindingSelect.Projection.Count != selectExpression.Projection.Count)
+            {
+                continue;
+            }
+
             var resolved = bindingSelect.GetProjection(binding);
 
             if (resolved is not ConstantExpression { Value: Dictionary<IPropertyBase, int> propertyIndexes })
