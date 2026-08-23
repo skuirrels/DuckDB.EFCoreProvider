@@ -182,8 +182,7 @@ internal sealed class DuckDBWholeStructProjectionExpressionVisitor : ExpressionV
         => left is ColumnExpression leftColumn
             && right is ColumnExpression rightColumn
             && string.Equals(leftColumn.TableAlias, rightColumn.TableAlias, StringComparison.Ordinal)
-            && string.Equals(leftColumn.Name, rightColumn.Name, StringComparison.Ordinal)
-            || left.Equals(right);
+            && string.Equals(leftColumn.Name, rightColumn.Name, StringComparison.Ordinal);
 
     private sealed class StructProjectionGroup(SqlExpression source)
     {

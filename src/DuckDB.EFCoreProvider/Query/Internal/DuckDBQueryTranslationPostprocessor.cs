@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Query;
+using Microsoft.EntityFrameworkCore.Query;
 using System.Linq.Expressions;
 
 namespace DuckDB.EFCoreProvider.Query.Internal;
@@ -11,6 +11,10 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 /// </summary>
 public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPostprocessor
 {
+    // Both visitors are stateless, so a single shared instance is safe across compilations.
+    private static readonly DuckDBUnnestPostprocessor UnnestPostprocessor = new();
+    private static readonly DuckDBWholeStructProjectionExpressionVisitor WholeStructProjectionVisitor = new();
+
     public DuckDBQueryTranslationPostprocessor(
         QueryTranslationPostprocessorDependencies dependencies,
         RelationalQueryTranslationPostprocessorDependencies relationalDependencies,
@@ -39,9 +43,9 @@ public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPos
                 RelationalDependencies.SqlExpressionFactory,
                 RelationalDependencies.TypeMappingSource)
             .Visit(result);
-        result = new DuckDBUnnestPostprocessor().Visit(result);
+        result = UnnestPostprocessor.Visit(result);
         result = new DuckDBStructFieldRewritingExpressionVisitor().Visit(result);
-        result = new DuckDBWholeStructProjectionExpressionVisitor().Visit(result);
+        result = WholeStructProjectionVisitor.Visit(result);
         result = new DuckDBStructItselfNullCheckRewritingExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
             .Visit(result);
         result = new DuckDBFileSourceQueryRootRewritingExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
