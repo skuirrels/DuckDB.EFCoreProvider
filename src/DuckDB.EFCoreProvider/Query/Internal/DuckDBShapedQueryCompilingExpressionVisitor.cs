@@ -18,6 +18,9 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
     private static readonly MethodInfo GetValueMethod
         = typeof(DbDataReader).GetMethod(nameof(DbDataReader.GetValue), [typeof(int)])!;
 
+    private static readonly PropertyInfo FieldCountProperty
+        = typeof(DbDataReader).GetProperty(nameof(DbDataReader.FieldCount))!;
+
     protected override Expression VisitShapedQuery(ShapedQueryExpression shapedQueryExpression)
     {
         var selectExpression = shapedQueryExpression.QueryExpression as SelectExpression;
@@ -28,10 +31,17 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
         }
 
         var slots = FindSharedStructSlots(selectExpression);
-        var rewritten = slots.Count == 0
-            ? result
-            : new DuckDBStructReaderExpressionVisitor(slots).Visit(result)!;
-        return rewritten;
+        if (slots.Count == 0)
+        {
+            return result;
+        }
+
+        // Split-query children inherit the parent's struct placeholder and root projections,
+        // but EF can prune the unconsumed root column from their SQL while keeping dead leaf
+        // guards in the shaper. Each rewrite is therefore guarded by a runtime FieldCount
+        // check: readers that still carry the root projection extract from it, while pruned
+        // readers fall back to the original leaf reads.
+        return new DuckDBStructReaderExpressionVisitor(slots).Visit(result)!;
     }
 
     protected override Expression InjectStructuralTypeMaterializers(Expression expression)
@@ -84,11 +94,55 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
 
     private sealed record StructSlot(int RootProjectionIndex, DuckDBStructKeyTypeMapping ExtractionMapping);
 
+    private static bool TryGetReaderProjection(
+        MethodCallExpression node,
+        out Expression reader,
+        out int projectionIndex)
+    {
+        reader = null!;
+        projectionIndex = 0;
+        if (node.Object is not { Type: { } objectType }
+            || !typeof(DbDataReader).IsAssignableFrom(objectType)
+            || node.Arguments.Count != 1
+            || node.Arguments[0] is not ConstantExpression { Value: int index })
+        {
+            return false;
+        }
+
+        reader = node.Object;
+        projectionIndex = index;
+        return true;
+    }
+
+    private sealed class ReaderOrdinalScanner : ExpressionVisitor
+    {
+        public static HashSet<int> Scan(Expression expression)
+        {
+            var scanner = new ReaderOrdinalScanner();
+            scanner.Visit(expression);
+            return scanner.ordinals;
+        }
+
+        private readonly HashSet<int> ordinals = [];
+
+        protected override Expression VisitMethodCall(MethodCallExpression node)
+        {
+            if (TryGetReaderProjection(node, out _, out var ordinal))
+            {
+                ordinals.Add(ordinal);
+            }
+
+            return base.VisitMethodCall(node);
+        }
+    }
+
     private sealed class DuckDBStructReaderExpressionVisitor(
         IReadOnlyDictionary<int, StructSlot> slots) : ExpressionVisitor
     {
         protected override Expression VisitConditional(ConditionalExpression node)
         {
+            var visited = base.VisitConditional(node);
+
             if (node.Test is MethodCallExpression test
                 && TryGetReaderProjection(test, out var reader, out var projectionIndex)
                 && test.Method.Name == nameof(DbDataReader.IsDBNull)
@@ -104,12 +158,15 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
                     leafTypeMapping,
                     slot.ExtractionMapping.FieldPath);
 
-                return extracted.Type == node.Type
-                    ? extracted
-                    : Expression.Convert(extracted, node.Type);
+                if (extracted.Type != node.Type)
+                {
+                    extracted = Expression.Convert(extracted, node.Type);
+                }
+
+                return GuardByFieldCount(reader, slot.RootProjectionIndex, extracted, visited);
             }
 
-            return base.VisitConditional(node);
+            return visited;
         }
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
@@ -136,30 +193,25 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
                 leafTypeMapping,
                 slot.ExtractionMapping.FieldPath);
 
-            return extracted.Type == node.Type
-                ? extracted
-                : Expression.Convert(extracted, node.Type);
-        }
-
-        private static bool TryGetReaderProjection(
-            MethodCallExpression node,
-            out Expression reader,
-            out int projectionIndex)
-        {
-            reader = null!;
-            projectionIndex = 0;
-            if (node.Object is not { Type: { } objectType }
-                || !typeof(DbDataReader).IsAssignableFrom(objectType)
-                || node.Arguments.Count != 1
-                || node.Arguments[0] is not ConstantExpression { Value: int index })
+            if (extracted.Type != node.Type)
             {
-                return false;
+                extracted = Expression.Convert(extracted, node.Type);
             }
 
-            reader = node.Object;
-            projectionIndex = index;
-            return true;
+            return GuardByFieldCount(reader, slot.RootProjectionIndex, extracted, node);
         }
+
+        private static Expression GuardByFieldCount(
+            Expression reader,
+            int rootProjectionIndex,
+            Expression fromRoot,
+            Expression fallback)
+            => Expression.Condition(
+                Expression.GreaterThan(
+                    Expression.Property(reader, FieldCountProperty),
+                    Expression.Constant(rootProjectionIndex)),
+                fromRoot,
+                fallback);
 
         private static bool ReaderMethodMatches(MethodInfo actual, MethodInfo expected)
         {

@@ -460,6 +460,80 @@ public class StructRoundTripTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_split_query_materializes_struct_from_shared_root_projection()
+    {
+        SeedSplitQueryCustomer(1, "first", "NYC", "US", [("one", 2), ("two", 3)]);
+
+        using var context = CreateContext();
+        var query = context.Set<SplitQueryCustomer>()
+            .Include(customer => customer.Orders)
+            .AsSplitQuery();
+
+        // The split-query outer select is cloned by struct field rewriting, so the shaper's
+        // projection bindings resolve against a stale snapshot; the whole-struct rewrite must
+        // still engage and emit one STRUCT read instead of per-field extraction.
+        var sql = query.ToQueryString();
+        Assert.Equal(1, sql.Split("\"Location\"", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain("\"Location\".\"City\"", sql, StringComparison.OrdinalIgnoreCase);
+
+        var customer = query.Single();
+
+        Assert.Equal("NYC", customer.Location.City);
+        Assert.Equal("US", customer.Location.Country);
+        Assert.Equal([2, 3], customer.Orders.Select(order => order.Id));
+    }
+
+    [ConditionalFact]
+    public void Struct_include_with_single_query_materializes_struct()
+    {
+        SeedSplitQueryCustomer(1, "first", "NYC", "US", [("one", 2), ("two", 3)]);
+
+        using var context = CreateContext();
+        var customer = context.Set<SplitQueryCustomer>()
+            .Include(entity => entity.Orders)
+            .Single();
+
+        Assert.Equal("NYC", customer.Location.City);
+        Assert.Equal("US", customer.Location.Country);
+        Assert.Equal([2, 3], customer.Orders.Select(order => order.Id));
+    }
+
+    [ConditionalFact]
+    public async Task Struct_split_query_materializes_struct_async()
+    {
+        SeedSplitQueryCustomer(1, "second", "LDN", "UK", [("only", 2)]);
+
+        using var context = CreateContext();
+        var customer = await context.Set<SplitQueryCustomer>()
+            .Include(entity => entity.Orders)
+            .AsSplitQuery()
+            .SingleAsync();
+
+        Assert.Equal("LDN", customer.Location.City);
+        Assert.Equal("UK", customer.Location.Country);
+        Assert.Equal("only", Assert.Single(customer.Orders).Title);
+    }
+
+    private void SeedSplitQueryCustomer(
+        int id,
+        string name,
+        string city,
+        string country,
+        IReadOnlyList<(string Title, int Id)> orders)
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+        context.Add(new SplitQueryCustomer
+        {
+            Id = id,
+            Name = name,
+            Location = new Address { City = city, Country = country },
+            Orders = [.. orders.Select(order => new SplitQueryOrder { Id = order.Id, Title = order.Title })]
+        });
+        context.SaveChanges();
+    }
+
+    [ConditionalFact]
     public void Multiple_struct_columns_round_trip()
     {
         using (var context = CreateContext())
@@ -1002,6 +1076,18 @@ public class StructRoundTripTests : DuckDBTestBase
                             .HasStructField("Container", "customer's \"details\"")
                             .HasStructFieldName("select value")));
             });
+
+            modelBuilder.Entity<SplitQueryCustomer>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Location);
+                e.HasMany(c => c.Orders)
+                    .WithOne()
+                    .HasForeignKey(o => o.SplitQueryCustomerId);
+            });
+
+            modelBuilder.Entity<SplitQueryOrder>(e =>
+                e.Property(p => p.Id).ValueGeneratedNever());
         }
     }
 
@@ -1011,6 +1097,22 @@ public class StructRoundTripTests : DuckDBTestBase
         [UseStructMapping]
         public required Address Location { get; set; }
         public ContactInfo? Contact { get; set; }
+    }
+
+    private sealed class SplitQueryCustomer
+    {
+        public int Id { get; set; }
+        public required string Name { get; set; }
+        [UseStructMapping]
+        public required Address Location { get; set; }
+        public List<SplitQueryOrder> Orders { get; set; } = [];
+    }
+
+    private sealed class SplitQueryOrder
+    {
+        public int Id { get; set; }
+        public int SplitQueryCustomerId { get; set; }
+        public required string Title { get; set; }
     }
 
     private sealed class NullableLeafCustomer
