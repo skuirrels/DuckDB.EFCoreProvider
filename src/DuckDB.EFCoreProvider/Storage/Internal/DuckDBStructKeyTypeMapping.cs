@@ -134,6 +134,14 @@ public sealed class DuckDBStructKeyTypeMapping : RelationalTypeMapping
             Expression.Default(leafTypeMapping.ClrType));
     }
 
+    internal static Expression CreatePresenceExpression(
+        Expression expression,
+        IReadOnlyList<string> fieldPath)
+        => Expression.Call(
+            HasStructKeyMethod,
+            expression,
+            Expression.Constant(fieldPath.ToArray()));
+
     internal static Expression CreateProviderReadExpression(
         Expression expression,
         RelationalTypeMapping leafTypeMapping,

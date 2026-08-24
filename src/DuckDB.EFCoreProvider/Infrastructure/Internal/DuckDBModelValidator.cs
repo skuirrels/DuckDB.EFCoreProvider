@@ -64,6 +64,23 @@ public class DuckDBModelValidator : RelationalModelValidator
         ValidateEngineCapabilities(model, _capabilities);
     }
 
+    protected override void ValidatePropertyMapping(
+        IConventionComplexProperty complexProperty,
+        IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
+    {
+        // Relational table-sharing requires a required leaf to detect a null complex value.
+        // Native STRUCT columns carry presence for every nested complex path themselves.
+        if (complexProperty.GetStructMapping() is not null
+            && complexProperty.IsNullable
+            && !complexProperty.IsCollection
+            && complexProperty.ComplexType.GetProperties().All(property => property.IsNullable))
+        {
+            return;
+        }
+
+        base.ValidatePropertyMapping(complexProperty, logger);
+    }
+
     private static void ValidateStructMappings(IModel model)
     {
         var structTables = new Dictionary<

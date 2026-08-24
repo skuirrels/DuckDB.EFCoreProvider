@@ -138,9 +138,12 @@ internal sealed class DuckDBStructMutationPlan
         {
             var field = modification.FieldInfo!;
             var current = root;
-            foreach (var nestedName in field.NestedFieldNames)
+            var nestedNullStates = ResolveNestedNullStates(modification);
+            for (var index = 0; index < field.NestedFieldNames.Count; index++)
             {
-                current = current.GetOrAdd(nestedName);
+                current = current.GetOrAdd(
+                    field.NestedFieldNames[index],
+                    nestedNullStates[index]);
             }
 
             current.AddLeaf(
@@ -151,6 +154,41 @@ internal sealed class DuckDBStructMutationPlan
         }
 
         return root.Freeze();
+    }
+
+    private static IReadOnlyList<bool> ResolveNestedNullStates(ResolvedModification modification)
+    {
+        var nestedCount = modification.FieldInfo!.NestedFieldNames.Count;
+        if (nestedCount == 0)
+        {
+            return [];
+        }
+
+        if (modification.Modification.Entry is not { } updateEntry
+            || modification.Modification.Property?.DeclaringType is not IComplexType declaringType)
+        {
+            return new bool[nestedCount];
+        }
+
+        var complexProperties = new List<IComplexProperty>();
+        IComplexType? currentType = declaringType;
+        while (currentType?.ComplexProperty is { } complexProperty)
+        {
+            complexProperties.Add(complexProperty);
+            currentType = complexProperty.DeclaringType as IComplexType;
+        }
+
+        complexProperties.Reverse();
+        var nestedProperties = complexProperties
+            .Skip(1)
+            .ToArray();
+        var states = new bool[nestedCount];
+        for (var index = 0; index < states.Length && index < nestedProperties.Length; index++)
+        {
+            states[index] = updateEntry.GetCurrentValue(nestedProperties[index]) is null;
+        }
+
+        return states;
     }
 
     private static DuckDBStructFieldInfo? ResolveFieldInfo(IColumnModification modification)
@@ -228,20 +266,30 @@ internal sealed class DuckDBStructMutationPlan
 
         public string? FieldName { get; } = fieldName;
 
+        public bool IsNull { get; private set; }
+
         public string? ParameterName { get; private init; }
 
         public string? ColumnName { get; private init; }
 
         public int? WriteOrdinal { get; private init; }
 
-        public MutableNode GetOrAdd(string name)
+        public MutableNode GetOrAdd(string name, bool isNull)
         {
             var child = _children.FirstOrDefault(
                 candidate => string.Equals(candidate.FieldName, name, StringComparison.OrdinalIgnoreCase));
             if (child is null)
             {
-                child = new MutableNode(name);
+                child = new MutableNode(name)
+                {
+                    IsNull = isNull
+                };
                 _children.Add(child);
+            }
+            else if (child.IsNull != isNull)
+            {
+                throw new InvalidOperationException(
+                    $"DuckDB STRUCT nested field '{name}' has conflicting null states in one mutation.");
             }
 
             return child;
@@ -268,6 +316,7 @@ internal sealed class DuckDBStructMutationPlan
         public DuckDBStructMutationNode Freeze()
             => new(
                 FieldName,
+                IsNull,
                 ParameterName,
                 ColumnName,
                 WriteOrdinal,
@@ -308,12 +357,14 @@ internal sealed class DuckDBStructMutationNode
 {
     public DuckDBStructMutationNode(
         string? fieldName,
+        bool isNull,
         string? parameterName,
         string? columnName,
         int? writeOrdinal,
         IEnumerable<DuckDBStructMutationNode> children)
     {
         FieldName = fieldName;
+        IsNull = isNull;
         ParameterName = parameterName;
         ColumnName = columnName;
         WriteOrdinal = writeOrdinal;
@@ -321,6 +372,8 @@ internal sealed class DuckDBStructMutationNode
     }
 
     public string? FieldName { get; }
+
+    public bool IsNull { get; }
 
     public string? ParameterName { get; }
 
@@ -334,6 +387,7 @@ internal sealed class DuckDBStructMutationNode
 
     public bool HasSamePhysicalShape(DuckDBStructMutationNode other)
         => string.Equals(FieldName, other.FieldName, StringComparison.OrdinalIgnoreCase)
+            && IsNull == other.IsNull
             && IsLeaf == other.IsLeaf
             && Children.Count == other.Children.Count
             && Children.Zip(other.Children).All(pair => pair.First.HasSamePhysicalShape(pair.Second));

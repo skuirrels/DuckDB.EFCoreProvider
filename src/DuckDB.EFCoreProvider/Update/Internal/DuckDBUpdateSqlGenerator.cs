@@ -1069,6 +1069,10 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             {
                 sb.Append(helper.GenerateParameterNamePlaceholder(child.ParameterName!));
             }
+            else if (child.IsNull)
+            {
+                sb.Append("NULL");
+            }
             else
             {
                 RenderStructLiteralNode(sb, child, helper);
@@ -1134,13 +1138,20 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             }
             else
             {
-                RenderStructUpdate(
-                    sb,
-                    child,
-                    rootColumnRef,
-                    sourcePath.Append(child.FieldName!).ToArray(),
-                    helper,
-                    useParameterPlaceholder);
+                if (child.IsNull)
+                {
+                    sb.Append("NULL");
+                }
+                else
+                {
+                    RenderStructUpdate(
+                        sb,
+                        child,
+                        rootColumnRef,
+                        sourcePath.Append(child.FieldName!).ToArray(),
+                        helper,
+                        useParameterPlaceholder);
+                }
             }
         }
 

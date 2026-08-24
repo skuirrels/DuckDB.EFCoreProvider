@@ -374,6 +374,32 @@ public class StructRoundTripTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Struct_materialization_distinguishes_null_root_from_present_all_null_root()
+    {
+        using var context = CreateContext();
+        context.Database.EnsureCreated();
+        context.Database.ExecuteSqlRaw("""
+            INSERT INTO "OptionalRootEntity" ("Id", "Location")
+            VALUES
+                (1, STRUCT_PACK(City := NULL::VARCHAR, Country := NULL::VARCHAR)),
+                (2, NULL)
+            """);
+
+        var projected = context.Set<OptionalRootEntity>()
+            .OrderBy(entity => entity.Id)
+            .Select(entity => entity.Location)
+            .ToArray();
+        Assert.NotNull(projected[0]);
+        Assert.Null(projected[0]!.City);
+        Assert.Null(projected[0]!.Country);
+        Assert.Null(projected[1]);
+
+        var entities = context.Set<OptionalRootEntity>().OrderBy(entity => entity.Id).ToArray();
+        Assert.NotNull(entities[0].Location);
+        Assert.Null(entities[1].Location);
+    }
+
+    [ConditionalFact]
     public void Struct_bulk_update_separates_null_root_state()
     {
         using (var context = CreateBatchingContext())
@@ -419,6 +445,153 @@ public class StructRoundTripTests : DuckDBTestBase
         Assert.True(reader.GetBoolean(0));
         Assert.True(reader.GetBoolean(1));
         Assert.True(reader.GetBoolean(2));
+    }
+
+    [ConditionalFact]
+    public void Struct_insert_writes_null_for_nullable_nested_complex_property()
+    {
+        using var context = CreateContext();
+        var optional = context.Model
+            .FindEntityType(typeof(NestedOptionalCustomer))!
+            .FindComplexProperty(nameof(NestedOptionalCustomer.Details))!
+            .ComplexType
+            .FindComplexProperty(nameof(NestedOptionalDetails.Optional))!;
+        Assert.True(optional.IsNullable);
+        Assert.All(optional.ComplexType!.GetProperties(), property => Assert.True(property.IsNullable));
+
+        context.Database.EnsureCreated();
+        context.AddRange(
+            new NestedOptionalCustomer
+            {
+                Id = 1,
+                Details = new NestedOptionalDetails { Label = "null", Optional = null }
+            },
+            new NestedOptionalCustomer
+            {
+                Id = 2,
+                Details = new NestedOptionalDetails
+                {
+                    Label = "present",
+                    Optional = new NestedOptionalAddress()
+                }
+            });
+        context.SaveChanges();
+        context.Database.OpenConnection();
+
+        using var command = context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = """
+            SELECT column_name, data_type
+            FROM duckdb_columns()
+            WHERE database_name = current_database() AND table_name = 'NestedOptionalCustomer'
+            ORDER BY column_index
+            """;
+        using (var schemaReader = command.ExecuteReader())
+        {
+            var columns = new List<(string Name, string StoreType)>();
+            while (schemaReader.Read())
+            {
+                columns.Add((schemaReader.GetString(0), schemaReader.GetString(1)));
+            }
+
+            Assert.Equal(["Id", "Details"], columns.Select(column => column.Name));
+            Assert.StartsWith("STRUCT", columns[1].StoreType, StringComparison.Ordinal);
+        }
+
+        command.CommandText = """
+            SELECT "Details".optional IS NULL, "Details".optional.city IS NULL
+            FROM "NestedOptionalCustomer"
+            ORDER BY "Id"
+            """;
+        using var reader = command.ExecuteReader();
+
+        Assert.True(reader.Read());
+        Assert.True(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+        Assert.True(reader.Read());
+        Assert.False(reader.GetBoolean(0));
+        Assert.True(reader.GetBoolean(1));
+    }
+
+    [ConditionalFact]
+    public void Struct_update_writes_null_for_nullable_nested_complex_property()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new NestedOptionalCustomer
+            {
+                Id = 1,
+                Details = new NestedOptionalDetails
+                {
+                    Label = "before",
+                    Optional = new NestedOptionalAddress { City = "NYC", Country = "US" }
+                }
+            });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateContext())
+        {
+            var customer = context.Set<NestedOptionalCustomer>().Single();
+            customer.Details.Optional = null;
+            context.SaveChanges();
+        }
+
+        using var verificationContext = CreateContext();
+        var optional = verificationContext.Set<NestedOptionalCustomer>().Single().Details.Optional;
+        Assert.Null(optional);
+    }
+
+    [ConditionalFact]
+    public void Struct_bulk_update_separates_nullable_nested_complex_property_state()
+    {
+        using (var context = CreateBatchingContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new NestedOptionalCustomer
+                {
+                    Id = 1,
+                    Details = new NestedOptionalDetails
+                    {
+                        Label = "first",
+                        Optional = new NestedOptionalAddress { City = "NYC", Country = "US" }
+                    }
+                },
+                new NestedOptionalCustomer
+                {
+                    Id = 2,
+                    Details = new NestedOptionalDetails
+                    {
+                        Label = "second",
+                        Optional = new NestedOptionalAddress { City = "LDN", Country = "UK" }
+                    }
+                });
+            context.SaveChanges();
+        }
+
+        using (var context = CreateBatchingContext())
+        {
+            var customers = context.Set<NestedOptionalCustomer>().OrderBy(customer => customer.Id).ToArray();
+            customers[0].Details.Optional = null;
+            customers[1].Details.Optional = new NestedOptionalAddress();
+            context.SaveChanges();
+        }
+
+        using var verificationContext = CreateContext();
+        verificationContext.Database.OpenConnection();
+        using var command = verificationContext.Database.GetDbConnection().CreateCommand();
+        command.CommandText = """
+            SELECT "Details".optional IS NULL
+            FROM "NestedOptionalCustomer"
+            ORDER BY "Id"
+            """;
+        using var reader = command.ExecuteReader();
+
+        Assert.True(reader.Read());
+        Assert.True(reader.GetBoolean(0));
+        Assert.True(reader.Read());
+        Assert.False(reader.GetBoolean(0));
     }
 
     [ConditionalFact]
@@ -985,6 +1158,13 @@ public class StructRoundTripTests : DuckDBTestBase
                 e.ComplexProperty(c => c.Location);
             });
 
+            modelBuilder.Entity<NestedOptionalCustomer>(e =>
+            {
+                e.Property(p => p.Id).ValueGeneratedNever();
+                e.ComplexProperty(c => c.Details, details =>
+                    details.ComplexProperty(d => d.Optional, optional => optional.IsRequired(false)));
+            });
+
             modelBuilder.Entity<Account>(e =>
             {
                 e.Property(p => p.Id).ValueGeneratedNever();
@@ -1138,6 +1318,26 @@ public class StructRoundTripTests : DuckDBTestBase
     private sealed class OptionalAddress
     {
         public required string Marker { get; set; }
+        public string? City { get; set; }
+        public string? Country { get; set; }
+    }
+
+    private sealed class NestedOptionalCustomer
+    {
+        public int Id { get; set; }
+
+        [UseStructMapping]
+        public required NestedOptionalDetails Details { get; set; }
+    }
+
+    private sealed class NestedOptionalDetails
+    {
+        public required string Label { get; set; }
+        public NestedOptionalAddress? Optional { get; set; }
+    }
+
+    private sealed class NestedOptionalAddress
+    {
         public string? City { get; set; }
         public string? Country { get; set; }
     }
