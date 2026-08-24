@@ -1014,13 +1014,27 @@ validation because the engine enforces it.
 
 When the input contains the same conflict-target value more than once, the last occurrence in input order wins,
 matching what sequential per-row upserts would produce. Key-only shapes with no updateable columns keep the first
-inserted row per key instead. Each staged batch is applied separately, so wrap the call in an explicit database
-transaction if the whole input must commit atomically.
+inserted row per key instead. When the caller already guarantees that conflict-target values are distinct across
+the complete input, pass `DuckDBUpsertInputMode.DistinctConflictTargets` to bypass the staging window used for
+that deterministic deduplication:
 
-DuckLake keys and unique indexes are logical metadata rather than physical constraints. Its `MERGE` path fails
-before mutating a batch when any staged conflict-target value matches multiple existing rows. This protects against
-silently updating several corrupt/duplicate target rows, but it cannot arbitrate concurrent inserts of the same new
-logical key; applications with multiple writers must still provide their own uniqueness guarantee.
+```csharp
+var processed = await context.UpsertAsync(
+    DuckDBUpsertInputMode.DistinctConflictTargets,
+    events,
+    entity => entity.ExternalId,
+    cancellationToken: cancellationToken);
+```
+
+The provider does not validate this input guarantee. Use the default overload whenever duplicates are possible.
+Each staged batch is applied separately, so wrap the call in an explicit database transaction if the whole input
+must commit atomically.
+
+DuckLake keys and unique indexes are logical metadata rather than physical constraints. Its `MERGE` path uses an
+atomic set-based guard and fails before mutating a batch when any staged conflict-target value matches multiple
+existing rows. This protects against silently updating several corrupt/duplicate target rows, but it cannot
+arbitrate concurrent inserts of the same new logical key; applications with multiple writers must still provide
+their own uniqueness guarantee.
 
 Like `BulkInsert`, this is a raw fast path: it bypasses the change tracker, EF optimistic-concurrency checks, and EF
 command interceptors and does not support shadow or database-computed columns. The default PK-target overload

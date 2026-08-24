@@ -18,6 +18,7 @@ internal sealed record DuckDBUpsertPlan(
     ImmutableArray<string> InsertColumns,
     ImmutableArray<string> UpdateColumns,
     ImmutableArray<string> ConflictColumns,
+    DuckDBUpsertInputMode InputMode,
     bool RequiresTargetCardinalityValidation,
     ImmutableArray<DuckDBUpsertValueAccessor> ValueAccessors,
     Action<IDuckDBAppenderRow, object>? WriteRow)
@@ -35,8 +36,14 @@ internal static class DuckDBUpsertPlanner
         DbContext context,
         Type clrType,
         IReadOnlyList<string>? conflictPropertyNames = null,
-        DuckDBUpsertMatchMode matchMode = DuckDBUpsertMatchMode.UniqueConflictTarget)
+        DuckDBUpsertMatchMode matchMode = DuckDBUpsertMatchMode.UniqueConflictTarget,
+        DuckDBUpsertInputMode inputMode = DuckDBUpsertInputMode.MayContainDuplicates)
     {
+        if (!Enum.IsDefined(inputMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(inputMode), inputMode, "Unsupported Upsert input mode.");
+        }
+
         var entityType = context.Model.FindEntityType(clrType)
             ?? throw new InvalidOperationException($"'{clrType.Name}' is not part of the model.");
 
@@ -56,6 +63,7 @@ internal static class DuckDBUpsertPlanner
             schema,
             table,
             strategy,
+            inputMode,
             requiresTargetCardinalityValidation,
             usesRemoteValueRendering,
             conflictTarget.MetadataIdentity);
@@ -67,6 +75,7 @@ internal static class DuckDBUpsertPlanner
                 state.Table,
                 state.Schema,
                 state.Strategy,
+                state.InputMode,
                 state.RequiresTargetCardinalityValidation,
                 state.UsesRemoteValueRendering,
                 state.ConflictTarget),
@@ -74,6 +83,7 @@ internal static class DuckDBUpsertPlanner
                 Table: table,
                 Schema: schema,
                 Strategy: strategy,
+                InputMode: inputMode,
                 RequiresTargetCardinalityValidation: requiresTargetCardinalityValidation,
                 UsesRemoteValueRendering: usesRemoteValueRendering,
                 ConflictTarget: conflictTarget));
@@ -129,6 +139,7 @@ internal static class DuckDBUpsertPlanner
         string table,
         string? schema,
         DuckDBUpsertStrategy strategy,
+        DuckDBUpsertInputMode inputMode,
         bool requiresTargetCardinalityValidation,
         bool usesRemoteValueRendering,
         UpsertConflictTarget conflictTarget)
@@ -203,6 +214,7 @@ internal static class DuckDBUpsertPlanner
             insertColumns.ToImmutableArray(),
             updateColumns.ToImmutableArray(),
             conflictColumns,
+            inputMode,
             requiresTargetCardinalityValidation,
             usesRemoteValueRendering
                 ? writableProperties.Select(DuckDBUpsertValueAccessor.Create).ToImmutableArray()
@@ -239,6 +251,7 @@ internal static class DuckDBUpsertPlanner
         string? Schema,
         string Table,
         DuckDBUpsertStrategy Strategy,
+        DuckDBUpsertInputMode InputMode,
         bool RequiresTargetCardinalityValidation,
         bool UsesRemoteValueRendering,
         object ConflictTarget);

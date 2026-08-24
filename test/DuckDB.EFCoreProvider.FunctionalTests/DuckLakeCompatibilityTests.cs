@@ -824,6 +824,7 @@ public sealed class DuckLakeCompatibilityTests
                 new DuckLakeItem { Id = Guid.NewGuid(), Name = "bulk", Quantity = 2 }
             ]));
             Assert.Equal(1, await context.UpsertAsync(
+                DuckDBUpsertInputMode.DistinctConflictTargets,
             [
                 new DuckLakeItem { Id = id, Name = "merged", Quantity = 3 }
             ]));
@@ -831,6 +832,96 @@ public sealed class DuckLakeCompatibilityTests
             var items = await context.Items.AsNoTracking().OrderBy(item => item.Name).ToListAsync();
             Assert.Equal(2, items.Count);
             Assert.Equal(3, items.Single(item => item.Id == id).Quantity);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Key_only_DuckLake_upsert_keeps_the_first_duplicate_input()
+    {
+        var root = CreateDirectories(out var metadataPath, out var dataPath);
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<DuckLakeKeyOnlyContext>()
+                .UseDuckLake(metadataPath, duckLake => duckLake.DataPath(dataPath))
+                .Options;
+            using var context = new DuckLakeKeyOnlyContext(options);
+            context.Database.EnsureCreated();
+            var id = Guid.NewGuid();
+
+            Assert.Equal(2, context.Upsert([new DuckLakeKeyOnlyItem { Id = id }, new DuckLakeKeyOnlyItem { Id = id }]));
+            Assert.Equal(1, context.Items.Count());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void DuckLake_bulk_insert_and_upsert_apply_compiled_value_converters()
+    {
+        var root = CreateDirectories(out var metadataPath, out var dataPath);
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<DuckLakeConvertedContext>()
+                .UseDuckLake(metadataPath, duckLake => duckLake.DataPath(dataPath))
+                .Options;
+            using var context = new DuckLakeConvertedContext(options);
+            context.Database.EnsureCreated();
+            var existingId = Guid.NewGuid();
+            var insertedId = Guid.NewGuid();
+
+            Assert.Equal(
+                1,
+                context.BulkInsert(
+                [
+                    new DuckLakeConvertedItem
+                    {
+                        Id = existingId,
+                        State = ConvertedState.Pending,
+                        Score = new ConvertedScore(10),
+                        OptionalState = null,
+                    }
+                ]));
+            Assert.Equal(
+                2,
+                context.Upsert(
+                    DuckDBUpsertInputMode.DistinctConflictTargets,
+                [
+                    new DuckLakeConvertedItem
+                    {
+                        Id = existingId,
+                        State = ConvertedState.Ready,
+                        Score = new ConvertedScore(20),
+                        OptionalState = ConvertedState.Ready,
+                    },
+                    new DuckLakeConvertedItem
+                    {
+                        Id = insertedId,
+                        State = ConvertedState.Pending,
+                        Score = new ConvertedScore(30),
+                        OptionalState = null,
+                    }
+                ]));
+
+            var stored = context.Items.AsNoTracking().ToArray().OrderBy(item => item.Score.Value).ToArray();
+            Assert.Equal(2, stored.Length);
+            Assert.Equal((ConvertedState.Ready, new ConvertedScore(20), ConvertedState.Ready),
+                (stored[0].State, stored[0].Score, stored[0].OptionalState));
+            Assert.Equal((ConvertedState.Pending, new ConvertedScore(30), null),
+                (stored[1].State, stored[1].Score, stored[1].OptionalState));
         }
         finally
         {
@@ -934,7 +1025,10 @@ public sealed class DuckLakeCompatibilityTests
 
             var renderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
             var sql = renderer.RenderUpsertFromTemporaryTable(plan, "temporary_upsert_rows");
-            Assert.Contains("SELECT count(*)", sql);
+            Assert.Contains("CASE WHEN count(*) > 0", sql);
+            Assert.Contains("CROSS JOIN", sql);
+            Assert.Contains("SEMI JOIN", sql);
+            Assert.Contains("GROUP BY", sql);
             Assert.Contains("error('The upsert conflict target matched multiple existing rows", sql);
 
             await using var transaction = await context.Database.BeginTransactionAsync();
@@ -1212,6 +1306,55 @@ public sealed class DuckLakeCompatibilityTests
         public Guid ExternalId { get; set; }
         public string Name { get; set; } = null!;
     }
+
+    private sealed class DuckLakeKeyOnlyContext(DbContextOptions<DuckLakeKeyOnlyContext> options) : DbContext(options)
+    {
+        public DbSet<DuckLakeKeyOnlyItem> Items => Set<DuckLakeKeyOnlyItem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<DuckLakeKeyOnlyItem>(entity =>
+            {
+                entity.ToTable("key_only_items");
+                entity.Property(item => item.Id).ValueGeneratedNever();
+            });
+    }
+
+    private sealed class DuckLakeKeyOnlyItem
+    {
+        public Guid Id { get; set; }
+    }
+
+    private sealed class DuckLakeConvertedContext(DbContextOptions<DuckLakeConvertedContext> options) : DbContext(options)
+    {
+        public DbSet<DuckLakeConvertedItem> Items => Set<DuckLakeConvertedItem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<DuckLakeConvertedItem>(entity =>
+            {
+                entity.ToTable("converted_items");
+                entity.Property(item => item.Id).ValueGeneratedNever();
+                entity.Property(item => item.State).HasConversion<int>();
+                entity.Property(item => item.Score)
+                    .HasConversion(value => value.Value, value => new ConvertedScore(value));
+                entity.Property(item => item.OptionalState).HasConversion<string>();
+            });
+    }
+
+    private sealed class DuckLakeConvertedItem
+    {
+        public Guid Id { get; set; }
+        public ConvertedState State { get; set; }
+        public ConvertedScore Score { get; set; }
+        public ConvertedState? OptionalState { get; set; }
+    }
+
+    private enum ConvertedState
+    {
+        Pending,
+        Ready,
+    }
+
+    private readonly record struct ConvertedScore(long Value);
 
     private sealed class NumericKeyContext(
         DbContextOptions<NumericKeyContext> options,

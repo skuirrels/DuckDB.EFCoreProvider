@@ -61,6 +61,8 @@ public class BulkInsertTests : DuckDBTestBase
                 OptionalQuantity = 42,
                 OptionalActive = true,
                 State = BulkState.Ready,
+                OptionalState = BulkState.Ready,
+                Code = new BulkCode(17),
                 Description = "converted",
                 Payload = firstPayload
             },
@@ -70,6 +72,8 @@ public class BulkInsertTests : DuckDBTestBase
                 OptionalQuantity = null,
                 OptionalActive = null,
                 State = BulkState.Pending,
+                OptionalState = null,
+                Code = new BulkCode(23),
                 Description = null,
                 Payload = null
             }
@@ -81,14 +85,44 @@ public class BulkInsertTests : DuckDBTestBase
         Assert.Equal(42, rows[0].OptionalQuantity);
         Assert.True(rows[0].OptionalActive);
         Assert.Equal(BulkState.Ready, rows[0].State);
+        Assert.Equal(BulkState.Ready, rows[0].OptionalState);
+        Assert.Equal(new BulkCode(17), rows[0].Code);
         Assert.Equal("converted", rows[0].Description);
         Assert.Equal(firstPayload, rows[0].Payload);
 
         Assert.Null(rows[1].OptionalQuantity);
         Assert.Null(rows[1].OptionalActive);
         Assert.Equal(BulkState.Pending, rows[1].State);
+        Assert.Null(rows[1].OptionalState);
+        Assert.Equal(new BulkCode(23), rows[1].Code);
         Assert.Null(rows[1].Description);
         Assert.Null(rows[1].Payload);
+    }
+
+    [ConditionalFact]
+    public void BulkInsert_preserves_field_only_converter_fallback()
+    {
+        using var context = new ConvertedBulkContext(FileOptions<ConvertedBulkContext>());
+        context.Database.EnsureCreated();
+
+        Assert.Equal(1, context.BulkInsert([new FieldConvertedBulkRow(1, 42)]));
+
+        var stored = context.FieldRows.AsNoTracking().Single();
+        Assert.Equal(42, stored.StoredQuantity);
+    }
+
+    [ConditionalFact]
+    public void BulkInsert_honors_configured_field_access_for_converted_properties()
+    {
+        using var context = new ConvertedBulkContext(FileOptions<ConvertedBulkContext>());
+        context.Database.EnsureCreated();
+
+        Assert.Equal(1, context.BulkInsert([new FieldAccessConvertedBulkRow(1, 42)]));
+
+        context.Database.OpenConnection();
+        using var command = context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = "SELECT StoredQuantity FROM FieldAccessRows WHERE Id = 1;";
+        Assert.Equal(42L, Convert.ToInt64(command.ExecuteScalar()));
     }
 
     private sealed class BulkContext(DbContextOptions<BulkContext> options) : DbContext(options)
@@ -110,11 +144,31 @@ public class BulkInsertTests : DuckDBTestBase
     private sealed class ConvertedBulkContext(DbContextOptions<ConvertedBulkContext> options) : DbContext(options)
     {
         public DbSet<ConvertedBulkRow> Rows => Set<ConvertedBulkRow>();
+        public DbSet<FieldConvertedBulkRow> FieldRows => Set<FieldConvertedBulkRow>();
+        public DbSet<FieldAccessConvertedBulkRow> FieldAccessRows => Set<FieldAccessConvertedBulkRow>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ConvertedBulkRow>().Property(e => e.Id).ValueGeneratedNever();
             modelBuilder.Entity<ConvertedBulkRow>().Property(e => e.State).HasConversion<string>();
+            modelBuilder.Entity<ConvertedBulkRow>().Property(e => e.OptionalState).HasConversion<string>();
+            modelBuilder.Entity<ConvertedBulkRow>().Property(e => e.Code)
+                .HasConversion(value => value.Value, value => new BulkCode(value));
+            modelBuilder.Entity<FieldConvertedBulkRow>(entity =>
+            {
+                entity.Property(e => e.Id).ValueGeneratedNever();
+                entity.Ignore(e => e.StoredQuantity);
+                entity.Property<int>("_storedQuantity").HasColumnName("StoredQuantity").HasConversion<long>();
+            });
+            modelBuilder.Entity<FieldAccessConvertedBulkRow>(entity =>
+            {
+                entity.ToTable("FieldAccessRows");
+                entity.Property(e => e.Id).ValueGeneratedNever();
+                entity.Property(e => e.StoredQuantity)
+                    .HasField("_storedQuantity")
+                    .UsePropertyAccessMode(PropertyAccessMode.Field)
+                    .HasConversion<long>();
+            });
         }
     }
 
@@ -124,9 +178,55 @@ public class BulkInsertTests : DuckDBTestBase
         public int? OptionalQuantity { get; set; }
         public bool? OptionalActive { get; set; }
         public BulkState State { get; set; }
+        public BulkState? OptionalState { get; set; }
+        public BulkCode Code { get; set; }
         public string? Description { get; set; }
         public byte[]? Payload { get; set; }
     }
+
+    private sealed class FieldConvertedBulkRow
+    {
+#pragma warning disable IDE0044 // EF Core materializes this field-only mapped property.
+        private int _storedQuantity;
+#pragma warning restore IDE0044
+
+        private FieldConvertedBulkRow()
+        {
+        }
+
+        public FieldConvertedBulkRow(int id, int storedQuantity)
+        {
+            Id = id;
+            _storedQuantity = storedQuantity;
+        }
+
+        public int Id { get; private set; }
+        public int StoredQuantity => _storedQuantity;
+    }
+
+    private sealed class FieldAccessConvertedBulkRow
+    {
+#pragma warning disable IDE0044 // EF Core materializes this field-backed property.
+        private int _storedQuantity;
+#pragma warning restore IDE0044
+
+        private FieldAccessConvertedBulkRow()
+        {
+        }
+
+        public FieldAccessConvertedBulkRow(int id, int storedQuantity)
+        {
+            Id = id;
+            _storedQuantity = storedQuantity;
+        }
+
+        public int Id { get; private set; }
+
+        // Deliberately differs from the field so the test detects bypassing EF's configured access mode.
+        public int StoredQuantity => _storedQuantity + 1_000;
+    }
+
+    private readonly record struct BulkCode(int Value);
 
     private enum BulkState
     {

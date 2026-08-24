@@ -8,6 +8,8 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Storage.Json;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Collections;
+using System.Collections.Immutable;
+using System.Collections.ObjectModel;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
@@ -166,7 +168,7 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
         bool? nullable = null,
         ParameterDirection direction = ParameterDirection.Input)
     {
-        if (value is not null && Converter is null && value is not TElement[] && value is not List<TElement>)
+        if (value is not null && Converter is null && !CanBindDirectly(value))
         {
             switch (value)
             {
@@ -192,6 +194,12 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
         // DuckDB type name is intentionally not set here.
         return param;
     }
+
+    private static bool CanBindDirectly(object value)
+        => value is TElement[]
+            or List<TElement>
+            or ReadOnlyCollection<TElement>
+            or ImmutableArray<TElement>;
 
     /// <inheritdoc />
     protected override RelationalTypeMapping Clone(RelationalTypeMappingParameters parameters)

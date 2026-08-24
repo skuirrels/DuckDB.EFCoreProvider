@@ -16,7 +16,7 @@ namespace DuckDB.EFCoreProvider.Extensions;
 /// </summary>
 /// <remarks>
 ///     <para>
-///         <see cref="Upsert{TEntity}" /> and the default <c>UpsertAsync</c> overload insert the supplied entities,
+///         The default <c>Upsert</c> and <c>UpsertAsync</c> overloads insert the supplied entities,
 ///         updating any rows whose primary key already exists. The alternate <c>UpsertAsync</c> overload can target
 ///         a primary key, alternate key, or unique index selected by the caller. Chunks are appended through one temporary staging
 ///         table per operation and then merged into the target table with a set-based
@@ -42,6 +42,9 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///         <item><description>duplicate conflict-target values within the input resolve to the last occurrence in
 ///             input order when updateable columns exist (key-only shapes keep the first inserted row); callers can
 ///             wrap the operation in an explicit transaction when all batches must commit atomically;</description></item>
+///         <item><description><see cref="DuckDBUpsertInputMode.DistinctConflictTargets" /> bypasses staging
+///             deduplication when the caller guarantees that conflict-target values are distinct across the complete
+///             input; the provider does not validate that guarantee;</description></item>
 ///         <item><description>DuckLake — and <see cref="DuckDBUpsertMatchMode.LogicalKeyMerge" /> on native DuckDB —
 ///             rejects the affected staged batch before mutation when a key matches multiple existing rows because
 ///             logical keys are not physically enforced;</description></item>
@@ -61,6 +64,27 @@ public static class DuckDBUpsertExtensions
         IEnumerable<TEntity> entities,
         int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize)
         where TEntity : class
+        => UpsertCore(context, entities, DuckDBUpsertInputMode.MayContainDuplicates, batchSize);
+
+    /// <summary>
+    ///     Inserts the supplied entities, using the requested input-duplicate contract to control whether the
+    ///     provider performs staging deduplication.
+    /// </summary>
+    /// <returns>The number of rows processed.</returns>
+    public static int Upsert<TEntity>(
+        this DbContext context,
+        DuckDBUpsertInputMode inputMode,
+        IEnumerable<TEntity> entities,
+        int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize)
+        where TEntity : class
+        => UpsertCore(context, entities, inputMode, batchSize);
+
+    private static int UpsertCore<TEntity>(
+        DbContext context,
+        IEnumerable<TEntity> entities,
+        DuckDBUpsertInputMode inputMode,
+        int batchSize)
+        where TEntity : class
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(entities);
@@ -74,7 +98,7 @@ public static class DuckDBUpsertExtensions
 
         try
         {
-            var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity));
+            var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity), inputMode: inputMode);
             var sqlRenderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
             var dbConnection = context.Database.GetDbConnection();
             var openedHere = dbConnection.State != ConnectionState.Open;
@@ -188,6 +212,28 @@ public static class DuckDBUpsertExtensions
             entities,
             conflictPropertyNames: null,
             DuckDBUpsertMatchMode.UniqueConflictTarget,
+            DuckDBUpsertInputMode.MayContainDuplicates,
+            batchSize,
+            cancellationToken);
+
+    /// <summary>
+    ///     Asynchronously inserts the supplied entities, using the requested input-duplicate contract to control
+    ///     whether the provider performs staging deduplication.
+    /// </summary>
+    /// <returns>The number of rows processed.</returns>
+    public static Task<int> UpsertAsync<TEntity>(
+        this DbContext context,
+        DuckDBUpsertInputMode inputMode,
+        IEnumerable<TEntity> entities,
+        int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
+        => UpsertAsyncCore(
+            context,
+            entities,
+            conflictPropertyNames: null,
+            DuckDBUpsertMatchMode.UniqueConflictTarget,
+            inputMode,
             batchSize,
             cancellationToken);
 
@@ -213,6 +259,29 @@ public static class DuckDBUpsertExtensions
         where TEntity : class
         => UpsertAsync(
             context,
+            DuckDBUpsertInputMode.MayContainDuplicates,
+            entities,
+            conflictTarget,
+            DuckDBUpsertMatchMode.UniqueConflictTarget,
+            batchSize,
+            cancellationToken);
+
+    /// <summary>
+    ///     Asynchronously inserts the supplied entities using the selected conflict target and input-duplicate
+    ///     contract.
+    /// </summary>
+    /// <returns>The number of rows processed.</returns>
+    public static Task<int> UpsertAsync<TEntity>(
+        this DbContext context,
+        DuckDBUpsertInputMode inputMode,
+        IEnumerable<TEntity> entities,
+        Expression<Func<TEntity, object?>> conflictTarget,
+        int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
+        => UpsertAsync(
+            context,
+            inputMode,
             entities,
             conflictTarget,
             DuckDBUpsertMatchMode.UniqueConflictTarget,
@@ -248,6 +317,29 @@ public static class DuckDBUpsertExtensions
         int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize,
         CancellationToken cancellationToken = default)
         where TEntity : class
+        => UpsertAsync(
+            context,
+            DuckDBUpsertInputMode.MayContainDuplicates,
+            entities,
+            conflictTarget,
+            matchMode,
+            batchSize,
+            cancellationToken);
+
+    /// <summary>
+    ///     Asynchronously inserts the supplied entities using the selected conflict target, match mode, and
+    ///     input-duplicate contract.
+    /// </summary>
+    /// <returns>The number of rows processed.</returns>
+    public static Task<int> UpsertAsync<TEntity>(
+        this DbContext context,
+        DuckDBUpsertInputMode inputMode,
+        IEnumerable<TEntity> entities,
+        Expression<Func<TEntity, object?>> conflictTarget,
+        DuckDBUpsertMatchMode matchMode,
+        int batchSize = DuckDBUpsertBatching.DefaultRequestedBatchSize,
+        CancellationToken cancellationToken = default)
+        where TEntity : class
     {
         ArgumentNullException.ThrowIfNull(conflictTarget);
         var conflictPropertyNames = DuckDBPropertySelector.GetPropertyNames(
@@ -255,7 +347,7 @@ public static class DuckDBUpsertExtensions
             "conflict-target",
             nameof(conflictTarget));
 
-        return UpsertAsyncCore(context, entities, conflictPropertyNames, matchMode, batchSize, cancellationToken);
+        return UpsertAsyncCore(context, entities, conflictPropertyNames, matchMode, inputMode, batchSize, cancellationToken);
     }
 
     private static async Task<int> UpsertAsyncCore<TEntity>(
@@ -263,6 +355,7 @@ public static class DuckDBUpsertExtensions
         IEnumerable<TEntity> entities,
         IReadOnlyList<string>? conflictPropertyNames,
         DuckDBUpsertMatchMode matchMode,
+        DuckDBUpsertInputMode inputMode,
         int batchSize,
         CancellationToken cancellationToken)
         where TEntity : class
@@ -279,7 +372,7 @@ public static class DuckDBUpsertExtensions
 
         try
         {
-            var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity), conflictPropertyNames, matchMode);
+            var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity), conflictPropertyNames, matchMode, inputMode);
             var sqlRenderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
             var dbConnection = context.Database.GetDbConnection();
             var openedHere = dbConnection.State != ConnectionState.Open;
