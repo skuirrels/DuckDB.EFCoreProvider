@@ -30,9 +30,6 @@ statement, and the logical-key rows use 10,000 incoming keys.
 | Logical-key guard, 500,000-row target | Correlated: 20.247 ms | Atomic semi-join: 3.302 ms | After; 83.7% lower latency |
 | 500-element read-only-list parameter | Copy: 431.8 us; 42.54 KB | Direct: 402.9 us; 40.54 KB | After; 2.00 KB less allocation; latency unproven |
 
-See [docs/PERFORMANCE-REVIEW-FOLLOW-UPS.md](docs/PERFORMANCE-REVIEW-FOLLOW-UPS.md) for methodology, confidence
-limits, rejected proposals, and reproduction commands.
-
 ## 1.22.0
 
 - Add `UseEncryptedDuckDB(path, keyProvider)` and `UseDuckDB(o => o.UseEncryptedDatabase(path, keyProvider))`:
