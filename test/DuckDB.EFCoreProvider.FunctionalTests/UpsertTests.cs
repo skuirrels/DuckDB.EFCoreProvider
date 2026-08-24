@@ -42,7 +42,7 @@ public class UpsertTests : DuckDBTestBase
             .Where(parameter => parameter.Name == "batchSize")
             .ToArray();
 
-        Assert.Equal(4, batchParameters.Length);
+        Assert.Equal(8, batchParameters.Length);
         Assert.All(
             batchParameters,
             parameter => Assert.Equal(DuckDBUpsertBatching.DefaultRequestedBatchSize, parameter.DefaultValue));
@@ -165,6 +165,46 @@ public class UpsertTests : DuckDBTestBase
             var two = context.Items.Single(x => x.Id == 2);
             Assert.Equal(("ins-last", 22), (two.Name, two.Quantity));
         }
+    }
+
+    [ConditionalFact]
+    public void Upsert_distinct_input_contract_processes_unique_rows_without_staging_deduplication()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.Add(new Item { Id = 1, Name = "original", Quantity = 1 });
+            context.SaveChanges();
+
+            Assert.Equal(
+                2,
+                context.Upsert(
+                    DuckDBUpsertInputMode.DistinctConflictTargets,
+                [
+                    new Item { Id = 1, Name = "updated", Quantity = 10 },
+                    new Item { Id = 2, Name = "inserted", Quantity = 20 },
+                ]));
+        }
+
+        using (var context = CreateContext())
+        {
+            var stored = context.Items.AsNoTracking().OrderBy(item => item.Id).ToArray();
+            Assert.Equal(2, stored.Length);
+            Assert.Equal(("updated", 10), (stored[0].Name, stored[0].Quantity));
+            Assert.Equal(("inserted", 20), (stored[1].Name, stored[1].Quantity));
+        }
+    }
+
+    [Fact]
+    public async Task Upsert_rejects_unknown_input_modes()
+    {
+        using var context = CreateContext();
+        var invalid = (DuckDBUpsertInputMode)int.MaxValue;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => context.Upsert(Array.Empty<Item>(), default));
+        Assert.Throws<ArgumentOutOfRangeException>(() => context.Upsert(invalid, Array.Empty<Item>()));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => context.UpsertAsync(invalid, Array.Empty<Item>()));
     }
 
     [ConditionalFact]
@@ -529,6 +569,64 @@ public class UpsertTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public async Task Logical_key_merge_atomic_guard_handles_composite_keys_before_mutation()
+    {
+        await using (var context = CreateContext())
+        {
+            await context.Database.EnsureCreatedAsync();
+            context.AddRange(
+                new CompositeLogicalItem { TenantId = 7, ExternalId = "duplicate", Name = "first" },
+                new CompositeLogicalItem { TenantId = 7, ExternalId = "duplicate", Name = "second" });
+            await context.SaveChangesAsync();
+        }
+
+        await using (var context = CreateContext())
+        {
+            var exception = await Assert.ThrowsAsync<DuckDBException>(() => context.UpsertAsync(
+                DuckDBUpsertInputMode.DistinctConflictTargets,
+            [
+                new CompositeLogicalItem { TenantId = 7, ExternalId = "duplicate", Name = "changed" }
+            ],
+                item => new { item.TenantId, item.ExternalId },
+                DuckDBUpsertMatchMode.LogicalKeyMerge));
+
+            Assert.Contains("The upsert conflict target matched multiple existing rows", exception.ToString());
+        }
+
+        await using (var context = CreateContext())
+        {
+            Assert.Equal(
+                ["first", "second"],
+                await context.CompositeLogicalItems.AsNoTracking().OrderBy(item => item.Name)
+                    .Select(item => item.Name).ToArrayAsync());
+        }
+    }
+
+    [ConditionalFact]
+    public async Task Logical_key_merge_preserves_SQL_null_does_not_match_semantics()
+    {
+        await using var context = CreateContext();
+        await context.Database.EnsureCreatedAsync();
+        context.Add(new NullableLogicalItem { ExternalId = null, Name = "existing" });
+        await context.SaveChangesAsync();
+
+        Assert.Equal(
+            1,
+            await context.UpsertAsync(
+                DuckDBUpsertInputMode.DistinctConflictTargets,
+            [
+                new NullableLogicalItem { ExternalId = null, Name = "inserted" }
+            ],
+                item => item.ExternalId,
+                DuckDBUpsertMatchMode.LogicalKeyMerge));
+
+        Assert.Equal(2, await context.NullableLogicalItems.CountAsync());
+        Assert.Equal(
+            ["existing", "inserted"],
+            await context.NullableLogicalItems.OrderBy(item => item.Name).Select(item => item.Name).ToArrayAsync());
+    }
+
+    [ConditionalFact]
     public void Logical_key_merge_plan_renders_validated_merge_sql_and_omits_generated_columns()
     {
         using var context = CreateContext();
@@ -547,6 +645,10 @@ public class UpsertTests : DuckDBTestBase
 
         Assert.Contains("MERGE INTO", sql);
         Assert.Contains("error(", sql);
+        Assert.Contains("CROSS JOIN", sql);
+        Assert.Contains("SEMI JOIN", sql);
+        Assert.Contains("GROUP BY", sql);
+        Assert.DoesNotContain("WHERE CASE WHEN (SELECT count(*)", sql);
         Assert.DoesNotContain("ON CONFLICT", sql);
     }
 
@@ -593,7 +695,7 @@ public class UpsertTests : DuckDBTestBase
     }
 
     [ConditionalFact]
-    public void Updating_conflict_sql_deduplicates_staged_rows_keeping_the_last_occurrence()
+    public void Updating_conflict_sql_deduplicates_by_default_and_bypasses_the_window_for_distinct_input()
     {
         using var context = CreateContext();
         var renderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
@@ -601,6 +703,15 @@ public class UpsertTests : DuckDBTestBase
         var updatingPlan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(Item));
         var updatingSql = renderer.RenderUpsertFromTemporaryTable(updatingPlan, "temporary_upsert_rows");
         Assert.Contains("row_number() OVER (PARTITION BY \"Id\" ORDER BY rowid DESC)", updatingSql);
+
+        var distinctPlan = DuckDBUpsertPlanner.GetOrCreate(
+            context,
+            typeof(Item),
+            inputMode: DuckDBUpsertInputMode.DistinctConflictTargets);
+        var distinctSql = renderer.RenderUpsertFromTemporaryTable(distinctPlan, "temporary_upsert_rows");
+        Assert.Equal(DuckDBUpsertInputMode.DistinctConflictTargets, distinctPlan.InputMode);
+        Assert.DoesNotContain("row_number", distinctSql);
+        Assert.Contains("SELECT \"Id\", \"Name\", \"Quantity\" FROM temporary_upsert_rows", distinctSql);
 
         var keyOnlyPlan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(KeyOnly));
         var keyOnlySql = renderer.RenderUpsertFromTemporaryTable(keyOnlyPlan, "temporary_upsert_rows");
@@ -617,10 +728,14 @@ public class UpsertTests : DuckDBTestBase
         public DbSet<CompositeConflictItem> CompositeConflictItems => Set<CompositeConflictItem>();
         public DbSet<ClientGeneratedItem> ClientGeneratedItems => Set<ClientGeneratedItem>();
         public DbSet<LogicalItem> LogicalItems => Set<LogicalItem>();
+        public DbSet<CompositeLogicalItem> CompositeLogicalItems => Set<CompositeLogicalItem>();
+        public DbSet<NullableLogicalItem> NullableLogicalItems => Set<NullableLogicalItem>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<LogicalItem>(entity => entity.Property(item => item.Id).UseAutoIncrement());
+            modelBuilder.Entity<CompositeLogicalItem>(entity => entity.Property(item => item.Id).UseAutoIncrement());
+            modelBuilder.Entity<NullableLogicalItem>(entity => entity.Property(item => item.Id).UseAutoIncrement());
             modelBuilder.Entity<Item>().Property(e => e.Id).ValueGeneratedNever();
             modelBuilder.Entity<CompositeItem>().HasKey(e => new { e.KeyA, e.KeyB });
             modelBuilder.Entity<KeyOnly>().Property(e => e.Id).ValueGeneratedNever();
@@ -697,6 +812,21 @@ public class UpsertTests : DuckDBTestBase
         public Guid ExternalId { get; set; }
         public string Name { get; set; } = "";
         public int Quantity { get; set; }
+    }
+
+    private sealed class CompositeLogicalItem
+    {
+        public long Id { get; set; }
+        public int TenantId { get; set; }
+        public string ExternalId { get; set; } = "";
+        public string Name { get; set; } = "";
+    }
+
+    private sealed class NullableLogicalItem
+    {
+        public long Id { get; set; }
+        public string? ExternalId { get; set; }
+        public string Name { get; set; } = "";
     }
 
     private readonly record struct EventKey(Guid Value);

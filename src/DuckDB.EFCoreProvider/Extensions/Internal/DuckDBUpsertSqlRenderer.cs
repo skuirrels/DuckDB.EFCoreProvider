@@ -114,15 +114,16 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
     }
 
     // ON CONFLICT DO UPDATE and MERGE apply only one staged row per conflict key, and which duplicate
-    // they pick is engine-defined. Keeping only the greatest rowid per key — appended rows keep input
-    // order — pins the outcome to the last occurrence, matching what sequential per-row upserts produce.
-    // Key-only DO NOTHING shapes keep the first inserted row per key either way and skip the window scan.
+    // they pick is engine-defined. Appended rowids preserve input order, so updating shapes retain the
+    // greatest rowid and key-only MERGE shapes retain the least. Native key-only ON CONFLICT DO NOTHING
+    // already keeps the first row and can skip the window scan.
     private string RenderStagedSource(
         DuckDBUpsertPlan plan,
         string temporaryTable,
         string? temporarySchema)
     {
-        if (plan.UpdateColumns.Length == 0)
+        if (plan.InputMode == DuckDBUpsertInputMode.DistinctConflictTargets
+            || plan.UpdateColumns.Length == 0 && plan.Strategy == DuckDBUpsertStrategy.InsertOnConflict)
         {
             return Delimit(temporaryTable, temporarySchema);
         }
@@ -130,7 +131,8 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
         var insertColumnList = RenderColumnList(plan.InsertColumns);
         var rowNumber = Delimit("__duckdb_upsert_row_number");
         return $"(SELECT {insertColumnList} FROM (SELECT {insertColumnList}, "
-               + $"row_number() OVER (PARTITION BY {RenderColumnList(plan.ConflictColumns)} ORDER BY rowid DESC) AS {rowNumber} "
+               + $"row_number() OVER (PARTITION BY {RenderColumnList(plan.ConflictColumns)} ORDER BY rowid "
+               + $"{(plan.UpdateColumns.Length == 0 ? "ASC" : "DESC")}) AS {rowNumber} "
                + $"FROM {Delimit(temporaryTable, temporarySchema)}) AS {Delimit("__duckdb_upsert_ranked")} "
                + $"WHERE {rowNumber} = 1)";
     }
@@ -180,8 +182,13 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
     {
         var incomingAlias = Delimit("__duckdb_upsert_incoming");
         var existingAlias = Delimit("__duckdb_upsert_existing");
+        var stagedAlias = Delimit("__duckdb_upsert_staged");
+        var duplicateKeysAlias = Delimit("__duckdb_upsert_duplicate_keys");
+        var guardAlias = Delimit("__duckdb_upsert_cardinality_guard");
+        var validColumn = Delimit("__duckdb_upsert_cardinality_valid");
         var matches = plan.ConflictColumns.Select(
-            column => $"{Qualify(existingAlias, column)} = {Qualify(incomingAlias, column)}");
+            column => $"{Qualify(existingAlias, column)} = {Qualify(stagedAlias, column)}");
+        var existingConflictColumns = plan.ConflictColumns.Select(column => Qualify(existingAlias, column));
 
         return new StringBuilder()
             .Append("(SELECT ")
@@ -190,15 +197,33 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
             .Append(stagedSource)
             .Append(" AS ")
             .Append(incomingAlias)
-            .Append(" WHERE CASE WHEN (SELECT count(*) FROM ")
+            .Append(" CROSS JOIN (SELECT CASE WHEN count(*) > 0 THEN error('")
+            .Append(CardinalityError)
+            .Append("') ELSE true END AS ")
+            .Append(validColumn)
+            .Append(" FROM (SELECT ")
+            .AppendJoin(", ", existingConflictColumns)
+            .Append(" FROM ")
             .Append(Delimit(plan.Table, plan.Schema))
             .Append(" AS ")
             .Append(existingAlias)
-            .Append(" WHERE ")
+            .Append(" SEMI JOIN ")
+            .Append(stagedSource)
+            .Append(" AS ")
+            .Append(stagedAlias)
+            .Append(" ON ")
             .AppendJoin(" AND ", matches)
-            .Append(") > 1 THEN error('")
-            .Append(CardinalityError)
-            .Append("') ELSE true END)")
+            .Append(" GROUP BY ")
+            .AppendJoin(", ", existingConflictColumns)
+            .Append(" HAVING count(*) > 1 LIMIT 1) AS ")
+            .Append(duplicateKeysAlias)
+            .Append(") AS ")
+            .Append(guardAlias)
+            .Append(" WHERE ")
+            .Append(guardAlias)
+            .Append('.')
+            .Append(validColumn)
+            .Append(')')
             .ToString();
     }
 

@@ -2,6 +2,37 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.23.0
+
+- Inline supported EF Core `ValueConverter` expressions into the shared compiled Appender writer used by
+  `BulkInsert` and staged `Upsert`, eliminating per-row boxing allocations while retaining the safe fallback for
+  field-only and unsupported provider shapes. Compiled reads honor EF's configured property-access member, including
+  mapped backing fields.
+- Add an explicit `DuckDBUpsertInputMode.DistinctConflictTargets` contract. Callers that guarantee conflict-target
+  uniqueness across the complete input can bypass the staging window; deterministic last-input-wins behavior remains
+  the default. The option-first overloads preserve source compatibility with existing batch-size calls.
+- Replace the correlated logical-key cardinality check with an atomic set-based semi-join guard inside the same
+  `MERGE`, retaining fail-before-mutation behavior for DuckLake and native logical-key merges.
+- Avoid defensive array-parameter copies for DuckDB.NET-proven `T[]`, `List<T>`, `ReadOnlyCollection<T>`, and
+  `ImmutableArray<T>` values. Other enumerable and custom `IReadOnlyList<T>` implementations retain the safe
+  `List<T>` conversion.
+
+Before and after were measured on the same Apple Silicon machine and process environment with BenchmarkDotNet
+0.15.8, .NET 10.0.11, and native DuckDB. Lower is better; the distinct-input rows measure the final conflict
+statement, and the logical-key rows use 10,000 incoming keys.
+
+| Workload | Before | After | Winner |
+|---|---:|---:|---|
+| Three value-type converters | 144 B/row allocated | 0 B/row allocated | After; allocation eliminated |
+| Distinct Upsert, 10,000 staged rows | Window: 3.160 ms; 880 B | Direct source: 2.266 ms; 1,552 B | After; 28.3% lower latency |
+| Distinct Upsert, 50,000 staged rows | Window: 9.811 ms; 4,528 B | Direct source: 6.859 ms; 4,528 B | After; 30.1% lower latency |
+| Logical-key guard, 100,000-row target | Correlated: 6.897 ms | Atomic semi-join: 4.027 ms | After; 41.6% lower latency |
+| Logical-key guard, 500,000-row target | Correlated: 20.247 ms | Atomic semi-join: 3.302 ms | After; 83.7% lower latency |
+| 500-element read-only-list parameter | Copy: 431.8 us; 42.54 KB | Direct: 402.9 us; 40.54 KB | After; 2.00 KB less allocation; latency unproven |
+
+See [docs/PERFORMANCE-REVIEW-FOLLOW-UPS.md](docs/PERFORMANCE-REVIEW-FOLLOW-UPS.md) for methodology, confidence
+limits, rejected proposals, and reproduction commands.
+
 ## 1.22.0
 
 - Add `UseEncryptedDuckDB(path, keyProvider)` and `UseDuckDB(o => o.UseEncryptedDatabase(path, keyProvider))`:

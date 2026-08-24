@@ -9,6 +9,10 @@ namespace DuckDB.EFCoreProvider.Extensions.Internal;
 
 internal static class DuckDBCompiledAppenderRowWriter
 {
+    private static readonly MethodInfo AppendNullValueMethod =
+        typeof(IDuckDBAppenderRow)
+            .GetMethod(nameof(IDuckDBAppenderRow.AppendNullValue), Type.EmptyTypes)!;
+
     private static readonly MethodInfo AppendConvertedValueMethod =
         typeof(DuckDBCompiledAppenderRowWriter)
             .GetMethod(nameof(AppendConvertedValue), BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -66,6 +70,12 @@ internal static class DuckDBCompiledAppenderRowWriter
     {
         var getter = property.GetGetter();
         var converter = property.GetTypeMapping().Converter;
+        if (converter is not null
+            && TryCreateConvertedAppendExpression(row, typedEntity, property, converter, out var convertedAppend))
+        {
+            return convertedAppend;
+        }
+
         if (converter is not null)
         {
             return Expression.Call(
@@ -76,8 +86,9 @@ internal static class DuckDBCompiledAppenderRowWriter
                 Expression.Constant(converter, typeof(ValueConverter)));
         }
 
-        if (property.PropertyInfo is not { } propertyInfo
-            || FindAppendValueMethod(propertyInfo.PropertyType) is not { } appendValueMethod)
+        if (property.PropertyInfo is null
+            || !TryCreateMemberAccess(typedEntity, property, out var value)
+            || FindAppendValueMethod(value.Type) is not { } appendValueMethod)
         {
             return Expression.Call(
                 AppendPropertyValueMethod,
@@ -86,7 +97,6 @@ internal static class DuckDBCompiledAppenderRowWriter
                 Expression.Constant(getter, typeof(IClrPropertyGetter)));
         }
 
-        Expression value = Expression.Property(typedEntity, propertyInfo);
         var parameterType = appendValueMethod.GetParameters()[0].ParameterType;
         if (value.Type != parameterType)
         {
@@ -94,6 +104,104 @@ internal static class DuckDBCompiledAppenderRowWriter
         }
 
         return Expression.Call(row, appendValueMethod, value);
+    }
+
+    private static bool TryCreateConvertedAppendExpression(
+        ParameterExpression row,
+        Expression typedEntity,
+        IProperty property,
+        ValueConverter converter,
+        out Expression appendExpression)
+    {
+        appendExpression = null!;
+        if (property.PropertyInfo is null
+            || !TryCreateMemberAccess(typedEntity, property, out var propertyValue)
+            || FindAppendValueMethod(converter.ProviderClrType) is not { } appendValueMethod
+            || converter.ConvertToProviderExpression.Parameters is not [{ } converterParameter])
+        {
+            return false;
+        }
+
+        var valueVariable = Expression.Variable(propertyValue.Type, "value");
+        Expression converterInput = valueVariable;
+        if (converterParameter.Type != converterInput.Type)
+        {
+            if (Nullable.GetUnderlyingType(converterInput.Type) == converterParameter.Type)
+            {
+                converterInput = Expression.Property(converterInput, nameof(Nullable<int>.Value));
+            }
+            else if (converterParameter.Type.IsAssignableFrom(converterInput.Type))
+            {
+                converterInput = Expression.Convert(converterInput, converterParameter.Type);
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        var convertedValue = new ParameterReplacingExpressionVisitor(converterParameter, converterInput)
+            .Visit(converter.ConvertToProviderExpression.Body)!;
+        var appendParameterType = appendValueMethod.GetParameters()[0].ParameterType;
+        if (convertedValue.Type != appendParameterType)
+        {
+            if (!CanConvert(convertedValue.Type, appendParameterType))
+            {
+                return false;
+            }
+
+            convertedValue = Expression.Convert(convertedValue, appendParameterType);
+        }
+
+        var appendConvertedValue = Expression.Call(row, appendValueMethod, convertedValue);
+        if (converter.ConvertsNulls || !CanBeNull(valueVariable.Type))
+        {
+            appendExpression = Expression.Block(
+                [valueVariable],
+                Expression.Assign(valueVariable, propertyValue),
+                appendConvertedValue);
+            return true;
+        }
+
+        Expression hasValue = Nullable.GetUnderlyingType(valueVariable.Type) is not null
+            ? Expression.Property(valueVariable, nameof(Nullable<int>.HasValue))
+            : Expression.NotEqual(valueVariable, Expression.Constant(null, valueVariable.Type));
+        appendExpression = Expression.Block(
+            [valueVariable],
+            Expression.Assign(valueVariable, propertyValue),
+            Expression.Condition(
+                hasValue,
+                appendConvertedValue,
+                Expression.Call(row, AppendNullValueMethod)));
+        return true;
+    }
+
+    private static bool CanConvert(Type source, Type target)
+        => target.IsAssignableFrom(source)
+           || Nullable.GetUnderlyingType(target) == source;
+
+    private static bool CanBeNull(Type type)
+        => !type.IsValueType || Nullable.GetUnderlyingType(type) is not null;
+
+    private static bool TryCreateMemberAccess(
+        Expression typedEntity,
+        IProperty property,
+        out Expression memberAccess)
+    {
+        memberAccess = null!;
+        if (property.IsShadowProperty())
+        {
+            return false;
+        }
+
+        var member = property.GetMemberInfo(forMaterialization: false, forSet: false);
+        if (member is PropertyInfo propertyInfo && propertyInfo.GetIndexParameters().Length > 0)
+        {
+            return false;
+        }
+
+        memberAccess = Expression.MakeMemberAccess(typedEntity, member);
+        return true;
     }
 
     private static MethodInfo? FindAppendValueMethod(Type valueType)
@@ -151,5 +259,13 @@ internal static class DuckDBCompiledAppenderRowWriter
                 throw new NotSupportedException(
                     $"DuckDB appender operations do not support values of type '{value.GetType()}'. Use SaveChanges for this entity.");
         }
+    }
+
+    private sealed class ParameterReplacingExpressionVisitor(
+        ParameterExpression parameter,
+        Expression replacement) : ExpressionVisitor
+    {
+        protected override Expression VisitParameter(ParameterExpression node)
+            => node == parameter ? replacement : base.VisitParameter(node);
     }
 }

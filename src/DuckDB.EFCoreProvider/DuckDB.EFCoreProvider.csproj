@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.22.0</PackageVersion>
-    <FileVersion>1.22.0.0</FileVersion>
-    <Version>1.22.0</Version>
+    <PackageVersion>1.23.0</PackageVersion>
+    <FileVersion>1.23.0.0</FileVersion>
+    <Version>1.23.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,14 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.21.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.22.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.23.0
+- Inline supported EF Core ValueConverter expressions into the shared BulkInsert/Upsert Appender writer, eliminating the measured 144 B/row allocation for three value-type converters (0 B/row after) while honoring configured backing-field access and retaining safe fallbacks.
+- Add DuckDBUpsertInputMode.DistinctConflictTargets. With caller-guaranteed unique keys, the direct conflict source measured 2.266 ms versus 3.160 ms for the staging window at 10,000 rows, and 6.859 ms versus 9.811 ms at 50,000 rows. Deterministic last-input-wins remains the default.
+- Replace the correlated logical-key cardinality check with one atomic semi-join guard inside MERGE. It measured 4.027 ms versus 6.897 ms on a 100,000-row target and 3.302 ms versus 20.247 ms on a 500,000-row target while preserving fail-before-mutation behavior.
+- Bind driver-proven read-only list shapes without a defensive copy: 40.54 KB versus 42.54 KB for a 500-element parameter. Unknown custom IReadOnlyList implementations retain the safe List conversion; the measured latency difference was not conclusive.
+
 1.22.0
 - Add UseEncryptedDuckDB(path, keyProvider) and UseDuckDB(o => o.UseEncryptedDatabase(path, keyProvider)): store a context's data in a DuckDB file encrypted with AES-256-GCM. The provider hosts the encrypted file on a shared in-memory database, attaches it with the application-supplied key, and selects it as the default catalog, so entities, migrations, and the migrations history and lock tables live inside the encrypted file. The key provider is invoked once per attachment and the ATTACH statement runs outside EF Core's command pipeline, so keys reach neither the options nor EF logs, diagnostics, or interceptors. Configurable catalog alias, read-only attachment, and DuckDB's temp_file_encryption, which is enabled by default so spilling queries do not write row data to the temporary directory in the clear.
 - Encrypted attachment is idempotent, so contexts opening concurrently share one attachment; a joining context's key is verified against a fingerprint of the attaching key, symbolic links are resolved in every path segment including the database file, EnsureDeleted invalidates the connection's attachment state so later use re-attaches, tiered-storage operations attach the catalog even on caller-opened connections, and a non-shared in-memory data source applied after configuration is rejected. CreateReadOnlyConnection() is refused for an encrypted database because the access mode belongs to the shared attachment — configure a read-only context with ReadOnly() instead.
