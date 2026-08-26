@@ -115,7 +115,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     {
         if (_quackOptions is not null)
         {
-            return new QuackDbConnection(GetValidatedConnectionString(), _quackOptions, _engineCapabilities);
+            return new QuackDbConnection(GetValidatedConnectionString(), _quackOptions, _engineCapabilities, _providerFactory);
         }
 
         var connection = _providerFactory.CreateConnection()

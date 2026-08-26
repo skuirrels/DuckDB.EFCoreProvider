@@ -1,6 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
-using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -55,7 +54,9 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
     private DatabaseModel CreateDuckLake(string metadataPath, DatabaseModelFactoryOptions options)
     {
         DuckLakeMetadataSourceValidator.ValidateLocalPath(metadataPath, nameof(metadataPath));
-        using var connection = new DuckDBConnection("Data Source=:memory:");
+        using var connection = _providerFactory.CreateConnection()
+            ?? throw new InvalidOperationException("The provider factory returned no connection.");
+        connection.ConnectionString = "Data Source=:memory:";
         connection.Open();
         using (var command = connection.CreateCommand())
         {

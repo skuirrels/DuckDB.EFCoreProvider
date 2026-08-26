@@ -1,5 +1,5 @@
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
-using DuckDB.NET.Data;
+using System.Data.Common;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
 
@@ -20,11 +20,11 @@ internal static class QuackCatalogBootstrapper
         + "'SELECT schema_name, sequence_name FROM duckdb_sequences() ORDER BY schema_name, sequence_name', "
         + "token := $token, disable_ssl := $disable_ssl);";
 
-    internal static void Prepare(DuckDBConnection connection, QuackOptions options)
+    internal static void Prepare(DbConnection connection, QuackOptions options)
         => CreateSkeleton(connection, options.CatalogName, DiscoverSequences(connection, options));
 
     internal static async Task PrepareAsync(
-        DuckDBConnection connection,
+        DbConnection connection,
         QuackOptions options,
         CancellationToken cancellationToken)
         => await CreateSkeletonAsync(
@@ -35,7 +35,7 @@ internal static class QuackCatalogBootstrapper
             .ConfigureAwait(false);
 
     private static IReadOnlyList<RemoteSequence> DiscoverSequences(
-        DuckDBConnection connection,
+        DbConnection connection,
         QuackOptions options)
     {
         using var command = CreateSequenceDiscoveryCommand(connection, options);
@@ -50,7 +50,7 @@ internal static class QuackCatalogBootstrapper
     }
 
     private static async Task<IReadOnlyList<RemoteSequence>> DiscoverSequencesAsync(
-        DuckDBConnection connection,
+        DbConnection connection,
         QuackOptions options,
         CancellationToken cancellationToken)
     {
@@ -65,20 +65,28 @@ internal static class QuackCatalogBootstrapper
         return sequences;
     }
 
-    private static DuckDBCommand CreateSequenceDiscoveryCommand(
-        DuckDBConnection connection,
+    private static DbCommand CreateSequenceDiscoveryCommand(
+        DbConnection connection,
         QuackOptions options)
     {
         var command = connection.CreateCommand();
         command.CommandText = SequenceDiscoverySql;
-        command.Parameters.Add(new DuckDBParameter("endpoint", options.Endpoint));
-        command.Parameters.Add(new DuckDBParameter("token", options.Token));
-        command.Parameters.Add(new DuckDBParameter("disable_ssl", options.DisableSsl));
+        AddParameter(command, "endpoint", options.Endpoint);
+        AddParameter(command, "token", options.Token);
+        AddParameter(command, "disable_ssl", options.DisableSsl);
         return command;
     }
 
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
+    }
+
     private static void CreateSkeleton(
-        DuckDBConnection connection,
+        DbConnection connection,
         string catalogName,
         IReadOnlyList<RemoteSequence> sequences)
     {
@@ -91,7 +99,7 @@ internal static class QuackCatalogBootstrapper
     }
 
     private static async Task CreateSkeletonAsync(
-        DuckDBConnection connection,
+        DbConnection connection,
         string catalogName,
         IReadOnlyList<RemoteSequence> sequences,
         CancellationToken cancellationToken)
@@ -110,7 +118,7 @@ internal static class QuackCatalogBootstrapper
         }
     }
 
-    private static void EnsureSchema(DuckDBConnection connection, string catalogName, string schemaName)
+    private static void EnsureSchema(DbConnection connection, string catalogName, string schemaName)
     {
         if (!string.Equals(schemaName, "main", StringComparison.OrdinalIgnoreCase))
         {
@@ -119,7 +127,7 @@ internal static class QuackCatalogBootstrapper
     }
 
     private static Task EnsureSchemaAsync(
-        DuckDBConnection connection,
+        DbConnection connection,
         string catalogName,
         string schemaName,
         CancellationToken cancellationToken)
@@ -136,7 +144,7 @@ internal static class QuackCatalogBootstrapper
     private static string Qualify(params string[] identifiers)
         => string.Join('.', identifiers.Select(QuackSqlTextBuilder.QuoteIdentifier));
 
-    private static void Execute(DuckDBConnection connection, string commandText)
+    private static void Execute(DbConnection connection, string commandText)
     {
         using var command = connection.CreateCommand();
         command.CommandText = commandText;
@@ -144,7 +152,7 @@ internal static class QuackCatalogBootstrapper
     }
 
     private static async Task ExecuteAsync(
-        DuckDBConnection connection,
+        DbConnection connection,
         string commandText,
         CancellationToken cancellationToken)
     {

@@ -10,7 +10,7 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// <summary>A local DuckDB client connection that replays each ADO command in one attached Quack session.</summary>
 internal sealed class QuackDbConnection : DbConnection
 {
-    private readonly DuckDBConnection _innerConnection;
+    private readonly DbConnection _innerConnection;
     private readonly QuackOptions _options;
     private bool _initialized;
     private QuackDbTransaction? _transaction;
@@ -19,14 +19,17 @@ internal sealed class QuackDbConnection : DbConnection
     internal QuackDbConnection(
         string connectionString,
         QuackOptions options,
-        IDuckDBEngineCapabilities engineCapabilities)
+        IDuckDBEngineCapabilities engineCapabilities,
+        DbProviderFactory providerFactory)
     {
-        _innerConnection = new DuckDBConnection(connectionString);
+        _innerConnection = providerFactory.CreateConnection()
+            ?? throw new InvalidOperationException("The provider factory returned no connection.");
+        _innerConnection.ConnectionString = connectionString;
         _options = options;
         EngineCapabilities = engineCapabilities;
     }
 
-    internal DuckDBConnection InnerConnection => _innerConnection;
+    internal DbConnection InnerConnection => _innerConnection;
 
     internal string RemoteCatalogName => _options.CatalogName;
 
@@ -167,14 +170,14 @@ internal sealed class QuackDbConnection : DbConnection
         return _transaction = new QuackDbTransaction(this, isolationLevel);
     }
 
-    internal DuckDBCommand CreateRemoteCommand(string commandText, DbParameterCollection parameters)
+    internal DbCommand CreateRemoteCommand(string commandText, DbParameterCollection parameters)
     {
         EnsureOpen();
         var expanded = QuackSqlTextBuilder.ExpandParameters(commandText, parameters);
         var command = _innerConnection.CreateCommand();
         command.CommandText = "FROM quack_query_by_name($quack_catalog, $quack_sql);";
-        command.Parameters.Add(new DuckDBParameter("quack_catalog", _options.CatalogName));
-        command.Parameters.Add(new DuckDBParameter("quack_sql", expanded));
+        AddParameter(command, "quack_catalog", _options.CatalogName);
+        AddParameter(command, "quack_sql", expanded);
         return command;
     }
 
@@ -351,7 +354,7 @@ internal sealed class QuackDbConnection : DbConnection
 
     private void ExecuteRemoteControl(string commandText)
     {
-        using var emptyCommand = new DuckDBCommand();
+        using var emptyCommand = _innerConnection.CreateCommand();
         using var command = CreateRemoteCommand(commandText, emptyCommand.Parameters);
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -361,12 +364,20 @@ internal sealed class QuackDbConnection : DbConnection
 
     private async Task ExecuteRemoteControlAsync(string commandText, CancellationToken cancellationToken)
     {
-        await using var emptyCommand = new DuckDBCommand();
+        await using var emptyCommand = _innerConnection.CreateCommand();
         await using var command = CreateRemoteCommand(commandText, emptyCommand.Parameters);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
         }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 
     private void EnsureOpen()

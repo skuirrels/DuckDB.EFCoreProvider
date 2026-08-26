@@ -226,11 +226,11 @@ public static class DuckDBBulkExtensions
         try
         {
             ExecuteDirect(
-                connection.InnerConnection,
+                DuckDBConnectionHelper.Require(connection.InnerConnection),
                 $"CREATE TEMPORARY TABLE {delimitedTemporaryTable} AS SELECT {columns} FROM {delimitedTarget} WHERE false;");
 
             var count = 0;
-            using (var appender = connection.InnerConnection.CreateAppender(temporaryTable))
+            using (var appender = DuckDBConnectionHelper.Require(connection.InnerConnection).CreateAppender(temporaryTable))
             {
                 foreach (var entity in entities)
                 {
@@ -240,7 +240,7 @@ public static class DuckDBBulkExtensions
             }
 
             ExecuteDirect(
-                connection.InnerConnection,
+                DuckDBConnectionHelper.Require(connection.InnerConnection),
                 $"INSERT INTO {delimitedTarget} ({columns}) SELECT {columns} FROM {delimitedTemporaryTable};");
             failed = false;
             return count;
@@ -248,7 +248,7 @@ public static class DuckDBBulkExtensions
         finally
         {
             ExecuteDirect(
-                connection.InnerConnection,
+                DuckDBConnectionHelper.Require(connection.InnerConnection),
                 $"DROP TABLE IF EXISTS {delimitedTemporaryTable};",
                 suppressFailure: failed);
         }

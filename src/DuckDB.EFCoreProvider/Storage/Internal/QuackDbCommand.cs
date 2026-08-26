@@ -9,8 +9,8 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 internal sealed class QuackDbCommand : DbCommand
 {
     private readonly QuackDbConnection _connection;
-    private readonly DuckDBCommand _parameterCommand;
-    private DuckDBCommand? _executionCommand;
+    private readonly DbCommand _parameterCommand;
+    private DbCommand? _executionCommand;
     private DbTransaction? _transaction;
     private int _disposed;
 

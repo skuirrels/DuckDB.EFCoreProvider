@@ -90,7 +90,7 @@ public sealed class DuckDBQuackServer : IDisposable, IAsyncDisposable
         {
             using var command = _connection.CreateCommand();
             command.CommandText = "CALL quack_stop($uri);";
-            command.Parameters.Add(new DuckDBParameter("uri", Uri));
+            AddParameter(command, "uri", Uri);
             command.ExecuteNonQuery();
         }
         catch
@@ -132,7 +132,7 @@ public sealed class DuckDBQuackServer : IDisposable, IAsyncDisposable
         {
             await using var command = _connection.CreateCommand();
             command.CommandText = "CALL quack_stop($uri);";
-            command.Parameters.Add(new DuckDBParameter("uri", Uri));
+            AddParameter(command, "uri", Uri);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -169,6 +169,14 @@ public sealed class DuckDBQuackServer : IDisposable, IAsyncDisposable
 
     /// <inheritdoc />
     public override string ToString() => $"Quack server {Uri}";
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
+    }
 }
 
 /// <summary>Provider-managed Quack server lifecycle and diagnostics.</summary>
@@ -236,13 +244,13 @@ public static class DuckDBQuackExtensions
             command.CommandText = token is null
                 ? "CALL quack_serve($uri, allow_other_hostname => $allow_other, disable_ssl => $disable_ssl);"
                 : "CALL quack_serve($uri, token => $token, allow_other_hostname => $allow_other, disable_ssl => $disable_ssl);";
-            command.Parameters.Add(new DuckDBParameter("uri", uri));
+            AddParameter(command, "uri", uri);
             if (token is not null)
             {
-                command.Parameters.Add(new DuckDBParameter("token", token));
+                AddParameter(command, "token", token);
             }
-            command.Parameters.Add(new DuckDBParameter("allow_other", allowOtherHostname));
-            command.Parameters.Add(new DuckDBParameter("disable_ssl", disableSsl));
+            AddParameter(command, "allow_other", allowOtherHostname);
+            AddParameter(command, "disable_ssl", disableSsl);
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             serverStarted = true;
@@ -405,7 +413,7 @@ public static class DuckDBQuackExtensions
     {
         await using var command = connection.CreateCommand();
         command.CommandText = "CALL quack_stop($uri);";
-        command.Parameters.Add(new DuckDBParameter("uri", uri));
+        AddParameter(command, "uri", uri);
         await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
@@ -445,5 +453,13 @@ public static class DuckDBQuackExtensions
         }
 
         return null;
+    }
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 }
