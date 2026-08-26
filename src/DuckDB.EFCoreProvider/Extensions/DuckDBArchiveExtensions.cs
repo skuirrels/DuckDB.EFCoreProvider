@@ -120,7 +120,7 @@ public static partial class DuckDBArchiveExtensions
         }
 
         var openedHere = OpenTracked(database);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             ExecuteNonQuery(connection, DuckDBTierControl.ControlTableDdl(sql));
@@ -260,7 +260,7 @@ public static partial class DuckDBArchiveExtensions
         }
 
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
 
         try
         {
@@ -525,7 +525,7 @@ public static partial class DuckDBArchiveExtensions
             options.Tombstones,
             options.OmitScopeFromCold);
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             await ExecuteNonQueryAsync(connection, DuckDBTierControl.ControlTableDdl(sql), cancellationToken)
@@ -873,7 +873,7 @@ public static partial class DuckDBArchiveExtensions
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             var hasControlTable = await TableExistsAsync(
@@ -1098,7 +1098,7 @@ public static partial class DuckDBArchiveExtensions
 
         var (_, _, archiveFileProbe, _) = Services(database);
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             var byId = inventory.Generations.ToDictionary(
@@ -1231,7 +1231,7 @@ public static partial class DuckDBArchiveExtensions
                 : $"Archive scheme '{scheme}' is not recognised by tiered storage."));
 
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             var ambiguity = await FindAmbiguousSharedBindingAsync(
@@ -1391,7 +1391,7 @@ public static partial class DuckDBArchiveExtensions
 
         var cutoff = DuckDBTierControl.AlignCutoff(olderThan, aggregate.Granularity);
         var openedHere = OpenTracked(database);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             ExecuteNonQuery(connection, DuckDBTierControl.ControlTableDdl(sql));

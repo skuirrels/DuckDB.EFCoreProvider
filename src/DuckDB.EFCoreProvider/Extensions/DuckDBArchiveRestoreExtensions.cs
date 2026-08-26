@@ -82,7 +82,7 @@ public static partial class DuckDBArchiveExtensions
         var previousGenerationId = "base";
 
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             await ExecuteNonQueryAsync(connection, DuckDBTierControl.ControlTableDdl(sql), cancellationToken)

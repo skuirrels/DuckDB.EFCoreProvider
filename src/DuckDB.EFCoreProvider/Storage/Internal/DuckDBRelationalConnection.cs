@@ -53,9 +53,9 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly QuackOptions? _quackOptions;
     private readonly IDuckDBEngineCapabilities _engineCapabilities;
     private readonly DbProviderFactory _providerFactory;
-    private DuckDBConnection? _initializedCatalogConnection;
-    private DuckDBConnection? _initializingCatalogConnection;
-    private DuckDBConnection? _observedCatalogConnection;
+    private DbConnection? _initializedCatalogConnection;
+    private DbConnection? _initializingCatalogConnection;
+    private DbConnection? _observedCatalogConnection;
 
     public DuckDBRelationalConnection(
         RelationalConnectionDependencies dependencies,
@@ -132,7 +132,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         // would otherwise stay unattached and the context would silently run against the empty host database.
         if (UsesAttachedCatalog && DbConnection.State == ConnectionState.Open)
         {
-            InitializeOpenConnection((DuckDBConnection)DbConnection);
+            InitializeOpenConnection(DbConnection);
         }
 
         return base.Open(errorsExpected);
@@ -143,7 +143,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     {
         if (UsesAttachedCatalog && DbConnection.State == ConnectionState.Open)
         {
-            await InitializeOpenConnectionAsync((DuckDBConnection)DbConnection, cancellationToken).ConfigureAwait(false);
+            await InitializeOpenConnectionAsync(DbConnection, cancellationToken).ConfigureAwait(false);
         }
 
         return await base.OpenAsync(cancellationToken, errorsExpected).ConfigureAwait(false);
@@ -390,7 +390,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         await LoadConfiguredExtensionsAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private void InitializeOpenConnection(DuckDBConnection connection)
+    private void InitializeOpenConnection(DbConnection connection)
     {
         if (UsesAttachedCatalog)
         {
@@ -410,7 +410,10 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             LoadSpatialExtensionIfNeeded();
             LoadConfiguredExtensions();
             AttachOrSelectEncryptedDatabase();
-            _connectionInitializer?.Invoke(connection);
+            if (connection is DuckDBConnection duckDbConnection)
+            {
+                _connectionInitializer?.Invoke(duckDbConnection);
+            }
             AttachOrSelectDuckLakeCatalog();
 
             if (UsesAttachedCatalog)
@@ -428,7 +431,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     }
 
     private async Task InitializeOpenConnectionAsync(
-        DuckDBConnection connection,
+        DbConnection connection,
         CancellationToken cancellationToken)
     {
         if (UsesAttachedCatalog)
@@ -449,7 +452,10 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             await LoadSpatialExtensionIfNeededAsync(cancellationToken).ConfigureAwait(false);
             await LoadConfiguredExtensionsAsync(cancellationToken).ConfigureAwait(false);
             await AttachOrSelectEncryptedDatabaseAsync(cancellationToken).ConfigureAwait(false);
-            _connectionInitializer?.Invoke(connection);
+            if (connection is DuckDBConnection duckDbConnection)
+            {
+                _connectionInitializer?.Invoke(duckDbConnection);
+            }
             await AttachOrSelectDuckLakeCatalogAsync(cancellationToken).ConfigureAwait(false);
 
             if (UsesAttachedCatalog)
@@ -993,7 +999,10 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         using var command = DbConnection.CreateCommand();
         command.CommandText =
             "SELECT type, path, readonly, encrypted FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
-        command.Parameters.Add(new DuckDBParameter("catalog_name", catalogName));
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "catalog_name";
+        parameter.Value = catalogName;
+        command.Parameters.Add(parameter);
         using var reader = command.ExecuteReader();
         return reader.Read()
             ? new AttachedDatabase(
@@ -1011,7 +1020,10 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         await using var command = DbConnection.CreateCommand();
         command.CommandText =
             "SELECT type, path, readonly, encrypted FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
-        command.Parameters.Add(new DuckDBParameter("catalog_name", catalogName));
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "catalog_name";
+        parameter.Value = catalogName;
+        command.Parameters.Add(parameter);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? new AttachedDatabase(
@@ -1133,7 +1145,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
 
     private sealed record AttachedDatabase(string Type, string? Path, bool IsReadOnly, bool IsEncrypted);
 
-    private void ObserveCatalogConnection(DuckDBConnection connection)
+    private void ObserveCatalogConnection(DbConnection connection)
     {
         if (ReferenceEquals(_observedCatalogConnection, connection))
         {

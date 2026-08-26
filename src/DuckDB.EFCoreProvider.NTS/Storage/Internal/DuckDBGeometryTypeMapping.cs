@@ -87,7 +87,7 @@ public class DuckDBGeometryTypeMapping<TGeometry> : RelationalGeometryTypeMappin
 
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
+        DuckDBParameterMetadataRegistry.Register(parameter, this);
         parameter.DbType = System.Data.DbType.String;
         base.ConfigureParameter(parameter);
     }

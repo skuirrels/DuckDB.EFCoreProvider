@@ -103,7 +103,7 @@ public class DuckDBTimeTypeMapping : RelationalTypeMapping
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        parameter.ConfigureNameAndMetadata(this);
+        DuckDBParameterMetadataRegistry.Register(parameter, this);
         base.ConfigureParameter(parameter);
     }
 

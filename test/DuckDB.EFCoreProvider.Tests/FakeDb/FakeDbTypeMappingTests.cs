@@ -4,15 +4,9 @@ using Xunit;
 
 namespace DuckDB.EFCoreProvider.Tests.FakeDb;
 
-// Before the ADO.NET provider substitutability fix, every DuckDB*TypeMapping.ConfigureParameter cast
-// its DbParameter argument to the concrete DuckDBParameter type before doing anything else
-// (((DuckDBParameter)parameter).ConfigureNameAndMetadata(this)). EF Core invokes ConfigureParameter on
-// whatever DbParameter the active connection's DbCommand.CreateParameter() produced -- against a
-// substituted ADO.NET provider (pengdows.crud.fakeDb's fakeDbConnection here, but the same is true
-// for any non-DuckDB provider substitute), that cast throws InvalidCastException for every single
-// mapped parameter, regardless of its .NET type. These tests prove the fix: a fake connection can
-// bind a WHERE-clause parameter of each affected .NET type without that cast ever firing. No real
-// DuckDB engine is involved anywhere in this file.
+// These tests verify that every mapped parameter can be bound through EF Core's DbParameter abstraction
+// with a substituted ADO.NET provider (pengdows.crud.fakeDb's fakeDbConnection here). No real DuckDB engine
+// is involved anywhere in this file.
 public class FakeDbTypeMappingTests
 {
     [Fact]

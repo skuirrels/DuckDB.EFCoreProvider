@@ -40,7 +40,7 @@ public static partial class DuckDBArchiveExtensions
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             return (await BuildArchiveRetentionPlanAsync(
@@ -100,7 +100,7 @@ public static partial class DuckDBArchiveExtensions
         EnsureRetentionBinding(plan, aggregate);
 
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = (DuckDBConnection)database.GetDbConnection();
+        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             var activeGenerationId = ReadArchiveRevision(connection, sql, aggregate.ControlKey) ?? "base";
