@@ -596,7 +596,14 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                 case DuckDBStructMutationGroup structGroup:
                     var structColumn = helper.DelimitIdentifier(structGroup.StructColumnName);
                     commandStringBuilder.Append(structColumn).Append(" = ");
-                    AppendStructUpdateBulk(commandStringBuilder, structColumn, structGroup.Root, helper);
+                    if (structGroup.IsNull)
+                    {
+                        commandStringBuilder.Append("NULL");
+                    }
+                    else
+                    {
+                        AppendStructUpdateBulk(commandStringBuilder, structColumn, structGroup.Root, helper);
+                    }
                     break;
             }
         }
@@ -981,7 +988,14 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                         helper.GenerateParameterNamePlaceholder(standalone.ParameterName));
                     break;
                 case DuckDBStructMutationGroup structGroup:
-                    AppendStructLiteral(commandStringBuilder, structGroup.Root, helper);
+                    if (structGroup.IsNull)
+                    {
+                        commandStringBuilder.Append("NULL");
+                    }
+                    else
+                    {
+                        AppendStructLiteral(commandStringBuilder, structGroup.Root, helper);
+                    }
                     break;
             }
         }
@@ -1017,7 +1031,14 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                     break;
                 case DuckDBStructMutationGroup structGroup:
                     commandStringBuilder.Append(columnName).Append(" = ");
-                    AppendStructUpdate(commandStringBuilder, columnName, structGroup.Root, helper);
+                    if (structGroup.IsNull)
+                    {
+                        commandStringBuilder.Append("NULL");
+                    }
+                    else
+                    {
+                        AppendStructUpdate(commandStringBuilder, columnName, structGroup.Root, helper);
+                    }
                     break;
             }
         }
@@ -1047,6 +1068,10 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             if (child.IsLeaf)
             {
                 sb.Append(helper.GenerateParameterNamePlaceholder(child.ParameterName!));
+            }
+            else if (child.IsNull)
+            {
+                sb.Append("NULL");
             }
             else
             {
@@ -1113,13 +1138,20 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
             }
             else
             {
-                RenderStructUpdate(
-                    sb,
-                    child,
-                    rootColumnRef,
-                    sourcePath.Append(child.FieldName!).ToArray(),
-                    helper,
-                    useParameterPlaceholder);
+                if (child.IsNull)
+                {
+                    sb.Append("NULL");
+                }
+                else
+                {
+                    RenderStructUpdate(
+                        sb,
+                        child,
+                        rootColumnRef,
+                        sourcePath.Append(child.FieldName!).ToArray(),
+                        helper,
+                        useParameterPlaceholder);
+                }
             }
         }
 

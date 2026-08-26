@@ -100,10 +100,12 @@ public class DuckDBCSharpRuntimeAnnotationCodeGenerator : RelationalCSharpRuntim
         var fieldType = code.Reference(typeof(DuckDBStructFieldInfo));
         var nestedFields = code.Literal(field.NestedFieldNames.ToArray());
         var leaf = field.LeafFieldName is null ? null : code.Literal(field.LeafFieldName);
+        var leafArgument = leaf is null ? null : $", {leaf}";
+        var rootNullability = field.IsRootNullable is null
+            ? null
+            : $", {code.Literal(field.IsRootNullable.Value)}";
 
-        return leaf is null
-            ? $"new {fieldType}({code.Literal(field.StructColumnName)}, {nestedFields})"
-            : $"new {fieldType}({code.Literal(field.StructColumnName)}, {nestedFields}, {leaf})";
+        return $"new {fieldType}({code.Literal(field.StructColumnName)}, {nestedFields}{leafArgument}{rootNullability})";
     }
 
     private string GenerateMappingLiteral(DuckDBStructMapping mapping)

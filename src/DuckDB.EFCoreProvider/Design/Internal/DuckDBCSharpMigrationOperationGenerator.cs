@@ -50,9 +50,11 @@ internal sealed class DuckDBCSharpMigrationOperationGenerator(
         var type = code.Reference(typeof(DuckDBStructFieldInfo), fullName: true);
         var nestedFields = code.Literal(field.NestedFieldNames.ToArray());
         var leaf = field.LeafFieldName is null ? null : code.Literal(field.LeafFieldName);
+        var leafArgument = leaf is null ? null : $", {leaf}";
+        var rootNullability = field.IsRootNullable is null
+            ? null
+            : $", {code.Literal(field.IsRootNullable.Value)}";
 
-        return leaf is null
-            ? $"new {type}({code.Literal(field.StructColumnName)}, {nestedFields})"
-            : $"new {type}({code.Literal(field.StructColumnName)}, {nestedFields}, {leaf})";
+        return $"new {type}({code.Literal(field.StructColumnName)}, {nestedFields}{leafArgument}{rootNullability})";
     }
 }

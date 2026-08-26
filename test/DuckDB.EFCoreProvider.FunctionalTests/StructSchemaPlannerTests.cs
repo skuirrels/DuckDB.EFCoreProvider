@@ -54,6 +54,28 @@ public sealed class StructSchemaPlannerTests
     }
 
     [Fact]
+    public void Plans_struct_root_nullability_from_complex_property_not_leaf()
+    {
+        var operation = new CreateTableOperation { Name = "items" };
+        operation.Columns.Add(CreateField(
+            "required_root_city",
+            "VARCHAR",
+            new DuckDBStructFieldInfo("RequiredRoot", [], "city", isRootNullable: false),
+            isNullable: true));
+        operation.Columns.Add(CreateField(
+            "optional_root_city",
+            "VARCHAR",
+            new DuckDBStructFieldInfo("OptionalRoot", [], "city", isRootNullable: true)));
+
+        var plan = DuckDBStructSchemaPlanner.PlanCreateTable(operation);
+
+        Assert.True(plan.TryGetReplacement(0, out var requiredRoot));
+        Assert.False(requiredRoot.IsNullable);
+        Assert.True(plan.TryGetReplacement(1, out var optionalRoot));
+        Assert.True(optionalRoot.IsNullable);
+    }
+
+    [Fact]
     public void Rejects_default_on_struct_leaf_before_rendering()
     {
         var operation = new CreateTableOperation { Name = "customers" };
@@ -437,7 +459,8 @@ public sealed class StructSchemaPlannerTests
     private static AddColumnOperation CreateField(
         string name,
         string storeType,
-        DuckDBStructFieldInfo field)
+        DuckDBStructFieldInfo field,
+        bool isNullable = false)
     {
         var column = new AddColumnOperation
         {
@@ -445,7 +468,7 @@ public sealed class StructSchemaPlannerTests
             Table = "items",
             ClrType = typeof(string),
             ColumnType = storeType,
-            IsNullable = false
+            IsNullable = isNullable
         };
         column.AddAnnotation(DuckDBAnnotationNames.StructField, field);
         return column;

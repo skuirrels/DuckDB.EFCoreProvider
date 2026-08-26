@@ -113,7 +113,7 @@ public sealed class DuckDBStructFieldExpression : SqlExpression, IEquatable<Duck
             _quotingConstructor ??= typeof(DuckDBStructFieldExpression).GetConstructor(
                 [
                     typeof(SqlExpression),
-                    typeof(string[]),
+                    typeof(IReadOnlyList<string>),
                     typeof(Type),
                     typeof(RelationalTypeMapping)
                 ])!,

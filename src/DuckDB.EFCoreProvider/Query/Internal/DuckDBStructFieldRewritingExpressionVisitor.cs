@@ -78,11 +78,15 @@ internal sealed class DuckDBStructFieldRewritingExpressionVisitor : ExpressionVi
             metadata.TryGetField(columnExpression.Name, out field!);
             if (field is null)
             {
+                // Casing-only name collisions must resolve deterministically rather than by
+                // dictionary insertion order.
                 field = metadata.Columns
-                    .FirstOrDefault(pair => string.Equals(
+                    .Where(pair => string.Equals(
                         pair.Key,
                         columnExpression.Name,
                         StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .FirstOrDefault()
                     .Value;
             }
         }

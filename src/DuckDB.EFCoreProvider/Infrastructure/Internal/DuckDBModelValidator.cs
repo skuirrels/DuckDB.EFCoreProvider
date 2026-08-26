@@ -64,6 +64,23 @@ public class DuckDBModelValidator : RelationalModelValidator
         ValidateEngineCapabilities(model, _capabilities);
     }
 
+    protected override void ValidatePropertyMapping(
+        IConventionComplexProperty complexProperty,
+        IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
+    {
+        // Relational table-sharing requires a required leaf to detect a null complex value.
+        // Native STRUCT columns carry presence for every nested complex path themselves.
+        if (complexProperty.GetStructMapping() is not null
+            && complexProperty.IsNullable
+            && !complexProperty.IsCollection
+            && complexProperty.ComplexType.GetProperties().All(property => property.IsNullable))
+        {
+            return;
+        }
+
+        base.ValidatePropertyMapping(complexProperty, logger);
+    }
+
     private static void ValidateStructMappings(IModel model)
     {
         var structTables = new Dictionary<
@@ -221,11 +238,6 @@ public class DuckDBModelValidator : RelationalModelValidator
 
         ValidateStructPathCollisions(entityType, fields);
 
-        foreach (var complexProperty in entityType.GetComplexProperties())
-        {
-            ValidateRequiredStructComplexProperty(complexProperty);
-        }
-
         foreach (var (property, field) in fields)
         {
             var propertyName = $"{entityType.DisplayName()}.{property.Name}";
@@ -299,21 +311,6 @@ public class DuckDBModelValidator : RelationalModelValidator
             {
                 yield return entry;
             }
-        }
-    }
-
-    private static void ValidateRequiredStructComplexProperty(IReadOnlyComplexProperty complexProperty)
-    {
-        if (complexProperty.GetStructMapping() is not null && complexProperty.IsNullable)
-        {
-            throw new NotSupportedException(
-                $"DuckDB STRUCT complex property '{complexProperty.DeclaringType.DisplayName()}.{complexProperty.Name}' "
-                + "must be required. Optional STRUCT roots and nested complex properties are not supported.");
-        }
-
-        foreach (var nestedProperty in complexProperty.ComplexType.GetComplexProperties())
-        {
-            ValidateRequiredStructComplexProperty(nestedProperty);
         }
     }
 
