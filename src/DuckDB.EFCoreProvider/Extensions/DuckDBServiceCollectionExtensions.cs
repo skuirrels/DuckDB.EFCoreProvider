@@ -20,7 +20,10 @@ using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.ComponentModel;
+using System.Data.Common;
+using DuckDB.NET.Data;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -100,6 +103,8 @@ public static class DuckDBServiceCollectionExtensions
     [EditorBrowsable(EditorBrowsableState.Never)]
     public static IServiceCollection AddEntityFrameworkDuckDB(this IServiceCollection serviceCollection)
     {
+        serviceCollection.TryAddSingleton<DbProviderFactory>(DuckDBClientFactory.Instance);
+
         var builder = new EntityFrameworkRelationalServicesBuilder(serviceCollection)
             .TryAdd<LoggingDefinitions, DuckDBLoggingDefinitions>()
             .TryAdd<IDatabaseProvider, DatabaseProvider<DuckDBOptionsExtension>>()

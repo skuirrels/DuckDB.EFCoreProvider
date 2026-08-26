@@ -52,6 +52,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly DuckLakeOptions? _duckLakeOptions;
     private readonly QuackOptions? _quackOptions;
     private readonly IDuckDBEngineCapabilities _engineCapabilities;
+    private readonly DbProviderFactory _providerFactory;
     private DuckDBConnection? _initializedCatalogConnection;
     private DuckDBConnection? _initializingCatalogConnection;
     private DuckDBConnection? _observedCatalogConnection;
@@ -59,12 +60,14 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     public DuckDBRelationalConnection(
         RelationalConnectionDependencies dependencies,
         IRawSqlCommandBuilder rawSqlCommandBuilder,
-        IDiagnosticsLogger<DbLoggerCategory.Infrastructure> logger)
+        IDiagnosticsLogger<DbLoggerCategory.Infrastructure> logger,
+        DbProviderFactory providerFactory)
         : this(
             dependencies,
             rawSqlCommandBuilder,
             logger,
-            DuckDBEngineCapabilities.FromOptions(dependencies.ContextOptions))
+            DuckDBEngineCapabilities.FromOptions(dependencies.ContextOptions),
+            providerFactory)
     {
     }
 
@@ -72,12 +75,14 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         RelationalConnectionDependencies dependencies,
         IRawSqlCommandBuilder rawSqlCommandBuilder,
         IDiagnosticsLogger<DbLoggerCategory.Infrastructure> logger,
-        IDuckDBEngineCapabilities engineCapabilities)
+        IDuckDBEngineCapabilities engineCapabilities,
+        DbProviderFactory providerFactory)
         : base(dependencies)
     {
         _rawSqlCommandBuilder = rawSqlCommandBuilder;
         _logger = logger;
         _context = dependencies.CurrentContext.Context;
+        _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
 
         var optionsExtension = dependencies.ContextOptions.FindExtension<DuckDBOptionsExtension>();
         _loadSpatial = optionsExtension?.LoadSpatialite == true;
@@ -108,9 +113,16 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     /// <inheritdoc />
     protected override DbConnection CreateDbConnection()
     {
-        return _quackOptions is null
-            ? new DuckDBConnection(GetValidatedConnectionString())
-            : new QuackDbConnection(GetValidatedConnectionString(), _quackOptions, _engineCapabilities);
+        if (_quackOptions is not null)
+        {
+            return new QuackDbConnection(GetValidatedConnectionString(), _quackOptions, _engineCapabilities);
+        }
+
+        var connection = _providerFactory.CreateConnection()
+            ?? throw new InvalidOperationException(
+                $"{_providerFactory.GetType().Name}.CreateConnection() returned null.");
+        connection.ConnectionString = GetValidatedConnectionString();
+        return connection;
     }
 
     /// <inheritdoc />
@@ -295,7 +307,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
                 }
             }).Options;
 
-        return new DuckDBRelationalConnection(Dependencies with { ContextOptions = contextOptions }, _rawSqlCommandBuilder, _logger);
+        return new DuckDBRelationalConnection(Dependencies with { ContextOptions = contextOptions }, _rawSqlCommandBuilder, _logger, _providerFactory);
     }
 
     protected override void CloseDbConnection()

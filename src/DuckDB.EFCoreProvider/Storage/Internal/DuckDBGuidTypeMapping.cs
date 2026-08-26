@@ -30,7 +30,7 @@ public class DuckDBGuidTypeMapping : GuidTypeMapping
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
+        parameter.ConfigureNameAndMetadata(this);
         base.ConfigureParameter(parameter);
     }
 }

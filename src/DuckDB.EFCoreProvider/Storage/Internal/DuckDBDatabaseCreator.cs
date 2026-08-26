@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
+using System.Data.Common;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
 
@@ -25,18 +26,21 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     private readonly DuckDBEncryptedDatabaseOptions? _encryptedDatabase;
     private readonly bool _supportsSchemaManagement;
     private readonly bool _supportsDatabaseDeletion;
+    private readonly DbProviderFactory _providerFactory;
     private bool _duckLakeCatalogReadyForEnsureCreated;
 
     public DuckDBDatabaseCreator(
         RelationalDatabaseCreatorDependencies dependencies,
         IDuckDBRelationalConnection connection,
-        IRawSqlCommandBuilder rawSqlCommandBuilder)
+        IRawSqlCommandBuilder rawSqlCommandBuilder,
+        DbProviderFactory providerFactory)
         : this(
             dependencies,
             connection,
             rawSqlCommandBuilder,
             DuckDBEngineCapabilities.FromOptions(
-                dependencies.CurrentContext.Context.GetService<IDbContextOptions>()))
+                dependencies.CurrentContext.Context.GetService<IDbContextOptions>()),
+            providerFactory)
     {
     }
 
@@ -44,11 +48,13 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         RelationalDatabaseCreatorDependencies dependencies,
         IDuckDBRelationalConnection connection,
         IRawSqlCommandBuilder rawSqlCommandBuilder,
-        IDuckDBEngineCapabilities engineCapabilities)
+        IDuckDBEngineCapabilities engineCapabilities,
+        DbProviderFactory providerFactory)
         : base(dependencies)
     {
         _connection = connection;
         _rawSqlCommandBuilder = rawSqlCommandBuilder;
+        _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
         var contextOptions = dependencies.CurrentContext.Context.GetService<IDbContextOptions>();
         var providerOptions = contextOptions.FindExtension<DuckDBOptionsExtension>();
         _duckLakeOptions = providerOptions?.DuckLakeOptions;
@@ -215,14 +221,14 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         var databasePredicate = catalogName is null
             ? string.Empty
             : " AND database_name = $database_name";
-        var parameters = new List<System.Data.Common.DbParameter>
+        var parameters = new List<DbParameter>
         {
-            new DuckDBParameter("default_table_name", HistoryRepository.DefaultTableName)
+            CreateParameter("default_table_name", HistoryRepository.DefaultTableName)
         };
 
         if (catalogName is not null)
         {
-            parameters.Add(new DuckDBParameter("database_name", catalogName));
+            parameters.Add(CreateParameter("database_name", catalogName));
         }
 
         return (bool)_rawSqlCommandBuilder
@@ -358,6 +364,16 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         {
             File.Delete(writeAheadLog);
         }
+    }
+
+    private DbParameter CreateParameter(string name, object value)
+    {
+        var parameter = _providerFactory.CreateParameter()
+            ?? throw new InvalidOperationException(
+                $"{_providerFactory.GetType().Name}.CreateParameter() returned null.");
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        return parameter;
     }
 
     private void ThrowIfSchemaProvisioningUnsupported()

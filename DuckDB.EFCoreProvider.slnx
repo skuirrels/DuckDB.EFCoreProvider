@@ -17,5 +17,6 @@
   <Folder Name="/test/">
     <Project Path="test/DuckDB.EFCoreProvider.Benchmarks/DuckDB.EFCoreProvider.Benchmarks.csproj" />
     <Project Path="test/DuckDB.EFCoreProvider.FunctionalTests/DuckDB.EFCoreProvider.FunctionalTests.csproj" />
+    <Project Path="test/DuckDB.EFCoreProvider.Tests/DuckDB.EFCoreProvider.Tests.csproj" />
   </Folder>
 </Solution>
