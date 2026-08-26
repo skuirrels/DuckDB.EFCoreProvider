@@ -28,6 +28,7 @@
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <!-- Pinned to the last publicly published release in Directory.Packages.props. -->
     <PackageReference Include="pengdows.crud.fakeDb" PrivateAssets="all" />
     <PackageReference Include="xunit.assert" />
     <PackageReference Include="xunit.core" />

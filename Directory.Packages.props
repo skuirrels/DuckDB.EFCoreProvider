@@ -41,9 +41,9 @@
     <PackageVersion Include="xunit.extensibility.core" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.console" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
-    <PackageVersion Include="pengdows.crud.fakeDb" Version="2.0.6" />
-    <PackageVersion Include="pengdows.stormgate" Version="2.0.6" />
-    <PackageVersion Include="pengdows.stormgate.EntityFrameworkCore" Version="2.0.6" />
+    <!-- Pinned to the last publicly published release; 2.0.6+ is not yet public and must not be
+         referenced from this public repository's build. -->
+    <PackageVersion Include="pengdows.crud.fakeDb" Version="2.0.5" />
   </ItemGroup>
 
 </Project>
