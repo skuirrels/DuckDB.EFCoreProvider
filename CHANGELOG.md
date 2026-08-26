@@ -2,6 +2,17 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.24.0
+
+- Support optional `STRUCT`-mapped complex roots and nullable nested complex properties. Queries and writes now
+  preserve the distinction between a SQL `NULL` struct and a present struct whose members are all `NULL`, including
+  inserts, partial updates, and bulk updates.
+- Materialize whole `STRUCT` complex properties from the complete DuckDB value, including sparse Parquet schemas,
+  mixed leaf types, and configured value converters. Scalar member projections continue to select only the requested
+  field, while whole-complex projections avoid binder failures when a sparse source omits declared members.
+- Translate whole-complex null comparisons to struct-level `IS NULL` and `IS NOT NULL` checks, preserve unchanged
+  siblings during partial updates, and support whole-`STRUCT` materialization in single and split queries.
+
 ## 1.23.0
 
 - Inline supported EF Core `ValueConverter` expressions into the shared compiled Appender writer used by

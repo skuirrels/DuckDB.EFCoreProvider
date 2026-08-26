@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.23.0</PackageVersion>
-    <FileVersion>1.23.0.0</FileVersion>
-    <Version>1.23.0</Version>
+    <PackageVersion>1.24.0</PackageVersion>
+    <FileVersion>1.24.0.0</FileVersion>
+    <Version>1.24.0</Version>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,13 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.22.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.23.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.24.0
+- Support optional STRUCT-mapped complex roots and nullable nested complex properties while preserving the difference between a SQL NULL struct and a present struct whose members are all NULL across queries, inserts, partial updates, and bulk updates.
+- Materialize whole STRUCT complex properties from the complete DuckDB value, including sparse Parquet schemas, mixed leaf types, and configured value converters, while retaining direct field SQL for scalar member projections.
+- Translate whole-complex null comparisons to struct-level IS NULL and IS NOT NULL checks, preserve unchanged siblings during partial updates, and support whole-STRUCT materialization in single and split queries.
+
 1.23.0
 - Inline supported EF Core ValueConverter expressions into the shared BulkInsert/Upsert Appender writer, eliminating the measured 144 B/row allocation for three value-type converters (0 B/row after) while honoring configured backing-field access and retaining safe fallbacks.
 - Add DuckDBUpsertInputMode.DistinctConflictTargets. With caller-guaranteed unique keys, the direct conflict source measured 2.266 ms versus 3.160 ms for the staging window at 10,000 rows, and 6.859 ms versus 9.811 ms at 50,000 rows. Deterministic last-input-wins remains the default.
