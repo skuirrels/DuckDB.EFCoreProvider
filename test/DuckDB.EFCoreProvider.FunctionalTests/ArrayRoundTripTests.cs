@@ -147,7 +147,7 @@ public class ArrayRoundTripTests : DuckDBTestBase
 
     private static long ExecuteListSum(
         DbContext context,
-        Microsoft.EntityFrameworkCore.Storage.RelationalTypeMapping mapping,
+        Storage.RelationalTypeMapping mapping,
         object values)
     {
         using var command = context.Database.GetDbConnection().CreateCommand();

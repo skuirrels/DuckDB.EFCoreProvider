@@ -10,7 +10,7 @@ public abstract class QueryExpressionInterceptionDuckDBTestBase(
     QueryExpressionInterceptionDuckDBTestBase.InterceptionDuckDBFixtureBase fixture)
     : QueryExpressionInterceptionTestBase(fixture)
 {
-    public abstract class InterceptionDuckDBFixtureBase : InterceptionTestBase.InterceptionFixtureBase
+    public abstract class InterceptionDuckDBFixtureBase : InterceptionFixtureBase
     {
         protected override ITestStoreFactory TestStoreFactory
             => DuckDBTestStoreFactory.Instance;

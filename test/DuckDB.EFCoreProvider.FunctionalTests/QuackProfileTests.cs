@@ -114,7 +114,7 @@ public sealed class QuackProfileTests : DuckDBTestBase
         var replayed = new List<int>();
         await foreach (var row in replay.ReadRowsAsync())
         {
-            replayed.Add(Convert.ToInt32(row.Span[0], System.Globalization.CultureInfo.InvariantCulture));
+            replayed.Add(Convert.ToInt32(row.Span[0], CultureInfo.InvariantCulture));
         }
         Assert.Equal([3, 5], replayed);
 

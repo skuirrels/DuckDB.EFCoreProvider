@@ -9,7 +9,7 @@ namespace Microsoft.EntityFrameworkCore;
 public abstract class SaveChangesInterceptionDuckDBTestBase(SaveChangesInterceptionDuckDBTestBase.InterceptionDuckDBFixtureBase fixture)
     : SaveChangesInterceptionTestBase(fixture)
 {
-    public abstract class InterceptionDuckDBFixtureBase : InterceptionTestBase.InterceptionFixtureBase
+    public abstract class InterceptionDuckDBFixtureBase : InterceptionFixtureBase
     {
         protected override string StoreName
             => "SaveChangesInterception";

@@ -83,7 +83,7 @@ public class ShortTypeTest : RelationalTypeTestBase<short, ShortTypeTest.ShortTy
 
 public class IntTypeTest : RelationalTypeTestBase<int, IntTypeTest.IntTypeFixture>
 {
-    public IntTypeTest(IntTypeTest.IntTypeFixture fixture) : base(fixture)
+    public IntTypeTest(IntTypeFixture fixture) : base(fixture)
     {
     }
 

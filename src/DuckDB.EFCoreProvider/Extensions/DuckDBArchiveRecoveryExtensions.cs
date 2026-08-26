@@ -35,7 +35,7 @@ public static partial class DuckDBArchiveExtensions
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
+        var connection = Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             if (!await TableExistsAsync(connection, DuckDBTierControl.ControlTable, cancellationToken)
@@ -127,7 +127,7 @@ public static partial class DuckDBArchiveExtensions
         ValidateRecoveryCheckpoint(checkpoint, aggregate);
 
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
+        var connection = Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             var archivePath = ResolveRecoveryArchivePath(aggregate, checkpoint.ActiveGenerationId);
@@ -228,7 +228,7 @@ public static partial class DuckDBArchiveExtensions
         var aggregate = DuckDBTierAggregate.Resolve(context.Model, typeof(TRoot))
             ?? throw NotConfigured(typeof(TRoot));
         var openedHere = await OpenTrackedAsync(database, cancellationToken).ConfigureAwait(false);
-        var connection = DuckDB.EFCoreProvider.Extensions.Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
+        var connection = Internal.DuckDBConnectionHelper.Require(database.GetDbConnection());
         try
         {
             await ExecuteNonQueryAsync(connection, DuckDBTierControl.ControlTableDdl(sql), cancellationToken)
