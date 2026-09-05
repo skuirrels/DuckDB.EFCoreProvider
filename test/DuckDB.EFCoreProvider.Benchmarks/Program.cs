@@ -13,5 +13,5 @@ if (args is ["--model-startup-probe"])
 }
 
 // Run all benchmarks (or filter), e.g.:
-//   dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *Write*
+//   dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *Write*
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);

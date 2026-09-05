@@ -171,7 +171,7 @@ public sealed class QuackProfileTests : DuckDBTestBase
         Assert.False(await client.Children.AnyAsync(child => child.Id == 3));
 
         var raw = await client.Items
-            .FromSqlInterpolated($"SELECT * FROM \"Items\" WHERE \"Id\" = {3}")
+            .FromSql($"SELECT * FROM \"Items\" WHERE \"Id\" = {3}")
             .AsNoTracking()
             .SingleAsync();
         Assert.Equal("bulk-three", raw.Name);

@@ -8,8 +8,13 @@ public class AdHocJsonQueryDuckDBTest : AdHocJsonQueryRelationalTestBase
     public AdHocJsonQueryDuckDBTest(NonSharedFixture fixture) : base(fixture)
     {
     }
-    
-    protected override ITestStoreFactory TestStoreFactory => DuckDBTestStoreFactory.Instance;
+
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
+    protected override ITestStoreFactory TestStoreFactory
+#endif
+        => DuckDBTestStoreFactory.Instance;
 
     protected override Task Seed30028(DbContext ctx)
     {

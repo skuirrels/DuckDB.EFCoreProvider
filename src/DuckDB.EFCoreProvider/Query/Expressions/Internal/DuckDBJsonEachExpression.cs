@@ -30,7 +30,7 @@ public class DuckDBJsonEachExpression : TableValuedFunctionExpression
     ///     doing so can result in application failures when updating to a new Entity Framework Core release.
     /// </summary>
     public virtual SqlExpression JsonExpression
-        => Arguments[0];
+        => (SqlExpression)Arguments[0];
 
     public virtual IReadOnlyList<PathSegment>? Path { get; }
 

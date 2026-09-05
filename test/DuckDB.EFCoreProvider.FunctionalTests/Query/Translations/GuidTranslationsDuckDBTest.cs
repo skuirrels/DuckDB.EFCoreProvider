@@ -1,5 +1,4 @@
-﻿using Xunit.Abstractions;
-
+﻿
 namespace Microsoft.EntityFrameworkCore.Query.Translations;
 
 public class GuidTranslationsDuckDBTest : GuidTranslationsTestBase<BasicTypesQueryDuckDBFixture>

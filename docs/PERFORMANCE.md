@@ -10,16 +10,16 @@ A [BenchmarkDotNet](https://benchmarkdotnet.org/) project lives in
 
 ```bash
 # all benchmarks
-dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *
 
 # just the write comparison
-dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *WriteBenchmarks*
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *WriteBenchmarks*
 
 # referenced-principal update regression
-dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *ReferencedPrincipalUpdateBenchmarks*
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *ReferencedPrincipalUpdateBenchmarks*
 
 # provider allocation, adaptive width, connection, Upsert, and tier-query regressions
-dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter \
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter \
   '*AllocationBenchmarks*' '*HotPathReviewBenchmarks*' '*SaveChangesWidthBenchmarks*' \
   '*ConnectionInitializationBenchmarks*' '*UpsertBatchSizeBenchmarks*' '*UpsertConflictTargetBenchmarks*' \
   '*UpsertTargetScaleBenchmarks*' '*UpsertMillionRowBenchmarks*' \
@@ -81,7 +81,7 @@ were retained. Lower is better for latency and allocation.
 Reproduce the benchmark with:
 
 ```bash
-dotnet run -c Release --no-build --project test/DuckDB.EFCoreProvider.Benchmarks -- \
+dotnet run -f net10.0 -c Release --no-build --project test/DuckDB.EFCoreProvider.Benchmarks -- \
   --filter '*UpsertMillionRowBenchmarks*' --inProcess \
   --warmupCount 2 --iterationCount 5 --launchCount 1 --iterationTime 1000
 ```
@@ -107,7 +107,7 @@ model-cache keys are not permanently rooted by this fast path.
 Reproduce the comparison with:
 
 ```bash
-dotnet run -c Release --no-restore --project test/DuckDB.EFCoreProvider.Benchmarks -- \
+dotnet run -f net10.0 -c Release --no-restore --project test/DuckDB.EFCoreProvider.Benchmarks -- \
   --filter '*UpsertConflictTargetBenchmarks*' --inProcess \
   --warmupCount 3 --iterationCount 10 --launchCount 1 --iterationTime 250
 ```
@@ -159,16 +159,16 @@ reduces both first-use and warmed identifier latency.
 Reproduce the retained benchmarks with:
 
 ```bash
-dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- \
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- \
   --filter '*ParameterPathBenchmarks*' '*SqlGenerationPathBenchmarks*' \
   --inProcess --warmupCount 5 --iterationCount 15
 
-dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- \
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- \
   --filter '*SaveChangesParameterBenchmarks*' \
   --inProcess --warmupCount 3 --iterationCount 10
 
-dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --cold-sql-probe
-dotnet run -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --model-startup-probe
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --cold-sql-probe
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --model-startup-probe
 ```
 
 For the current package-level and cross-language comparison, including the

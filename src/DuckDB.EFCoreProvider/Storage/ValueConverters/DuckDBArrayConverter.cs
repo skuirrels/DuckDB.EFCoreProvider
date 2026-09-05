@@ -28,7 +28,13 @@ public class DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TP
     public DuckDBArrayConverter(ValueConverter? elementConverter)
         : base(
             ArrayConversionExpression<TModelCollection, TProviderCollection, TProviderCollection>(elementConverter?.ConvertToProviderExpression),
-            ArrayConversionExpression<TProviderCollection, TModelCollection, TConcreteModelCollection>(elementConverter?.ConvertFromProviderExpression))
+            ArrayConversionExpression<TProviderCollection, TModelCollection, TConcreteModelCollection>(elementConverter?.ConvertFromProviderExpression)
+#if NET11_0_OR_GREATER
+            // Both expressions already preserve null. Declaring this also keeps EF11's JSON-string
+            // collection materializer from intercepting native DuckDB LIST/ARRAY conversions.
+            , convertsNulls: true
+#endif
+        )
     {
         var modelElementType = typeof(TModelCollection).TryGetElementType(typeof(IEnumerable<>));
         var providerElementType = typeof(TProviderCollection).TryGetElementType(typeof(IEnumerable<>));
@@ -145,6 +151,24 @@ public class DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TP
 
         if (instantiateOutput is null)
         {
+            var collectionConstructor = typeof(TConcreteOutput).GetConstructor([typeof(IList<>).MakeGenericType(outputElementType)])
+                ?? typeof(TConcreteOutput).GetConstructor([typeof(IEnumerable<>).MakeGenericType(outputElementType)]);
+            if (collectionConstructor is not null)
+            {
+                // Read-only collection types wrap a populated list instead of exposing Add.
+                var listType = typeof(List<>).MakeGenericType(outputElementType);
+                var listConversion = (LambdaExpression)typeof(DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TProviderCollection>)
+                    .GetMethod(nameof(ArrayConversionExpression), BindingFlags.Static | BindingFlags.NonPublic)!
+                    .MakeGenericMethod(typeof(TInput), listType, listType)
+                    .Invoke(null, [elementConversionExpression])!;
+                return Lambda<Func<TInput, TOutput>>(
+                    Condition(
+                        Equal(input, Constant(null, typeof(TInput))),
+                        Default(typeof(TOutput)),
+                        Convert(New(collectionConstructor, Invoke(listConversion, input)), typeof(TOutput))),
+                    input);
+            }
+
             return Lambda<Func<TInput, TOutput>>(
                 Throw(
                     New(

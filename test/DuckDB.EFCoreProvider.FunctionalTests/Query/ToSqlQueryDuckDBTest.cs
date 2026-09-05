@@ -13,6 +13,10 @@ public class ToSqlQueryDuckDBTest : ToSqlQueryTestBase
         return base.Entity_type_with_navigation_mapped_to_SqlQuery(async);
     }
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 }

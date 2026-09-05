@@ -10,6 +10,16 @@ namespace Microsoft.EntityFrameworkCore;
 
 public sealed class StructDesignTimeWorkflowTests
 {
+    private static readonly string EFCoreVersion = BuildMetadata("EFCoreVersion");
+    private static readonly string TargetFramework = BuildMetadata("TestTargetFramework");
+
+    private static string BuildMetadata(string key)
+        => typeof(StructDesignTimeWorkflowTests).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .Single(attribute => attribute.Key == key).Value!;
+
+    private static string ToolDirectory(string repositoryRoot)
+        => TargetFramework == "net11.0" ? Path.Combine(repositoryRoot, ".config", "ef11") : repositoryRoot;
+
     [Fact]
     public void Generated_migration_and_compiled_model_workflows_compile_and_preserve_struct_guards()
     {
@@ -27,11 +37,11 @@ public sealed class StructDesignTimeWorkflowTests
             var repositoryRoot = FindRepositoryRoot();
             RunDotnet(root, "build");
             var toolVersion = RunDotnet(
-                repositoryRoot,
+                ToolDirectory(repositoryRoot),
                 ["tool", "run", "dotnet-ef", "--", "--version"],
                 environment: null,
-                failureHint: "Run 'dotnet tool restore' from the repository root before running this test.");
-            Assert.Contains("10.0.10", toolVersion, StringComparison.Ordinal);
+                failureHint: "Run 'scripts/restore-tools.sh' from the repository root before running this test.");
+            Assert.Contains(EFCoreVersion, toolVersion, StringComparison.Ordinal);
 
             RunEf(repositoryRoot, root, "migrations", "add", "InitialStruct", "--no-build");
             Assert.NotEmpty(Directory.GetFiles(Path.Combine(root, "Migrations"), "*.cs"));
@@ -109,14 +119,14 @@ public sealed class StructDesignTimeWorkflowTests
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
                 <OutputType>Exe</OutputType>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>{TargetFramework}</TargetFramework>
                 <RuntimeIdentifier>{RuntimeInformation.RuntimeIdentifier}</RuntimeIdentifier>
                 <Nullable>enable</Nullable>
                 <ImplicitUsings>enable</ImplicitUsings>
               </PropertyGroup>
               <ItemGroup>
                 <ProjectReference Include="{providerProject.Replace("&", "&amp;")}" />
-                <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+                <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="{EFCoreVersion}">
                   <PrivateAssets>all</PrivateAssets>
                 </PackageReference>
               </ItemGroup>
@@ -142,10 +152,10 @@ public sealed class StructDesignTimeWorkflowTests
         commandArguments.Add(project);
 
         RunDotnet(
-            repositoryRoot,
+            ToolDirectory(repositoryRoot),
             ["tool", "run", "dotnet-ef", "--", .. commandArguments],
             environment,
-            "Run 'dotnet tool restore' from the repository root before running this test.");
+            "Run 'scripts/restore-tools.sh' from the repository root before running this test.");
     }
 
     private static string RunDotnet(
@@ -175,6 +185,15 @@ public sealed class StructDesignTimeWorkflowTests
         foreach (var argument in arguments)
         {
             process.StartInfo.ArgumentList.Add(argument);
+        }
+
+        // Preview SDK build servers may retain redirected stdout after the CLI exits, leaving
+        // ReadToEndAsync waiting indefinitely. Each temporary consumer owns its build process.
+        process.StartInfo.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+        process.StartInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+        if (arguments[0] == "build")
+        {
+            process.StartInfo.ArgumentList.Add("--disable-build-servers");
         }
 
         if (environment is { } variable)

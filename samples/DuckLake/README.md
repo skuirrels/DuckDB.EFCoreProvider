@@ -5,7 +5,7 @@ It creates a local DuckLake, writes through tracked `SaveChanges`, the appender-
 `MERGE`-backed `Upsert`, then runs a LINQ aggregation.
 
 ```bash
-dotnet run --project samples/DuckLake
+dotnet run --project samples/DuckLake -f net10.0
 ```
 
 Output is written under `ducklake-sample/` in the current directory. See

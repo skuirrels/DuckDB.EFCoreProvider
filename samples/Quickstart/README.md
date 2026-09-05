@@ -12,7 +12,7 @@ A single-file console app that exercises the four things you will use most:
 From the repository root:
 
 ```bash
-dotnet run --project samples/Quickstart
+dotnet run --project samples/Quickstart -f net10.0
 ```
 
 It creates `quickstart.duckdb` in the working directory (recreated on each run) and prints the results of each step.

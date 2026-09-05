@@ -65,7 +65,11 @@ public class DuckDBModelValidator : RelationalModelValidator
     }
 
     protected override void ValidatePropertyMapping(
+#if NET11_0_OR_GREATER
+        IComplexProperty complexProperty,
+#else
         IConventionComplexProperty complexProperty,
+#endif
         IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
     {
         // Relational table-sharing requires a required leaf to detect a null complex value.

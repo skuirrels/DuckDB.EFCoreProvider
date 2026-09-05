@@ -695,12 +695,12 @@ public sealed class TieredStorageTests : IDisposable
         var itemId = root.PartitionedParts[0].Id;
         await context.Database.ArchiveTierAsync<PartitionedRecord>(new DateTime(2024, 2, 1));
         context.ChangeTracker.Clear();
-        context.Database.ExecuteSqlInterpolated(
+        context.Database.ExecuteSql(
             $"""
              INSERT INTO partitioned_records ("Id", "EffectiveAt", "GroupId")
              VALUES ({orderId}, {new DateTime(2024, 1, 10)}, {20});
              """);
-        context.Database.ExecuteSqlInterpolated(
+        context.Database.ExecuteSql(
             $"""
              INSERT INTO partitioned_record_parts ("Id", "GroupId", "PartitionedRecordId")
              VALUES ({itemId}, {999}, {orderId});

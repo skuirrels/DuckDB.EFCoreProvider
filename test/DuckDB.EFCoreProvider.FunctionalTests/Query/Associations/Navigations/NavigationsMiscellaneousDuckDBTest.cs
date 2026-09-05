@@ -1,5 +1,4 @@
-﻿using Xunit.Abstractions;
-
+﻿
 namespace Microsoft.EntityFrameworkCore.Query.Associations.Navigations;
 
 public class NavigationsMiscellaneousDuckDBTest: NavigationsMiscellaneousRelationalTestBase<NavigationsDuckDBFixture>

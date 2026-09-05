@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Storage.Internal;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 
@@ -861,6 +862,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -888,6 +891,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -923,6 +928,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -939,6 +946,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -982,6 +991,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -1002,6 +1013,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -1022,6 +1035,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -1043,6 +1058,8 @@ public sealed class TieredStorageSafetyTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IModelCacheKeyFactory, ArchiveModelCacheKeyFactory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)

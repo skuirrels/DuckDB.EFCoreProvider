@@ -187,12 +187,12 @@ public sealed record DuckDBStructFieldInfo
             string? efColumnName,
             string? storeType,
             bool? nullable,
-            bool? isRootNullable)
+            bool? rootNullable)
         {
             EfColumnName = efColumnName;
             StoreType = storeType;
             IsNullable = nullable;
-            IsRootNullable = isRootNullable;
+            IsRootNullable = rootNullable;
         }
 
         // These values are derived relational caches, not STRUCT field identity.

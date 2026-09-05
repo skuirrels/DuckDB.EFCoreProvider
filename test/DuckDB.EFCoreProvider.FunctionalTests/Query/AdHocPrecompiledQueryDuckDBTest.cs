@@ -1,7 +1,6 @@
 ﻿using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
@@ -26,7 +25,12 @@ public class AdHocPrecompiledQueryDuckDBTest : AdHocPrecompiledQueryRelationalTe
     [ConditionalFact]
     public async Task File_source_preserves_custom_schema_qualified_function_metadata()
     {
-        var options = (await InitializeAsync<FileSourceContext>(
+        var options = (await
+#if NET11_0_OR_GREATER
+            InitializeNonSharedTest<FileSourceContext>(
+#else
+            InitializeAsync<FileSourceContext>(
+#endif
             seed: async context =>
             {
                 await context.Database.ExecuteSqlRawAsync("CREATE SCHEMA IF NOT EXISTS analytics");
@@ -49,7 +53,11 @@ public class AdHocPrecompiledQueryDuckDBTest : AdHocPrecompiledQueryRelationalTe
     protected override bool AlwaysPrintGeneratedSources
         => false;
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 
     protected override PrecompiledQueryTestHelpers PrecompiledQueryTestHelpers

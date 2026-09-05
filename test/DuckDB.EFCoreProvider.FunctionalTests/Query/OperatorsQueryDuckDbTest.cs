@@ -9,7 +9,7 @@ public class OperatorsQueryDuckDbTest : OperatorsQueryTestBase
     {
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Complex_predicate_with_bitwise_and_modulo_and_negation()
     {
         return base.Complex_predicate_with_bitwise_and_modulo_and_negation();
@@ -27,7 +27,11 @@ public class OperatorsQueryDuckDbTest : OperatorsQueryTestBase
         return base.Projection_with_not_and_negation_on_integer();
     }
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 
     protected void AssertSql(params string[] expected)

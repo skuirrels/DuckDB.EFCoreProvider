@@ -1,11 +1,11 @@
 # DuckDB.EFCoreProvider
 
-**An Entity Framework Core 10 provider with first-class support for [DuckDB](https://duckdb.org) and [DuckLake](https://ducklake.select), designed for analytical .NET workloads.**
+**An Entity Framework Core provider for EF10 and EF11 preview with first-class support for [DuckDB](https://duckdb.org) and [DuckLake](https://ducklake.select), designed for analytical .NET workloads.**
 
 [![NuGet](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.svg)](https://www.nuget.org/packages/DuckDB.EFCoreProvider)
 [![NuGet (NTS)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.NTS.svg?label=NuGet%20%28NTS%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.NTS)
-[![EF Core 10](https://img.shields.io/badge/EF%20Core-10-512BD4)](https://learn.microsoft.com/ef/core/)
-[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
+[![EF Core 10 and 11 preview](https://img.shields.io/badge/EF%20Core-10%20%7C%2011%20preview-512BD4)](https://learn.microsoft.com/ef/core/)
+[![.NET 10 and 11 preview](https://img.shields.io/badge/.NET-10%20%7C%2011%20preview-512BD4)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [DuckDB.EFCoreProvider](https://www.nuget.org/packages/DuckDB.EFCoreProvider) provides LINQ queries, `SaveChanges`, native-DuckDB migrations, high-throughput ingestion, DuckLake catalogs, and Parquet-backed data lifecycle management through EF Core.
@@ -29,8 +29,18 @@
 
 ## Getting started
 
+EF11 preview support is available through the `DuckDB.EFCoreProvider.EF11` package family.
+The existing `DuckDB.EFCoreProvider` package retains EF10, including when used from .NET 11. See the
+[shared EF10/EF11 guide](docs/EF10-EF11-SUPPORT.md) for build instructions and known preview limitations.
+
 ```bash
 dotnet add package DuckDB.EFCoreProvider
+```
+
+For EF11 preview, select the EF11 package (requires `net11.0`):
+
+```bash
+dotnet add package DuckDB.EFCoreProvider.EF11 --version 1.26.0-preview.1
 ```
 
 Package Manager Console: `Install-Package DuckDB.EFCoreProvider`
@@ -38,10 +48,10 @@ Package Manager Console: `Install-Package DuckDB.EFCoreProvider`
 The [`samples/Quickstart`](samples/Quickstart) console application provides runnable examples of database creation, standard writes, `BulkInsert`, and `Upsert`:
 
 ```bash
-dotnet run --project samples/Quickstart
+dotnet run --project samples/Quickstart -f net10.0
 ```
 
-For the DuckLake backend profile, run `dotnet run --project samples/DuckLake`.
+For the DuckLake backend profile, run `dotnet run --project samples/DuckLake -f net10.0`.
 
 ### Configure a record model
 
@@ -852,13 +862,13 @@ from the active representation.
 > **Try it now.** The runnable [`samples/TieredStorage`](samples/TieredStorage) console app demonstrates archiving
 > and reporting across hot + cold:
 > ```bash
-> dotnet run --project samples/TieredStorage          # cold archive on the local filesystem (no setup)
+> dotnet run --project samples/TieredStorage -f net10.0          # cold archive on the local filesystem (no setup)
 >
 > # Remote modes: start local MinIO + Azurite, then run against one of them:
 > docker compose -f samples/TieredStorage/docker-compose.yml up -d
-> dotnet run --project samples/TieredStorage -- s3     # S3       (httpfs + MinIO)
-> dotnet run --project samples/TieredStorage -- gcs    # GCS      (TYPE gcs + gcs:// through MinIO)
-> dotnet run --project samples/TieredStorage -- azure  # Azure    (azure extension + Azurite)
+> dotnet run --project samples/TieredStorage -f net10.0 -- s3     # S3       (httpfs + MinIO)
+> dotnet run --project samples/TieredStorage -f net10.0 -- gcs    # GCS      (TYPE gcs + gcs:// through MinIO)
+> dotnet run --project samples/TieredStorage -f net10.0 -- azure  # Azure    (azure extension + Azurite)
 > ```
 > The remote modes target MinIO / Azurite by default. Override `TIER_S3_*`, `TIER_GCS_*`, or `TIER_AZURE_*`
 > to point at real S3, Google Cloud Storage, or Azure.
@@ -1043,7 +1053,7 @@ every staging command.
 
 ### JSON, owned JSON, and arrays
 
-DuckDB JSON columns can be mapped to `string`, `JsonDocument`, or `JsonElement`. EF Core owned JSON documents are supported through `ToJson()`, and CLR arrays/lists map to DuckDB array types.
+DuckDB JSON columns can be mapped to `string`, `JsonDocument`, or `JsonElement`. EF Core owned JSON documents can be mapped through `ToJson()`, and CLR arrays/lists map to DuckDB array types. Partial updates inside owned JSON documents are rejected; use whole-column JSON writes for updates.
 
 ```csharp
 using System.Text.Json;
@@ -1130,7 +1140,7 @@ budget, see the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY
 
 ## Compatibility
 
-This provider targets EF Core 10.0.x and .NET 10. DuckDB is an embedded analytical database, so some relational features differ from server databases. Unsupported DuckDB features should fail clearly or be documented as provider limitations.
+The shared source builds for EF Core 10.0.10 on `net10.0` and EF Core 11.0.0-preview.7.26381.103 on `net11.0`. EF11 support is a preview. The existing package names retain EF10 on both .NET 10 and .NET 11; opt into EF11 with `DuckDB.EFCoreProvider.EF11` (and `DuckDB.EFCoreProvider.EF11.NTS` for spatial support). See [shared development and package selection](docs/EF10-EF11-SUPPORT.md). DuckDB is an embedded analytical database, so some relational features differ from server databases. Unsupported DuckDB features should fail clearly or be documented as provider limitations.
 
 For the full feature support matrix, the DuckDB engine limitations, and the roadmap, see
 [docs/CAPABILITY-MAP.md](docs/CAPABILITY-MAP.md). For the `dotnet ef` migrations workflow and its

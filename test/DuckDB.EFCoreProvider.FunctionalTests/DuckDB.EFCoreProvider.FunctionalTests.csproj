@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <PreserveCompilationContext>true</PreserveCompilationContext>
+    <OutputType Condition="'$(TargetFramework)' == 'net11.0'">Exe</OutputType>
     <IsPackable>false</IsPackable>
     <AssemblyName>DuckDB.EFCoreProvider.FunctionalTests</AssemblyName>
     <RootNamespace>Microsoft.EntityFrameworkCore</RootNamespace>
@@ -50,10 +51,13 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="pengdows.crud.fakeDb" PrivateAssets="all" />
-    <PackageReference Include="xunit.assert" />
-    <PackageReference Include="xunit.core" />
-    <PackageReference Include="xunit.extensibility.core" />
-    <PackageReference Include="xunit.runner.console">
+    <!-- Match EF's test infrastructure packages; upstream override data is inherited at runtime. -->
+    <PackageReference Include="xunit.v3.core.mtp-off" Condition="'$(TargetFramework)' == 'net11.0'" />
+    <PackageReference Include="xunit.v3.assert" Condition="'$(TargetFramework)' == 'net11.0'" />
+    <PackageReference Include="xunit.assert" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="xunit.core" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="xunit.extensibility.core" Condition="'$(TargetFramework)' == 'net10.0'" />
+    <PackageReference Include="xunit.runner.console" Condition="'$(TargetFramework)' == 'net10.0'">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
@@ -65,6 +69,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <AssemblyMetadata Include="EFCoreVersion" Value="$(EFCoreVersion)" />
+    <AssemblyMetadata Include="TestTargetFramework" Value="$(TargetFramework)" />
     <AssemblyAttribute Include="System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage" />
   </ItemGroup>
 

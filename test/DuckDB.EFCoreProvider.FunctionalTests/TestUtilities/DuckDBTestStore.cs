@@ -75,9 +75,17 @@ public class DuckDBTestStore : RelationalTestStore
         Func<DbContext, Task> seed)
         => (DuckDBTestStore)await InitializeAsync(serviceProvider, () => createContext(this), seed);
 
+#if NET11_0_OR_GREATER
+    public override Task CleanAsync(DbContext context, bool createTables = true)
+#else
     public override Task CleanAsync(DbContext context)
+#endif
     {
+#if NET11_0_OR_GREATER
+        new DuckDBDatabaseCleaner().Clean(context.Database, createTables);
+#else
         context.Database.EnsureClean();
+#endif
         return Task.CompletedTask;
     }
 

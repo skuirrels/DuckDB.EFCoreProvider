@@ -87,6 +87,7 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
         conventionSet.Replace<RuntimeModelConvention>(new DuckDBRuntimeModelConvention(Dependencies, RelationalDependencies));
         conventionSet.EntityTypeAddedConventions.Add(new DuckDBFileSourceConvention());
         conventionSet.ModelFinalizingConventions.Add(new DuckDBStructFieldConvention());
+        conventionSet.ModelFinalizingConventions.Add(new DuckDBOwnedValueConvention());
 
         return conventionSet;
     }

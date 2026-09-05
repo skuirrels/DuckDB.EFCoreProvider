@@ -163,9 +163,9 @@ public class ArrayRoundTripTests : DuckDBTestBase
             modelBuilder.Entity<Bag>(entity =>
             {
                 entity.Property(e => e.Id).ValueGeneratedNever();
-                entity.Property(e => e.Numbers).HasColumnType("INTEGER[]");
-                entity.Property(e => e.OptionalNumbers).HasColumnType("INTEGER[]");
-                entity.Property(e => e.Words).HasColumnType("VARCHAR[]");
+                entity.PrimitiveCollection(e => e.Numbers).HasColumnType("INTEGER[]");
+                entity.PrimitiveCollection(e => e.OptionalNumbers).HasColumnType("INTEGER[]");
+                entity.PrimitiveCollection(e => e.Words).HasColumnType("VARCHAR[]");
             });
         }
     }

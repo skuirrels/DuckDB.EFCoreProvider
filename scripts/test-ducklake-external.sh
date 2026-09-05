@@ -6,6 +6,18 @@ COMPOSE_FILE="$ROOT_DIR/test/ducklake-external.compose.yml"
 SOLUTION="$ROOT_DIR/DuckDB.EFCoreProvider.slnx"
 TEST_PROJECT="$ROOT_DIR/test/DuckDB.EFCoreProvider.FunctionalTests/DuckDB.EFCoreProvider.FunctionalTests.csproj"
 
+# Each target requires an empty PostgreSQL catalog for the EnsureCreated assertions.
+if [[ -z "${DUCKDB_TEST_FRAMEWORK:-}" ]]; then
+    for framework in net10.0 net11.0; do
+        DUCKDB_TEST_FRAMEWORK="$framework" "$ROOT_DIR/scripts/test-ducklake-external.sh" "$@"
+    done
+    exit 0
+fi
+case "$DUCKDB_TEST_FRAMEWORK" in
+    net10.0|net11.0) ;;
+    *) echo "Unsupported DUCKDB_TEST_FRAMEWORK: $DUCKDB_TEST_FRAMEWORK" >&2; exit 2 ;;
+esac
+
 export DUCKLAKE_EXTERNAL_TESTS=1
 export DUCKLAKE_POSTGRES_HOST="${DUCKLAKE_POSTGRES_HOST:-127.0.0.1}"
 export DUCKLAKE_POSTGRES_PORT="${DUCKLAKE_POSTGRES_PORT:-15432}"
@@ -65,6 +77,11 @@ compose run --rm createbucket
 
 dotnet restore "$SOLUTION"
 dotnet build "$SOLUTION" --no-restore
-dotnet test "$TEST_PROJECT" --no-build \
+framework_args=()
+if [[ -n "${DUCKDB_TEST_FRAMEWORK:-}" ]]; then
+    framework_args=(--framework "$DUCKDB_TEST_FRAMEWORK")
+fi
+
+dotnet test "$TEST_PROJECT" --no-build "${framework_args[@]+"${framework_args[@]}"}" \
     --filter "FullyQualifiedName~DuckLake" \
     "$@"

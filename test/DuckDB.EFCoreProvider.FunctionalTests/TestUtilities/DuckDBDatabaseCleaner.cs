@@ -24,7 +24,7 @@ public class DuckDBDatabaseCleaner : RelationalDatabaseCleaner
 
     protected override string? BuildCustomSql(DatabaseModel databaseModel)
     {
-        var remaining = databaseModel.Tables.ToList();
+        var remaining = databaseModel.Tables.OrderBy(table => table is DatabaseView ? 0 : 1).ToList();
         var ordered = new List<DatabaseTable>(remaining.Count);
         while (remaining.Count > 0)
         {
@@ -42,7 +42,7 @@ public class DuckDBDatabaseCleaner : RelationalDatabaseCleaner
         var sql = new StringBuilder();
         foreach (var table in ordered)
         {
-            sql.Append("DROP TABLE ");
+            sql.Append(table is DatabaseView ? "DROP VIEW " : "DROP TABLE ");
             if (!string.IsNullOrEmpty(table.Schema))
             {
                 sql.Append(Quote(table.Schema)).Append('.');
@@ -68,9 +68,21 @@ public class DuckDBDatabaseCleaner : RelationalDatabaseCleaner
             .GetRequiredService<IDatabaseModelFactory>();
     }
 
+#if NET11_0_OR_GREATER
+    public override void Clean(DatabaseFacade facade, bool createTables = true)
+#else
     public override void Clean(DatabaseFacade facade)
+#endif
     {
+#if NET11_0_OR_GREATER
+        base.Clean(facade, createTables: false);
+        if (!createTables)
+        {
+            return;
+        }
+#else
         base.Clean(facade);
+#endif
         facade.EnsureCreated();
     }
 }

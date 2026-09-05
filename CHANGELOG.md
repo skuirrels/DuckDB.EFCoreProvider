@@ -2,6 +2,26 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.26.0 / EF11 1.26.0-preview.1
+
+- Fix precompiled `FromSqlRaw` and interpolated `FromSql` queries by resolving argument arrays at runtime;
+  ordinary queries retain SQL pregeneration. Repeated calls correctly bind changed values and SQL NULL.
+- Build core, NTS, samples and functional tests from shared source for EF Core 10.0.10 (`net10.0`) and
+  EF Core 11.0.0-preview.7.26381.103 (`net11.0`). EF11 support remains preview support.
+- Adapt EF11 JSON mapping, table-valued expression, complex model-validation and index metadata contracts
+  while retaining the EF10 implementation and public entry points.
+- Preserve native array defaults and collection materialization under EF11, including read-only collections;
+  provide binary JSON serialization, retain numeric casts for floating-point averages, and translate
+  numeric character conversions using character values rather than parsing text digits.
+- Load inline owned values while respecting explicit auto-include configuration. Reject unsupported partial owned-JSON
+  writes before execution, preventing a scalar or SQL NULL from replacing the complete document.
+- Preserve numeric character value-converter casts and avoid automatic owned-reference joins between separately mapped views.
+- Publish separate package families from shared source: core/NTS `1.26.0` / `1.1.0` retain EF10;
+  `DuckDB.EFCoreProvider.EF11` and `.EF11.NTS` use `1.26.0-preview.1` / `1.1.0-preview.1`.
+  .NET 11 applications can keep EF10 without losing new provider functionality. Version 2 remains reserved for DuckDB 2.
+- Run both targets in CI and use matching EF tools for migrations and compiled-model workflows.
+  See [shared EF10/EF11 development](docs/EF10-EF11-SUPPORT.md) for commands and package selection details.
+
 ## 1.25.0
 
 - Support registered ADO.NET provider factories for ordinary DuckDB connections and database-first scaffolding while

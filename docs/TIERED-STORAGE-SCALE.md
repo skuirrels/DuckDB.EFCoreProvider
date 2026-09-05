@@ -7,7 +7,7 @@ policy.
 Run the fixture with representative declared-partition cardinality and monthly history:
 
 ```bash
-dotnet run -c Release \
+dotnet run -f net10.0 -c Release \
   --project test/DuckDB.EFCoreProvider.Benchmarks \
   --filter '*TieredCatalogueScaleBenchmarks*'
 ```
@@ -43,7 +43,7 @@ DUCKDB_TIER_SCALE_NODES=4 \
 DUCKDB_TIER_SCALE_FILE_FANOUT=3 \
 DUCKDB_TIER_SCALE_RETAINED_SCOPES=250 \
 DUCKDB_TIER_SCALE_SCOPE_PREFIX_WIDTH=2 \
-dotnet run -c Release \
+dotnet run -f net10.0 -c Release \
   --project test/DuckDB.EFCoreProvider.Benchmarks \
   --filter '*TieredCatalogueScaleBenchmarks*'
 ```
@@ -60,7 +60,7 @@ Run the shared-descendant preset separately; it fixes the primary graph at two n
 ```bash
 DUCKDB_TIER_SCALE_NODES=2 \
 DUCKDB_TIER_SCALE_SHARED_DESCENDANT=true \
-dotnet run -c Release \
+dotnet run -f net10.0 -c Release \
   --project test/DuckDB.EFCoreProvider.Benchmarks \
   --filter '*TieredCatalogueScaleBenchmarks*'
 ```

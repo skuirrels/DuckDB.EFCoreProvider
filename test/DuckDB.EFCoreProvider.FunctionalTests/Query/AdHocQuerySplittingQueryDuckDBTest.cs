@@ -15,7 +15,11 @@ public class AdHocQuerySplittingQueryDuckDBTest: AdHocQuerySplittingQueryTestBas
     {
     }
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 
     protected override DbContextOptionsBuilder SetQuerySplittingBehavior(DbContextOptionsBuilder optionsBuilder, QuerySplittingBehavior splittingBehavior)

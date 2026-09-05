@@ -1,4 +1,5 @@
-﻿using DuckDB.NET.Data;
+﻿#if !NET11_0_OR_GREATER
+using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore.TestUtilities.Xunit;
 
 namespace Microsoft.EntityFrameworkCore.TestUtilities;
@@ -20,3 +21,4 @@ public sealed class SpatialiteRequiredAttribute : Attribute, ITestCondition
     public string SkipReason
         => "mod_spatialite not found. Install it to run this test.";
 }
+#endif

@@ -1,5 +1,4 @@
-﻿using Xunit.Abstractions;
-
+﻿
 namespace Microsoft.EntityFrameworkCore.Query.Associations.ComplexJson;
 
 public class ComplexJsonPrimitiveCollectionDuckDBTest: ComplexJsonPrimitiveCollectionRelationalTestBase<ComplexJsonDuckDBFixture>

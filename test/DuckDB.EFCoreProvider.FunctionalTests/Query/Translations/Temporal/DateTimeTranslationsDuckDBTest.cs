@@ -1,5 +1,4 @@
 ﻿using Xunit;
-using Xunit.Abstractions;
 using System.Globalization;
 
 namespace Microsoft.EntityFrameworkCore.Query.Translations.Temporal;

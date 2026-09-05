@@ -5,7 +5,7 @@ This records the before/after allocation run for provider-owned allocation reduc
 Command:
 
 ```bash
-dotnet run -c Release --no-restore --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter '*AllocationBenchmarks*' --job short --warmupCount 1 --iterationCount 3 --inProcess
+dotnet run -f net10.0 -c Release --no-restore --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter '*AllocationBenchmarks*' --job short --warmupCount 1 --iterationCount 3 --inProcess
 ```
 
 The run uses BenchmarkDotNet `ShortRun` with `MemoryDiagnoser`. `--inProcess` is intentional here:
@@ -50,7 +50,7 @@ Notes:
 Follow-up command:
 
 ```bash
-dotnet run -c Release --no-restore --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter '*AllocationBenchmarks.UpsertBatch*' --job short --warmupCount 1 --iterationCount 3 --inProcess
+dotnet run -f net10.0 -c Release --no-restore --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter '*AllocationBenchmarks.UpsertBatch*' --job short --warmupCount 1 --iterationCount 3 --inProcess
 ```
 
 This compares the post-allocation-cleanup parameterized upsert path against the temp-table/appender upsert

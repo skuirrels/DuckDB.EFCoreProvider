@@ -1,10 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
-public class PrimitiveCollectionsQueryDuckDBTest : PrimitiveCollectionsQueryRelationalTestBase<PrimitiveCollectionsQueryDuckDBTest.PrimitiveCollectionsQueryDuckDBFixture>
+public partial class PrimitiveCollectionsQueryDuckDBTest : PrimitiveCollectionsQueryRelationalTestBase<PrimitiveCollectionsQueryDuckDBTest.PrimitiveCollectionsQueryDuckDBFixture>
 {
     public PrimitiveCollectionsQueryDuckDBTest(PrimitiveCollectionsQueryDuckDBFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture)
     {
@@ -277,6 +276,7 @@ public class PrimitiveCollectionsQueryDuckDBTest : PrimitiveCollectionsQueryRela
             """);
     }
 
+#if !NET11_0_OR_GREATER
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Column_collection_of_strings_contains_null()
     {
@@ -289,6 +289,7 @@ public class PrimitiveCollectionsQueryDuckDBTest : PrimitiveCollectionsQueryRela
             WHERE array_position(p."Strings", NULL) IS NOT NULL
             """);
     }
+#endif
 
     public override async Task Column_collection_OrderByDescending_ElementAt()
     {

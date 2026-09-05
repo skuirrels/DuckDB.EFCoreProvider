@@ -1,6 +1,6 @@
 name: Publish
 
-# Publishes DuckDB.EFCoreProvider and DuckDB.EFCoreProvider.NTS to NuGet.org
+# Publishes the selected EF10 or EF11 core/NTS package family to NuGet.org
 # using Trusted Publishing (GitHub OIDC -> short-lived API key). No stored secret.
 # Trigger by publishing a GitHub Release (tag), or run manually.
 
@@ -8,6 +8,13 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      ef_major:
+        description: EF package line to publish
+        required: true
+        default: '10'
+        type: choice
+        options: ['10', '11']
 
 jobs:
   publish:
@@ -23,25 +30,60 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: 10.0.x
+        dotnet-version: |
+          10.0.x
+          11.0.100-preview.7.26381.103
+
+    - name: Select and validate release line
+      id: release
+      env:
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+        REQUESTED_EF_MAJOR: ${{ inputs.ef_major }}
+      run: |
+        if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+          case "$RELEASE_TAG" in
+            ef11-v*) major=11; version="${RELEASE_TAG#ef11-v}" ;;
+            v*) major=10; version="${RELEASE_TAG#v}" ;;
+            *) echo "Expected v<version> for EF10 or ef11-v<version> for EF11." >&2; exit 1 ;;
+          esac
+        else
+          major="$REQUESTED_EF_MAJOR"
+        fi
+        case "$major" in 10|11) ;; *) exit 1 ;; esac
+        expected=$(dotnet msbuild src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj -nologo -p:DuckDBEFCoreMajorVersion="$major" -getProperty:PackageVersion)
+        if [[ "$GITHUB_EVENT_NAME" == release && "$version" != "$expected" ]]; then
+          echo "Release version $version does not match EF$major package version $expected." >&2
+          exit 1
+        fi
+        echo "major=$major" >> "$GITHUB_OUTPUT"
 
     - name: Pack core
-      run: dotnet pack src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj -c Release -o artifacts
+      env:
+        EF_MAJOR: ${{ steps.release.outputs.major }}
+      run: dotnet pack src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj -c Release -p:DuckDBEFCoreMajorVersion="$EF_MAJOR" -o artifacts
 
     - name: Pack NTS (only when its version is not already published)
       # NTS is versioned independently and usually unchanged on a core release. Re-packing an already-published
       # NTS version and pushing its .snupkg fails symbol validation: SourceLink embeds the current commit in the
       # rebuilt PDB, so it no longer matches the DLL in the .nupkg already on NuGet (which --skip-duplicate keeps).
       # So only pack NTS — and therefore only push it — when this is a genuinely new NTS version.
+      env:
+        EF_MAJOR: ${{ steps.release.outputs.major }}
       run: |
-        id=duckdb.efcoreprovider.nts
-        ver=$(sed -n 's:.*<PackageVersion>\(.*\)</PackageVersion>.*:\1:p' src/DuckDB.EFCoreProvider.NTS/DuckDB.EFCoreProvider.NTS.csproj | head -1)
-        published=$(curl -s "https://api.nuget.org/v3-flatcontainer/$id/index.json" || echo '{}')
-        if echo "$published" | grep -q "\"$ver\""; then
-          echo "DuckDB.EFCoreProvider.NTS $ver is already published; skipping pack/push."
+        project=src/DuckDB.EFCoreProvider.NTS/DuckDB.EFCoreProvider.NTS.csproj
+        id=$(dotnet msbuild "$project" -nologo -p:DuckDBEFCoreMajorVersion="$EF_MAJOR" -getProperty:PackageId | tr '[:upper:]' '[:lower:]')
+        ver=$(dotnet msbuild "$project" -nologo -p:DuckDBEFCoreMajorVersion="$EF_MAJOR" -getProperty:PackageVersion)
+        status=$(curl --silent --show-error --output /tmp/nts-versions.json --write-out '%{http_code}' "https://api.nuget.org/v3-flatcontainer/$id/index.json")
+        case "$status" in
+          200) ;;
+          404) echo '{"versions":[]}' > /tmp/nts-versions.json ;;
+          *) echo "NuGet version lookup failed with HTTP $status" >&2; exit 1 ;;
+        esac
+        if python3 -c 'import json,sys; sys.exit(0 if sys.argv[1] in json.load(open(sys.argv[2]))["versions"] else 1)' "$ver" /tmp/nts-versions.json; then
+          echo "$id $ver is already published; skipping pack/push."
         else
-          echo "Packing DuckDB.EFCoreProvider.NTS $ver (new version)."
-          dotnet pack src/DuckDB.EFCoreProvider.NTS/DuckDB.EFCoreProvider.NTS.csproj -c Release -o artifacts
+          echo "Packing $id $ver (new version)."
+          dotnet pack "$project" -c Release -p:DuckDBEFCoreMajorVersion="$EF_MAJOR" -o artifacts
         fi
 
     - name: NuGet login (OIDC -> short-lived API key)

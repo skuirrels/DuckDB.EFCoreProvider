@@ -10,10 +10,15 @@ jobs:
   test:
     name: Production write gate
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [net10.0, net11.0]
 
     env:
       DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: "1"
       TERM: xterm
+      DUCKDB_TEST_FRAMEWORK: ${{ matrix.framework }}
 
     steps:
     - uses: actions/checkout@v6
@@ -21,22 +26,47 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: 10.0.x
+        dotnet-version: |
+          10.0.x
+          11.0.100-preview.7.26381.103
 
     - name: Restore local .NET tools
-      run: dotnet tool restore --tool-manifest .config/dotnet-tools.json
+      run: scripts/restore-tools.sh
 
     - name: Run production write test suite
       run: scripts/test-suite.sh all -- --verbosity normal
 
+    - name: Run shared compatibility suite
+      run: scripts/test-suite.sh compatibility -- --verbosity normal
+
+  packages:
+    name: Package identities and consumer compatibility
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: |
+          10.0.x
+          11.0.100-preview.7.26381.103
+    - name: Validate both EF package lines
+      run: scripts/pack.sh all
+    - name: Test isolated package consumers
+      run: python3 scripts/test-package-consumers.py artifacts
+
   ducklake-external:
     name: DuckLake PostgreSQL and MinIO integration
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [net10.0, net11.0]
     timeout-minutes: 15
 
     env:
       DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: "1"
       TERM: xterm
+      DUCKDB_TEST_FRAMEWORK: ${{ matrix.framework }}
 
     steps:
     - uses: actions/checkout@v6
@@ -44,7 +74,9 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: 10.0.x
+        dotnet-version: |
+          10.0.x
+          11.0.100-preview.7.26381.103
 
     - name: Run DuckLake external integration suite
       run: scripts/test-ducklake-external.sh --verbosity normal
@@ -52,11 +84,16 @@ jobs:
   tiered-storage-local:
     name: Tiered storage query and lifecycle matrix
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [net10.0, net11.0]
     timeout-minutes: 15
 
     env:
       DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: "1"
       TERM: xterm
+      DUCKDB_TEST_FRAMEWORK: ${{ matrix.framework }}
 
     steps:
     - uses: actions/checkout@v6
@@ -64,21 +101,28 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: 10.0.x
+        dotnet-version: |
+          10.0.x
+          11.0.100-preview.7.26381.103
 
     - name: Run local tiered-storage acceptance suite
       run: >
         dotnet test test/DuckDB.EFCoreProvider.FunctionalTests/DuckDB.EFCoreProvider.FunctionalTests.csproj
-        --filter FullyQualifiedName~Tiered --verbosity normal
+        --framework ${{ matrix.framework }} --filter FullyQualifiedName~Tiered --verbosity normal
 
   tiered-storage-s3:
     name: Tiered storage MinIO failure matrix
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [net10.0, net11.0]
     timeout-minutes: 15
 
     env:
       DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: "1"
       TERM: xterm
+      DUCKDB_TEST_FRAMEWORK: ${{ matrix.framework }}
 
     steps:
     - uses: actions/checkout@v6
@@ -86,7 +130,9 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: 10.0.x
+        dotnet-version: |
+          10.0.x
+          11.0.100-preview.7.26381.103
 
     - name: Run tiered storage S3 failure matrix
       run: scripts/test-tiered-storage-s3.sh --verbosity normal

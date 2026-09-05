@@ -21,6 +21,10 @@ public class NonSharedModelUpdatesDuckDBTest : NonSharedModelUpdatesTestBase
         return base.Principal_and_dependent_roundtrips_with_cycle_breaking(async);
     }
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 }

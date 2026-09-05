@@ -4,11 +4,18 @@ using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
+#if NET11_0_OR_GREATER
+// EF11 folded the non-shared primitive collection tests into the main fixture.
+public partial class PrimitiveCollectionsQueryDuckDBTest
+#else
 public class NonSharedPrimitiveCollectionsQueryDuckDBTest : NonSharedPrimitiveCollectionsQueryRelationalTestBase
+#endif
 {
+#if !NET11_0_OR_GREATER
     public NonSharedPrimitiveCollectionsQueryDuckDBTest(NonSharedFixture fixture) : base(fixture)
     {
     }
+#endif
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Multidimensional_array_is_not_supported()
@@ -40,11 +47,13 @@ public class NonSharedPrimitiveCollectionsQueryDuckDBTest : NonSharedPrimitiveCo
         return base.Parameter_collection_Count_with_column_predicate_with_default_mode_EF_Parameter(mode);
     }
 
+#if !NET11_0_OR_GREATER
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Array_of_byte_array()
     {
         return base.Array_of_byte_array();
     }
+#endif
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Subquery_over_primitive_collection_on_inheritance_derived_type()
@@ -64,8 +73,10 @@ public class NonSharedPrimitiveCollectionsQueryDuckDBTest : NonSharedPrimitiveCo
         return base.Parameter_collection_of_enum_Cast_from_different_enum_type(mode);
     }
 
+#if !NET11_0_OR_GREATER
     protected override ITestStoreFactory TestStoreFactory
         => DuckDBTestStoreFactory.Instance;
+#endif
 
     protected override DbContextOptionsBuilder SetParameterizedCollectionMode(DbContextOptionsBuilder optionsBuilder,
         ParameterTranslationMode parameterizedCollectionMode)

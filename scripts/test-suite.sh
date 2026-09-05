@@ -16,6 +16,10 @@ Suites:
   updates          EF update, graph update, and bulk update coverage.
   all              Complete production write-provider gate.
   full-project     Raw full functional test project; useful for backlog discovery.
+  compatibility    Shared query, mapping, write and backend compatibility coverage.
+
+Both target frameworks run by default. Set DUCKDB_TEST_FRAMEWORK=net10.0 or net11.0
+to select one target (the solution build still checks both).
 
 Examples:
   scripts/test-suite.sh write-critical
@@ -50,16 +54,25 @@ fi
 write_critical_filter='FullyQualifiedName~ProductionWriteDuckDBTest|FullyQualifiedName~DuckDBUpdateSqlGeneratorTest|FullyQualifiedName~DuckDBMigrationsSqlGeneratorTest.AddColumnOperation_with_auto_increment_creates_sequence_and_default|FullyQualifiedName~DuckDBMigrationsSqlGeneratorTest.CreateTableOperation_with_auto_increment_creates_sequence_and_default|FullyQualifiedName~DuckDBGenericNonRelationship|FullyQualifiedName~ReferencedPrincipalUpdateTests|FullyQualifiedName~DualRolePrincipalUpdateTests'
 write_broad_filter="${write_critical_filter}|FullyQualifiedName~StoreGeneratedDuckDBTest|FullyQualifiedName~TransactionDuckDBTest|FullyQualifiedName~UpdatesDuckDBTest"
 production_gate_filter="${write_broad_filter}|FullyQualifiedName~Migrations|FullyQualifiedName~StructDesignTimeWorkflowTests"
+compatibility_filter='FullyQualifiedName~Query.PrecompiledQueryDuckDBTest.FromSql|FullyQualifiedName~PrecompiledSqlPregenerationQueryDuckDBTest|FullyQualifiedName~DuckDBApiConsistencyTest.Public_api_bool_parameters_should_not_be_prefixed|FullyQualifiedName~NorthwindAggregateOperatorsQueryDuckDBTest.Average_on_float_column|FullyQualifiedName~JsonUpdateDuckDBTest.Edit_single_property_nullable|FullyQualifiedName~Struct|FullyQualifiedName~ArrayRoundTrip|FullyQualifiedName~NativeArrayCompatibility|FullyQualifiedName~CharacterConversionCompatibility|FullyQualifiedName~BinaryJsonCompatibility|FullyQualifiedName~OwnedNavigationsSetOperationsDuckDBTest.Over_associate_collection_projected|FullyQualifiedName~OwnedNavigationCompatibility|FullyQualifiedName~JsonPathRewriting|FullyQualifiedName~AnalyticalTranslation|FullyQualifiedName~DuckLake|FullyQualifiedName~Quack|FullyQualifiedName~BulkInsert|FullyQualifiedName~Upsert|FullyQualifiedName~AdoNetSubstitution|FullyQualifiedName~FileSource|FullyQualifiedName~Spatial'
+
+framework_args=()
+if [[ -n "${DUCKDB_TEST_FRAMEWORK:-}" ]]; then
+    case "$DUCKDB_TEST_FRAMEWORK" in
+        net10.0|net11.0) framework_args=(--framework "$DUCKDB_TEST_FRAMEWORK") ;;
+        *) echo "Unsupported DUCKDB_TEST_FRAMEWORK: $DUCKDB_TEST_FRAMEWORK" >&2; exit 2 ;;
+    esac
+fi
 
 run_build() {
-    dotnet tool restore --tool-manifest "$ROOT_DIR/.config/dotnet-tools.json"
+    "$ROOT_DIR/scripts/restore-tools.sh"
     dotnet restore "$SOLUTION"
     dotnet build "$SOLUTION" --no-restore
 }
 
 run_filtered_tests() {
     local filter="$1"
-    dotnet test "$TEST_PROJECT" --no-build --filter "$filter" "${extra_args[@]+"${extra_args[@]}"}"
+    dotnet test "$TEST_PROJECT" --no-build "${framework_args[@]+"${framework_args[@]}"}" --filter "$filter" "${extra_args[@]+"${extra_args[@]}"}"
 }
 
 cd "$ROOT_DIR"
@@ -87,7 +100,11 @@ case "$suite" in
         ;;
     full-project)
         run_build
-        dotnet test "$TEST_PROJECT" --no-build "${extra_args[@]+"${extra_args[@]}"}"
+        dotnet test "$TEST_PROJECT" --no-build "${framework_args[@]+"${framework_args[@]}"}" "${extra_args[@]+"${extra_args[@]}"}"
+        ;;
+    compatibility)
+        run_build
+        run_filtered_tests "$compatibility_filter"
         ;;
     *)
         echo "Unknown suite '$suite'." >&2

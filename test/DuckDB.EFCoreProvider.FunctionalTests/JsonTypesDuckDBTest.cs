@@ -94,7 +94,7 @@ public class JsonTypesDuckDBTest : JsonTypesRelationalTestBase
         await base.Can_read_write_list_of_array_of_GUID_JSON_values(expected);
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Can_read_write_list_of_array_of_int_JSON_values()
     {
         await base.Can_read_write_list_of_array_of_int_JSON_values();
@@ -106,7 +106,7 @@ public class JsonTypesDuckDBTest : JsonTypesRelationalTestBase
         await base.Can_read_write_list_of_array_of_list_of_IPAddress_JSON_values();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Can_read_write_list_of_array_of_IPAddress_JSON_values()
     {
         await base.Can_read_write_list_of_array_of_IPAddress_JSON_values();
@@ -208,6 +208,10 @@ public class JsonTypesDuckDBTest : JsonTypesRelationalTestBase
         await base.Can_read_write_nullable_binary_JSON_values(value, json);
     }
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 }

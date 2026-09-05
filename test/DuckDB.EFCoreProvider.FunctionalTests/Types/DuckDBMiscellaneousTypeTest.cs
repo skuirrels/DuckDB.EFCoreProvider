@@ -6,7 +6,11 @@ namespace Microsoft.EntityFrameworkCore.Types.Miscellaneous;
 
 public class BoolTypeTest : RelationalTypeTestBase<bool, BoolTypeTest.BoolTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public BoolTypeTest(BoolTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public BoolTypeTest(BoolTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -45,7 +49,11 @@ public class BoolTypeTest : RelationalTypeTestBase<bool, BoolTypeTest.BoolTypeFi
 
 public class StringTypeTest : RelationalTypeTestBase<string, StringTypeTest.StringTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public StringTypeTest(StringTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public StringTypeTest(StringTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -84,14 +92,18 @@ public class StringTypeTest : RelationalTypeTestBase<string, StringTypeTest.Stri
 
 public class GuidTypeTest : RelationalTypeTestBase<Guid, GuidTypeTest.GuidTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public GuidTypeTest(GuidTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public GuidTypeTest(GuidTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
     public override async Task ExecuteUpdate_within_json_to_nonjson_column()
     {
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => base.ExecuteUpdate_within_json_to_nonjson_column());
-        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.Message);
+        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.GetBaseException().Message);
     }
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
@@ -123,7 +135,11 @@ public class GuidTypeTest : RelationalTypeTestBase<Guid, GuidTypeTest.GuidTypeFi
 
 public class ByteArrayTypeTest : RelationalTypeTestBase<byte[], ByteArrayTypeTest.ByteArrayTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public ByteArrayTypeTest(ByteArrayTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public ByteArrayTypeTest(ByteArrayTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -164,9 +180,17 @@ public class ByteArrayTypeTest : RelationalTypeTestBase<byte[], ByteArrayTypeTes
     }
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
+#if NET11_0_OR_GREATER
+    public override Task Equality_in_query_with_parameter()
+#else
     public override Task Equality_in_query()
+#endif
     {
+#if NET11_0_OR_GREATER
+        return base.Equality_in_query_with_parameter();
+#else
         return base.Equality_in_query();
+#endif
     }
 
     public class ByteArrayTypeFixture : RelationalTypeFixtureBase<byte[]>

@@ -1,0 +1,15 @@
+<Project>
+  <Target Name="ValidateDuckDBEFCoreMajorVersion" BeforeTargets="PrepareForBuild;_GenerateRestoreGraphProjectEntry;_IntermediatePack;Pack">
+    <Error Condition="'$(DuckDBEFCoreMajorVersion)' != '' And '$(DuckDBEFCoreMajorVersion)' != '10' And '$(DuckDBEFCoreMajorVersion)' != '11'"
+           Text="DuckDBEFCoreMajorVersion must be 10 or 11." />
+  </Target>
+
+  <Target Name="ValidateDuckDBPackageLine" BeforeTargets="_IntermediatePack;GenerateNuspec" Condition="'$(IsPackable)' == 'true'">
+    <Error Condition="'$(DuckDBEFCoreMajorVersion)' == ''"
+           Text="Select an EF package line with -p:DuckDBEFCoreMajorVersion=10 or 11, or use scripts/pack.sh all. Development builds still target both." />
+    <Error Condition="'$(DuckDBEFCoreMajorVersion)' != '' And '$(TargetFrameworks)' != 'net$(DuckDBEFCoreMajorVersion).0'"
+           Text="An EF release package must contain only net$(DuckDBEFCoreMajorVersion).0." />
+    <Error Condition="'$(TargetFramework)' != '' And '$(TargetFramework)' != 'net$(DuckDBEFCoreMajorVersion).0'"
+           Text="The target framework does not match the selected EF package line." />
+  </Target>
+</Project>

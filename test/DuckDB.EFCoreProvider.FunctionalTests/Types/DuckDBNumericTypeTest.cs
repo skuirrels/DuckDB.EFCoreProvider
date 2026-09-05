@@ -5,7 +5,11 @@ namespace Microsoft.EntityFrameworkCore.Types.Numeric;
 
 public class ByteTypeTest : RelationalTypeTestBase<byte, ByteTypeTest.ByteTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public ByteTypeTest(ByteTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public ByteTypeTest(ByteTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -44,7 +48,11 @@ public class ByteTypeTest : RelationalTypeTestBase<byte, ByteTypeTest.ByteTypeFi
 
 public class ShortTypeTest : RelationalTypeTestBase<short, ShortTypeTest.ShortTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public ShortTypeTest(ShortTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public ShortTypeTest(ShortTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -83,7 +91,11 @@ public class ShortTypeTest : RelationalTypeTestBase<short, ShortTypeTest.ShortTy
 
 public class IntTypeTest : RelationalTypeTestBase<int, IntTypeTest.IntTypeFixture>
 {
-    public IntTypeTest(IntTypeTest.IntTypeFixture fixture) : base(fixture)
+#if NET11_0_OR_GREATER
+    public IntTypeTest(IntTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
+    public IntTypeTest(IntTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -122,7 +134,11 @@ public class IntTypeTest : RelationalTypeTestBase<int, IntTypeTest.IntTypeFixtur
 
 public class LongTypeTest : RelationalTypeTestBase<long, LongTypeTest.LongTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public LongTypeTest(LongTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public LongTypeTest(LongTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -161,7 +177,11 @@ public class LongTypeTest : RelationalTypeTestBase<long, LongTypeTest.LongTypeFi
 
 public class DecimalTypeTest : RelationalTypeTestBase<decimal, DecimalTypeTest.DecimalTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public DecimalTypeTest(DecimalTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public DecimalTypeTest(DecimalTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -200,7 +220,11 @@ public class DecimalTypeTest : RelationalTypeTestBase<decimal, DecimalTypeTest.D
 
 public class DoubleTypeTest : RelationalTypeTestBase<double, DoubleTypeTest.DoubleTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public DoubleTypeTest(DoubleTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public DoubleTypeTest(DoubleTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -239,7 +263,11 @@ public class DoubleTypeTest : RelationalTypeTestBase<double, DoubleTypeTest.Doub
 
 public class FloatTypeTest : RelationalTypeTestBase<float, FloatTypeTest.FloatTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public FloatTypeTest(FloatTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public FloatTypeTest(FloatTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
