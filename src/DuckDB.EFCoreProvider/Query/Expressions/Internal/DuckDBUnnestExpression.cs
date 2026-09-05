@@ -19,7 +19,7 @@ public class DuckDBUnnestExpression : TableValuedFunctionExpression, IEquatable<
     /// <summary>
     ///     The array to be un-nested into a table.
     /// </summary>
-    public virtual SqlExpression Array => Arguments[0];
+    public virtual SqlExpression Array => (SqlExpression)Arguments[0];
 
     /// <summary>
     ///     Column information for the output of the <c>unnest</c> call.
@@ -68,8 +68,12 @@ public class DuckDBUnnestExpression : TableValuedFunctionExpression, IEquatable<
             : Update((SqlExpression)visitedArray);
 
     /// <inheritdoc />
+#if NET11_0_OR_GREATER
+    public override TableValuedFunctionExpression Update(IReadOnlyList<Expression> arguments)
+#else
     public override TableValuedFunctionExpression Update(IReadOnlyList<SqlExpression> arguments)
-        => arguments is [var singleArgument]
+#endif
+        => arguments is [SqlExpression singleArgument]
             ? Update(singleArgument)
             : throw new ArgumentException(
                 $"An unnest expression takes exactly one argument (the array), but {arguments.Count} were supplied.",

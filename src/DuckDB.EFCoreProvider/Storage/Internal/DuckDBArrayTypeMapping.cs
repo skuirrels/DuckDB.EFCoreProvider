@@ -86,13 +86,10 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
                     typeof(TCollection), typeof(TConcreteCollection), typeof(List<>).MakeGenericType(providerElementType)),
                 elementConverter)!;
         }
-        else if (typeof(TCollection) != typeof(TConcreteCollection))
-        {
-            converter = (ValueConverter)Activator.CreateInstance(
-                typeof(DuckDBArrayConverter<,,>).MakeGenericType(
-                    typeof(TCollection), typeof(TConcreteCollection), typeof(List<>).MakeGenericType(elementType)))!;
-        }
-        else if (typeof(TCollection) != typeof(TConcreteCollection) || typeof(TCollection).IsArray)
+        else if (typeof(TCollection) != typeof(TConcreteCollection) || typeof(TCollection).IsArray
+                 || typeof(TCollection) == typeof(ReadOnlyCollection<TElement>)
+                 || typeof(TCollection) == typeof(ObservableCollection<TElement>)
+                 || typeof(TCollection) == typeof(Collection<TElement>))
         {
             converter = (ValueConverter)Activator.CreateInstance(
                 typeof(DuckDBArrayConverter<,,>).MakeGenericType(
@@ -191,6 +188,17 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
             or List<TElement>
             or ReadOnlyCollection<TElement>
             or ImmutableArray<TElement>;
+
+#if NET11_0_OR_GREATER
+    /// <inheritdoc />
+    public override object GetDefaultProviderValue()
+    {
+        // EF11's default assumes collections are JSON strings. Native array defaults must
+        // retain their element type so migrations render [] with the correct type mapping.
+        var providerElementType = ElementTypeMapping.Converter?.ProviderClrType ?? typeof(TElement);
+        return Array.CreateInstance(providerElementType, 0);
+    }
+#endif
 
     /// <inheritdoc />
     protected override RelationalTypeMapping Clone(RelationalTypeMappingParameters parameters)

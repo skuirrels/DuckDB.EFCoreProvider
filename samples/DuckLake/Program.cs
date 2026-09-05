@@ -1,7 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using Microsoft.EntityFrameworkCore;
 
-// Run with: dotnet run --project samples/DuckLake
+// Run with: dotnet run -f net10.0 --project samples/DuckLake
 var root = Path.Combine(Environment.CurrentDirectory, "ducklake-sample");
 var metadataPath = Path.Combine(root, "catalog", "analytics.ducklake");
 var dataPath = Path.Combine(root, "data");

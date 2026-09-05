@@ -1,9 +1,12 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.25.0</PackageVersion>
-    <FileVersion>1.25.0.0</FileVersion>
-    <Version>1.25.0</Version>
+    <Version>1.26.0</Version>
+    <Version Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.26.0-preview.1</Version>
+    <PackageVersion>$(Version)</PackageVersion>
+    <PackageId>DuckDB.EFCoreProvider</PackageId>
+    <PackageId Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB.EFCoreProvider.EF11</PackageId>
+    <FileVersion>1.26.0.0</FileVersion>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +24,13 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.24.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.24.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.26.0 (EF10) / 1.26.0-preview.1 (EF11)
+- Fix precompiled FromSqlRaw and interpolated FromSql argument binding while retaining SQL pregeneration for ordinary queries.
+- Ship separate EF10 and EF11 release lines from shared source. The EF10 package can also be used by net11.0 applications without upgrading EF. EF11 support is preview support.
+- Preserve native DuckDB array materialization under EF11 and validate matching migration and compiled-model tooling for each target.
+
 1.25.0
 - Support registered ADO.NET provider factories for ordinary DuckDB connections and database scaffolding while preserving existing public constructors.
 - Create provider parameters through their owning commands, retain type-mapping metadata for substituted parameters, preserve decorator parameter names and types, and use provider-neutral DbDataReader materialization for temporal values.

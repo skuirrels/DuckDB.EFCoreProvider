@@ -29,7 +29,7 @@ public class GraphUpdatesDuckDBFullWithOriginalsNotificationsTest : GraphUpdates
         await base.Avoid_nulling_shared_FK_property_when_nulling_navigation(nullPrincipal);
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Can_add_multiple_dependents_when_multiple_possible_principal_sides()
     {
         await base.Can_add_multiple_dependents_when_multiple_possible_principal_sides();
@@ -533,7 +533,7 @@ public class GraphUpdatesDuckDBFullWithOriginalsNotificationsTest : GraphUpdates
         await base.Reset_unknown_original_value_when_current_value_is_set(async);
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Resetting_a_deleted_reference_fixes_up_again()
     {
         await base.Resetting_a_deleted_reference_fixes_up_again();

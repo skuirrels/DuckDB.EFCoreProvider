@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Storage.Internal;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Xunit;
 
@@ -290,6 +291,9 @@ public sealed class TieredStorageFailureTests : IDisposable
 
         protected override void OnConfiguring(DbContextOptionsBuilder options)
             => options.UseDuckDB($"Data Source={dbPath}")
+                // The full specification suite intentionally creates many service configurations.
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .ReplaceService<IDuckDBTierFailureInjector, TestTierFailureInjector>()
                 .ReplaceService<IModelCacheKeyFactory, FailureModelCacheKeyFactory>();
 

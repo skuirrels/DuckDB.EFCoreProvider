@@ -117,7 +117,7 @@ internal static class DuckDBUpsertPlanner
             .FirstOrDefault(candidate => candidate.IsUnique && candidate.Properties.SequenceEqual(properties));
         if (index is not null)
         {
-            return new UpsertConflictTarget(index.Properties, index, UsesPrimaryKey: false, IsPhysicallyEnforced: true);
+            return new UpsertConflictTarget(properties, index, UsesPrimaryKey: false, IsPhysicallyEnforced: true);
         }
 
         if (matchMode == DuckDBUpsertMatchMode.LogicalKeyMerge)

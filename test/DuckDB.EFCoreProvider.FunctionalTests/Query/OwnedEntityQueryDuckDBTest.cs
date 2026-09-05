@@ -63,31 +63,31 @@ public class OwnedEntityQueryDuckDBTest : OwnedEntityQueryRelationalTestBase
         return base.Owned_reference_mapped_to_different_table_updated_correctly_after_subquery_pushdown(async);
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Accessing_scalar_property_in_derived_type_projection_does_not_load_owned_navigations()
     {
         return base.Accessing_scalar_property_in_derived_type_projection_does_not_load_owned_navigations();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Can_auto_include_navigation_from_model()
     {
         return base.Can_auto_include_navigation_from_model();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Correlated_subquery_with_owned_navigation_being_compared_to_null_works()
     {
         return base.Correlated_subquery_with_owned_navigation_being_compared_to_null_works();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Include_collection_for_entity_with_owned_type_works()
     {
         return base.Include_collection_for_entity_with_owned_type_works();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Multilevel_owned_entities_determine_correct_nullability()
     {
         return base.Multilevel_owned_entities_determine_correct_nullability();
@@ -117,6 +117,10 @@ public class OwnedEntityQueryDuckDBTest : OwnedEntityQueryRelationalTestBase
         return base.Projecting_owned_collection_and_aggregate(async);
     }
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 }

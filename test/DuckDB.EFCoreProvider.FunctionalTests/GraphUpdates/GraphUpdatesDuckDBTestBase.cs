@@ -38,6 +38,12 @@ public abstract class GraphUpdatesDuckDBTestBase<TFixture> : GraphUpdatesTestBas
 
         protected override void OnModelCreating(ModelBuilder modelBuilder, DbContext context)
         {
+#if NET11_0_OR_GREATER
+            // The provider disables relationship key discovery; the new upstream fixture
+            // therefore needs the shadow key's type before its HasKey("Id") configuration.
+            modelBuilder.Entity<OwnerWithNonCompositeOwnedCollection>()
+                .OwnsMany(owner => owner.Owned, owned => owned.Property<int>("Id"));
+#endif
             base.OnModelCreating(modelBuilder, context);
 
             modelBuilder.Entity<OwnerRoot>(b =>

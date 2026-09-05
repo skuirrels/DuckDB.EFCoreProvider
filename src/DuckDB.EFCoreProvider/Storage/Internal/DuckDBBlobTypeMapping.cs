@@ -1,6 +1,7 @@
 ﻿using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Storage.Json;
 using System.Data;
 using System.Data.Common;
 using System.Linq.Expressions;
@@ -22,7 +23,8 @@ public class DuckDBBlobTypeMapping : ByteArrayTypeMapping
         : this(
             new RelationalTypeMappingParameters(
                 new CoreTypeMappingParameters(
-                    typeof(byte[])),
+                    typeof(byte[]),
+                    jsonValueReaderWriter: JsonByteArrayReaderWriter.Instance),
                 storeType,
                 dbType: dbType))
     {

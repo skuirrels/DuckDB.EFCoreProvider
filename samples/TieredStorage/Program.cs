@@ -2,10 +2,10 @@
 // (tiered on OccurredOn). Each root names its own timestamp property and archives on its own cutoff, so their
 // hot/cold boundaries move independently. Reporting spans hot + cold through keyless read-models.
 //
-//   dotnet run --project samples/TieredStorage            # cold archive on the local filesystem (default)
-//   dotnet run --project samples/TieredStorage -- s3      # cold archive on S3 / an S3-compatible store (httpfs)
-//   dotnet run --project samples/TieredStorage -- gcs     # cold archive on Google Cloud Storage (httpfs)
-//   dotnet run --project samples/TieredStorage -- azure   # cold archive on Azure Blob Storage (azure extension)
+//   dotnet run -f net10.0 --project samples/TieredStorage            # cold archive on the local filesystem (default)
+//   dotnet run -f net10.0 --project samples/TieredStorage -- s3      # cold archive on S3 / an S3-compatible store (httpfs)
+//   dotnet run -f net10.0 --project samples/TieredStorage -- gcs     # cold archive on Google Cloud Storage (httpfs)
+//   dotnet run -f net10.0 --project samples/TieredStorage -- azure   # cold archive on Azure Blob Storage (azure extension)
 //
 // The s3/gcs/azure modes target local MinIO / Azurite services by default. GCS uses MinIO's S3-compatible API
 // to exercise DuckDB's TYPE gcs secret and gcs:// URL path locally; use a real GCS bucket to validate Google IAM.

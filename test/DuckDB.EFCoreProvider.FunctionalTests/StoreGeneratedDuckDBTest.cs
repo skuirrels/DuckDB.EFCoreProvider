@@ -95,271 +95,271 @@ public abstract class StoreGeneratedDuckDBTest : StoreGeneratedTestBase<StoreGen
         await base.After_save_use_uses_value_if_modified(propertyName, expectedValue);
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_key_with_read_only_before_save_throws_if_explicit_values_set()
     {
         await base.Identity_key_with_read_only_before_save_throws_if_explicit_values_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_property_on_Added_entity_with_temporary_value_gets_value_from_store()
     {
         await base.Identity_property_on_Added_entity_with_temporary_value_gets_value_from_store();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Store_generated_values_are_propagated_with_composite_key_cycles()
     {
         await base.Store_generated_values_are_propagated_with_composite_key_cycles();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_property_on_Added_entity_with_temporary_value_gets_value_from_store_even_if_same()
     {
         await base.Identity_property_on_Added_entity_with_temporary_value_gets_value_from_store_even_if_same();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_property_on_Added_entity_with_default_value_gets_value_from_store()
     {
         await base.Identity_property_on_Added_entity_with_default_value_gets_value_from_store();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_property_on_Added_entity_with_read_only_before_save_throws_if_explicit_values_set()
     {
         await base.Identity_property_on_Added_entity_with_read_only_before_save_throws_if_explicit_values_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_property_on_Added_entity_can_have_value_set_explicitly()
     {
         await base.Identity_property_on_Added_entity_can_have_value_set_explicitly();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_property_on_Modified_entity_with_read_only_after_save_throws_if_value_is_in_modified_state()
     {
         await base.Identity_property_on_Modified_entity_with_read_only_after_save_throws_if_value_is_in_modified_state();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_property_on_Modified_entity_is_included_in_update_when_modified()
     {
         await base.Identity_property_on_Modified_entity_is_included_in_update_when_modified();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Identity_property_on_Modified_entity_is_not_included_in_update_when_not_modified()
     {
         await base.Identity_property_on_Modified_entity_is_not_included_in_update_when_not_modified();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_identity_property_on_Added_entity_with_temporary_value_gets_value_from_store()
     {
         await base.Always_identity_property_on_Added_entity_with_temporary_value_gets_value_from_store();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_identity_property_on_Added_entity_with_default_value_gets_value_from_store()
     {
         await base.Always_identity_property_on_Added_entity_with_default_value_gets_value_from_store();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_identity_property_on_Added_entity_with_read_only_before_save_throws_if_explicit_values_set()
     {
         await base.Always_identity_property_on_Added_entity_with_read_only_before_save_throws_if_explicit_values_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_identity_property_on_Modified_entity_with_read_only_after_save_throws_if_value_is_in_modified_state()
     {
         await base.Always_identity_property_on_Modified_entity_with_read_only_after_save_throws_if_value_is_in_modified_state();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_identity_property_on_Modified_entity_is_not_included_in_the_update_when_not_modified()
     {
         await base.Always_identity_property_on_Modified_entity_is_not_included_in_the_update_when_not_modified();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Computed_property_on_Added_entity_with_temporary_value_gets_value_from_store()
     {
         await base.Computed_property_on_Added_entity_with_temporary_value_gets_value_from_store();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Computed_property_on_Added_entity_with_default_value_gets_value_from_store()
     {
         await base.Computed_property_on_Added_entity_with_default_value_gets_value_from_store();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Computed_property_on_Added_entity_with_read_only_before_save_throws_if_explicit_values_set()
     {
         await base.Computed_property_on_Added_entity_with_read_only_before_save_throws_if_explicit_values_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Computed_property_on_Added_entity_can_have_value_set_explicitly()
     {
         await base.Computed_property_on_Added_entity_can_have_value_set_explicitly();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Computed_property_on_Modified_entity_with_read_only_after_save_throws_if_value_is_in_modified_state()
     {
         await base.Computed_property_on_Modified_entity_with_read_only_after_save_throws_if_value_is_in_modified_state();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Computed_property_on_Modified_entity_is_included_in_update_when_modified()
     {
         await base.Computed_property_on_Modified_entity_is_included_in_update_when_modified();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Computed_property_on_Modified_entity_is_read_from_store_when_not_modified()
     {
         await base.Computed_property_on_Modified_entity_is_read_from_store_when_not_modified();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_computed_property_on_Added_entity_with_temporary_value_gets_value_from_store()
     {
         await base.Always_computed_property_on_Added_entity_with_temporary_value_gets_value_from_store();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_computed_property_on_Added_entity_with_default_value_gets_value_from_store()
     {
         await base.Always_computed_property_on_Added_entity_with_default_value_gets_value_from_store();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_computed_property_on_Added_entity_with_read_only_before_save_throws_if_explicit_values_set()
     {
         await base.Always_computed_property_on_Added_entity_with_read_only_before_save_throws_if_explicit_values_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_computed_property_on_Modified_entity_with_read_only_after_save_throws_if_value_is_in_modified_state()
     {
         await base.Always_computed_property_on_Modified_entity_with_read_only_after_save_throws_if_value_is_in_modified_state();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Always_computed_property_on_Modified_entity_is_read_from_store_when_not_modified()
     {
         await base.Always_computed_property_on_Modified_entity_is_read_from_store_when_not_modified();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Fields_used_correctly_for_store_generated_values()
     {
         await base.Fields_used_correctly_for_store_generated_values();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Nullable_fields_get_defaults_when_not_set()
     {
         await base.Nullable_fields_get_defaults_when_not_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Properties_get_database_defaults_when_set_to_sentinel_values()
     {
         await base.Properties_get_database_defaults_when_set_to_sentinel_values();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Properties_get_set_values_when_not_set_to_sentinel_values()
     {
         await base.Properties_get_set_values_when_not_set_to_sentinel_values();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Nullable_fields_store_non_defaults_when_set()
     {
         await base.Nullable_fields_store_non_defaults_when_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Nullable_fields_store_any_value_when_set()
     {
         await base.Nullable_fields_store_any_value_when_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Object_fields_get_defaults_when_not_set()
     {
         await base.Object_fields_get_defaults_when_not_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Object_fields_store_non_defaults_when_set()
     {
         await base.Object_fields_store_non_defaults_when_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Object_fields_store_any_value_when_set()
     {
         await base.Object_fields_store_any_value_when_set();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_wrapped_int_key()
     {
         await base.Insert_update_and_delete_with_wrapped_int_key();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_long_to_int_conversion()
     {
         await base.Insert_update_and_delete_with_long_to_int_conversion();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_wrapped_string_key()
     {
         await base.Insert_update_and_delete_with_wrapped_string_key();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_wrapped_Guid_key()
     {
         await base.Insert_update_and_delete_with_wrapped_Guid_key();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_wrapped_Uri_key()
     {
         await base.Insert_update_and_delete_with_wrapped_Uri_key();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_Uri_key()
     {
         await base.Insert_update_and_delete_with_Uri_key();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_enum_key()
     {
         await base.Insert_update_and_delete_with_enum_key();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_GuidAsString_key()
     {
         await base.Insert_update_and_delete_with_GuidAsString_key();
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override async Task Insert_update_and_delete_with_StringAsGuid_key()
     {
         await base.Insert_update_and_delete_with_StringAsGuid_key();

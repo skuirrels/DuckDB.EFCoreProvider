@@ -4,10 +4,10 @@ This repository is `DuckDB.EFCoreProvider`, an Entity Framework Core provider fo
 
 ## Compatibility
 
-- Support EF Core 10.0.x on .NET 10.
+- Develop functionality once in shared source for EF Core 10 / `net10.0` and EF Core 11 preview / `net11.0`.
 - Do not add compatibility work for EF Core versions older than 10.
-- Do not claim EF Core 11+ support until the provider is retargeted, rebuilt, and passes the EF Core 11 relational specification tests.
-- Keep Microsoft EF Core package versions aligned on the same patch version across provider and test projects.
+- Treat EF11 as preview support until the stable release is rebuilt and validated. See [dual-target development](docs/EF10-EF11-SUPPORT.md).
+- Keep Microsoft EF Core package versions aligned within each target across provider and test projects.
 
 ## Engineering Standards
 
@@ -40,9 +40,15 @@ scripts/test-suite.sh write-broad
 scripts/test-suite.sh migrations
 scripts/test-suite.sh updates
 scripts/test-suite.sh all
+scripts/test-suite.sh compatibility
 scripts/test-suite.sh full-project
 scripts/test-ducklake-external.sh
 ```
+
+Install the .NET 11 preview SDK and .NET 10 runtime. Both targets run by default; use
+`DUCKDB_TEST_FRAMEWORK=net10.0` or `net11.0` to select one test target. Restore both EF tools with
+`scripts/restore-tools.sh`. Package each EF family with `scripts/pack.sh all`, then run
+`python3 scripts/test-package-consumers.py artifacts` to validate consumer selection.
 
 Minimum expectations:
 
@@ -58,7 +64,7 @@ Minimum expectations:
 ## Documentation
 
 - Keep `README.md` simple to start with, then include detailed examples for real usage.
-- Document compatibility as EF Core 10.0.x and .NET 10 unless the project is deliberately retargeted.
+- Document the EF10 and EF11 target matrix, including the pinned EF11 preview and NuGet selection behavior.
 - Document limitations honestly, especially OLAP/embedded DuckDB constraints and EF Core provider gaps.
 - Doc index: `README.md` (overview/usage), `samples/Quickstart` (runnable sample), `CHANGELOG.md` (release history), `docs/MIGRATIONS.md` (EF migrations), `docs/CAPABILITY-MAP.md` (feature matrix/limits), `docs/PERFORMANCE.md` (benchmarks), `SECURITY.md`, `VERSIONING.md`. Keep version references and the changelog in sync with the package version on each content change.
 

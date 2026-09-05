@@ -1,5 +1,4 @@
-﻿using Xunit.Abstractions;
-
+﻿
 namespace Microsoft.EntityFrameworkCore.Query.Translations.Operators;
 
 public class BitwiseOperatorTranslationsDuckDBTest : BitwiseOperatorTranslationsTestBase<BasicTypesQueryDuckDBFixture>

@@ -1,6 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.EntityFrameworkCore;
 
@@ -34,6 +33,10 @@ public class TPTTableSplittingDuckDBTest : TPTTableSplittingTestBase
         await base.Warn_when_save_optional_dependent_with_null_values_sensitive();
     }
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 }

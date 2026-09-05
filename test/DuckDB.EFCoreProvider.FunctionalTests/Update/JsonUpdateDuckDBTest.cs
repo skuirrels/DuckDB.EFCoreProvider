@@ -8,6 +8,24 @@ public class JsonUpdateDuckDBTest : JsonUpdateTestBase<JsonUpdateDuckDBFixture>
     {
     }
 
+#if NET11_0_OR_GREATER
+    [Fact]
+    public override async Task Edit_single_property_nullable_datetime_set_to_null()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => base.Edit_single_property_nullable_datetime_set_to_null());
+        Assert.Contains("partial updates of owned JSON", exception.Message);
+    }
+
+    [Fact]
+    public override async Task Edit_single_property_nullable_dateonly_set_to_null()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => base.Edit_single_property_nullable_dateonly_set_to_null());
+        Assert.Contains("partial updates of owned JSON", exception.Message);
+    }
+#endif
+
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Add_and_update_nested_optional_owned_collection_to_JSON(bool? value)
     {

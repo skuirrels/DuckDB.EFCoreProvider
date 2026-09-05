@@ -7,6 +7,11 @@ public class OperatorsProceduralDuckDBTest : OperatorsProceduralQueryTestBase
     public OperatorsProceduralDuckDBTest(NonSharedFixture fixture) : base(fixture)
     {
     }
-    
-    protected override ITestStoreFactory TestStoreFactory => DuckDBTestStoreFactory.Instance;
+
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
+    protected override ITestStoreFactory TestStoreFactory
+#endif
+        => DuckDBTestStoreFactory.Instance;
 }

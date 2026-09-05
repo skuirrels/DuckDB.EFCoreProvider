@@ -1,7 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
@@ -173,11 +172,13 @@ public class TPTInheritanceQueryDuckDBTest : TPTInheritanceQueryTestBase<TPTInhe
         return base.Can_use_of_type_rose(async);
     }
 
+#if !NET11_0_OR_GREATER
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Filter_on_property_inside_complex_type_on_derived_type(bool async)
     {
         return base.Filter_on_property_inside_complex_type_on_derived_type(async);
     }
+#endif
 
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
     public override Task GetType_in_hierarchy_in_abstract_base_type(bool async)
@@ -299,7 +300,7 @@ public class TPTInheritanceQueryDuckDBTest : TPTInheritanceQueryTestBase<TPTInhe
         return base.Discriminator_with_cast_in_shadow_property(async);
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override void Using_from_sql_throws()
     {
         base.Using_from_sql_throws();

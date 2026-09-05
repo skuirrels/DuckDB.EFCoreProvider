@@ -6,14 +6,18 @@ namespace Microsoft.EntityFrameworkCore.Types.Temporal;
 
 public class DateTimeTypeTest : RelationalTypeTestBase<DateTime, DateTimeTypeTest.DateTimeTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public DateTimeTypeTest(DateTimeTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public DateTimeTypeTest(DateTimeTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
     public override async Task ExecuteUpdate_within_json_to_nonjson_column()
     {
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => base.ExecuteUpdate_within_json_to_nonjson_column());
-        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.Message);
+        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.GetBaseException().Message);
     }
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
@@ -45,14 +49,18 @@ public class DateTimeTypeTest : RelationalTypeTestBase<DateTime, DateTimeTypeTes
 
 public class DateTimeOffsetTypeTest : RelationalTypeTestBase<DateTimeOffset, DateTimeOffsetTypeTest.DateTimeOffsetTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public DateTimeOffsetTypeTest(DateTimeOffsetTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public DateTimeOffsetTypeTest(DateTimeOffsetTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
     public override async Task ExecuteUpdate_within_json_to_nonjson_column()
     {
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => base.ExecuteUpdate_within_json_to_nonjson_column());
-        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.Message);
+        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.GetBaseException().Message);
     }
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
@@ -84,7 +92,11 @@ public class DateTimeOffsetTypeTest : RelationalTypeTestBase<DateTimeOffset, Dat
 
 public class DateOnlyTypeTest : RelationalTypeTestBase<DateOnly, DateOnlyTypeTest.DateTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public DateOnlyTypeTest(DateTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public DateOnlyTypeTest(DateTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -123,7 +135,11 @@ public class DateOnlyTypeTest : RelationalTypeTestBase<DateOnly, DateOnlyTypeTes
 
 public class TimeOnlyTypeTest : RelationalTypeTestBase<TimeOnly, TimeOnlyTypeTest.TimeTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public TimeOnlyTypeTest(TimeTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public TimeOnlyTypeTest(TimeTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
@@ -136,7 +152,7 @@ public class TimeOnlyTypeTest : RelationalTypeTestBase<TimeOnly, TimeOnlyTypeTes
     public override async Task ExecuteUpdate_within_json_to_nonjson_column()
     {
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => base.ExecuteUpdate_within_json_to_nonjson_column());
-        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.Message);
+        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.GetBaseException().Message);
     }
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
@@ -168,14 +184,18 @@ public class TimeOnlyTypeTest : RelationalTypeTestBase<TimeOnly, TimeOnlyTypeTes
 
 public class TimeSpanTypeTest : RelationalTypeTestBase<TimeSpan, TimeSpanTypeTest.TimeSpanTypeFixture>
 {
+#if NET11_0_OR_GREATER
+    public TimeSpanTypeTest(TimeSpanTypeFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
+#else
     public TimeSpanTypeTest(TimeSpanTypeFixture fixture) : base(fixture)
+#endif
     {
     }
 
     public override async Task ExecuteUpdate_within_json_to_nonjson_column()
     {
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => base.ExecuteUpdate_within_json_to_nonjson_column());
-        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.Message);
+        Assert.Equal(RelationalStrings.ExecuteUpdateCannotSetJsonPropertyToNonJsonColumn, exception.GetBaseException().Message);
     }
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]

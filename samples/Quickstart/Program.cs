@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore;
 
 // DuckDB.EFCoreProvider — Quickstart
 //
-// Run with:  dotnet run --project samples/Quickstart
+// Run with:  dotnet run -f net10.0 --project samples/Quickstart
 //
 // Creates a local file database (quickstart.duckdb), then demonstrates the four
 // things you will reach for most: SaveChanges with DuckDB-generated keys, the

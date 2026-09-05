@@ -1,5 +1,4 @@
-﻿using Xunit.Abstractions;
-
+﻿
 namespace Microsoft.EntityFrameworkCore.Query.Associations.ComplexTableSplitting;
 
 public class ComplexTableSplittingMiscellaneousDuckDBTest: ComplexTableSplittingMiscellaneousRelationalTestBase<ComplexTableSplittingDuckDBFixture>

@@ -142,6 +142,33 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
     /// <inheritdoc />
     protected override Expression VisitUnary(UnaryExpression unaryExpression)
     {
+        var operandType = Nullable.GetUnderlyingType(unaryExpression.Operand.Type) ?? unaryExpression.Operand.Type;
+        var targetType = Nullable.GetUnderlyingType(unaryExpression.Type) ?? unaryExpression.Type;
+        if (unaryExpression.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked
+            && operandType == typeof(char)
+            && Type.GetTypeCode(targetType) is TypeCode.UInt16 or TypeCode.Int32 or TypeCode.UInt32
+                or TypeCode.Int64 or TypeCode.UInt64 or TypeCode.Single or TypeCode.Double or TypeCode.Decimal)
+        {
+            if (TranslationFailed(unaryExpression.Operand, Visit(unaryExpression.Operand), out var character))
+            {
+                return QueryCompilationContext.NotTranslatedExpression;
+            }
+
+            character = Dependencies.SqlExpressionFactory.ApplyDefaultTypeMapping(character);
+            var providerType = character!.TypeMapping?.Converter?.ProviderClrType ?? character.TypeMapping?.ClrType;
+            if (providerType != typeof(string) && providerType != typeof(char))
+            {
+                // Numeric value converters already supply a numeric SQL operand.
+                return base.VisitUnary(unaryExpression);
+            }
+
+            // CLR numeric casts use the character's code point; a SQL text cast parses its digits.
+            return Dependencies.SqlExpressionFactory.Convert(
+                Dependencies.SqlExpressionFactory.Function(
+                    "unicode", [character!], nullable: true, argumentsPropagateNullability: [true], typeof(int)),
+                targetType);
+        }
+
         switch (unaryExpression.NodeType)
         {
             case ExpressionType.ArrayLength:

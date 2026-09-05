@@ -12,7 +12,7 @@ public sealed class NullableRawSqlParameterTests : DuckDBTestBase
         using var context = new ParameterContext(FileOptions<ParameterContext>());
         context.Database.EnsureCreated();
 
-        context.Database.ExecuteSqlInterpolated(
+        context.Database.ExecuteSql(
             $"INSERT INTO \"Rows\" (\"Id\", \"Text\", \"Number\", \"OccurredAt\", \"ExternalId\") VALUES ({1}, {(string?)null}, {(int?)null}, {(DateTime?)null}, {(Guid?)null})");
 
         var row = context.Rows.Single();
@@ -28,11 +28,11 @@ public sealed class NullableRawSqlParameterTests : DuckDBTestBase
         await using var context = new ParameterContext(FileOptions<ParameterContext>());
         await context.Database.EnsureCreatedAsync();
 
-        await context.Database.ExecuteSqlInterpolatedAsync(
+        await context.Database.ExecuteSqlAsync(
             $"INSERT INTO \"Rows\" (\"Id\", \"Text\", \"Number\", \"OccurredAt\", \"ExternalId\") VALUES ({1}, {(string?)null}, {42}, {(DateTime?)null}, {(Guid?)null})");
-        await context.Database.ExecuteSqlInterpolatedAsync(
+        await context.Database.ExecuteSqlAsync(
             $"INSERT INTO \"Rows\" (\"Id\", \"Text\", \"Number\", \"OccurredAt\", \"ExternalId\") VALUES ({2}, {"middle"}, {(int?)null}, {DateTime.UtcNow}, {Guid.NewGuid()})");
-        await context.Database.ExecuteSqlInterpolatedAsync(
+        await context.Database.ExecuteSqlAsync(
             $"INSERT INTO \"Rows\" (\"Id\", \"Text\", \"Number\", \"OccurredAt\", \"ExternalId\") VALUES ({3}, {"final"}, {7}, {DateTime.UtcNow}, {(Guid?)null})");
 
         var rows = await context.Rows.OrderBy(row => row.Id).ToListAsync();

@@ -17,4 +17,28 @@ public class DuckDBModificationCommand : ModificationCommand
     public DuckDBModificationCommand(in NonTrackedModificationCommandParameters modificationCommandParameters) : base(in modificationCommandParameters)
     {
     }
+
+    /// <inheritdoc />
+    public override IReadOnlyList<IColumnModification> ColumnModifications
+    {
+        get
+        {
+            var modifications = base.ColumnModifications;
+            foreach (var modification in modifications)
+            {
+#if NET11_0_OR_GREATER
+                var partialJsonUpdate = modification.JsonPath is { IsRoot: false };
+#else
+                var partialJsonUpdate = modification.JsonPath is not null and not "$";
+#endif
+                if (partialJsonUpdate)
+                {
+                    throw new InvalidOperationException(
+                        "DuckDB does not support partial updates of owned JSON values. Replace the complete JSON document instead.");
+                }
+            }
+
+            return modifications;
+        }
+    }
 }

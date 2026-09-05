@@ -35,7 +35,7 @@ internal sealed class DuckDBFileSourceExpression : TableValuedFunctionExpression
 
     public DuckDBFileSourceFunction Function { get; }
 
-    public SqlExpression Path => Arguments[0];
+    public SqlExpression Path => (SqlExpression)Arguments[0];
 
     public override Expression Quote()
         => New(
@@ -45,8 +45,12 @@ internal sealed class DuckDBFileSourceExpression : TableValuedFunctionExpression
             Constant(Function),
             Path.Quote());
 
+#if NET11_0_OR_GREATER
+    public override TableValuedFunctionExpression Update(IReadOnlyList<Expression> arguments)
+#else
     public override TableValuedFunctionExpression Update(IReadOnlyList<SqlExpression> arguments)
-        => arguments is [var path]
+#endif
+        => arguments is [SqlExpression path]
             ? path == Path
                 ? this
                 : new DuckDBFileSourceExpression(Alias, Function, path, Annotations)

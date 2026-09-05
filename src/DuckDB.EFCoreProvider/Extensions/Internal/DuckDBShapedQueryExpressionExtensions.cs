@@ -102,7 +102,7 @@ public static class DuckDBShapedQueryExpressionExtensions
                     TableValuedFunctionExpression
                 {
                     Name: "jsonb_array_elements_text" or "json_array_elements_text",
-                    Arguments: [var json]
+                    Arguments: [SqlExpression json]
                 } tvf
                 ],
                 GroupBy: [],

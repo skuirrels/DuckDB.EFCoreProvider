@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/test/tiered-storage-s3.compose.yml"
 BENCHMARK_PROJECT="$ROOT_DIR/test/DuckDB.EFCoreProvider.Benchmarks/DuckDB.EFCoreProvider.Benchmarks.csproj"
+framework="${DUCKDB_BENCHMARK_FRAMEWORK:-net10.0}"
+case "$framework" in
+    net10.0|net11.0) ;;
+    *) echo "Unsupported DUCKDB_BENCHMARK_FRAMEWORK: $framework" >&2; exit 2 ;;
+esac
 TRACE_FILE="$(mktemp)"
 
 export DUCKDB_S3_TEST_PORT="${DUCKDB_S3_TEST_PORT:-19010}"
@@ -75,7 +80,7 @@ compose up --detach minio request-proxy
 wait_for_minio
 compose run --rm createbucket
 
-dotnet run -c Release --project "$BENCHMARK_PROJECT" -- \
+dotnet run -c Release --framework "$framework" --project "$BENCHMARK_PROJECT" -- \
     --filter '*TieredCatalogueScaleBenchmarks*' \
     --job Dry \
     "$@"

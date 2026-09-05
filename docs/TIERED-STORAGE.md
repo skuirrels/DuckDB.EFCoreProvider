@@ -5,7 +5,7 @@ report across the whole history with ordinary LINQ. Tiering works over a **relat
 `Record` and its `RecordPart` (and deeper) children move together — governed by the root's date. Ideal for
 time-series or append-only data with a small working set but long, read-only retention.
 
-> **Runnable example:** [`samples/TieredStorage`](../samples/TieredStorage) — `dotnet run --project samples/TieredStorage`.
+> **Runnable example:** [`samples/TieredStorage`](../samples/TieredStorage) — `dotnet run -f net10.0 --project samples/TieredStorage`.
 > See the [tiered-storage compatibility and release-acceptance matrix](TIERED-STORAGE-COMPATIBILITY.md) for supported
 > registration, partition, query, lifecycle, and storage-backend combinations.
 
@@ -739,9 +739,9 @@ GCS interoperability mode, using separate buckets; Azurite serves Azure:
 
 ```bash
 docker compose -f samples/TieredStorage/docker-compose.yml up -d
-dotnet run --project samples/TieredStorage -- s3      # archive to S3 (MinIO)
-dotnet run --project samples/TieredStorage -- gcs     # TYPE gcs + gcs:// archive (MinIO)
-dotnet run --project samples/TieredStorage -- azure   # archive to Azure Blob (Azurite)
+dotnet run -f net10.0 --project samples/TieredStorage -- s3      # archive to S3 (MinIO)
+dotnet run -f net10.0 --project samples/TieredStorage -- gcs     # TYPE gcs + gcs:// archive (MinIO)
+dotnet run -f net10.0 --project samples/TieredStorage -- azure   # archive to Azure Blob (Azurite)
 ```
 
 It targets MinIO / Azurite by default. Override `TIER_S3_*`, `TIER_GCS_*`, or `TIER_AZURE_*` to point at a real
@@ -753,7 +753,7 @@ TIER_GCS_ENDPOINT="" \
 TIER_GCS_KEY_ID="$GCS_HMAC_ACCESS_ID" \
 TIER_GCS_SECRET="$GCS_HMAC_SECRET" \
 TIER_GCS_BUCKET="my-archive-bucket" \
-dotnet run --project samples/TieredStorage -- gcs
+dotnet run -f net10.0 --project samples/TieredStorage -- gcs
 ```
 
 **Failure/retry acceptance matrix.** Run the provider's dedicated MinIO lane with:

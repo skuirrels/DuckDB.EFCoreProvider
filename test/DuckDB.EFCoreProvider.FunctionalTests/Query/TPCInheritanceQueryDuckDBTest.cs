@@ -1,7 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
@@ -11,7 +10,7 @@ public class TPCInheritanceQueryDuckDBTest: TPCInheritanceQueryTestBase<TPCInher
     {
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Can_insert_update_delete()
     {
         return base.Can_insert_update_delete();
@@ -29,7 +28,7 @@ public class TPCInheritanceQueryDuckDBTest: TPCInheritanceQueryTestBase<TPCInher
         return base.GetType_in_hierarchy_in_leaf_type_with_sibling(async);
     }
 
-    [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Setting_foreign_key_to_a_different_type_throws()
     {
         return base.Setting_foreign_key_to_a_different_type_throws();

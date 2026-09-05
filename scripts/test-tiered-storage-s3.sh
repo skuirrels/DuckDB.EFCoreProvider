@@ -6,6 +6,14 @@ COMPOSE_FILE="$ROOT_DIR/test/tiered-storage-s3.compose.yml"
 SOLUTION="$ROOT_DIR/DuckDB.EFCoreProvider.slnx"
 TEST_PROJECT="$ROOT_DIR/test/DuckDB.EFCoreProvider.FunctionalTests/DuckDB.EFCoreProvider.FunctionalTests.csproj"
 
+framework_args=()
+if [[ -n "${DUCKDB_TEST_FRAMEWORK:-}" ]]; then
+    case "$DUCKDB_TEST_FRAMEWORK" in
+        net10.0|net11.0) framework_args=(--framework "$DUCKDB_TEST_FRAMEWORK") ;;
+        *) echo "Unsupported DUCKDB_TEST_FRAMEWORK: $DUCKDB_TEST_FRAMEWORK" >&2; exit 2 ;;
+    esac
+fi
+
 export DUCKDB_S3_TEST_PORT="${DUCKDB_S3_TEST_PORT:-19010}"
 export DUCKDB_S3_TEST_ENDPOINT="${DUCKDB_S3_TEST_ENDPOINT:-127.0.0.1:${DUCKDB_S3_TEST_PORT}}"
 export DUCKDB_S3_TEST_BUCKET="${DUCKDB_S3_TEST_BUCKET:-tiered-storage-integration}"
@@ -50,6 +58,6 @@ compose run --rm createbucket
 
 dotnet restore "$SOLUTION"
 dotnet build "$SOLUTION" --no-restore
-dotnet test "$TEST_PROJECT" --no-build \
+dotnet test "$TEST_PROJECT" --no-build "${framework_args[@]+"${framework_args[@]}"}" \
     --filter "FullyQualifiedName~TieredStorageS3Tests" \
     "$@"

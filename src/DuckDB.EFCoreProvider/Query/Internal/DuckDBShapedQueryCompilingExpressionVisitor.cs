@@ -23,10 +23,30 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
     private static readonly PropertyInfo FieldCountProperty
         = typeof(DbDataReader).GetProperty(nameof(DbDataReader.FieldCount))!;
 
+    private bool _requiresRuntimeRawSqlArguments;
+
+    // EF's pregeneration parameter locator only finds SqlParameterExpression, not the
+    // QueryParameterExpression containing FromSql's object[] arguments. Resolve those
+    // commands at runtime, when EF can expand the array and map its actual values.
+    protected override int MaxNullableParametersForPregeneratedSql
+        => _requiresRuntimeRawSqlArguments ? -1 : base.MaxNullableParametersForPregeneratedSql;
+
     protected override Expression VisitShapedQuery(ShapedQueryExpression shapedQueryExpression)
     {
         var selectExpression = shapedQueryExpression.QueryExpression as SelectExpression;
-        var result = base.VisitShapedQuery(shapedQueryExpression);
+        var previousRequiresRuntimeArguments = _requiresRuntimeRawSqlArguments;
+        _requiresRuntimeRawSqlArguments |= QueryCompilationContext.IsPrecompiling
+            && RuntimeRawSqlArgumentsFinder.Contains(shapedQueryExpression.QueryExpression);
+        Expression result;
+        try
+        {
+            result = base.VisitShapedQuery(shapedQueryExpression);
+        }
+        finally
+        {
+            _requiresRuntimeRawSqlArguments = previousRequiresRuntimeArguments;
+        }
+
         if (selectExpression is null)
         {
             return result;
@@ -252,6 +272,32 @@ internal sealed class DuckDBShapedQueryCompilingExpressionVisitor(
         int RootProjectionIndex,
         IReadOnlySet<int> LeafProjectionIndexes,
         IReadOnlySet<string> NestedComplexPropertyNames);
+
+    private sealed class RuntimeRawSqlArgumentsFinder : ExpressionVisitor
+    {
+        private bool _found;
+
+        public static bool Contains(Expression expression)
+        {
+            var finder = new RuntimeRawSqlArgumentsFinder();
+            finder.Visit(expression);
+            return finder._found;
+        }
+
+        public override Expression? Visit(Expression? node)
+            => _found ? node : base.Visit(node);
+
+        protected override Expression VisitExtension(Expression node)
+        {
+            if (node is FromSqlExpression { Arguments: QueryParameterExpression })
+            {
+                _found = true;
+                return node;
+            }
+
+            return base.VisitExtension(node);
+        }
+    }
 
     private sealed class StructuralTypeShaperFindingVisitor : ExpressionVisitor
     {

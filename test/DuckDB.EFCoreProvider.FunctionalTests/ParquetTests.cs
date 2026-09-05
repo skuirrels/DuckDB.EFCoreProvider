@@ -3,7 +3,6 @@ using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.EntityFrameworkCore;
 
@@ -272,4 +271,3 @@ public class ParquetTests : IClassFixture<ParquetTests.ParquetFixture>
         }
     }
 }
-

@@ -2,7 +2,12 @@
 
   <!-- Shared properties for every project in the repository. -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+    <!-- Release packages contain one EF line; ordinary development builds still compile both. -->
+    <TargetFrameworks Condition="'$(DuckDBEFCoreMajorVersion)' == '10'">net10.0</TargetFrameworks>
+    <TargetFrameworks Condition="'$(DuckDBEFCoreMajorVersion)' == '11'">net11.0</TargetFrameworks>
+    <!-- dotnet test otherwise runs target frameworks concurrently against shared test resources. -->
+    <TestTfmsInParallel>false</TestTfmsInParallel>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 

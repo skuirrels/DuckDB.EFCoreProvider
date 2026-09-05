@@ -1,9 +1,9 @@
 # Local object-store endpoints for the tiered-storage sample's remote modes.
 #
 #   docker compose -f samples/TieredStorage/docker-compose.yml up -d
-#   dotnet run --project samples/TieredStorage -- s3       # uses the minio service
-#   dotnet run --project samples/TieredStorage -- gcs      # TYPE gcs + gcs:// via the minio service
-#   dotnet run --project samples/TieredStorage -- azure    # uses the azurite service
+#   dotnet run -f net10.0 --project samples/TieredStorage -- s3       # uses the minio service
+#   dotnet run -f net10.0 --project samples/TieredStorage -- gcs      # TYPE gcs + gcs:// via the minio service
+#   dotnet run -f net10.0 --project samples/TieredStorage -- azure    # uses the azurite service
 #   docker compose -f samples/TieredStorage/docker-compose.yml down -v   # tear down + wipe data
 #
 # - minio    : S3-compatible store (API :9000, console :9001, minioadmin/minioadmin); createbucket makes

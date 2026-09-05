@@ -7,6 +7,12 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 
+#if NET11_0_OR_GREATER
+using JsonMappingBase = Microsoft.EntityFrameworkCore.Storage.RelationalTypeMapping;
+#else
+using JsonMappingBase = Microsoft.EntityFrameworkCore.Storage.JsonTypeMapping;
+#endif
+
 namespace DuckDB.EFCoreProvider.Storage.Internal;
 
 /// <summary>
@@ -15,7 +21,7 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 ///     any release. You should only use it directly in your code with extreme caution and knowing that
 ///     doing so can result in application failures when updating to a new Entity Framework Core release.
 /// </summary>
-public class DuckDBJsonTypeMapping : JsonTypeMapping
+public class DuckDBJsonTypeMapping : JsonMappingBase
 {
     public DuckDBJsonTypeMapping(Type clrType)
         : base("JSON", clrType, System.Data.DbType.String)

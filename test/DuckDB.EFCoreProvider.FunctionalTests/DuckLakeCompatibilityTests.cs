@@ -587,6 +587,11 @@ public sealed class DuckLakeCompatibilityTests
         {
             var options = new DbContextOptionsBuilder<DuckLakeContext>()
                 .UseDuckLake(metadataPath, duckLake => duckLake.DataPath(dataPath))
+                // This fixture intentionally uses distinct warning options; do not populate the shared EF cache.
+                .EnableServiceProviderCaching(false)
+                // Exercise the provider's migration capability guard even without fixture migrations.
+                .ConfigureWarnings(warnings => warnings.Ignore(
+                    RelationalEventId.MigrationsNotFound, CoreEventId.ManyServiceProvidersCreatedWarning))
                 .Options;
             using var context = new DuckLakeContext(options);
             context.Database.EnsureCreated();
@@ -1010,11 +1015,11 @@ public sealed class DuckLakeCompatibilityTests
             Assert.True(await context.Database.EnsureCreatedAsync());
             Assert.Equal(
                 1,
-                await context.Database.ExecuteSqlInterpolatedAsync(
+                await context.Database.ExecuteSqlAsync(
                     $"INSERT INTO alternate_upsert_items VALUES ({id}, {externalId}, {"first"})"));
             Assert.Equal(
                 1,
-                await context.Database.ExecuteSqlInterpolatedAsync(
+                await context.Database.ExecuteSqlAsync(
                     $"INSERT INTO alternate_upsert_items VALUES ({id}, {externalId}, {"second"})"));
 
             var plan = DuckDBUpsertPlanner.GetOrCreate(

@@ -69,5 +69,10 @@ public class NonSharedModelBulkUpdatesDuckDBTest : NonSharedModelBulkUpdatesRela
         return base.Update_owned_and_non_owned_properties_with_table_sharing(async);
     }
 
-    protected override ITestStoreFactory TestStoreFactory => DuckDBTestStoreFactory.Instance;
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
+    protected override ITestStoreFactory TestStoreFactory
+#endif
+        => DuckDBTestStoreFactory.Instance;
 }

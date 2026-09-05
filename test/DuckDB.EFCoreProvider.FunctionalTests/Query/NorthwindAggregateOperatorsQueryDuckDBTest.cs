@@ -1,13 +1,23 @@
 ﻿using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
 public class NorthwindAggregateOperatorsQueryDuckDBTest : NorthwindAggregateOperatorsQueryRelationalTestBase<
     NorthwindQueryDuckDBFixture<NoopModelCustomizer>>
 {
+#if NET11_0_OR_GREATER
+    [ConditionalTheory]
+    public override Task Average_over_nested_subquery(bool async)
+        => AssertAverage(
+            async,
+            source => source.Set<Microsoft.EntityFrameworkCore.TestModels.Northwind.Customer>().OrderBy(customer => customer.CustomerID).Take(3),
+            selector: customer => (decimal)customer.Orders.Average(double (order) => 5 + order.OrderDetails.Average(int (detail) => detail.ProductID)),
+            // DuckDB's existing default decimal mapping is DECIMAL(18,3).
+            asserter: (expected, actual) => Assert.Equal(expected, actual, precision: 3));
+#endif
+
     public NorthwindAggregateOperatorsQueryDuckDBTest(NorthwindQueryDuckDBFixture<NoopModelCustomizer> fixture, ITestOutputHelper testOutputHelper)
         : base(fixture)
     {

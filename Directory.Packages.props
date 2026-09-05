@@ -2,15 +2,20 @@
 
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <EFCoreVersion>10.0.10</EFCoreVersion>
+    <EFCoreVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">11.0.0-preview.7.26381.103</EFCoreVersion>
+    <!-- Allow EF10 servicing patches only. Preview provider contracts are pinned exactly. -->
+    <EFCorePackageVersion>[10.0.10,10.1.0)</EFCorePackageVersion>
+    <EFCorePackageVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">[$(EFCoreVersion)]</EFCorePackageVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- Provider runtime dependencies -->
     <PackageVersion Include="Skuirrels.DuckDB.NET.Data.Full" Version="1.5.5.4" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Abstractions" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="$(EFCorePackageVersion)" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Abstractions" Version="$(EFCorePackageVersion)" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="$(EFCorePackageVersion)" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="$(EFCorePackageVersion)" />
     <PackageVersion Include="NetTopologySuite" Version="2.6.0" />
   </ItemGroup>
 
@@ -26,7 +31,7 @@
 
   <ItemGroup>
     <!-- Test-only dependencies -->
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational.Specification.Tests" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational.Specification.Tests" Version="$(EFCoreVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.10" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
@@ -37,6 +42,8 @@
     <PackageVersion Include="coverlet.msbuild" Version="10.0.1" />
     <PackageVersion Include="JetBrains.Annotations" Version="2026.2.0" />
     <PackageVersion Include="JunitXml.TestLogger" Version="8.0.0" />
+    <PackageVersion Include="xunit.v3.core.mtp-off" Version="4.0.0-pre.108" />
+    <PackageVersion Include="xunit.v3.assert" Version="4.0.0-pre.108" />
     <PackageVersion Include="xunit.assert" Version="2.9.3" />
     <PackageVersion Include="xunit.core" Version="2.9.3" />
     <PackageVersion Include="xunit.extensibility.core" Version="2.9.3" />

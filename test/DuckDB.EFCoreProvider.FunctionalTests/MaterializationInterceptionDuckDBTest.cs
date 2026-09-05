@@ -32,10 +32,23 @@ public class MaterializationInterceptionDuckDBTest : MaterializationInterception
         }
     }
 
+#if NET11_0_OR_GREATER
+    protected override DbContextOptionsBuilder AddNonSharedOptions(DbContextOptionsBuilder builder)
+        => base.AddNonSharedOptions(builder).ConfigureWarnings(
+            warnings => warnings
+                .Ignore(CoreEventId.ManyServiceProvidersCreatedWarning)
+                // These inherited tests intentionally exercise the legacy owned JSON model.
+                .Log(RelationalEventId.OwnedEntityMappedToJsonCollectionWarning));
+#else
     protected override DbContextOptionsBuilder AddOptions(DbContextOptionsBuilder builder)
         => base.AddOptions(builder).ConfigureWarnings(
             warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
+#endif
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 }

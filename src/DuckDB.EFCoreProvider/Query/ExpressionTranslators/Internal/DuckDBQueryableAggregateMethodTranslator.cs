@@ -56,7 +56,7 @@ public class DuckDBQueryableAggregateMethodTranslator : IAggregateMethodCallTran
                                 [averageSqlExpression],
                                 nullable: true,
                                 argumentsPropagateNullability: [false],
-                                typeof(decimal)),
+                                typeof(double)),
                             averageSqlExpression.Type,
                             averageSqlExpression.TypeMapping);
                     }
@@ -69,7 +69,7 @@ public class DuckDBQueryableAggregateMethodTranslator : IAggregateMethodCallTran
                                 [averageSqlExpression],
                                 nullable: true,
                                 argumentsPropagateNullability: [false],
-                                typeof(float)),
+                                typeof(double)),
                             averageSqlExpression.Type,
                             averageSqlExpression.TypeMapping);
                     }

@@ -33,5 +33,10 @@ public class SharedTypeQueryDuckDBTest : SharedTypeQueryRelationalTestBase
         return base.Can_use_shared_type_entity_type_in_query_filter(async);
     }
 
-    protected override ITestStoreFactory TestStoreFactory => DuckDBTestStoreFactory.Instance;
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
+    protected override ITestStoreFactory TestStoreFactory
+#endif
+        => DuckDBTestStoreFactory.Instance;
 }

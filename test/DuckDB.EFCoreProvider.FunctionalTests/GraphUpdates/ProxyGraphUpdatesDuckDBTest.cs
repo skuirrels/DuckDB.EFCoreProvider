@@ -76,7 +76,7 @@ public class ProxyGraphUpdatesDuckDBTest
             await base.Can_attach_full_required_non_PK_AK_graph_of_duplicates();
         }
 
-        [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+        [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
         public override async Task Can_attach_full_required_non_PK_graph_of_duplicates()
         {
             await base.Can_attach_full_required_non_PK_graph_of_duplicates();
@@ -412,7 +412,7 @@ public class ProxyGraphUpdatesDuckDBTest
             await base.Save_changed_optional_one_to_one_with_alternate_key(changeMechanism, useExistingEntities);
         }
 
-        [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+        [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
         public override async Task Save_changed_optional_one_to_one_with_alternate_key_in_store()
         {
             await base.Save_changed_optional_one_to_one_with_alternate_key_in_store();
@@ -608,7 +608,7 @@ public class ProxyGraphUpdatesDuckDBTest
             await base.Can_attach_full_required_non_PK_AK_graph_of_duplicates();
         }
 
-        [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+        [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
         public override async Task Can_attach_full_required_non_PK_graph_of_duplicates()
         {
             await base.Can_attach_full_required_non_PK_graph_of_duplicates();
@@ -944,7 +944,7 @@ public class ProxyGraphUpdatesDuckDBTest
             await base.Save_changed_optional_one_to_one_with_alternate_key(changeMechanism, useExistingEntities);
         }
 
-        [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+        [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
         public override async Task Save_changed_optional_one_to_one_with_alternate_key_in_store()
         {
             await base.Save_changed_optional_one_to_one_with_alternate_key_in_store();
@@ -1142,7 +1142,7 @@ public class ProxyGraphUpdatesDuckDBTest
             await base.Can_attach_full_required_non_PK_AK_graph_of_duplicates();
         }
 
-        [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+        [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
         public override async Task Can_attach_full_required_non_PK_graph_of_duplicates()
         {
             await base.Can_attach_full_required_non_PK_graph_of_duplicates();
@@ -1478,7 +1478,7 @@ public class ProxyGraphUpdatesDuckDBTest
             await base.Save_changed_optional_one_to_one_with_alternate_key(changeMechanism, useExistingEntities);
         }
 
-        [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
+        [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
         public override async Task Save_changed_optional_one_to_one_with_alternate_key_in_store()
         {
             await base.Save_changed_optional_one_to_one_with_alternate_key_in_store();

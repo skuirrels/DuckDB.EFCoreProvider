@@ -1,5 +1,4 @@
 ﻿using Microsoft.EntityFrameworkCore.TestUtilities;
-using Xunit.Abstractions;
 
 namespace Microsoft.EntityFrameworkCore;
 
@@ -10,7 +9,11 @@ public class EntitySplittingDuckDBTest : EntitySplittingTestBase
     {
     }
 
+#if NET11_0_OR_GREATER
+    protected override ITestStoreFactory NonSharedTestStoreFactory
+#else
     protected override ITestStoreFactory TestStoreFactory
+#endif
         => DuckDBTestStoreFactory.Instance;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
