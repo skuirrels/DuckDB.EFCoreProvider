@@ -1174,7 +1174,8 @@ public sealed class DuckLakeCompatibilityTests
                 var row = appender.CreateRow();
                 row.AppendValue(appendedId);
                 row.AppendValue("appended");
-                row.AppendValue(4);
+                // A bare constant selects the sbyte? overload; match the INTEGER column's width.
+                row.AppendValue((int?)4);
                 row.EndRow();
             }
 
