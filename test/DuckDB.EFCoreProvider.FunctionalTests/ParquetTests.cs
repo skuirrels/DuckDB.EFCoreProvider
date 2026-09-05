@@ -234,8 +234,9 @@ public class ParquetTests : IClassFixture<ParquetTests.ParquetFixture>
             Execute(joinConn, "CREATE TABLE \"Others\" (\"Id\" INTEGER)");
             using (var a = joinConn.CreateAppender("Others"))
             {
-                a.CreateRow().AppendValue(1).EndRow();
-                a.CreateRow().AppendValue(2).EndRow();
+                // Match INTEGER: bare constants select the appender's sbyte? overload.
+                a.CreateRow().AppendValue((int?)1).EndRow();
+                a.CreateRow().AppendValue((int?)2).EndRow();
             }
             JoinDatabaseConnectionString = $"DataSource={dbPath}";
         }
