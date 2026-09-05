@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.NET.Data;
 using System.Data;
@@ -173,8 +174,8 @@ internal sealed class QuackDbConnection : DbConnection
         var expanded = QuackSqlTextBuilder.ExpandParameters(commandText, parameters);
         var command = _innerConnection.CreateCommand();
         command.CommandText = "FROM quack_query_by_name($quack_catalog, $quack_sql);";
-        command.Parameters.Add(new DuckDBParameter("quack_catalog", _options.CatalogName));
-        command.Parameters.Add(new DuckDBParameter("quack_sql", expanded));
+        command.AddParameter("quack_catalog", _options.CatalogName);
+        command.AddParameter("quack_sql", expanded);
         return command;
     }
 

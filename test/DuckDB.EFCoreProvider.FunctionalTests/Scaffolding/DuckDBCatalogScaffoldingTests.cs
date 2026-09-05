@@ -2,7 +2,10 @@ using DuckDB.EFCoreProvider.Design.Internal;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore.Scaffolding.Metadata;
+using Microsoft.EntityFrameworkCore.TestUtilities;
 using Microsoft.Extensions.DependencyInjection;
+using pengdows.crud.fakeDb;
+using System.Data.Common;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Scaffolding;
@@ -108,9 +111,40 @@ public sealed class DuckDBCatalogScaffoldingTests
         Assert.Contains("must be file paths", exception.Message);
     }
 
-    private static ServiceProvider CreateDesignTimeServices()
+    [Fact]
+    public void Connection_string_scaffolding_uses_the_registered_factory_end_to_end()
+    {
+        var connection = new CapturingFakeDbConnection();
+        var providerFactory = new CapturingProviderFactory(connection);
+        connection.EnqueueScalarResult("main");
+        connection.EnqueueReaderResult([]);
+        connection.EnqueueReaderResult([]);
+        using var services = CreateDesignTimeServices(providerFactory);
+
+        var model = services.GetRequiredService<IDatabaseModelFactory>().Create(
+            "Data Source=:memory:",
+            new DatabaseModelFactoryOptions([], []));
+
+        Assert.Equal("main", model.DatabaseName);
+        Assert.Empty(model.Tables);
+        Assert.Equal(1, providerFactory.CreateConnectionCount);
+        var tableCommand = Assert.Single(connection.ExecutedReaderCommands.Where(
+            command => command.CommandText.Contains("information_schema.tables", StringComparison.OrdinalIgnoreCase)));
+        Assert.Equal(4, tableCommand.Parameters.Count);
+        Assert.All(tableCommand.Parameters, parameter => Assert.Equal(typeof(fakeDbParameter), parameter.ParameterType));
+        Assert.Equal(
+            ["database_name", "default_table_name", "tables", "schemas"],
+            tableCommand.Parameters.Select(parameter => parameter.Name));
+    }
+
+    private static ServiceProvider CreateDesignTimeServices(DbProviderFactory? providerFactory = null)
     {
         var services = new ServiceCollection();
+        if (providerFactory is not null)
+        {
+            services.AddSingleton<DbProviderFactory>(providerFactory);
+        }
+
         new DuckDBDesignTimeServices().ConfigureDesignTimeServices(services);
         return services.BuildServiceProvider();
     }

@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.NET.Data;
 
@@ -71,9 +72,9 @@ internal static class QuackCatalogBootstrapper
     {
         var command = connection.CreateCommand();
         command.CommandText = SequenceDiscoverySql;
-        command.Parameters.Add(new DuckDBParameter("endpoint", options.Endpoint));
-        command.Parameters.Add(new DuckDBParameter("token", options.Token));
-        command.Parameters.Add(new DuckDBParameter("disable_ssl", options.DisableSsl));
+        command.AddParameter("endpoint", options.Endpoint);
+        command.AddParameter("token", options.Token);
+        command.AddParameter("disable_ssl", options.DisableSsl);
         return command;
     }
 

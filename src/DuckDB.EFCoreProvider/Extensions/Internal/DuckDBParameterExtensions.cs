@@ -1,5 +1,6 @@
 ﻿using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore.Storage;
+using System.Data.Common;
 
 namespace DuckDB.EFCoreProvider.Extensions.Internal;
 
@@ -18,11 +19,15 @@ internal static class DuckDBParameterExtensions
         return parameter;
     }
 
-    public static DuckDBParameter ConfigureNameAndMetadata(
-        this DuckDBParameter parameter,
+    public static DbParameter ConfigureNameAndMetadata(
+        this DbParameter parameter,
         RelationalTypeMapping typeMapping)
     {
-        parameter.RemoveDollarSign();
+        if (parameter is DuckDBParameter duckDbParameter)
+        {
+            duckDbParameter.RemoveDollarSign();
+        }
+
         DuckDBParameterMetadataRegistry.Register(parameter, typeMapping);
         return parameter;
     }

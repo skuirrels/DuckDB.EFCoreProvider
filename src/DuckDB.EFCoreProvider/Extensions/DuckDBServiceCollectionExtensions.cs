@@ -10,6 +10,7 @@ using DuckDB.EFCoreProvider.Migrations.Internal;
 using DuckDB.EFCoreProvider.Query.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.EFCoreProvider.Update.Internal;
+using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -20,7 +21,9 @@ using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.ComponentModel;
+using System.Data.Common;
 
 namespace DuckDB.EFCoreProvider.Extensions;
 
@@ -100,6 +103,8 @@ public static class DuckDBServiceCollectionExtensions
     [EditorBrowsable(EditorBrowsableState.Never)]
     public static IServiceCollection AddEntityFrameworkDuckDB(this IServiceCollection serviceCollection)
     {
+        serviceCollection.TryAddSingleton<DbProviderFactory>(DuckDBClientFactory.Instance);
+
         var builder = new EntityFrameworkRelationalServicesBuilder(serviceCollection)
             .TryAdd<LoggingDefinitions, DuckDBLoggingDefinitions>()
             .TryAdd<IDatabaseProvider, DatabaseProvider<DuckDBOptionsExtension>>()

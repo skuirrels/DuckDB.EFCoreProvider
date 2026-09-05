@@ -2658,6 +2658,8 @@ public static partial class DuckDBArchiveExtensions
     // (s3://, gcs://, azure://) credentials before the archive reads or writes remote Parquet.
     private static bool OpenTracked(DatabaseFacade database)
     {
+        _ = RequireNativeArchiveConnection(database);
+
         // Open even when the caller already opened the raw DbConnection: the provider's Open() is what
         // attaches an encrypted database or DuckLake catalog on a caller-opened connection (and is a no-op
         // otherwise), so short-circuiting here would run the tiered operation against the host catalog.
@@ -2676,6 +2678,8 @@ public static partial class DuckDBArchiveExtensions
 
     private static async Task<bool> OpenTrackedAsync(DatabaseFacade database, CancellationToken cancellationToken)
     {
+        _ = RequireNativeArchiveConnection(database);
+
         var wasOpen = database.GetDbConnection().State == ConnectionState.Open;
         await database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         return !wasOpen;
@@ -2688,6 +2692,12 @@ public static partial class DuckDBArchiveExtensions
             await database.CloseConnectionAsync().ConfigureAwait(false);
         }
     }
+
+    private static DuckDBConnection RequireNativeArchiveConnection(DatabaseFacade database)
+        => database.GetDbConnection() as DuckDBConnection
+            ?? throw new NotSupportedException(
+                "Tiered-storage archive operations require a native DuckDBConnection. "
+                + "Substituted or decorated connections are not supported without an explicit archive contract.");
 
     private static async Task<TResult> ExecuteTieredOperationAsync<TRoot, TResult>(
         DatabaseFacade database,

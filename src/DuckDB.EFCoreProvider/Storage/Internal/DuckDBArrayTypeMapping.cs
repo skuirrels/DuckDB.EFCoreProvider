@@ -1,6 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Storage.ValueConverters;
-using DuckDB.NET.Data;
 using DuckDB.NET.Native;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.ChangeTracking.Internal;
@@ -182,17 +181,9 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
             }
         }
 
-        var param = base.CreateParameter(command, name, value, nullable, direction);
-
-        if (param is not DuckDBParameter)
-        {
-            throw new InvalidOperationException(
-                $"DuckDB-specific type mapping {GetType().Name} being used with non-DuckDB parameter type {param.GetType().Name}");
-        }
-
-        // The array element type is inferred by DuckDB from the bound list value; the parameter's explicit
-        // DuckDB type name is intentionally not set here.
-        return param;
+        // The array element type is inferred by the DuckDB-compatible command from the bound list value; no
+        // DuckDBParameter-specific type name is required here, so decorators can retain their own parameter type.
+        return base.CreateParameter(command, name, value, nullable, direction);
     }
 
     private static bool CanBindDirectly(object value)
@@ -254,7 +245,7 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
+        parameter.ConfigureNameAndMetadata(this);
         base.ConfigureParameter(parameter);
     }
 
