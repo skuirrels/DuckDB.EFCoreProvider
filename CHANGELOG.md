@@ -2,6 +2,19 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.25.0
+
+- Support registered ADO.NET provider factories for ordinary DuckDB connections and database-first scaffolding while
+  preserving every existing public constructor. Factory-created connections are exercised end to end through EF
+  queries, `SaveChanges`, `EnsureCreated`, and scaffolding.
+- Create parameters through their owning commands. Native `DuckDBParameter` names retain DuckDB's `$` normalization,
+  while substituted parameters preserve their own names and types; both paths retain provider type-mapping metadata.
+  Temporal materialization now uses the provider-neutral `DbDataReader` contract.
+- Keep DuckLake, encrypted databases, Quack hosting, Appender operations, and tiered-storage archive operations
+  explicitly native. Unsupported substituted connections and native-only initializers fail before opening or partial
+  configuration, and remote profiles reject unsupported deletion before attempting a connection.
+- Release `DuckDB.EFCoreProvider.NTS` 1.0.8 with the same provider-neutral parameter configuration for geometry values.
+
 ## 1.24.0
 
 - Support optional `STRUCT`-mapped complex roots and nullable nested complex properties. Queries and writes now

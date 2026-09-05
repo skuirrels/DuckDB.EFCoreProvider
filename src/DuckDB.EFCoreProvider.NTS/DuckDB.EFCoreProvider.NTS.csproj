@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageVersion>1.0.7</PackageVersion>
-    <FileVersion>1.0.7</FileVersion>
-    <Version>1.0.7</Version>
+    <PackageVersion>1.0.8</PackageVersion>
+    <FileVersion>1.0.8</FileVersion>
+    <Version>1.0.8</Version>
     <Authors>skuirrels</Authors>
     <Description>NetTopologySuite (spatial) support for the DuckDB provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -21,8 +21,11 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion>1.0.6</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.0.7</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.0.8
+- Configure geometry parameters through the provider-neutral DbParameter path so decorated ADO.NET connections preserve their parameter implementation and metadata. Tracks DuckDB.EFCoreProvider 1.25.0.
+
 1.0.7
 - Refresh NuGet discovery tags and track DuckDB.EFCoreProvider 1.14.0. No behavioural or public API changes.
 
