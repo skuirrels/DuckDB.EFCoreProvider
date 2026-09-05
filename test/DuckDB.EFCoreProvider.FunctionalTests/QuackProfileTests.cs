@@ -560,6 +560,21 @@ public sealed class QuackProfileTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Quack_database_deletion_fails_before_connecting_synchronously()
+    {
+        using var context = new QuackContext(
+            new DbContextOptionsBuilder<QuackContext>()
+                .UseQuack("quack:localhost:1", "valid-token")
+                .Options);
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => context.Database.EnsureDeleted());
+
+        Assert.Contains("owned by the server", exception.Message);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [ConditionalFact]
     public void Quack_sequence_generated_model_is_accepted_during_model_validation()
     {
         using var context = new GeneratedQuackContext(

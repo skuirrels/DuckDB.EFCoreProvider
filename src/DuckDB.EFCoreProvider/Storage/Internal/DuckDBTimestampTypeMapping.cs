@@ -1,5 +1,4 @@
 ﻿using DuckDB.EFCoreProvider.Extensions.Internal;
-using DuckDB.NET.Data;
 using DuckDB.NET.Native;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Storage.Json;
@@ -18,7 +17,7 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBTimestampTypeMapping : RelationalTypeMapping
 {
-    private static readonly MethodInfo GetDateTime = typeof(DuckDBDataReader)
+    private static readonly MethodInfo GetDateTime = typeof(DbDataReader)
         .GetRuntimeMethod(nameof(DbDataReader.GetDateTime), [typeof(int)])!;
 
     private static readonly MethodInfo ConvertDateTimeToDateTimeOffsetMethod
@@ -127,7 +126,7 @@ public class DuckDBTimestampTypeMapping : RelationalTypeMapping
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
+        parameter.ConfigureNameAndMetadata(this);
         base.ConfigureParameter(parameter);
     }
 

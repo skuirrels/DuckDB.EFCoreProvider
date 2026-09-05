@@ -1,6 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Storage.ValueConverters;
-using DuckDB.NET.Data;
 using DuckDB.NET.Native;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Storage.Json;
@@ -19,12 +18,12 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBTimeTypeMapping : RelationalTypeMapping
 {
-    private static readonly MethodInfo GetTimeOnly = typeof(DuckDBDataReader)
-        .GetMethod(nameof(DuckDBDataReader.GetFieldValue), 1, [typeof(int)])!
+    private static readonly MethodInfo GetTimeOnly = typeof(DbDataReader)
+        .GetMethod(nameof(DbDataReader.GetFieldValue), 1, [typeof(int)])!
         .MakeGenericMethod(typeof(TimeOnly));
 
-    private static readonly MethodInfo GetTimeSpan = typeof(DuckDBDataReader)
-        .GetMethod(nameof(DuckDBDataReader.GetFieldValue), 1, [typeof(int)])!
+    private static readonly MethodInfo GetTimeSpan = typeof(DbDataReader)
+        .GetMethod(nameof(DbDataReader.GetFieldValue), 1, [typeof(int)])!
         .MakeGenericMethod(typeof(TimeSpan));
 
     // Keyed by store-type name rather than DuckDBType because the DuckDBType enum does not contain TIME_NS.
@@ -103,7 +102,7 @@ public class DuckDBTimeTypeMapping : RelationalTypeMapping
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)
     {
-        ((DuckDBParameter)parameter).ConfigureNameAndMetadata(this);
+        parameter.ConfigureNameAndMetadata(this);
         base.ConfigureParameter(parameter);
     }
 

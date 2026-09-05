@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Diagnostics.Internal;
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
@@ -90,7 +91,7 @@ public sealed class DuckDBQuackServer : IDisposable, IAsyncDisposable
         {
             using var command = _connection.CreateCommand();
             command.CommandText = "CALL quack_stop($uri);";
-            command.Parameters.Add(new DuckDBParameter("uri", Uri));
+            command.AddParameter("uri", Uri);
             command.ExecuteNonQuery();
         }
         catch
@@ -132,7 +133,7 @@ public sealed class DuckDBQuackServer : IDisposable, IAsyncDisposable
         {
             await using var command = _connection.CreateCommand();
             command.CommandText = "CALL quack_stop($uri);";
-            command.Parameters.Add(new DuckDBParameter("uri", Uri));
+            command.AddParameter("uri", Uri);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -236,13 +237,13 @@ public static class DuckDBQuackExtensions
             command.CommandText = token is null
                 ? "CALL quack_serve($uri, allow_other_hostname => $allow_other, disable_ssl => $disable_ssl);"
                 : "CALL quack_serve($uri, token => $token, allow_other_hostname => $allow_other, disable_ssl => $disable_ssl);";
-            command.Parameters.Add(new DuckDBParameter("uri", uri));
+            command.AddParameter("uri", uri);
             if (token is not null)
             {
-                command.Parameters.Add(new DuckDBParameter("token", token));
+                command.AddParameter("token", token);
             }
-            command.Parameters.Add(new DuckDBParameter("allow_other", allowOtherHostname));
-            command.Parameters.Add(new DuckDBParameter("disable_ssl", disableSsl));
+            command.AddParameter("allow_other", allowOtherHostname);
+            command.AddParameter("disable_ssl", disableSsl);
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             serverStarted = true;
@@ -405,7 +406,7 @@ public static class DuckDBQuackExtensions
     {
         await using var command = connection.CreateCommand();
         command.CommandText = "CALL quack_stop($uri);";
-        command.Parameters.Add(new DuckDBParameter("uri", uri));
+        command.AddParameter("uri", uri);
         await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
     }
 

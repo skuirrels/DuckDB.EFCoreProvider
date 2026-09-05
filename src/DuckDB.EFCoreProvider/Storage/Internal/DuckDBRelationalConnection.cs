@@ -1,5 +1,6 @@
 ﻿using DuckDB.EFCoreProvider.Diagnostics.Internal;
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Internal;
 using DuckDB.NET.Data;
@@ -52,6 +53,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly DuckLakeOptions? _duckLakeOptions;
     private readonly QuackOptions? _quackOptions;
     private readonly IDuckDBEngineCapabilities _engineCapabilities;
+    private readonly DbProviderFactory _providerFactory;
     private DuckDBConnection? _initializedCatalogConnection;
     private DuckDBConnection? _initializingCatalogConnection;
     private DuckDBConnection? _observedCatalogConnection;
@@ -64,7 +66,8 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
             dependencies,
             rawSqlCommandBuilder,
             logger,
-            DuckDBEngineCapabilities.FromOptions(dependencies.ContextOptions))
+            DuckDBEngineCapabilities.FromOptions(dependencies.ContextOptions),
+            DuckDBClientFactory.Instance)
     {
     }
 
@@ -73,11 +76,22 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         IRawSqlCommandBuilder rawSqlCommandBuilder,
         IDiagnosticsLogger<DbLoggerCategory.Infrastructure> logger,
         IDuckDBEngineCapabilities engineCapabilities)
+        : this(dependencies, rawSqlCommandBuilder, logger, engineCapabilities, DuckDBClientFactory.Instance)
+    {
+    }
+
+    public DuckDBRelationalConnection(
+        RelationalConnectionDependencies dependencies,
+        IRawSqlCommandBuilder rawSqlCommandBuilder,
+        IDiagnosticsLogger<DbLoggerCategory.Infrastructure> logger,
+        IDuckDBEngineCapabilities engineCapabilities,
+        DbProviderFactory providerFactory)
         : base(dependencies)
     {
         _rawSqlCommandBuilder = rawSqlCommandBuilder;
         _logger = logger;
         _context = dependencies.CurrentContext.Context;
+        _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
 
         var optionsExtension = dependencies.ContextOptions.FindExtension<DuckDBOptionsExtension>();
         _loadSpatial = optionsExtension?.LoadSpatialite == true;
@@ -108,9 +122,21 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     /// <inheritdoc />
     protected override DbConnection CreateDbConnection()
     {
-        return _quackOptions is null
-            ? new DuckDBConnection(GetValidatedConnectionString())
-            : new QuackDbConnection(GetValidatedConnectionString(), _quackOptions, _engineCapabilities);
+        if (_quackOptions is not null)
+        {
+            return new QuackDbConnection(GetValidatedConnectionString(), _quackOptions, _engineCapabilities);
+        }
+
+        if (UsesAttachedCatalog)
+        {
+            return new DuckDBConnection(GetValidatedConnectionString());
+        }
+
+        var connection = _providerFactory.CreateConnection()
+            ?? throw new InvalidOperationException(
+                $"{_providerFactory.GetType().Name}.CreateConnection() returned null.");
+        connection.ConnectionString = GetValidatedConnectionString();
+        return connection;
     }
 
     /// <inheritdoc />
@@ -120,7 +146,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         // would otherwise stay unattached and the context would silently run against the empty host database.
         if (UsesAttachedCatalog && DbConnection.State == ConnectionState.Open)
         {
-            InitializeOpenConnection((DuckDBConnection)DbConnection);
+            InitializeOpenConnection(GetRequiredNativeCatalogConnection());
         }
 
         return base.Open(errorsExpected);
@@ -131,7 +157,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     {
         if (UsesAttachedCatalog && DbConnection.State == ConnectionState.Open)
         {
-            await InitializeOpenConnectionAsync((DuckDBConnection)DbConnection, cancellationToken).ConfigureAwait(false);
+            await InitializeOpenConnectionAsync(GetRequiredNativeCatalogConnection(), cancellationToken).ConfigureAwait(false);
         }
 
         return await base.OpenAsync(cancellationToken, errorsExpected).ConfigureAwait(false);
@@ -295,7 +321,12 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
                 }
             }).Options;
 
-        return new DuckDBRelationalConnection(Dependencies with { ContextOptions = contextOptions }, _rawSqlCommandBuilder, _logger);
+        return new DuckDBRelationalConnection(
+            Dependencies with { ContextOptions = contextOptions },
+            _rawSqlCommandBuilder,
+            _logger,
+            DuckDBEngineCapabilities.FromOptions(contextOptions),
+            _providerFactory);
     }
 
     protected override void CloseDbConnection()
@@ -325,13 +356,17 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         connection.Open();
         try
         {
-            if (connection is DuckDBConnection duckDbConnection)
+            if (UsesAttachedCatalog)
+            {
+                InitializeOpenConnection(GetRequiredNativeCatalogConnection());
+            }
+            else if (connection is DuckDBConnection duckDbConnection)
             {
                 InitializeOpenConnection(duckDbConnection);
             }
             else
             {
-                InitializeOpenQuackConnection();
+                InitializeOpenNonNativeConnection();
             }
         }
         catch
@@ -348,13 +383,17 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (connection is DuckDBConnection duckDbConnection)
+            if (UsesAttachedCatalog)
+            {
+                await InitializeOpenConnectionAsync(GetRequiredNativeCatalogConnection(), cancellationToken).ConfigureAwait(false);
+            }
+            else if (connection is DuckDBConnection duckDbConnection)
             {
                 await InitializeOpenConnectionAsync(duckDbConnection, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                await InitializeOpenQuackConnectionAsync(cancellationToken).ConfigureAwait(false);
+                await InitializeOpenNonNativeConnectionAsync(cancellationToken).ConfigureAwait(false);
             }
         }
         catch
@@ -364,19 +403,37 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         }
     }
 
-    private void InitializeOpenQuackConnection()
+    private void InitializeOpenNonNativeConnection()
     {
+        ThrowIfNativeConnectionInitializerConfigured();
         ApplyConfigurationIfNeeded();
         LoadSpatialExtensionIfNeeded();
         LoadConfiguredExtensions();
     }
 
-    private async Task InitializeOpenQuackConnectionAsync(CancellationToken cancellationToken)
+    private async Task InitializeOpenNonNativeConnectionAsync(CancellationToken cancellationToken)
     {
+        ThrowIfNativeConnectionInitializerConfigured();
         await ApplyConfigurationIfNeededAsync(cancellationToken).ConfigureAwait(false);
         await LoadSpatialExtensionIfNeededAsync(cancellationToken).ConfigureAwait(false);
         await LoadConfiguredExtensionsAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    private void ThrowIfNativeConnectionInitializerConfigured()
+    {
+        if (_connectionInitializer is not null)
+        {
+            throw new NotSupportedException(
+                "ConfigureConnection requires a native DuckDBConnection and cannot initialize a substituted connection. "
+                + "Configure the decorator when its DbProviderFactory creates the connection instead.");
+        }
+    }
+
+    private DuckDBConnection GetRequiredNativeCatalogConnection()
+        => DbConnection as DuckDBConnection
+            ?? throw new NotSupportedException(
+                "DuckLake and encrypted database profiles require a native DuckDBConnection. "
+                + "Substituted or decorated connections are supported only by the ordinary DuckDB profile.");
 
     private void InitializeOpenConnection(DuckDBConnection connection)
     {
@@ -981,7 +1038,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         using var command = DbConnection.CreateCommand();
         command.CommandText =
             "SELECT type, path, readonly, encrypted FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
-        command.Parameters.Add(new DuckDBParameter("catalog_name", catalogName));
+        command.AddParameter("catalog_name", catalogName);
         using var reader = command.ExecuteReader();
         return reader.Read()
             ? new AttachedDatabase(
@@ -999,7 +1056,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         await using var command = DbConnection.CreateCommand();
         command.CommandText =
             "SELECT type, path, readonly, encrypted FROM duckdb_databases() WHERE database_name = $catalog_name LIMIT 1;";
-        command.Parameters.Add(new DuckDBParameter("catalog_name", catalogName));
+        command.AddParameter("catalog_name", catalogName);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? new AttachedDatabase(

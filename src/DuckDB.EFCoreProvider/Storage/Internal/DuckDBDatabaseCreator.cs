@@ -1,4 +1,5 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Internal;
 using DuckDB.NET.Data;
@@ -8,6 +9,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
+using System.Data.Common;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
 
@@ -135,6 +137,11 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
             return true;
         }
 
+        if (_connection.DbConnection is not DuckDBConnection)
+        {
+            return ExistsUsingConnection();
+        }
+
         var connectionOptions = new DuckDBConnectionStringBuilder
         {
             ConnectionString = _connection.ConnectionString
@@ -215,14 +222,15 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         var databasePredicate = catalogName is null
             ? string.Empty
             : " AND database_name = $database_name";
-        var parameters = new List<System.Data.Common.DbParameter>
+        using var parameterFactoryCommand = Dependencies.Connection.DbConnection.CreateCommand();
+        var parameters = new List<DbParameter>
         {
-            new DuckDBParameter("default_table_name", HistoryRepository.DefaultTableName)
+            parameterFactoryCommand.CreateParameter("default_table_name", HistoryRepository.DefaultTableName)
         };
 
         if (catalogName is not null)
         {
-            parameters.Add(new DuckDBParameter("database_name", catalogName));
+            parameters.Add(parameterFactoryCommand.CreateParameter("database_name", catalogName));
         }
 
         return (bool)_rawSqlCommandBuilder
@@ -256,6 +264,20 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     }
 
     /// <inheritdoc />
+    public override bool EnsureDeleted()
+    {
+        ThrowIfDatabaseDeletionUnsupported();
+        return base.EnsureDeleted();
+    }
+
+    /// <inheritdoc />
+    public override async Task<bool> EnsureDeletedAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDatabaseDeletionUnsupported();
+        return await base.EnsureDeletedAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public override void CreateTables()
     {
         base.CreateTables();
@@ -283,19 +305,7 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     /// <inheritdoc />
     public override void Delete()
     {
-        if (_duckLakeOptions is not null)
-        {
-            throw new NotSupportedException(
-                "Database.EnsureDeleted() is intentionally disabled for DuckLake because a catalog may reference shared or "
-                + "remote metadata and object storage. Delete the catalog and data path explicitly with storage-specific tooling.");
-        }
-
-        if (!_supportsDatabaseDeletion)
-        {
-            throw new NotSupportedException(
-                "Database.EnsureDeleted() is intentionally disabled for the configured remote profile because the database "
-                + "is owned by the server. Delete it explicitly on the server.");
-        }
+        ThrowIfDatabaseDeletionUnsupported();
 
         if (_encryptedDatabase is not null)
         {
@@ -366,6 +376,44 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
         {
             throw new NotSupportedException(
                 "Database.EnsureCreated is not supported by the configured DuckDB engine capabilities.");
+        }
+    }
+
+    private void ThrowIfDatabaseDeletionUnsupported()
+    {
+        if (_duckLakeOptions is not null)
+        {
+            throw new NotSupportedException(
+                "Database.EnsureDeleted() is intentionally disabled for DuckLake because a catalog may reference shared or "
+                + "remote metadata and object storage. Delete the catalog and data path explicitly with storage-specific tooling.");
+        }
+
+        if (!_supportsDatabaseDeletion)
+        {
+            throw new NotSupportedException(
+                "Database.EnsureDeleted() is intentionally disabled for the configured remote profile because the database "
+                + "is owned by the server. Delete it explicitly on the server.");
+        }
+    }
+
+    private bool ExistsUsingConnection()
+    {
+        var opened = false;
+        try
+        {
+            opened = _connection.Open(errorsExpected: true);
+            return true;
+        }
+        catch (DbException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (opened)
+            {
+                _connection.Close();
+            }
         }
     }
 }

@@ -125,10 +125,10 @@ internal static class DuckDBBulkInsertPlanner<TEntity>
             + "AND table_name = $t AND schema_name = $s ORDER BY column_index";
         if (database is not null)
         {
-            command.Parameters.Add(new DuckDBParameter("d", database));
+            command.AddParameter("d", database);
         }
-        command.Parameters.Add(new DuckDBParameter("t", table));
-        command.Parameters.Add(new DuckDBParameter("s", schema));
+        command.AddParameter("t", table);
+        command.AddParameter("s", schema);
 
         var names = new List<string>();
         using var reader = command.ExecuteReader();
