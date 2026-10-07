@@ -2,11 +2,14 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
-## Unreleased
+## 1.27.0 / EF11 1.27.0-preview.1
 
 - Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.4 to 1.5.6, resolving the matching
   `Skuirrels.DuckDB.NET.Bindings.Full` 1.5.6 package and moving the bundled native DuckDB runtime from 1.5.5
   to 1.5.6. Provider APIs are unchanged.
+- Replace the withdrawn official MinIO container images with pinned `pgsty/minio` and `pgsty/mc` community-fork
+  images in the DuckLake and tiered-storage integration environments and the TieredStorage sample.
+- `DuckDB.EFCoreProvider.NTS` 1.1.0 and `DuckDB.EFCoreProvider.EF11.NTS` 1.1.0-preview.1 are unchanged.
 
 ## 1.26.0 / EF11 1.26.0-preview.1
 
