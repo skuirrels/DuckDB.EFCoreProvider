@@ -2,6 +2,12 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.4 to 1.5.6, resolving the matching
+  `Skuirrels.DuckDB.NET.Bindings.Full` 1.5.6 package and moving the bundled native DuckDB runtime from 1.5.5
+  to 1.5.6. Provider APIs are unchanged.
+
 ## 1.26.0 / EF11 1.26.0-preview.1
 
 - Fix precompiled `FromSqlRaw` and interpolated `FromSql` queries by resolving argument arrays at runtime;
