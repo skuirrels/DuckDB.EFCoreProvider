@@ -40,7 +40,7 @@ dotnet add package DuckDB.EFCoreProvider
 For EF11 preview, select the EF11 package (requires `net11.0`):
 
 ```bash
-dotnet add package DuckDB.EFCoreProvider.EF11 --version 1.26.0-preview.1
+dotnet add package DuckDB.EFCoreProvider.EF11 --version 1.26.1-preview.1
 ```
 
 Package Manager Console: `Install-Package DuckDB.EFCoreProvider`

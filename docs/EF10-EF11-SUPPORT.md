@@ -13,8 +13,8 @@ The package families are separate:
 
 | EF line | Core package | NTS package | Versions (core / NTS) |
 | --- | --- | --- | --- |
-| EF10 | `DuckDB.EFCoreProvider` | `DuckDB.EFCoreProvider.NTS` | `1.26.0` / `1.1.0` |
-| EF11 | `DuckDB.EFCoreProvider.EF11` | `DuckDB.EFCoreProvider.EF11.NTS` | `1.26.0-preview.1` / `1.1.0-preview.1` |
+| EF10 | `DuckDB.EFCoreProvider` | `DuckDB.EFCoreProvider.NTS` | `1.26.1` / `1.1.0` |
+| EF11 | `DuckDB.EFCoreProvider.EF11` | `DuckDB.EFCoreProvider.EF11.NTS` | `1.26.1-preview.1` / `1.1.0-preview.1` |
 
 Adding EF11 does not change the provider major version. Version 2 is reserved for the anticipated
 DuckDB 2 transition. The EF10 package remains stable while the EF11 package depends on preview EF.
