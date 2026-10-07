@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Version>1.26.1</Version>
-    <Version Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.26.1-preview.1</Version>
+    <Version>1.27.0</Version>
+    <Version Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.27.0-preview.1</Version>
     <PackageVersion>$(Version)</PackageVersion>
     <PackageId>DuckDB.EFCoreProvider</PackageId>
     <PackageId Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB.EFCoreProvider.EF11</PackageId>
-    <FileVersion>1.26.1.0</FileVersion>
+    <FileVersion>1.27.0.0</FileVersion>
     <Authors>skuirrels</Authors>
     <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
@@ -26,7 +26,7 @@
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
     <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.26.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
-1.26.1 (EF10) / 1.26.1-preview.1 (EF11)
+1.27.0 (EF10) / 1.27.0-preview.1 (EF11)
 - Upgrade Skuirrels.DuckDB.NET.Data.Full from 1.5.5.4 to 1.5.6, resolving the matching Skuirrels.DuckDB.NET.Bindings.Full 1.5.6 package and moving the bundled native DuckDB runtime from 1.5.5 to 1.5.6. Provider APIs are unchanged.
 
 1.26.0 (EF10) / 1.26.0-preview.1 (EF11)
