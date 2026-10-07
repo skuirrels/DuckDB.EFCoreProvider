@@ -2,7 +2,7 @@ name: duckdb-efcore-tiered-storage-s3
 
 services:
   minio:
-    image: ${TIERED_S3_MINIO_IMAGE:-minio/minio:RELEASE.2025-07-23T15-54-02Z}
+    image: ${TIERED_S3_MINIO_IMAGE:-pgsty/minio:RELEASE.2026-08-04T00-00-00Z}
     command: server /data
     ports:
       - "${DUCKDB_S3_TEST_PORT:-19010}:9000"
@@ -13,7 +13,7 @@ services:
       - minio-data:/data
 
   createbucket:
-    image: ${TIERED_S3_MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-07-16T15-35-03Z}
+    image: ${TIERED_S3_MINIO_MC_IMAGE:-pgsty/mc:RELEASE.2026-09-16T00-00-00Z}
     depends_on:
       - minio
     environment:
