@@ -16,7 +16,7 @@
 
 services:
   minio:
-    image: minio/minio
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     ports:
       - "9000:9000"   # S3 API
       - "9001:9001"   # web console (http://localhost:9001)
@@ -27,7 +27,7 @@ services:
 
   # One-shot: wait for MinIO, then create the buckets used by the S3 and GCS modes. Exits when done.
   createbucket:
-    image: minio/mc
+    image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z
     depends_on:
       - minio
     entrypoint: >
