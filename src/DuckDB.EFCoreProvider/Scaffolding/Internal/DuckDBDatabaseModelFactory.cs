@@ -96,6 +96,7 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
             FillTables(connection, databaseModel, options.Tables, options.Schemas);
             FillColumns(connection, databaseModel);
             FillPrimaryKeys(connection, databaseModel);
+            FillUniqueConstraints(connection, databaseModel);
             FillIndexes(connection, databaseModel);
             FillSequences(connection, databaseModel);
 
@@ -181,6 +182,7 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
 
     private void FillColumns(DbConnection connection, DatabaseModel database)
     {
+        var generatedColumns = GetGeneratedColumns(connection, database);
         foreach (var table in database.Tables)
         {
             using var command = connection.CreateCommand();
@@ -209,6 +211,16 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
                 var numericPrecision = reader.IsDBNull("numeric_precision") ? (int?)null : reader.GetInt32("numeric_precision");
                 var numericScale = reader.IsDBNull("numeric_scale") ? (int?)null : reader.GetInt32("numeric_scale");
 
+                // DuckDB reports a generated column's expression through column_default as well. Engines that
+                // populate information_schema.columns.is_generated identify it, so it is scaffolded as a
+                // VIRTUAL computed column (DuckDB never stores generated columns). Engines that leave the flag
+                // NULL cannot distinguish it from a literal default, so the expression stays DefaultValueSql.
+                var computedColumnSql = generatedColumns.GetValueOrDefault((table.Schema, table.Name, columnName));
+                if (computedColumnSql is not null)
+                {
+                    defaultValueSql = null;
+                }
+
                 var column = new DatabaseColumn
                 {
                     Table = table,
@@ -216,16 +228,12 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
                     StoreType = dataType,
                     IsNullable = isNullable,
                     DefaultValueSql = defaultValueSql,
+                    ComputedColumnSql = computedColumnSql,
+                    IsStored = computedColumnSql is null ? null : false,
                     ValueGenerated = !string.IsNullOrWhiteSpace(defaultValueSql) && defaultValueSql.StartsWith("nextval(") && defaultValueSql.EndsWith(")")
                         ? ValueGenerated.OnAdd
                         : null,
                     Comment = columnComment
-                    // Computed columns are intentionally not reverse-engineered: DuckDB does not
-                    // populate information_schema.columns.is_generated / generation_expression, and a
-                    // generated column's expression is reported through column_default with no flag to
-                    // distinguish it from a literal default. DuckDB also supports only VIRTUAL generated
-                    // columns (never STORED), so ComputedColumnSql/IsStored cannot be resolved reliably.
-                    // The expression is therefore surfaced as DefaultValueSql above (best effort).
                 };
 
                 if (characterMaximumLength.HasValue)
@@ -245,6 +253,91 @@ public class DuckDBDatabaseModelFactory : DatabaseModelFactory
 
                 table.Columns.Add(column);
             }
+        }
+    }
+
+    private static Dictionary<(string? Schema, string Table, string Column), string> GetGeneratedColumns(
+        DbConnection connection,
+        DatabaseModel database)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+                              SELECT table_schema, table_name, column_name, generation_expression
+                                FROM information_schema.columns
+                               WHERE table_catalog = $database_name
+                                 AND is_generated = 'ALWAYS'
+                                 AND generation_expression IS NOT NULL
+                              """;
+
+        command.Parameters.Add(command.CreateParameter("database_name", database.DatabaseName));
+
+        var generatedColumns = new Dictionary<(string? Schema, string Table, string Column), string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            generatedColumns[(reader.GetString(0), reader.GetString(1), reader.GetString(2))] = reader.GetString(3);
+        }
+
+        return generatedColumns;
+    }
+
+    private void FillUniqueConstraints(DbConnection connection, DatabaseModel database)
+    {
+        var tables = database.Tables
+            .Where(table => table is not DatabaseView)
+            .ToDictionary(table => (table.Schema, table.Name));
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+                              SELECT schema_name, table_name, constraint_column_names
+                                FROM duckdb_constraints()
+                               WHERE database_name = $database_name
+                                 AND constraint_type = 'UNIQUE'
+                               ORDER BY schema_name, table_name, constraint_index
+                              """;
+
+        command.Parameters.Add(command.CreateParameter("database_name", database.DatabaseName));
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (!tables.TryGetValue((reader.GetString(0), reader.GetString(1)), out var table))
+            {
+                continue;
+            }
+
+            // duckdb_constraints() reports a generated name such as "t_a_b_key" rather than the declared one, so
+            // the name is left unset and EF's default alternate-key name is scaffolded. Keeping the generated name
+            // would make the next migration rename, and therefore drop and re-add, the constraint.
+            var uniqueConstraint = new DatabaseUniqueConstraint { Table = table };
+            var columnNames = reader.GetFieldValue<List<string>>(2);
+            var columns = columnNames
+                .Select(columnName => table.Columns.FirstOrDefault(c => c.Name == columnName)
+                    ?? table.Columns.FirstOrDefault(c => c.Name.Equals(columnName, StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+            if (columns.Any(column => column is null))
+            {
+                _logger.Logger.LogWarning(
+                    "Unique constraint on table '{Table}' references columns ({Columns}) that were not all scaffolded. The constraint was skipped.",
+                    table.Name,
+                    string.Join(", ", columnNames));
+                continue;
+            }
+
+            foreach (var column in columns)
+            {
+                uniqueConstraint.Columns.Add(column!);
+            }
+
+            // DuckDB does not record a separate unique constraint for the primary key, but guard anyway so
+            // an alternate key is never scaffolded over the same columns as the primary key.
+            if (table.PrimaryKey is { } primaryKey
+                && primaryKey.Columns.SequenceEqual(uniqueConstraint.Columns))
+            {
+                continue;
+            }
+
+            table.UniqueConstraints.Add(uniqueConstraint);
         }
     }
 

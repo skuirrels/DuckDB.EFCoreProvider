@@ -21,6 +21,12 @@ internal sealed record DuckLakeOptions
 
     public bool AutomaticMigration { get; init; }
 
+    /// <summary>
+    ///     The DuckLake specification version (for example <c>1.0</c>) used when attaching creates or migrates the
+    ///     catalog, or <see langword="null" /> to let the DuckLake extension use its own default.
+    /// </summary>
+    public string? DuckLakeVersion { get; init; }
+
     public bool OverrideDataPath { get; init; }
 
     public long? SnapshotVersion { get; init; }
@@ -35,6 +41,7 @@ internal sealed record DuckLakeOptions
             IsReadOnly = true,
             CreateIfNotExists = false,
             AutomaticMigration = false,
+            DuckLakeVersion = null,
             AdditionalCatalogs = AdditionalCatalogs.Select(catalog => catalog.AsReadOnly()).ToArray()
         };
 }

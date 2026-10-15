@@ -105,7 +105,8 @@ public sealed class DuckLakeDbContextOptionsBuilder
         {
             IsReadOnly = readOnly,
             CreateIfNotExists = readOnly ? false : options.CreateIfNotExists,
-            AutomaticMigration = readOnly ? false : options.AutomaticMigration
+            AutomaticMigration = readOnly ? false : options.AutomaticMigration,
+            DuckLakeVersion = readOnly ? null : options.DuckLakeVersion
         });
 
     /// <summary>Controls whether attaching may create a missing DuckLake. Enabled by default.</summary>
@@ -119,6 +120,38 @@ public sealed class DuckLakeDbContextOptionsBuilder
     /// <returns>This builder so that further configuration can be chained.</returns>
     public DuckLakeDbContextOptionsBuilder AutomaticMigration(bool automaticMigration = true)
         => WithOption(options => options with { AutomaticMigration = automaticMigration });
+
+    /// <summary>
+    ///     Selects the DuckLake specification version written when attaching creates a catalog, or when
+    ///     <see cref="AutomaticMigration" /> upgrades one. The version applies to the primary catalog and to every
+    ///     writable catalog added with <see cref="AlsoAttach" /> or <see cref="AlsoAttachNamedSecret" />.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Pin the version when clients with different DuckDB releases share a catalog. DuckDB 2.0 pairs with a
+    ///         newer DuckLake specification than DuckDB 1.5, and a catalog upgraded by a newer client cannot be
+    ///         downgraded or opened by older ones. For example, <c>DuckLakeVersion("1.0")</c> keeps a catalog
+    ///         usable from DuckDB 1.5 clients.
+    ///     </para>
+    ///     <para>
+    ///         Leave the version unset to use the extension default. The DuckLake extension paired with DuckDB 1.5
+    ///         does not accept this option, so set it only when every client uses a DuckLake release that does.
+    ///         Read-only and historical profiles cannot select a version.
+    ///     </para>
+    /// </remarks>
+    /// <param name="version">A writable DuckLake specification version, such as <c>1.0</c> or <c>1.1-dev1</c>.</param>
+    /// <returns>This builder so that further configuration can be chained.</returns>
+    public DuckLakeDbContextOptionsBuilder DuckLakeVersion(string version)
+    {
+        var normalized = DuckDBStorageVersions.NormalizeDuckLakeVersion(version, nameof(version));
+        return WithOption(options => options with
+        {
+            DuckLakeVersion = normalized,
+            AdditionalCatalogs = options.AdditionalCatalogs
+                .Select(catalog => catalog.IsReadOnly ? catalog : catalog with { DuckLakeVersion = normalized })
+                .ToArray()
+        });
+    }
 
     /// <summary>
     ///     Attaches the catalog at one committed snapshot. Queries through the resulting context use normal EF LINQ
@@ -135,7 +168,8 @@ public sealed class DuckLakeDbContextOptionsBuilder
             SnapshotTime = null,
             IsReadOnly = true,
             CreateIfNotExists = false,
-            AutomaticMigration = false
+            AutomaticMigration = false,
+            DuckLakeVersion = null
         });
     }
 
@@ -152,7 +186,8 @@ public sealed class DuckLakeDbContextOptionsBuilder
             SnapshotTime = timestamp,
             IsReadOnly = true,
             CreateIfNotExists = false,
-            AutomaticMigration = false
+            AutomaticMigration = false,
+            DuckLakeVersion = null
         });
 
     /// <summary>Adds another local DuckLake catalog to every connection created by this profile.</summary>
@@ -227,7 +262,7 @@ public sealed class DuckLakeDbContextOptionsBuilder
             AdditionalCatalogs =
             [
                 .. options.AdditionalCatalogs,
-                catalog
+                catalog.IsReadOnly ? catalog : catalog with { DuckLakeVersion = options.DuckLakeVersion }
             ]
         });
 

@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.TestUtilities;
+﻿using Microsoft.EntityFrameworkCore.TestModels.Northwind;
+using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Query;
@@ -8,6 +9,54 @@ public class NorthwindSelectQueryDuckDBTest : NorthwindSelectQueryRelationalTest
     public NorthwindSelectQueryDuckDBTest(NorthwindQueryDuckDBFixture<NoopModelCustomizer> fixture) : base(fixture)
     {
     }
+
+    // FirstOrDefault() without OrderBy renders LIMIT 1 without ORDER BY, so DuckDB may return any matching order
+    // (DuckDB 2.0 returns a different one than 1.5). Ordering the correlated subquery by key keeps the comparison
+    // with the in-memory expectation deterministic on every engine.
+    public override Task Client_projection_with_string_initialization_with_scalar_subquery(bool async)
+        => AssertQuery(
+            async,
+            ss => ss.Set<Customer>()
+                .Where(c => c.CustomerID.StartsWith("F"))
+                .Select(c => new
+                {
+                    c.CustomerID,
+                    Order = c.Orders.OrderBy(o => o.OrderID).FirstOrDefault(o => o.OrderID < 11000)!.OrderDate,
+                    InterpolatedString = $"test{c.City}",
+                    NonInterpolatedString = "test" + c.City,
+                    Collection = new List<string>
+                    {
+                        $"{c.CustomerID}@test1.com",
+                        $"{c.CustomerID}@test2.com",
+                        $"{c.CustomerID}@test3.com",
+                        $"{c.CustomerID}@test4.com"
+                    }
+                }),
+            ss => ss.Set<Customer>()
+                .Where(c => c.CustomerID.StartsWith("F"))
+                .Select(c => new
+                {
+                    c.CustomerID,
+                    Order = c.Orders.OrderBy(o => o.OrderID).FirstOrDefault(o => o.OrderID < 11000)!.MaybeScalar(e => e.OrderDate),
+                    InterpolatedString = $"test{c.City}",
+                    NonInterpolatedString = "test" + c.City,
+                    Collection = new List<string>
+                    {
+                        $"{c.CustomerID}@test1.com",
+                        $"{c.CustomerID}@test2.com",
+                        $"{c.CustomerID}@test3.com",
+                        $"{c.CustomerID}@test4.com"
+                    }
+                }),
+            e => e.CustomerID,
+            (e, a) =>
+            {
+                AssertEqual(e.CustomerID, a.CustomerID);
+                AssertEqual(e.Order, a.Order);
+                AssertEqual(e.InterpolatedString, a.InterpolatedString);
+                AssertEqual(e.NonInterpolatedString, a.NonInterpolatedString);
+                AssertCollection(e.Collection, a.Collection, ordered: true);
+            });
 
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Collection_projection_selecting_outer_element_followed_by_take(bool async)

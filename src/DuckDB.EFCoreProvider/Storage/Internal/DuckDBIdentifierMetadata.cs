@@ -4,9 +4,15 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 
 internal static class DuckDBIdentifierMetadata
 {
-    // Generated from the union of duckdb_keywords() and duckdb_functions() for native DuckDB 1.5.5.
-    // Only syntactically valid unquoted identifiers are needed; other names are quoted by the character rules.
+    // Generated from the union of duckdb_keywords() and duckdb_functions() for native DuckDB 1.5.5 and
+    // DuckDB 2.0 (v2.0-cyanoptera, 9a97642349, with json, icu and parquet). Names from both engines are kept so
+    // an identifier quoted on one supported engine is quoted on every engine. Only syntactically valid unquoted
+    // identifiers are needed; other names are quoted by the character rules.
     private const string IdentifierText = """
+    __between
+    __cast
+    __internal_barrier
+    __internal_compress_geometry_point
     __internal_compress_integral_ubigint
     __internal_compress_integral_uinteger
     __internal_compress_integral_usmallint
@@ -17,6 +23,8 @@ internal static class DuckDBIdentifierMetadata
     __internal_compress_string_uinteger
     __internal_compress_string_usmallint
     __internal_compress_string_utinyint
+    __internal_compressed_materialization_cast
+    __internal_decompress_geometry_point
     __internal_decompress_integral_bigint
     __internal_decompress_integral_hugeint
     __internal_decompress_integral_integer
@@ -26,6 +34,13 @@ internal static class DuckDBIdentifierMetadata
     __internal_decompress_integral_uinteger
     __internal_decompress_integral_usmallint
     __internal_decompress_string
+    __internal_json_copy_to_geojson
+    __internal_json_copy_to_json
+    __internal_tablefilter_bloom_filter
+    __internal_tablefilter_dynamic
+    __internal_tablefilter_optional
+    __internal_tablefilter_prefix_range
+    __internal_tablefilter_selectivity_optional
     abort
     abs
     absolute
@@ -53,6 +68,7 @@ internal static class DuckDBIdentifierMetadata
     any
     any_value
     apply
+    approx
     approx_count_distinct
     approx_quantile
     approx_top_k
@@ -121,6 +137,7 @@ internal static class DuckDBIdentifierMetadata
     asin
     asinh
     asof
+    assert_true
     assertion
     assignment
     asymmetric
@@ -141,6 +158,7 @@ internal static class DuckDBIdentifierMetadata
     bigint
     bin
     binary
+    binom
     bit
     bit_and
     bit_count
@@ -150,6 +168,7 @@ internal static class DuckDBIdentifierMetadata
     bit_xor
     bitstring
     bitstring_agg
+    bitstring_byte_comparable
     bool_and
     bool_or
     boolean
@@ -187,11 +206,153 @@ internal static class DuckDBIdentifierMetadata
     coalesce
     col_description
     collate
+    collate_aa
+    collate_af
+    collate_am
+    collate_ar
+    collate_ar_sa
+    collate_as
+    collate_az
+    collate_bal
+    collate_be
+    collate_bg
+    collate_blo
+    collate_bn
+    collate_bo
+    collate_br
+    collate_bs
+    collate_ca
+    collate_ceb
+    collate_chr
+    collate_cs
+    collate_cu
+    collate_cy
+    collate_da
+    collate_de
+    collate_de_at
+    collate_dsb
+    collate_dz
+    collate_ee
+    collate_el
+    collate_en
+    collate_en_us
+    collate_eo
+    collate_es
+    collate_et
+    collate_fa
+    collate_fa_af
+    collate_ff
+    collate_fi
+    collate_fil
+    collate_fo
+    collate_fr
+    collate_fr_ca
+    collate_fy
+    collate_ga
+    collate_gl
+    collate_gu
+    collate_ha
+    collate_haw
+    collate_he
+    collate_he_il
+    collate_hi
+    collate_hr
+    collate_hsb
+    collate_hu
+    collate_hy
+    collate_id
+    collate_id_id
+    collate_ig
+    collate_is
+    collate_it
+    collate_ja
+    collate_ka
+    collate_kk
+    collate_kl
+    collate_km
+    collate_kn
+    collate_ko
+    collate_kok
+    collate_ku
+    collate_ky
+    collate_lb
+    collate_lij
+    collate_lkt
+    collate_ln
+    collate_lo
+    collate_lt
+    collate_lv
+    collate_mk
+    collate_ml
+    collate_mn
+    collate_mr
+    collate_ms
+    collate_mt
+    collate_my
+    collate_nb
+    collate_nb_no
+    collate_ne
+    collate_nl
+    collate_nn
+    collate_no
+    collate_noaccent
+    collate_nso
+    collate_om
+    collate_or
+    collate_pa
+    collate_pa_in
+    collate_pl
+    collate_ps
+    collate_pt
+    collate_ro
+    collate_ru
+    collate_sa
+    collate_se
+    collate_sgs
+    collate_si
+    collate_sk
+    collate_sl
+    collate_smn
+    collate_sq
+    collate_sr
+    collate_sr_ba
+    collate_sr_me
+    collate_sr_rs
+    collate_ssy
+    collate_st
+    collate_sv
+    collate_sw
+    collate_ta
+    collate_te
+    collate_th
+    collate_tk
+    collate_tn
+    collate_to
+    collate_tr
+    collate_ug
+    collate_uk
+    collate_ur
+    collate_uz
+    collate_vi
+    collate_vo
+    collate_wae
+    collate_wo
+    collate_xh
+    collate_yi
+    collate_yo
+    collate_zh
+    collate_zh_cn
+    collate_zh_hk
+    collate_zh_mo
+    collate_zh_sg
+    collate_zh_tw
+    collate_zu
     collation
     collations
     column
     columns
     combine
+    combine_aggr
     comment
     comments
     commit
@@ -202,6 +363,7 @@ internal static class DuckDBIdentifierMetadata
     concurrently
     configuration
     conflict
+    connect
     connection
     constant_or_null
     constraint
@@ -224,6 +386,7 @@ internal static class DuckDBIdentifierMetadata
     covar_pop
     covar_samp
     create
+    create_external_resource
     create_sort_key
     cross
     csv
@@ -273,6 +436,8 @@ internal static class DuckDBIdentifierMetadata
     decade
     decades
     decimal
+    decimal_average
+    decimal_division
     declare
     decode
     default
@@ -286,8 +451,11 @@ internal static class DuckDBIdentifierMetadata
     delimiters
     dense_rank
     depends
+    deregister_external_resource
     desc
     describe
+    destroy
+    destroy_external_resource
     detach
     dictionary
     disable
@@ -306,6 +474,8 @@ internal static class DuckDBIdentifierMetadata
     disable_verify_parallelism
     disable_verify_serializer
     discard
+    disconnect
+    distance
     distinct
     divide
     do
@@ -314,15 +484,22 @@ internal static class DuckDBIdentifierMetadata
     double
     drop
     duckdb_approx_database_count
+    duckdb_available_metrics
     duckdb_columns
     duckdb_connection_count
     duckdb_constraints
     duckdb_coordinate_systems
     duckdb_databases
     duckdb_dependencies
+    duckdb_dialects
+    duckdb_eviction_queues
+    duckdb_extension_repositories
     duckdb_extensions
     duckdb_external_file_cache
+    duckdb_external_resource_types
+    duckdb_external_resources
     duckdb_functions
+    duckdb_grammar_extensions
     duckdb_indexes
     duckdb_keywords
     duckdb_log_contexts
@@ -333,6 +510,7 @@ internal static class DuckDBIdentifierMetadata
     duckdb_prepared_statements
     duckdb_profiling_settings
     duckdb_schemas
+    duckdb_secret_type_parameters
     duckdb_secret_types
     duckdb_secrets
     duckdb_sequences
@@ -340,6 +518,7 @@ internal static class DuckDBIdentifierMetadata
     duckdb_table_sample
     duckdb_tables
     duckdb_temporary_files
+    duckdb_triggers
     duckdb_types
     duckdb_variables
     duckdb_views
@@ -380,6 +559,7 @@ internal static class DuckDBIdentifierMetadata
     escape
     even
     event
+    exact
     except
     exclude
     excluding
@@ -419,6 +599,8 @@ internal static class DuckDBIdentifierMetadata
     format_bytes
     format_pg_type
     format_type
+    formatreadabledecimalsize
+    formatreadablesize
     forward
     freeze
     from
@@ -478,18 +660,22 @@ internal static class DuckDBIdentifierMetadata
     histogram
     histogram_exact
     histogram_values
+    hive_partition_component
     hold
     hour
     hours
     icu_calendar_names
+    icu_collate_aa
     icu_collate_af
     icu_collate_am
     icu_collate_ar
     icu_collate_ar_sa
     icu_collate_as
     icu_collate_az
+    icu_collate_bal
     icu_collate_be
     icu_collate_bg
+    icu_collate_blo
     icu_collate_bn
     icu_collate_bo
     icu_collate_br
@@ -498,6 +684,7 @@ internal static class DuckDBIdentifierMetadata
     icu_collate_ceb
     icu_collate_chr
     icu_collate_cs
+    icu_collate_cu
     icu_collate_cy
     icu_collate_da
     icu_collate_de
@@ -566,6 +753,7 @@ internal static class DuckDBIdentifierMetadata
     icu_collate_ne
     icu_collate_nl
     icu_collate_nn
+    icu_collate_no
     icu_collate_noaccent
     icu_collate_nso
     icu_collate_om
@@ -579,6 +767,7 @@ internal static class DuckDBIdentifierMetadata
     icu_collate_ru
     icu_collate_sa
     icu_collate_se
+    icu_collate_sgs
     icu_collate_si
     icu_collate_sk
     icu_collate_sl
@@ -588,6 +777,7 @@ internal static class DuckDBIdentifierMetadata
     icu_collate_sr_ba
     icu_collate_sr_me
     icu_collate_sr_rs
+    icu_collate_ssy
     icu_collate_st
     icu_collate_sv
     icu_collate_sw
@@ -603,6 +793,7 @@ internal static class DuckDBIdentifierMetadata
     icu_collate_ur
     icu_collate_uz
     icu_collate_vi
+    icu_collate_vo
     icu_collate_wae
     icu_collate_wo
     icu_collate_xh
@@ -634,6 +825,7 @@ internal static class DuckDBIdentifierMetadata
     including
     increment
     index
+    index_key
     indexes
     inet_client_addr
     inet_client_port
@@ -656,6 +848,7 @@ internal static class DuckDBIdentifierMetadata
     intersect
     interval
     into
+    invoke
     invoker
     is
     is_histogram_other_bin
@@ -674,6 +867,9 @@ internal static class DuckDBIdentifierMetadata
     json_array
     json_array_length
     json_contains
+    json_copy_strftime_if_date
+    json_copy_strftime_if_timestamp
+    json_deep_merge
     json_deserialize_sql
     json_each
     json_execute_serialized_sql
@@ -685,13 +881,20 @@ internal static class DuckDBIdentifierMetadata
     json_group_array
     json_group_object
     json_group_structure
+    json_insert
     json_keys
     json_merge_patch
+    json_merge_patch_diff
+    json_normalize
     json_object
     json_pretty
     json_quote
+    json_remove
+    json_replace
     json_serialize_plan
     json_serialize_sql
+    json_set
+    json_strip_nulls
     json_structure
     json_transform
     json_transform_strict
@@ -815,6 +1018,7 @@ internal static class DuckDBIdentifierMetadata
     lower
     lpad
     ltrim
+    lttb
     macro
     mad
     make_date
@@ -877,6 +1081,7 @@ internal static class DuckDBIdentifierMetadata
     national
     natural
     nchar
+    nearest
     new
     next
     nextafter
@@ -945,6 +1150,7 @@ internal static class DuckDBIdentifierMetadata
     partitioned
     passing
     password
+    path_join
     percent
     percent_rank
     persistent
@@ -1036,6 +1242,9 @@ internal static class DuckDBIdentifierMetadata
     read_ndjson_auto
     read_ndjson_objects
     read_parquet
+    read_single_csv_file
+    read_single_json_file
+    read_single_parquet_file
     read_text
     real
     reassign
@@ -1054,6 +1263,9 @@ internal static class DuckDBIdentifierMetadata
     regexp_replace
     regexp_split_to_array
     regexp_split_to_table
+    register
+    register_external_resource
+    register_external_resource_type
     regr_avgx
     regr_avgy
     regr_count
@@ -1076,6 +1288,8 @@ internal static class DuckDBIdentifierMetadata
     replica
     reservoir_quantile
     reset
+    resource
+    resources
     respect
     restart
     restrict
@@ -1108,6 +1322,7 @@ internal static class DuckDBIdentifierMetadata
     second
     seconds
     secret
+    secure
     security
     select
     sem
@@ -1124,9 +1339,11 @@ internal static class DuckDBIdentifierMetadata
     setof
     sets
     setseed
+    setval
     sha1
     sha256
     share
+    shell_history
     shobj_description
     show
     show_databases
@@ -1135,6 +1352,7 @@ internal static class DuckDBIdentifierMetadata
     sign
     signbit
     similar
+    similarity
     simple
     sin
     sinh
@@ -1153,10 +1371,12 @@ internal static class DuckDBIdentifierMetadata
     sql_auto_complete
     sqrt
     st_asbinary
+    st_asgeojson
     st_astext
     st_aswkb
     st_aswkt
     st_crs
+    st_geomfromgeojson
     st_geomfromwkb
     st_intersects_extent
     st_setcrs
@@ -1240,6 +1460,7 @@ internal static class DuckDBIdentifierMetadata
     timezone_hour
     timezone_minute
     to
+    to_aggregate_state
     to_base
     to_base64
     to_binary
@@ -1275,6 +1496,7 @@ internal static class DuckDBIdentifierMetadata
     trusted
     try_cast
     try_strptime
+    tuple
     txid_current
     type
     typeof
@@ -1324,10 +1546,19 @@ internal static class DuckDBIdentifierMetadata
     variable
     variadic
     variance
+    variant_array_length
     variant_bytes_to_variant
+    variant_comparator
+    variant_contains
+    variant_exists
     variant_extract
+    variant_extract_string
+    variant_group_array
+    variant_group_object
+    variant_keys
     variant_normalize
     variant_to_parquet_variant
+    variant_type
     variant_typeof
     varying
     vector_type
@@ -1337,6 +1568,7 @@ internal static class DuckDBIdentifierMetadata
     verify_parallelism
     verify_serializer
     version
+    vertex_extract
     view
     views
     virtual

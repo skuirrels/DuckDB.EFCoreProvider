@@ -25,6 +25,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private int? _threads;
     private string? _checkpointThreshold;
     private string? _fileSearchPath;
+    private string? _storageCompatibilityVersion;
     private TimeSpan? _migrationLockTimeout;
     private bool _migrationTableRebuilds;
     private bool _caseInsensitiveStringSearches;
@@ -50,6 +51,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _threads = copyFrom._threads;
         _checkpointThreshold = copyFrom._checkpointThreshold;
         _fileSearchPath = copyFrom._fileSearchPath;
+        _storageCompatibilityVersion = copyFrom._storageCompatibilityVersion;
         _migrationLockTimeout = copyFrom._migrationLockTimeout;
         _migrationTableRebuilds = copyFrom._migrationTableRebuilds;
         _caseInsensitiveStringSearches = copyFrom._caseInsensitiveStringSearches;
@@ -147,6 +149,12 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     ///     resolved against — or <see langword="null" /> to leave DuckDB's default in place.
     /// </summary>
     public virtual string? FileSearchPath => _fileSearchPath;
+
+    /// <summary>
+    ///     The DuckDB storage format version (for example <c>"v1.5.0"</c>) written to database files that the
+    ///     provider creates or attaches, or <see langword="null" /> to let the engine write its default format.
+    /// </summary>
+    public virtual string? StorageCompatibilityVersion => _storageCompatibilityVersion;
 
     /// <summary>
     ///     The maximum time to wait for the migrations lock (the <c>__EFMigrationsLock</c> table row) before
@@ -280,6 +288,19 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         var clone = (DuckDBOptionsExtension)Clone();
 
         clone._checkpointThreshold = checkpointThreshold;
+
+        return clone;
+    }
+
+    /// <summary>
+    ///     Returns a copy configured to write the specified DuckDB storage format version (for example
+    ///     <c>"v1.5.0"</c>), or <see langword="null" /> to let the engine write its default format.
+    /// </summary>
+    public virtual DuckDBOptionsExtension WithStorageCompatibilityVersion(string? storageCompatibilityVersion)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+
+        clone._storageCompatibilityVersion = storageCompatibilityVersion;
 
         return clone;
     }
@@ -484,6 +505,11 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             ValidateEncryptedDatabase();
         }
 
+        if (_storageCompatibilityVersion is not null)
+        {
+            ValidateStorageCompatibilityVersion();
+        }
+
         if (_duckLakeOptions is null)
         {
             return;
@@ -505,6 +531,66 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
 
             ValidateDuckLakeProfile(profile);
         }
+    }
+
+    private void ValidateStorageCompatibilityVersion()
+    {
+        if (_quackOptions is not null)
+        {
+            throw new InvalidOperationException(
+                "StorageCompatibilityVersion cannot be combined with UseQuack because the remote server owns its "
+                + "database files. Configure storage_compatibility_version on the Quack server instead.");
+        }
+
+        if (_duckLakeOptions is not null)
+        {
+            throw new InvalidOperationException(
+                "StorageCompatibilityVersion cannot be combined with UseDuckLake because DuckLake always writes its "
+                + "DuckDB metadata catalog in the engine's newest storage format. Pin the DuckLake specification with "
+                + "UseDuckLake(..., duckLake => duckLake.DuckLakeVersion(...)) instead.");
+        }
+
+        // The setting must reach DuckDB before the main database file is opened, so it travels in the
+        // connection string. A value already present there must agree with the configured one.
+        if (_encryptedDatabase is not null
+            && DuckDBStorageVersions.GetRelease(_storageCompatibilityVersion!) is { } release
+            && release < DuckDBStorageVersions.MinimumEncryptedStorageVersion)
+        {
+            throw new InvalidOperationException(
+                $"StorageCompatibilityVersion('{_storageCompatibilityVersion}') cannot be combined with "
+                + "UseEncryptedDatabase. DuckDB writes an encrypted file with an explicit storage version below v1.5.0 "
+                + "using its legacy encryption scheme, and rejects versions below v1.4.0. New encrypted files are "
+                + "already written in the v1.5.0 storage format, which DuckDB 1.5 opens, so leave the version unset "
+                + "or use 'v1.5.0' or later.");
+        }
+
+        var connectionString = Connection?.ConnectionString ?? ConnectionString;
+        var configured = string.IsNullOrWhiteSpace(connectionString)
+            ? null
+            : FindConnectionStringValue(connectionString, DuckDBStorageVersions.StorageCompatibilityVersionKey);
+        if (configured is not null
+            && !string.Equals(configured, _storageCompatibilityVersion, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"StorageCompatibilityVersion('{_storageCompatibilityVersion}') conflicts with "
+                + $"'{DuckDBStorageVersions.StorageCompatibilityVersionKey}={configured}' in the connection string. "
+                + "Configure the storage version in one place.");
+        }
+
+        if (Connection is not null && configured is null && _encryptedDatabase is null)
+        {
+            throw new InvalidOperationException(
+                "StorageCompatibilityVersion cannot be applied to a caller-supplied DbConnection because DuckDB reads "
+                + "the storage version only when the database file is opened. Add "
+                + $"'{DuckDBStorageVersions.StorageCompatibilityVersionKey}={_storageCompatibilityVersion}' to that "
+                + "connection's connection string, or let the provider create the connection.");
+        }
+    }
+
+    internal static string? FindConnectionStringValue(string connectionString, string key)
+    {
+        var builder = new DuckDBConnectionStringBuilder { ConnectionString = connectionString };
+        return builder.TryGetValue(key, out var value) ? value?.ToString() : null;
     }
 
     private void ValidateEncryptedDatabase()
@@ -568,6 +654,13 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         {
             throw new InvalidOperationException(
                 "A read-only DuckLake profile cannot create a missing catalog or perform automatic catalog migration.");
+        }
+
+        if (profile.IsReadOnly && profile.DuckLakeVersion is not null)
+        {
+            throw new InvalidOperationException(
+                $"A read-only DuckLake profile cannot select DuckLake specification '{profile.DuckLakeVersion}', "
+                + "because the version applies only when a catalog is created or migrated.");
         }
 
         if (profile.OverrideDataPath && string.IsNullOrWhiteSpace(profile.DataPath))

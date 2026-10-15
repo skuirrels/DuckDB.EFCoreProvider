@@ -43,7 +43,8 @@ This document is the published capability matrix for the provider. It serves two
 | Raw SQL | EF Core relational raw-SQL APIs |
 | Resource settings | `MemoryLimit(...)` and `Threads(...)` apply DuckDB's global instance settings when a connection opens |
 | Encryption at rest | `UseEncryptedDuckDB(path, keyProvider)` / `UseEncryptedDatabase(...)`: AES-256-GCM database and WAL encryption with keys resolved per attachment, plus DuckDB's `temp_file_encryption` for spilled query files. Not combinable with DuckLake or Quack, whose storage is encrypted by its own backend. See [ENCRYPTION.md](ENCRYPTION.md) |
-| Database-first scaffolding | `dotnet ef dbcontext scaffold` (tables, columns, keys, indexes, sequences, FKs) |
+| Database-first scaffolding | `dotnet ef dbcontext scaffold` (tables, columns, keys, unique constraints, indexes, sequences, FKs; `VIRTUAL` computed columns on DuckDB 2.0) |
+| Storage format pinning | `StorageCompatibilityVersion("v1.5.0")` writes new native database files in an older storage format, so DuckDB 2.0 can create files that DuckDB 1.5 still opens. Encrypted files default to v1.5.0 storage and reject older versions, which would weaken the encryption scheme. DuckLake uses `DuckLakeVersion("1.0")` for its catalogs instead |
 
 ### DuckLake backend profile
 
@@ -93,15 +94,21 @@ into a target-model table rebuild with `EnableMigrationTableRebuilds()`.
 | Foreign key in `CREATE TABLE` | ✅ emitted and enforced; unsupported cascade actions become `NO ACTION` with a migration warning |
 | Add / drop foreign key | clear `NotSupportedException`; ✅ opt-in table rebuild |
 | Update / delete a referenced row | Keep the roles distinct: the row's primary/alternate-key identity can remain stable while an inbound child FK references it and the row also has an outbound FK. Scalar updates succeed through an affected-row-checked `UPDATE` without `RETURNING`, followed by a transactional keyed read-back when store-generated values are required. If EF explicitly marks the outbound FK modified but its original and current provider values are equal, the provider omits that column when another write remains; a sole FK write uses `IS DISTINCT FROM` and a keyed concurrency probe, preserving disconnected updates without issuing an unchanged physical write. Eligible multi-row updates can still use `UPDATE ... FROM (VALUES ...)`. A genuine outbound-FK change is never omitted: native DuckDB rejects it while an actual inbound dependant exists, and the provider reports the table and outbound column in an atomic `DbUpdateException`. The same reassignment succeeds when no inbound row exists. Bulk batching does not change or work around these semantics. Deleting a referenced row remains subject to the foreign-key constraint. |
-| Add / drop primary, unique, or check constraint | clear engine error by default; ✅ opt-in table rebuild |
-| Add column with constraint / default / required | `Adding columns with constraints not yet supported` |
-| Add / alter computed (generated) column | `Adding generated columns after table creation is not supported yet` |
-| Add / drop / alter check constraint | `No support for that ALTER TABLE option yet!` |
-| Add / drop unique constraint | `No support for that ALTER TABLE option yet!` |
+| Add / drop primary, unique, or check constraint | clear engine error by default; ✅ opt-in table rebuild. DuckDB 2.0 adds a unique constraint in place, even when rebuilds are enabled |
+| Add column with constraint / default / required | DuckDB 1.5: `Adding columns with constraints not yet supported`. ✅ DuckDB 2.0 (`NOT NULL`, `DEFAULT`, `UNIQUE`) |
+| Add / alter computed (generated) column | `Adding generated columns after table creation is not supported yet`; DuckDB 2.0 rejects `STORED` first with `Can not create a STORED generated column!` |
+| Add / drop / alter check constraint | DuckDB 1.5: `No support for that ALTER TABLE option yet!`; DuckDB 2.0: `No support for adding CHECK constraints with ALTER TABLE` |
+| Add unique constraint | DuckDB 1.5: `No support for that ALTER TABLE option yet!`. ✅ DuckDB 2.0, except on a table referenced by another table's foreign key, which the provider rejects when generating the migration. DuckDB does not keep the declared constraint name |
+| Drop unique constraint | `No support for that ALTER TABLE option yet!` |
 | Drop primary key / drop PK column | `No support for that ALTER TABLE option yet!` |
 | Rename table (incl. with PK / JSON column) | `No support for that ALTER TABLE option yet!` |
-| Move table / sequence to another schema | `Not implemented Error: T_AlterObjectSchemaStmt` |
-| Rename sequence | `Schema element not supported yet!` |
+| Move table / sequence to another schema | DuckDB 1.5: `Not implemented Error: T_AlterObjectSchemaStmt`; DuckDB 2.0: parser error at `SCHEMA` / `SET` |
+| Rename sequence | DuckDB 1.5: `Schema element not supported yet!`; DuckDB 2.0: `Renaming sequences is not yet supported` |
+| Restart sequence (`StartsAt` change) | DuckDB 1.5: `ALTER SEQUENCE option not supported yet!`. ✅ DuckDB 2.0 through `setval(..., false)` |
+
+These rows are selected by `IDuckDBEngineCapabilities`, which the provider resolves from the loaded native library at
+the composition boundary: DuckDB 2.0 enables `SupportsAddColumnConstraints`, `SupportsAddUniqueConstraint` and
+`SupportsSequenceSetValue` for native profiles only.
 
 ### Indexes
 Basic indexes work (single/composite column, unique, expression). The following are DuckDB engine limitations:
@@ -115,7 +122,7 @@ Basic indexes work (single/composite column, unique, expression). The following 
 | Limitation | Evidence |
 |---|---|
 | `STORED` generated columns (only `VIRTUAL` exist) | DuckDB: `Can not create a STORED generated column!` (probed) |
-| Computed columns are not reverse-engineered | DuckDB does not populate `information_schema.columns.is_generated` / `generation_expression`; the expression leaks into `column_default` with no distinguishing flag (probed) |
+| Computed columns are reverse-engineered only on DuckDB 2.0 | DuckDB 2.0 populates `information_schema.columns.is_generated` / `generation_expression`, so generated columns scaffold as `VIRTUAL` computed columns. DuckDB 1.5 leaves them `NULL`; the expression stays in `column_default` with no distinguishing flag and scaffolds as a default (probed) |
 | Multidimensional arrays | `NotSupportedException("Multidimensional arrays are not supported")` |
 
 ### Query translation

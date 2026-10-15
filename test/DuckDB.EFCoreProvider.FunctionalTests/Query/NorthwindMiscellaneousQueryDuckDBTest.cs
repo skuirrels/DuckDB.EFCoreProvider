@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.TestUtilities;
+﻿using Microsoft.EntityFrameworkCore.TestModels.Northwind;
+using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Query;
@@ -11,6 +12,54 @@ public class NorthwindMiscellaneousQueryDuckDBTest: NorthwindMiscellaneousQueryR
         Fixture.TestSqlLoggerFactory.Clear();
         Fixture.TestSqlLoggerFactory.SetTestOutputHelper(testOutputHelper);
     }
+
+    // First() without OrderBy renders LIMIT 1 without ORDER BY, so DuckDB may return any matching order (DuckDB 2.0
+    // returns a different one than 1.5). The overrides order the correlated subquery by key so the comparison with
+    // the in-memory expectation is deterministic on every engine.
+    public override Task FirstOrDefault_with_predicate_nested(bool async)
+        => AssertQuery(
+            async,
+            ss => ss.Set<Customer>()
+                .Where(c => c.CustomerID.StartsWith("F"))
+                .OrderBy(c => c.CustomerID)
+                .Select(c => new TestDto
+                {
+                    CustomerID = c.CustomerID,
+                    OrderDate = c.Orders.OrderBy(o => o.OrderID).FirstOrDefault(t => t.OrderID == t.OrderID)!.OrderDate
+                }),
+            ss => ss.Set<Customer>()
+                .Where(c => c.CustomerID.StartsWith("F"))
+                .OrderBy(c => c.CustomerID)
+                .Select(c => new TestDto
+                {
+                    CustomerID = c.CustomerID,
+                    OrderDate = c.Orders.OrderBy(o => o.OrderID).FirstOrDefault(t => t.OrderID == t.OrderID)!
+                        .MaybeScalar(e => e.OrderDate)
+                }),
+            elementAsserter: (e, a) =>
+            {
+                Assert.Equal(e.CustomerID, a.CustomerID);
+                Assert.Equal(e.OrderDate, a.OrderDate);
+            },
+            assertOrder: true);
+
+    public override Task First_on_collection_in_projection(bool async)
+        => AssertQuery(
+            async,
+            ss => ss.Set<Customer>()
+                .Where(c => c.CustomerID.StartsWith("F"))
+                .OrderBy(c => c.CustomerID)
+                .Select(c => new
+                {
+                    c.CustomerID,
+                    OrderDate = c.Orders.Any() ? c.Orders.OrderBy(o => o.OrderID).First().OrderDate : null
+                }),
+            elementAsserter: (e, a) =>
+            {
+                Assert.Equal(e.CustomerID, a.CustomerID);
+                Assert.Equal(e.OrderDate, a.OrderDate);
+            },
+            assertOrder: true);
 
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Client_code_unknown_method(bool async)

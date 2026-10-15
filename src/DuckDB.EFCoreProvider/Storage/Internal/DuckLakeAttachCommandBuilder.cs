@@ -52,6 +52,11 @@ internal static class DuckLakeAttachCommandBuilder
             parameters.Add("AUTOMATIC_MIGRATION");
         }
 
+        if (profile.DuckLakeVersion is not null)
+        {
+            parameters.Add($"DUCKLAKE_VERSION '{EscapeLiteral(profile.DuckLakeVersion)}'");
+        }
+
         if (profile.IsReadOnly)
         {
             parameters.Add("READ_ONLY");
