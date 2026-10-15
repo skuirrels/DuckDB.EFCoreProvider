@@ -327,6 +327,49 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     }
 
     /// <summary>
+    ///     Pins the DuckDB storage format written to database files that the provider creates or attaches.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A database file created by a newer DuckDB release uses that release's storage format by default and
+    ///         cannot be opened by older releases. Pinning a version, for example <c>"v1.5.0"</c>, keeps new files
+    ///         readable by every client from that release onwards, which matters for mixed-version fleets and for
+    ///         rolling an application back.
+    ///     </para>
+    ///     <para>
+    ///         The version applies to the connection string's database file and to an encrypted database
+    ///         configured with <see cref="UseEncryptedDatabase" />. DuckDB reads it when a file is first opened in a
+    ///         process, so it does not rewrite an existing file, and contexts sharing one database file must agree
+    ///         on it: a native connection fails when the database instance it joins was opened with another
+    ///         version. A caller-supplied connection must carry <c>storage_compatibility_version</c> in its own
+    ///         connection string.
+    ///     </para>
+    ///     <para>
+    ///         Encrypted files are already written in the v1.5.0 storage format by default, so DuckDB 1.5 opens
+    ///         them without this option. An encrypted database rejects versions below <c>"v1.5.0"</c>, because
+    ///         DuckDB would silently fall back to its legacy encryption scheme for them.
+    ///     </para>
+    ///     <para>
+    ///         DuckLake always writes its DuckDB metadata catalog in the newest storage format, so this option
+    ///         cannot be combined with <see cref="UseDuckLake(Action{DuckLakeDbContextOptionsBuilder})" />. Use
+    ///         <see cref="DuckLakeDbContextOptionsBuilder.DuckLakeVersion" /> to keep a catalog usable by older
+    ///         clients instead.
+    ///     </para>
+    ///     <para>
+    ///         Use a release version such as <c>"v1.5.0"</c>, or <c>"latest"</c>. The loaded DuckDB engine rejects
+    ///         a version it does not know when the database is opened.
+    ///     </para>
+    /// </remarks>
+    /// <param name="version">The storage version, for example <c>"v1.5.0"</c>.</param>
+    /// <returns>The same builder instance so that multiple calls can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder StorageCompatibilityVersion(string version)
+    {
+        var normalized = DuckDBStorageVersions.NormalizeStorageCompatibilityVersion(version, nameof(version));
+
+        return WithOption(e => e.WithStorageCompatibilityVersion(normalized));
+    }
+
+    /// <summary>
     ///     Sets the maximum time to wait for the migrations lock before failing.
     /// </summary>
     /// <remarks>

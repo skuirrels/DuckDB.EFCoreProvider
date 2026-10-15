@@ -21,9 +21,18 @@ internal static class DuckDBEncryptedAttachCommandBuilder
     ///     to attach the same database. DuckDB matches the alias rather than the file, so the caller must still
     ///     confirm the resulting attachment is the configured database.
     /// </remarks>
-    public static string BuildAttachment(DuckDBEncryptedDatabaseOptions options, string key)
+    public static string BuildAttachment(
+        DuckDBEncryptedDatabaseOptions options,
+        string key,
+        string? storageCompatibilityVersion = null)
     {
-        var parameters = options.IsReadOnly ? ", READ_ONLY" : string.Empty;
+        var parameters = storageCompatibilityVersion is null
+            ? string.Empty
+            : $", STORAGE_VERSION '{EscapeLiteral(storageCompatibilityVersion)}'";
+        if (options.IsReadOnly)
+        {
+            parameters += ", READ_ONLY";
+        }
 
         return $"ATTACH IF NOT EXISTS '{EscapeLiteral(options.Path)}' AS {DelimitIdentifier(options.CatalogName)} "
             + $"(ENCRYPTION_KEY {KeyLiteral(key)}{parameters});";

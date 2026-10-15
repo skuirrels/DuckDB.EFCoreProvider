@@ -47,6 +47,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private readonly int? _threads;
     private readonly string? _checkpointThreshold;
     private readonly string? _fileSearchPath;
+    private readonly string? _storageCompatibilityVersion;
     private readonly IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions;
     private readonly Action<DuckDBConnection>? _connectionInitializer;
     private readonly DuckDBEncryptedDatabaseOptions? _encryptedDatabase;
@@ -57,6 +58,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
     private DuckDBConnection? _initializedCatalogConnection;
     private DuckDBConnection? _initializingCatalogConnection;
     private DuckDBConnection? _observedCatalogConnection;
+    private DuckDBConnection? _storageVersionVerifiedConnection;
 
     public DuckDBRelationalConnection(
         RelationalConnectionDependencies dependencies,
@@ -99,6 +101,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         _threads = optionsExtension?.Threads;
         _checkpointThreshold = optionsExtension?.CheckpointThreshold;
         _fileSearchPath = optionsExtension?.FileSearchPath;
+        _storageCompatibilityVersion = optionsExtension?.StorageCompatibilityVersion;
         _configuredExtensions = optionsExtension?.ConfiguredExtensions ?? [];
         _connectionInitializer = optionsExtension?.ConnectionInitializer;
         _encryptedDatabase = optionsExtension?.EncryptedDatabase;
@@ -135,8 +138,41 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         var connection = _providerFactory.CreateConnection()
             ?? throw new InvalidOperationException(
                 $"{_providerFactory.GetType().Name}.CreateConnection() returned null.");
-        connection.ConnectionString = GetValidatedConnectionString();
+        connection.ConnectionString = BuildNativeConnectionString(GetValidatedConnectionString());
         return connection;
+    }
+
+    /// <summary>
+    ///     Adds the configured storage version to the connection string of a native database file. DuckDB reads
+    ///     startup configuration only when it opens the file, which is too late for a <c>SET</c> statement. An
+    ///     encrypted database renders the version on its <c>ATTACH</c> instead, because its in-memory host is
+    ///     shared by contexts that may configure other versions.
+    /// </summary>
+    private string BuildNativeConnectionString(string connectionString)
+    {
+        if (_storageCompatibilityVersion is null)
+        {
+            return connectionString;
+        }
+
+        var configured = DuckDBOptionsExtension.FindConnectionStringValue(
+            connectionString,
+            DuckDBStorageVersions.StorageCompatibilityVersionKey);
+        if (configured is not null)
+        {
+            // Options validation runs once per internal service provider, so a connection string changed later
+            // is checked again here before DuckDB opens the file with the wrong format.
+            return string.Equals(configured, _storageCompatibilityVersion, StringComparison.Ordinal)
+                ? connectionString
+                : throw new InvalidOperationException(
+                    $"StorageCompatibilityVersion('{_storageCompatibilityVersion}') conflicts with "
+                    + $"'{DuckDBStorageVersions.StorageCompatibilityVersionKey}={configured}' in the connection string. "
+                    + "Configure the storage version in one place.");
+        }
+
+        var builder = new DuckDBConnectionStringBuilder { ConnectionString = connectionString };
+        builder[DuckDBStorageVersions.StorageCompatibilityVersionKey] = _storageCompatibilityVersion;
+        return builder.ToString();
     }
 
     /// <inheritdoc />
@@ -261,6 +297,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
                 if (_threads is not null) options.Threads(_threads.Value);
                 if (_checkpointThreshold is not null) options.CheckpointThreshold(_checkpointThreshold);
                 if (_fileSearchPath is not null) options.FileSearchPath(_fileSearchPath);
+                if (_storageCompatibilityVersion is not null) options.StorageCompatibilityVersion(_storageCompatibilityVersion);
                 foreach (var extension in _configuredExtensions)
                 {
                     options.LoadExtension(extension.Name, extension.Mode);
@@ -452,6 +489,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         try
         {
             ApplyConfigurationIfNeeded();
+            VerifyStorageCompatibilityVersion(connection);
             LoadSpatialExtensionIfNeeded();
             LoadConfiguredExtensions();
             AttachOrSelectEncryptedDatabase();
@@ -491,6 +529,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         try
         {
             await ApplyConfigurationIfNeededAsync(cancellationToken).ConfigureAwait(false);
+            VerifyStorageCompatibilityVersion(connection);
             await LoadSpatialExtensionIfNeededAsync(cancellationToken).ConfigureAwait(false);
             await LoadConfiguredExtensionsAsync(cancellationToken).ConfigureAwait(false);
             await AttachOrSelectEncryptedDatabaseAsync(cancellationToken).ConfigureAwait(false);
@@ -509,6 +548,39 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
                 _initializingCatalogConnection = null;
             }
         }
+    }
+
+    /// <summary>
+    ///     Confirms that the database instance behind a native connection uses the configured storage version.
+    ///     DuckDB.NET shares one instance per data source and applies connection-string configuration only when it
+    ///     creates that instance, so a file already opened in the process without the setting would otherwise be
+    ///     written in the engine's default format without any error. The check runs once per connection object.
+    /// </summary>
+    private void VerifyStorageCompatibilityVersion(DuckDBConnection connection)
+    {
+        if (_storageCompatibilityVersion is null
+            || UsesAttachedCatalog
+            || ReferenceEquals(_storageVersionVerifiedConnection, connection))
+        {
+            return;
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"SELECT current_setting('{DuckDBStorageVersions.StorageCompatibilityVersionKey}')";
+            var active = (command.ExecuteScalar() as string)?.Trim().ToLowerInvariant();
+            if (!string.Equals(active, _storageCompatibilityVersion, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"StorageCompatibilityVersion('{_storageCompatibilityVersion}') is configured, but the DuckDB "
+                    + $"instance for '{connection.DataSource}' was already opened in this process with "
+                    + $"{DuckDBStorageVersions.StorageCompatibilityVersionKey} '{active}'. DuckDB reads the setting only "
+                    + "when it opens a database file, so configure the same storage version on every context and "
+                    + "connection that opens this file.");
+            }
+        }
+
+        _storageVersionVerifiedConnection = connection;
     }
 
     private void ApplyConfigurationIfNeeded()
@@ -840,7 +912,7 @@ public class DuckDBRelationalConnection : RelationalConnection, IDuckDBRelationa
         if (attach)
         {
             commandText
-                .Append(DuckDBEncryptedAttachCommandBuilder.BuildAttachment(_encryptedDatabase, key))
+                .Append(DuckDBEncryptedAttachCommandBuilder.BuildAttachment(_encryptedDatabase, key, _storageCompatibilityVersion))
                 .Append(' ');
         }
 

@@ -63,6 +63,8 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
     {
         operations = DuckDBStructSchemaPlanner.OmitLogicalForeignKeyOperations(operations);
         ValidateUnsupportedOperations(operations);
+        ValidateReferencedTableAlterations(operations, model);
+        LogEngineSpecificStatements(operations);
 
         if (_capabilities.SupportsIndexes && _capabilities.SupportsSchemaConstraints)
         {
@@ -166,6 +168,100 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
                     unsupportedColumn.Table,
                     unsupportedColumn.Name));
         }
+    }
+
+    /// <summary>
+    ///     Rejects in-place alterations that DuckDB refuses on a table referenced by another table's foreign key.
+    ///     Only the forms that the engine capabilities enable are checked, because engines without them reject
+    ///     these operations earlier for every table.
+    /// </summary>
+    private void ValidateReferencedTableAlterations(IReadOnlyList<MigrationOperation> operations, IModel? model)
+    {
+        if (model is null
+            || !_capabilities.SupportsAddUniqueConstraint && !_capabilities.SupportsAddColumnConstraints)
+        {
+            return;
+        }
+
+        for (var index = 0; index < operations.Count; index++)
+        {
+            var operation = operations[index];
+            var rejected = operation switch
+            {
+                AddUniqueConstraintOperation when _capabilities.SupportsAddUniqueConstraint => true,
+                AddColumnOperation { IsNullable: false } when _capabilities.SupportsAddColumnConstraints => true,
+                _ => false
+            };
+            if (!rejected)
+            {
+                continue;
+            }
+
+            var target = (ITableMigrationOperation)operation;
+            var table = model.GetRelationalModel().FindTable(target.Table, target.Schema);
+            var referencingConstraint = table?.ReferencingForeignKeyConstraints.FirstOrDefault(constraint =>
+                constraint.Table != table && ExistsBefore(constraint, operations, index));
+            if (referencingConstraint is null)
+            {
+                continue;
+            }
+
+            throw new NotSupportedException(
+                $"DuckDB cannot apply {operation.GetType().Name} to table '{target.Table}' because table "
+                + $"'{referencingConstraint.Table.Name}' references it through foreign key '{referencingConstraint.Name}'. "
+                + "DuckDB rejects this ALTER TABLE form on a referenced table, and a table rebuild cannot drop a "
+                + "referenced table either. Remove the referencing foreign keys first, or make the change before "
+                + "the dependent tables are created.");
+        }
+    }
+
+    /// <summary>
+    ///     A foreign key exists when an operation runs unless this migration creates its table or adds the key
+    ///     afterwards.
+    /// </summary>
+    private static bool ExistsBefore(
+        IForeignKeyConstraint constraint,
+        IReadOnlyList<MigrationOperation> operations,
+        int index)
+    {
+        for (var later = index + 1; later < operations.Count; later++)
+        {
+            switch (operations[later])
+            {
+                case CreateTableOperation createTable
+                    when createTable.Name == constraint.Table.Name && createTable.Schema == constraint.Table.Schema:
+                case AddForeignKeyOperation addForeignKey
+                    when addForeignKey.Name == constraint.Name && addForeignKey.Table == constraint.Table.Name:
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    ///     Migration SQL depends on the native engine loaded when it is generated. Scripts produced on a DuckDB 2.0
+    ///     host can contain statements that DuckDB 1.5 rejects, so the generator records when it emits them.
+    /// </summary>
+    private void LogEngineSpecificStatements(IReadOnlyList<MigrationOperation> operations)
+    {
+        var engineSpecific = operations.FirstOrDefault(operation => operation switch
+        {
+            RestartSequenceOperation => _capabilities.SupportsSequenceSetValue,
+            AddUniqueConstraintOperation => _capabilities.SupportsAddUniqueConstraint,
+            AddColumnOperation column => _capabilities.SupportsAddColumnConstraints
+                && (!column.IsNullable || column.DefaultValue is not null || column.DefaultValueSql is not null),
+            _ => false
+        });
+        if (engineSpecific is null)
+        {
+            return;
+        }
+
+        Dependencies.MigrationsLogger.Logger.LogInformation(
+            "DuckDB migration SQL for {Operation} uses a form that requires DuckDB 2.0 or later, because the loaded "
+            + "native engine supports it. Apply scripts generated here only to DuckDB 2.0 or later databases.",
+            engineSpecific.GetType().Name);
     }
 
     private static bool IsAutoIncrement(ColumnOperation column)
@@ -299,10 +395,12 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         var rewritten = new List<MigrationOperation>();
         foreach (var operation in operations)
         {
-            if (TryGetIndexTable(operation, out var indexKey) && rebuildKeys.Contains(indexKey))
+            if ((TryGetIndexTable(operation, out var indexKey) || TryGetInPlaceUniqueConstraintTable(operation, out indexKey))
+                && rebuildKeys.Contains(indexKey))
             {
-                // The rebuilt table is recreated from the final model and all final indexes are emitted once
-                // by AddTableRebuild. Retaining explicit index operations would duplicate or drop that state.
+                // The rebuilt table is recreated from the final model and all final indexes and unique
+                // constraints are emitted once by AddTableRebuild. Retaining explicit index or in-place unique
+                // constraint operations would duplicate or drop that state.
                 continue;
             }
 
@@ -426,11 +524,26 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         return operation;
     }
 
-    private static bool IsConstraintAlterOperation(MigrationOperation operation)
+    private bool IsConstraintAlterOperation(MigrationOperation operation)
         => operation is AddForeignKeyOperation or DropForeignKeyOperation
             or AddPrimaryKeyOperation or DropPrimaryKeyOperation
-            or AddUniqueConstraintOperation or DropUniqueConstraintOperation
-            or AddCheckConstraintOperation or DropCheckConstraintOperation;
+            or DropUniqueConstraintOperation
+            or AddCheckConstraintOperation or DropCheckConstraintOperation
+            || operation is AddUniqueConstraintOperation && !_capabilities.SupportsAddUniqueConstraint;
+
+    private bool TryGetInPlaceUniqueConstraintTable(
+        MigrationOperation operation,
+        out (string Table, string? Schema) table)
+    {
+        if (operation is AddUniqueConstraintOperation addUniqueConstraint && _capabilities.SupportsAddUniqueConstraint)
+        {
+            table = (addUniqueConstraint.Table, addUniqueConstraint.Schema);
+            return true;
+        }
+
+        table = default;
+        return false;
+    }
 
     private static bool TryGetIndexTable(
         MigrationOperation operation,
@@ -520,6 +633,34 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         builder.AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
 
         EndStatement(builder, true);
+    }
+
+    /// <summary>
+    ///     Restarts a sequence with <c>setval</c> when the engine supports it, because DuckDB has no
+    ///     <c>ALTER SEQUENCE ... RESTART</c>. Otherwise the standard statement is emitted.
+    /// </summary>
+    /// <param name="operation">The operation.</param>
+    /// <param name="model">The target model which may be <see langword="null" /> if the operations exist without a model.</param>
+    /// <param name="builder">The command builder to use to build the commands.</param>
+    protected override void Generate(RestartSequenceOperation operation, IModel? model, MigrationCommandListBuilder builder)
+    {
+        var startValue = operation.StartValue ?? model?.FindSequence(operation.Name, operation.Schema)?.StartValue;
+        if (!_capabilities.SupportsSequenceSetValue || startValue is null)
+        {
+            base.Generate(operation, model, builder);
+            return;
+        }
+
+        // setval(..., false) leaves the sequence uncalled, so the next nextval returns startValue itself.
+        builder
+            .Append("SELECT setval(")
+            .Append(DuckDBSequenceNameHelper.GenerateSequenceNameLiteral(operation.Name, operation.Schema))
+            .Append(", ")
+            .Append(Dependencies.TypeMappingSource.FindMapping(typeof(long))!.GenerateSqlLiteral(startValue.Value))
+            .Append(", false)")
+            .AppendLine(Dependencies.SqlGenerationHelper.StatementTerminator);
+
+        EndStatement(builder);
     }
 
     /// <inheritdoc />

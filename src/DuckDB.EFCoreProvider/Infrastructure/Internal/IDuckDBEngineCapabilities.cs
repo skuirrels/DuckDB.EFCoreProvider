@@ -68,5 +68,21 @@ public interface IDuckDBEngineCapabilities
     /// <summary>Whether one provider command can expose result sets from multiple SQL statements.</summary>
     bool SupportsMultipleStatementsPerCommand => true;
 
+    /// <summary>
+    ///     Whether <c>ALTER TABLE ... ADD COLUMN</c> accepts <c>NOT NULL</c>, <c>DEFAULT</c> and <c>UNIQUE</c>
+    ///     column constraints. DuckDB still rejects <c>NOT NULL</c> and <c>UNIQUE</c> column additions on a table
+    ///     that another table references through a foreign key.
+    /// </summary>
+    bool SupportsAddColumnConstraints => false;
+
+    /// <summary>
+    ///     Whether <c>ALTER TABLE ... ADD CONSTRAINT ... UNIQUE (...)</c> adds a unique constraint in place. DuckDB
+    ///     still rejects it on a table that another table references through a foreign key.
+    /// </summary>
+    bool SupportsAddUniqueConstraint => false;
+
+    /// <summary>Whether a sequence can be repositioned with <c>setval(...)</c>.</summary>
+    bool SupportsSequenceSetValue => false;
+
     DuckDBUpsertStrategy UpsertStrategy { get; }
 }

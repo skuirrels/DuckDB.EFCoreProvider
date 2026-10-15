@@ -2,6 +2,31 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- Prepare for DuckDB 2.0 without changing DuckDB 1.5 behaviour. The provider reads the loaded native library version
+  once at the composition boundary and exposes three engine capabilities: `ADD COLUMN` with `NOT NULL`, `DEFAULT`
+  and `UNIQUE`, in-place `ADD CONSTRAINT ... UNIQUE`, and sequence repositioning with `setval`. DuckLake and Quack
+  profiles never enable them.
+- Restart sequences with `SELECT setval(..., false)` on DuckDB 2.0, which has no `ALTER SEQUENCE ... RESTART`.
+- Add unique constraints in place on DuckDB 2.0 even when `EnableMigrationTableRebuilds()` is on; a table rebuilt
+  for another constraint change still absorbs the unique constraint. On DuckDB 2.0, `ADD UNIQUE` and required
+  `ADD COLUMN` on a table referenced by another table's foreign key now fail when the migration is generated,
+  naming the foreign key, instead of with DuckDB's `Dependency Error`. The generator logs when it emits SQL that
+  needs DuckDB 2.0.
+- Scaffold unique constraints as alternate keys with EF's default names (DuckDB does not keep declared constraint
+  names), and scaffold `VIRTUAL` generated columns as computed columns when
+  the engine reports `information_schema.columns.is_generated` (DuckDB 2.0). DuckDB 1.5 still scaffolds the
+  expression as a default.
+- Add `StorageCompatibilityVersion("v1.5.0")` to pin the storage format of new native and encrypted database files,
+  validated at options time, so files created by DuckDB 2.0 stay readable by DuckDB 1.5. A native connection fails
+  if its database instance was already opened with another version. Encrypted databases reject versions below
+  v1.5.0, which would downgrade DuckDB's encryption scheme; their default format is already v1.5.0.
+- Add `DuckLakeVersion("1.0")` to pin the DuckLake specification of the primary catalog and every writable
+  `AlsoAttach` catalog. Read-only and historical profiles reject it.
+- Extend the reserved-identifier set with the 230 names that DuckDB 2.0 adds to `duckdb_keywords()` and
+  `duckdb_functions()`, keeping every DuckDB 1.5 name.
+
 ## 1.27.0 / EF11 1.27.0-preview.1
 
 - Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.4 to 1.5.6, resolving the matching

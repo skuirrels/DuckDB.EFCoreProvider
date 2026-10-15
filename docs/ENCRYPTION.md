@@ -82,6 +82,14 @@ options.UseEncryptedDuckDB(
     encrypted => encrypted.CatalogName("vault").ReadOnly());
 ```
 
+## Storage format and DuckDB versions
+
+DuckDB writes new encrypted files in the v1.5.0 storage format unless told otherwise, so files created by
+DuckDB 2.0 still open in DuckDB 1.5. `StorageCompatibilityVersion(...)` therefore does not need to be set for
+encrypted databases. When it is set, the provider renders it as `STORAGE_VERSION` on the encrypted `ATTACH`
+and rejects versions below `"v1.5.0"` during options validation. DuckDB would otherwise fall back to its
+legacy encryption scheme for v1.4.x without any error, and reject anything older.
+
 ## Key handling
 
 The key is supplied as a `Func<string>` that the provider invokes when it attaches the database — and again when

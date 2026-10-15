@@ -105,6 +105,28 @@ changes and constraint rebuilds must be placed in separate migrations; the provi
 rather than risking an ambiguous copy. Rebuilding a table referenced by foreign keys from other tables may also
 be rejected by DuckDB, so rebuild dependants first or use an application-managed maintenance migration.
 
+### DuckDB 2.0 and engine-dependent migration SQL
+
+The provider reads the native DuckDB library that is loaded when migration SQL is generated. With DuckDB 2.0 it
+uses three forms that DuckDB 1.5 rejects:
+
+- required or defaulted `ADD COLUMN` statements;
+- in-place `ADD CONSTRAINT ... UNIQUE`, also when table rebuilds are enabled;
+- `SELECT setval(..., false)` for a changed sequence start value.
+
+The generator logs an information message when it emits one of them.
+
+Generated SQL therefore follows the machine that produces it. A script from `dotnet ef migrations script` or
+`migrations bundle` on a DuckDB 2.0 host fails on a DuckDB 1.5 database (`setval` does not exist there). Generate
+scripts with the same DuckDB generation that runs in production, or apply migrations at runtime with
+`Database.Migrate()` so the running engine decides.
+
+DuckDB 2.0 still rejects `ADD CONSTRAINT ... UNIQUE` and `NOT NULL` column additions on a table that another table
+references through a foreign key: `Cannot alter entry ... because there are entries that depend on it`. A rebuild
+cannot help, because DuckDB also refuses to drop a referenced table. The provider therefore fails these operations
+when the migration is generated, naming the referencing table and foreign key. Remove the referencing foreign keys
+first, or make the change before the dependent tables are created.
+
 For the complete capability matrix and the engine-limitation rationale, see [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
 
 ## Tips
