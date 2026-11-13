@@ -2,6 +2,14 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- Add LINQ translation for `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` through the `GroupByRollup`,
+  `GroupByCube` and `GroupByGroupingSets` queryable operators, plus `EF.Functions.Grouping(...)` for DuckDB's
+  `GROUPING`. Rolled-up value-type key members must be nullable, key members must be scalar, and querying a
+  group's elements is rejected at query compilation rather than returning incomplete subtotal groups. Works on
+  native DuckDB and DuckLake.
+
 ## 1.27.0 / EF11 1.27.0-preview.1
 
 - Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.5.4 to 1.5.6, resolving the matching

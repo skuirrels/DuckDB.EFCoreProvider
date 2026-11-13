@@ -217,8 +217,22 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
             DuckDBRowValueExpression e => VisitRowValueExpression(e, allowOptimizedExpansion, out nullable),
             DuckDBStructFieldExpression e => VisitStructField(e, allowOptimizedExpansion, out nullable),
             DuckDBWholeStructExpression e => VisitWholeStruct(e, allowOptimizedExpansion, out nullable),
+            DuckDBGroupingSetsExpression e => VisitGroupingSets(e, out nullable),
             _ => base.VisitCustomSqlExpression(sqlExpression, allowOptimizedExpansion, out nullable)
         };
+    }
+
+    protected virtual SqlExpression VisitGroupingSets(DuckDBGroupingSetsExpression groupingSetsExpression, out bool nullable)
+    {
+        var terms = new SqlExpression[groupingSetsExpression.Terms.Count];
+        for (var i = 0; i < terms.Length; i++)
+        {
+            terms[i] = Visit(groupingSetsExpression.Terms[i], out _);
+        }
+
+        // A GROUP BY element is not a value, so it has no nullability of its own.
+        nullable = false;
+        return groupingSetsExpression.Update(terms);
     }
 
     protected virtual SqlExpression VisitStructField(
