@@ -2,6 +2,15 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- The alternate-target `UpsertAsync` overloads now read store-generated values back into the supplied entities.
+  Generated columns left out of staging, such as a sequence-backed surrogate key, are read from the stored rows
+  after each batch by matching on the conflict target, so inserted rows receive their new values and updated
+  rows their existing ones. Entities whose conflict target contains `NULL` keep their supplied values. The
+  primary-key `Upsert` overloads are unchanged. Applies to native DuckDB and Quack; DuckLake has no
+  store-generated values.
+
 ## 1.29.0 / EF11 1.29.0-preview.1
 
 - `BulkInsert` and `BulkInsertAsync` now fill database-generated keys on native DuckDB. A generated primary key,

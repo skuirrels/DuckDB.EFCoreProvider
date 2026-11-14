@@ -135,6 +135,19 @@ public sealed class QuackProfileTests : DuckDBTestBase
         Assert.Equal(1, await client.SaveChangesAsync());
         Assert.Equal("CHANGED", generated.UpperName);
 
+        // Upserting on a unique non-key target reads the generated values back from the remote table.
+        var upsertedGenerated = new[]
+        {
+            new GeneratedQuackItem { Id = -1, Name = "changed", LiteralDefault = "supplied" },
+            new GeneratedQuackItem { Name = "upserted-generated" }
+        };
+        Assert.Equal(2, await client.UpsertAsync(upsertedGenerated, item => item.Name));
+        Assert.Equal(generated.Id, upsertedGenerated[0].Id);
+        Assert.Equal(generated.CorrelationId, upsertedGenerated[0].CorrelationId);
+        Assert.True(upsertedGenerated[1].Id > generated.Id);
+        Assert.Equal("literal-default", upsertedGenerated[1].LiteralDefault);
+        Assert.NotEqual(Guid.Empty, upsertedGenerated[1].CorrelationId);
+
         var schemaGenerated = new SchemaGeneratedQuackItem { Name = "schema-generated" };
         client.SchemaGeneratedItems.Add(schemaGenerated);
         Assert.Equal(1, await client.SaveChangesAsync());
@@ -610,6 +623,7 @@ public sealed class QuackProfileTests : DuckDBTestBase
                 entity.HasKey(item => item.Id);
                 entity.Property(item => item.Id).HasColumnName("id").UseAutoIncrement();
                 entity.Property(item => item.Name).HasColumnName("name").IsRequired();
+                entity.HasIndex(item => item.Name).IsUnique();
                 entity.Property(item => item.LiteralDefault)
                     .HasColumnName("literal_default")
                     .HasDefaultValue("literal-default");
