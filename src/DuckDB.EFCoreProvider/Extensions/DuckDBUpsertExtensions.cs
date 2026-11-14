@@ -881,7 +881,7 @@ public static class DuckDBUpsertExtensions
             throw ReadBackCountMismatch(index + 1, batch.Count);
         }
 
-        if (Convert.ToInt64(reader.GetValue(0), System.Globalization.CultureInfo.InvariantCulture) != 1)
+        if (reader.GetInt64(0) != 1)
         {
             return;
         }
