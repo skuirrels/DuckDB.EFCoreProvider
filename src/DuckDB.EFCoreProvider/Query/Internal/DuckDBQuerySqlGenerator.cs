@@ -136,6 +136,7 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             DuckDBRowValueExpression e => VisitRowValue(e),
             DuckDBStructFieldExpression e => VisitStructField(e),
             DuckDBWholeStructExpression e => VisitWholeStruct(e),
+            DuckDBGroupingSetsExpression e => VisitGroupingSets(e),
             _ => base.VisitExtension(extensionExpression)
         };
     }
@@ -352,6 +353,56 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         }
 
         return binaryExpression;
+    }
+
+    /// <summary>Renders a ROLLUP, CUBE or GROUPING SETS element of a GROUP BY clause.</summary>
+    protected virtual Expression VisitGroupingSets(DuckDBGroupingSetsExpression groupingSetsExpression)
+    {
+        switch (groupingSetsExpression.Kind)
+        {
+            case DuckDBGroupingSetsKind.Rollup:
+                Sql.Append("ROLLUP ");
+                GenerateGroupingList(groupingSetsExpression.Terms);
+                break;
+
+            case DuckDBGroupingSetsKind.Cube:
+                Sql.Append("CUBE ");
+                GenerateGroupingList(groupingSetsExpression.Terms);
+                break;
+
+            default:
+                Sql.Append("GROUPING SETS (");
+                for (var i = 0; i < groupingSetsExpression.Sets.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        Sql.Append(", ");
+                    }
+
+                    GenerateGroupingList(groupingSetsExpression.Sets[i].Select(index => groupingSetsExpression.Terms[index]).ToArray());
+                }
+
+                Sql.Append(")");
+                break;
+        }
+
+        return groupingSetsExpression;
+    }
+
+    private void GenerateGroupingList(IReadOnlyList<SqlExpression> terms)
+    {
+        Sql.Append("(");
+        for (var i = 0; i < terms.Count; i++)
+        {
+            if (i > 0)
+            {
+                Sql.Append(", ");
+            }
+
+            Visit(terms[i]);
+        }
+
+        Sql.Append(")");
     }
 
     protected virtual Expression VisitRowValue(DuckDBRowValueExpression rowValueExpression)

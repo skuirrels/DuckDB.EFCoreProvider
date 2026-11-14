@@ -52,6 +52,40 @@ public static class DuckDBDbFunctionsExtensions
         => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(ArgMin)));
 
     /// <summary>
+    ///     Returns 1 when <paramref name="keyMember" /> is aggregated away in the current group of a
+    ///     <c>GroupByRollup</c>, <c>GroupByCube</c> or <c>GroupByGroupingSets</c> query, and 0 when the group is
+    ///     keyed by it. Translates to DuckDB's <c>GROUPING</c>; use it to tell a subtotal from a NULL key value.
+    /// </summary>
+    /// <param name="_">The <see cref="DbFunctions" /> instance.</param>
+    /// <param name="keyMember">A member of the grouping key, for example <c>g.Key.Region</c>.</param>
+    /// <returns>1 for a subtotal over <paramref name="keyMember" />; otherwise 0.</returns>
+    public static int Grouping<T>(this DbFunctions _, T keyMember)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(Grouping)));
+
+    /// <summary>
+    ///     Returns a bit mask of <c>GROUPING</c> flags for two key members: bit 1 for <paramref name="first" /> and
+    ///     bit 0 for <paramref name="second" />. Translates to DuckDB's <c>GROUPING(first, second)</c>.
+    /// </summary>
+    /// <param name="_">The <see cref="DbFunctions" /> instance.</param>
+    /// <param name="first">The most significant key member.</param>
+    /// <param name="second">The least significant key member.</param>
+    /// <returns>A value from 0 (grouped by both) to 3 (grouped by neither).</returns>
+    public static int Grouping<T1, T2>(this DbFunctions _, T1 first, T2 second)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(Grouping)));
+
+    /// <summary>
+    ///     Returns a bit mask of <c>GROUPING</c> flags for three key members, with <paramref name="first" /> as the
+    ///     most significant bit. Translates to DuckDB's <c>GROUPING(first, second, third)</c>.
+    /// </summary>
+    /// <param name="_">The <see cref="DbFunctions" /> instance.</param>
+    /// <param name="first">The most significant key member.</param>
+    /// <param name="second">The middle key member.</param>
+    /// <param name="third">The least significant key member.</param>
+    /// <returns>A value from 0 (grouped by all three) to 7 (grouped by none).</returns>
+    public static int Grouping<T1, T2, T3>(this DbFunctions _, T1 first, T2 second, T3 third)
+        => throw new InvalidOperationException(CoreStrings.FunctionOnClient(nameof(Grouping)));
+
+    /// <summary>
     ///     Returns whether the row value represented by <paramref name="a" /> is greater than the row value represented by <paramref name="b" />.
     /// </summary>
     /// <param name="_">The <see cref="DbFunctions" /> instance.</param>

@@ -29,7 +29,17 @@ public class DuckDBQueryCompilationContext : RelationalQueryCompilationContext
     {
     }
 
+    private List<DuckDBGroupingSetsBinding>? _groupingSets;
+
     /// <inheritdoc />
     public override bool SupportsPrecompiledQuery
         => true;
+
+    /// <summary>The ROLLUP, CUBE and GROUPING SETS groupings translated in this query.</summary>
+    public virtual IReadOnlyList<DuckDBGroupingSetsBinding> GroupingSets
+        => _groupingSets ?? (IReadOnlyList<DuckDBGroupingSetsBinding>)[];
+
+    /// <summary>Records a translated multi-level grouping for query postprocessing.</summary>
+    public virtual void AddGroupingSets(DuckDBGroupingSetsBinding binding)
+        => (_groupingSets ??= []).Add(binding);
 }

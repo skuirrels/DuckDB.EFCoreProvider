@@ -34,6 +34,22 @@ public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPos
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    ///     Base postprocessing applies the final projections immediately before pruning and rewrites table aliases
+    ///     immediately after it. Grouping sets are applied here because only at this point is every SELECT immutable
+    ///     while still holding the GROUP BY term instances recorded during translation.
+    /// </remarks>
+    protected override Expression Prune(Expression query)
+    {
+        if (QueryCompilationContext is DuckDBQueryCompilationContext { GroupingSets.Count: > 0 } duckDBContext)
+        {
+            query = new DuckDBGroupingSetsPostprocessor(duckDBContext.GroupingSets).Process(query);
+        }
+
+        return base.Prune(query);
+    }
+
+    /// <inheritdoc />
     public override Expression Process(Expression query)
     {
         var result = base.Process(query);

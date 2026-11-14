@@ -27,6 +27,7 @@
     <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.27.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
 1.28.0 (EF10) / 1.28.0-preview.1 (EF11)
+- Add LINQ translation for GROUP BY ROLLUP, CUBE and GROUPING SETS through the GroupByRollup, GroupByCube and GroupByGroupingSets operators, plus EF.Functions.Grouping for DuckDB's GROUPING. Works on native DuckDB and DuckLake.
 - Infer relationship requiredness from foreign key nullability: a relationship on non-nullable foreign key properties is now required and its navigations query through INNER JOIN. Delete behaviour and existing migrations are unchanged; call IsRequired(false) to keep a relationship optional.
 - Fix ExecuteUpdate filters that join two or more tables by rendering later inner joins as cross joins with their predicates in WHERE.
 - Keep EF key discovery so many-to-many join entities configured with UsingEntity get their composite key from the join foreign keys.

@@ -7,7 +7,7 @@ using System.Reflection;
 
 namespace DuckDB.EFCoreProvider.Query.ExpressionTranslators.Internal;
 
-/// <summary>Translates DuckDB-specific scalar analytical helpers.</summary>
+/// <summary>Translates DuckDB-specific scalar analytical helpers, including <c>GROUPING</c>.</summary>
 internal sealed class DuckDBAnalyticalMethodTranslator(ISqlExpressionFactory sqlExpressionFactory) : IMethodCallTranslator
 {
     public SqlExpression? Translate(
@@ -16,8 +16,27 @@ internal sealed class DuckDBAnalyticalMethodTranslator(ISqlExpressionFactory sql
         IReadOnlyList<SqlExpression> arguments,
         IDiagnosticsLogger<DbLoggerCategory.Query> logger)
     {
-        if (method.DeclaringType != typeof(DuckDBDbFunctionsExtensions)
-            || method.Name != nameof(DuckDBDbFunctionsExtensions.SplitPart))
+        if (method.DeclaringType != typeof(DuckDBDbFunctionsExtensions))
+        {
+            return null;
+        }
+
+        if (method.Name == nameof(DuckDBDbFunctionsExtensions.Grouping))
+        {
+            var keyMembers = arguments.Skip(1).ToArray();
+
+            // DuckDB returns BIGINT; the cast keeps the documented int result exact for reading.
+            return sqlExpressionFactory.Convert(
+                sqlExpressionFactory.Function(
+                    "grouping",
+                    keyMembers,
+                    nullable: false,
+                    argumentsPropagateNullability: keyMembers.Select(_ => false),
+                    typeof(long)),
+                typeof(int));
+        }
+
+        if (method.Name != nameof(DuckDBDbFunctionsExtensions.SplitPart))
         {
             return null;
         }

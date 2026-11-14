@@ -1084,6 +1084,49 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
+### Subtotals with ROLLUP, CUBE, and GROUPING SETS
+
+`GroupByRollup`, `GroupByCube`, and `GroupByGroupingSets` (namespace `DuckDB.EFCoreProvider.Extensions`)
+work like `GroupBy` but also return subtotal groups, translating to DuckDB's `GROUP BY ROLLUP`, `CUBE`, and
+`GROUPING SETS`. They suit star-schema reporting, where a fact table is grouped by dimension attributes reached
+through navigations.
+
+```csharp
+using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Extensions.DbFunctionsExtensions;
+
+// Detail rows per region and category, a subtotal per region, and a grand total.
+var report = await db.Sales
+    .GroupByRollup(s => new { s.Store.Region, s.Product.Category })
+    .Select(g => new
+    {
+        g.Key.Region,
+        g.Key.Category,
+        Revenue = g.Sum(s => s.Amount),
+        Level = EF.Functions.Grouping(g.Key.Region, g.Key.Category) // 0 detail, 1 region, 3 total
+    })
+    .ToListAsync();
+
+// Only the listed sets: per region, per year, and the grand total.
+var bySet = await db.Sales
+    .GroupByGroupingSets(
+        s => new { s.Store.Region, Year = (int?)s.Year },
+        k => k.Region,
+        k => k.Year,
+        k => new { })
+    .Select(g => new { g.Key.Region, g.Key.Year, Revenue = g.Sum(s => s.Amount) })
+    .ToListAsync();
+```
+
+Key members are NULL in subtotal rows, so any value-type member that is rolled up must be nullable
+(`Year = (int?)s.Year`); the operators reject a non-nullable one when the query is built. Use
+`EF.Functions.Grouping(...)` to tell a subtotal from a genuine NULL key value. Key members must be distinct
+scalar values (nested anonymous members and repeated columns are rejected), and only the key and aggregates
+can be projected: querying a group's elements (`g.ToList()`,
+`g.First()`) is rejected, because subtotal rows do not correspond to source rows by key. `Where` on a
+group becomes `HAVING`, and ordering, paging and parameters compose as with `GroupBy`. The same SQL runs on
+native DuckDB and DuckLake.
+
 ### Spatial queries
 
 Spatial support lives in the separate `DuckDB.EFCoreProvider.NTS` project and assembly. Reference that

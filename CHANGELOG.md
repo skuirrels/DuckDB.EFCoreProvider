@@ -4,6 +4,11 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 
 ## 1.28.0 / EF11 1.28.0-preview.1
 
+- Add LINQ translation for `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` through the `GroupByRollup`,
+  `GroupByCube` and `GroupByGroupingSets` queryable operators, plus `EF.Functions.Grouping(...)` for DuckDB's
+  `GROUPING`. Rolled-up value-type key members must be nullable, key members must be scalar, and querying a
+  group's elements is rejected at query compilation rather than returning incomplete subtotal groups. Works on
+  native DuckDB and DuckLake.
 - Build the EF11 package family against stable EF Core 11.0.0 (`net11.0`) and allow 11.0.x servicing
   updates. CI and publishing use the .NET 11 SDK, and the EF11 tests use xUnit v3 4.0.3. The EF11 packages
   still ship as previews.
