@@ -1,5 +1,6 @@
 using DuckDB.EFCoreProvider.Diagnostics.Internal;
 using DuckDB.EFCoreProvider.Extensions.Internal;
+using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
@@ -24,7 +25,10 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///     <list type="bullet">
 ///         <item><description>no change tracking, concurrency checks, or EF command interceptors; provider lifecycle
 ///             diagnostics are emitted for the complete bulk operation;</description></item>
-///         <item><description>no store-generated values — every mapped column must be given a value;</description></item>
+///         <item><description>store-generated values are limited to keys: on native DuckDB, a generated primary key or
+///             <c>UseAutoIncrement()</c> property that still holds its default value is reserved from the column default
+///             (for example its sequence) and written back to the entity before the row is appended; every other
+///             mapped column must be given a value;</description></item>
 ///         <item><description>the target table must already exist;</description></item>
 ///         <item><description>EF column mappings and value converters are applied; shadow properties,
 ///             computed/generated columns, and unmapped columns are not supported.</description></item>
@@ -75,7 +79,8 @@ public static class DuckDBBulkExtensions
                         quackConnection,
                         entityType,
                         table,
-                        schema);
+                        schema,
+                        quackConnection.EngineCapabilities.SupportsBulkInsertKeyReservation);
                     count = AppendRemote(
                         quackConnection,
                         plan,
@@ -86,7 +91,12 @@ public static class DuckDBBulkExtensions
                 {
                     var connection = dbConnection as DuckDBConnection
                         ?? throw UnexpectedConnection(dbConnection);
-                    var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(connection!, entityType, table, schema);
+                    var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(
+                        connection!,
+                        entityType,
+                        table,
+                        schema,
+                        context.GetService<IDuckDBEngineCapabilities>().SupportsBulkInsertKeyReservation);
                     count = Append(connection!, plan, entities);
                 }
             }
@@ -150,7 +160,8 @@ public static class DuckDBBulkExtensions
                         quackConnection,
                         entityType,
                         table,
-                        schema);
+                        schema,
+                        quackConnection.EngineCapabilities.SupportsBulkInsertKeyReservation);
                     count = AppendRemote(
                         quackConnection,
                         plan,
@@ -161,7 +172,12 @@ public static class DuckDBBulkExtensions
                 {
                     var connection = dbConnection as DuckDBConnection
                         ?? throw UnexpectedConnection(dbConnection);
-                    var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(connection!, entityType, table, schema);
+                    var plan = DuckDBBulkInsertPlanner<TEntity>.GetOrCreate(
+                        connection!,
+                        entityType,
+                        table,
+                        schema,
+                        context.GetService<IDuckDBEngineCapabilities>().SupportsBulkInsertKeyReservation);
                     count = Append(connection!, plan, entities);
                 }
             }
@@ -190,8 +206,12 @@ public static class DuckDBBulkExtensions
         where TEntity : class
     {
         using var appender = connection.CreateAppender(plan.Schema, plan.Table);
-        var count = 0;
+        if (plan.KeyReservations.Count > 0)
+        {
+            return AppendWithReservedKeys(connection, appender, plan, entities);
+        }
 
+        var count = 0;
         foreach (var entity in entities)
         {
             appender.AppendRow(entity, plan.WriteRow);
@@ -200,6 +220,65 @@ public static class DuckDBBulkExtensions
 
         return count;
     }
+
+    /// <summary>
+    ///     Appends rows in chunks, reserving database-generated keys for each chunk before its rows are written,
+    ///     so the supplied entities carry their keys once the call returns.
+    /// </summary>
+    private static int AppendWithReservedKeys<TEntity>(
+        DuckDBConnection connection,
+        DuckDBAppender appender,
+        DuckDBBulkInsertPlan<TEntity> plan,
+        IEnumerable<TEntity> entities)
+        where TEntity : class
+    {
+        var chunk = new TEntity[KeyReservationChunkSize];
+        var buffered = 0;
+        var count = 0;
+
+        foreach (var entity in entities)
+        {
+            chunk[buffered++] = entity;
+            if (buffered == chunk.Length)
+            {
+                count += AppendChunk(connection, appender, plan, chunk, buffered);
+                buffered = 0;
+            }
+        }
+
+        if (buffered > 0)
+        {
+            count += AppendChunk(connection, appender, plan, chunk, buffered);
+        }
+
+        return count;
+    }
+
+    private static int AppendChunk<TEntity>(
+        DuckDBConnection connection,
+        DuckDBAppender appender,
+        DuckDBBulkInsertPlan<TEntity> plan,
+        TEntity[] chunk,
+        int count)
+        where TEntity : class
+    {
+        foreach (var reservation in plan.KeyReservations)
+        {
+            reservation.Apply(connection, chunk, count);
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            appender.AppendRow(chunk[i], plan.WriteRow);
+        }
+
+        Array.Clear(chunk, 0, count);
+        return count;
+    }
+
+    // Large enough that reservation queries are a small fraction of append time, small enough to keep the
+    // buffered entity references bounded for streamed sources.
+    private const int KeyReservationChunkSize = 8192;
 
     private static NotSupportedException UnexpectedConnection(DbConnection connection)
         => new(

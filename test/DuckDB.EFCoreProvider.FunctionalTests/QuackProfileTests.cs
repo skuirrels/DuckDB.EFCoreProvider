@@ -331,6 +331,7 @@ public sealed class QuackProfileTests : DuckDBTestBase
         var remoteCapabilities = remote.GetService<IDuckDBEngineCapabilities>();
         Assert.True(remoteCapabilities.SupportsRemoteCommandExecution);
         Assert.True(remoteCapabilities.SupportsRemoteBulkInsert);
+        Assert.False(remoteCapabilities.SupportsBulkInsertKeyReservation);
         Assert.True(remoteCapabilities.SupportsSequences);
         Assert.True(remoteCapabilities.SupportsGeneratedColumns);
         Assert.True(remoteCapabilities.SupportsSqlDefaultExpressions);

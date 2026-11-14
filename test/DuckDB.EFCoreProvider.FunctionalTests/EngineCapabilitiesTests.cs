@@ -511,6 +511,7 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.True(capabilities.SupportsSchemaManagement);
         Assert.Equal(supported, capabilities.SupportsDatabaseDeletion);
         Assert.True(capabilities.SupportsMultipleStatementsPerCommand);
+        Assert.Equal(supported, capabilities.SupportsBulkInsertKeyReservation);
         Assert.Equal(
             supported ? DuckDBUpsertStrategy.InsertOnConflict : DuckDBUpsertStrategy.Merge,
             capabilities.UpsertStrategy);
