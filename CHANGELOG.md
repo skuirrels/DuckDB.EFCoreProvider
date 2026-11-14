@@ -2,6 +2,15 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- `BulkInsert` and `BulkInsertAsync` now fill database-generated keys on native DuckDB. A generated primary key,
+  or any `UseAutoIncrement()` property, that still holds its default value is reserved from the column default
+  (its sequence, or an expression such as `uuid()`) in chunks of 8,192 rows and written back to the entity
+  before the row is appended, so dimension keys can feed the fact load that follows. Keys you set yourself are
+  kept, and keys without a column default are written as supplied. DuckLake and Quack keep the previous
+  behaviour of writing every key as supplied.
+
 ## 1.28.0 / EF11 1.28.0-preview.1
 
 - Add LINQ translation for `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` through the `GroupByRollup`,

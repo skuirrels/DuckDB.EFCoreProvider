@@ -218,7 +218,7 @@ not make those types persistable EF entity properties. See [TYPE-MAPPINGS.md](TY
 ### Write performance
 | DuckDB capability | Provider |
 |---|---|
-| `Appender` (high-throughput bulk load) | ✅ exposed via `DbContext.BulkInsert(...)` (raw fast path; bypasses change tracking / generated values). Native DuckDB `SaveChanges` uses `RETURNING`; DuckLake uses non-returning commands plus affected-row checks. |
+| `Appender` (high-throughput bulk load) | ✅ exposed via `DbContext.BulkInsert(...)` (raw fast path; bypasses change tracking; on native DuckDB, generated keys are reserved from their column default and written back). Native DuckDB `SaveChanges` uses `RETURNING`; DuckLake uses non-returning commands plus affected-row checks. |
 
 ### Functions
 Only a subset of DuckDB's large function library is LINQ-translatable. In addition to common string / math /

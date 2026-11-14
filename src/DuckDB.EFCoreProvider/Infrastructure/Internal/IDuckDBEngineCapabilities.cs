@@ -68,5 +68,11 @@ public interface IDuckDBEngineCapabilities
     /// <summary>Whether one provider command can expose result sets from multiple SQL statements.</summary>
     bool SupportsMultipleStatementsPerCommand => true;
 
+    /// <summary>
+    ///     Whether <c>BulkInsert</c> can reserve database-generated key values from column defaults, such as
+    ///     sequences, and write them back to the entities before appending.
+    /// </summary>
+    bool SupportsBulkInsertKeyReservation => SupportsSqlDefaultExpressions && !SupportsRemoteCommandExecution;
+
     DuckDBUpsertStrategy UpsertStrategy { get; }
 }

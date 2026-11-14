@@ -936,7 +936,9 @@ modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "/var/data/archive/record
 
 ### Bulk insert
 
-For high-throughput loading, `BulkInsert` / `BulkInsertAsync` append rows directly through DuckDB's columnar `Appender` — much faster than `SaveChanges` for large batches. It is a deliberate raw fast path: it bypasses the change tracker, concurrency checks, EF command interceptors, and store-generated values (provide a value for every mapped column), and the target table must already exist. The provider still emits one structured start/completion/failure diagnostic for the overall operation.
+For high-throughput loading, `BulkInsert` / `BulkInsertAsync` append rows directly through DuckDB's columnar `Appender` — much faster than `SaveChanges` for large batches. It is a deliberate raw fast path: it bypasses the change tracker, concurrency checks, and EF command interceptors, and the target table must already exist. The provider still emits one structured start/completion/failure diagnostic for the overall operation.
+
+On native DuckDB, database-generated keys work on this path. When a generated primary key (or any `UseAutoIncrement()` property) still holds its default value, `BulkInsert` reserves values from the column's default, such as its sequence or `uuid()`, in chunks of 8,192 rows and writes them onto the entities before appending. After the call, the supplied entities carry their keys, so a dimension load can feed the fact load that references it. Keys you set yourself are kept. Other columns must be given a value, and reserved sequence values are not returned if the transaction rolls back. DuckLake has no sequences or column defaults, and the Quack profile does not reserve keys, so on those profiles supply every key yourself.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
@@ -950,6 +952,11 @@ var rows = Enumerable.Range(1, 100_000)
 
 var inserted = context.BulkInsert(rows);
 // or: var inserted = await context.BulkInsertAsync(rows);
+
+// With a generated key (modelBuilder.Entity<Product>().Property(p => p.Id).UseAutoIncrement()):
+var products = names.Select(name => new Product { Name = name }).ToList();
+context.BulkInsert(products);                       // each product.Id is now set
+context.BulkInsert(sales.Select(s => new Sale { ProductId = products[s.ProductIndex].Id, Quantity = s.Quantity }));
 ```
 
 ### Upsert
@@ -1220,7 +1227,7 @@ options.UseDuckDB(
 ```
 
 - **An order of magnitude faster** in local measurements (all while **keeping change tracking and
-  store-generated keys**, unlike `BulkInsert`):
+  store-generated values**, which `BulkInsert` limits to keys):
   - inserts ~120k rows/s (vs ~12k),
   - updates ~52k rows/s (vs ~6k),
   - deletes ~119k rows/s (vs ~9k) — delete batching is especially effective for **orphan cleanup** and
@@ -1237,8 +1244,8 @@ options.UseDuckDB(
   their concurrency-detection and value-propagation behaviour is unchanged.
 - Tune the merge size with the standard `MaxBatchSize` option. The default of 100 is based on local benchmark
   results; very large batches regress.
-- For pure bulk inserts that do not need change tracking or generated values, `BulkInsert` (below) is faster
-  still.
+- For pure bulk inserts that do not need change tracking or generated values other than keys, `BulkInsert`
+  (below) is faster still.
 
 ### When to use `BulkInsert` (batch size)
 
@@ -1317,7 +1324,7 @@ scripts/test-suite.sh full-project
 
 **`UseDuckDB` / `BulkInsert` / `UseAutoIncrement` not found.** Add `using DuckDB.EFCoreProvider.Extensions;`.
 
-**`BulkInsert` or `Upsert` throws about a missing key or column.** Both are raw fast paths that bypass change tracking. `BulkInsert` and PK-targeted `Upsert` require supplied primary-key values (configure the key as `ValueGeneratedNever()`). For a sequence-generated primary key, use the alternate-target `UpsertAsync` overload with a declared alternate key or unique index. Ensure the target table already exists; generated values are not copied back into the supplied entities. See [Bulk insert](#bulk-insert) and [Upsert](#upsert).
+**`BulkInsert` or `Upsert` throws about a missing key or column.** Both are raw fast paths that bypass change tracking. On native DuckDB, `BulkInsert` reserves generated primary keys from their column default and writes them back; on DuckLake and Quack it requires supplied keys. PK-targeted `Upsert` requires supplied primary-key values (configure the key as `ValueGeneratedNever()`). For a sequence-generated primary key, use the alternate-target `UpsertAsync` overload with a declared alternate key or unique index; `Upsert` does not copy generated values back into the supplied entities. Ensure the target table already exists. See [Bulk insert](#bulk-insert) and [Upsert](#upsert).
 
 **Migrations.** For the `dotnet ef` workflow, generated keys, and the DuckDB-specific `ALTER TABLE`/index limitations, see the [migrations guide](docs/MIGRATIONS.md).
 
