@@ -12,13 +12,22 @@ namespace DuckDB.EFCoreProvider.Update.Internal;
 /// </summary>
 internal static class DuckDBUpdateFallbackPlanner
 {
-    public static bool CanPlan(IReadOnlyModificationCommand command)
+    /// <summary>
+    ///     Whether a tracked update must run as a plain <c>UPDATE</c> with a separate read-back instead of
+    ///     <c>UPDATE ... RETURNING</c>: always when the engine's <c>RETURNING</c> updates do not report write-write
+    ///     conflicts, and otherwise for tables referenced by foreign keys when the engine cannot use
+    ///     <c>RETURNING</c> there.
+    /// </summary>
+    public static bool CanPlan(IReadOnlyModificationCommand command, IDuckDBEngineCapabilities capabilities)
     {
         ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(capabilities);
 
-        return command.EntityState == EntityState.Modified
+        return capabilities.SupportsReturning
+            && command.EntityState == EntityState.Modified
             && command.StoreStoredProcedure is null
-            && IsReferencedPrincipal(command);
+            && (!capabilities.SupportsConflictDetectingReturningUpdates
+                || (!capabilities.SupportsReturningOnReferencedTableUpdates && IsReferencedPrincipal(command)));
     }
 
     public static bool TryCreate(
@@ -26,7 +35,7 @@ internal static class DuckDBUpdateFallbackPlanner
         IDuckDBEngineCapabilities capabilities,
         [NotNullWhen(true)] out DuckDBUpdateFallbackPlan? plan)
     {
-        if (!CanPlan(command))
+        if (!CanPlan(command, capabilities))
         {
             plan = null;
             return false;
@@ -44,7 +53,7 @@ internal static class DuckDBUpdateFallbackPlanner
         => TryCreate(command, capabilities, out var plan)
             ? plan
             : throw new ArgumentException(
-                "The command must be an update to a table referenced by a foreign key.",
+                "The command must be a tracked update that the engine runs without RETURNING.",
                 nameof(command));
 
     private static bool IsReferencedPrincipal(IReadOnlyModificationCommand command)

@@ -197,6 +197,71 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
         await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => staleContext.SaveChangesAsync());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unreferenced_table_update_avoids_returning_on_native_DuckDB(bool enableBulkUpdateBatching)
+    {
+        var interceptor = new CommandCaptureInterceptor();
+        await SeedAsync(interceptor, enableBulkUpdateBatching);
+
+        await using var context = CreateContext(interceptor, enableBulkUpdateBatching);
+        var independent = await context.IndependentItems.SingleAsync();
+        interceptor.CommandTexts.Clear();
+
+        independent.Payload = "after";
+        await context.SaveChangesAsync();
+
+        // DuckDB 1.5.6 does not report write-write conflicts for UPDATE ... RETURNING on keyed tables.
+        var updateSql = Assert.Single(
+            interceptor.CommandTexts.Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal)));
+        Assert.DoesNotContain("RETURNING", updateSql, StringComparison.OrdinalIgnoreCase);
+        context.ChangeTracker.Clear();
+        Assert.Equal("after", (await context.IndependentItems.SingleAsync()).Payload);
+    }
+
+    [Fact]
+    public async Task Conflict_detecting_returning_engine_keeps_returning_only_for_unreferenced_tables()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddEntityFrameworkDuckDB()
+            .AddSingleton<IDuckDBEngineCapabilities, ConflictDetectingReturningCapabilities>()
+            .BuildServiceProvider(validateScopes: true);
+        var interceptor = new CommandCaptureInterceptor();
+        await using var context = CreateContext(interceptor, enableBulkUpdateBatching: false, serviceProvider);
+        await context.Database.EnsureCreatedAsync();
+        context.AddRange(
+            new Parent
+            {
+                Id = 1,
+                ExternalId = Guid.Parse("55555555-5555-5555-5555-555555555555"),
+                Payload = "before"
+            },
+            new IndependentItem { Id = 1, Payload = "before" });
+        await context.SaveChangesAsync();
+
+        var parent = await context.Parents.SingleAsync();
+        var independent = await context.IndependentItems.SingleAsync();
+        parent.Payload = "after";
+        independent.Payload = "after";
+        interceptor.CommandTexts.Clear();
+        await context.SaveChangesAsync();
+
+        var updates = interceptor.CommandTexts
+            .Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal))
+            .ToList();
+        Assert.Equal(2, updates.Count);
+        Assert.Contains(
+            updates,
+            command => command.Contains("\"IndependentItems\"", StringComparison.Ordinal)
+                && command.Contains("RETURNING", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(
+            updates,
+            command => command.Contains("\"Parents\"", StringComparison.Ordinal)
+                && !command.Contains("RETURNING", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("AFTER", parent.ComputedValue);
+    }
+
     [Fact]
     public async Task Bulk_update_batching_isolates_referenced_principal_readback()
     {
@@ -403,6 +468,22 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
     {
         public bool SupportsReturning => true;
         public bool SupportsReturningOnReferencedTableUpdates => true;
+        public bool SupportsConflictDetectingReturningUpdates => true;
+        public bool SupportsSaveChangesBatching => true;
+        public bool SupportsSequences => true;
+        public bool SupportsGeneratedColumns => true;
+        public bool SupportsSqlDefaultExpressions => true;
+        public bool SupportsIndexes => true;
+        public bool SupportsSchemaConstraints => true;
+        public bool SupportsTieredStorage => true;
+        public bool SupportsEfMigrations => true;
+        public DuckDBUpsertStrategy UpsertStrategy => DuckDBUpsertStrategy.InsertOnConflict;
+    }
+
+    private sealed class ConflictDetectingReturningCapabilities : IDuckDBEngineCapabilities
+    {
+        public bool SupportsReturning => true;
+        public bool SupportsConflictDetectingReturningUpdates => true;
         public bool SupportsSaveChangesBatching => true;
         public bool SupportsSequences => true;
         public bool SupportsGeneratedColumns => true;

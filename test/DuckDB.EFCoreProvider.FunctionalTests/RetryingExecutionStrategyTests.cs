@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.Infrastructure;
 using DuckDB.EFCoreProvider.Storage;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
@@ -82,7 +83,6 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
         await SeedAsync();
         var counter = new ConflictingWriter(DbPath, "INSERT INTO \"Accounts\"", conflictOnFirstAttempt: false);
         await using var context = CreateContext(counter, retry: true);
-        await context.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX "IX_Accounts_Id" ON "Accounts" ("Id");""");
 
         context.Add(new Account { Id = 1, Balance = 1 });
         var exception = await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
@@ -104,6 +104,51 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
 
         Assert.True(DuckDBTransientExceptionDetector.ShouldRetryOn(exception));
         Assert.Equal(1, conflict.Attempts);
+
+        // The competing transaction committed after the failed update, and its value is not overwritten.
+        Assert.Equal(-1, await ReadBalanceAsync(1));
+    }
+
+    [Fact]
+    public async Task Overlapping_SaveChanges_update_with_a_concurrency_token_reports_the_conflict()
+    {
+        await SeedAsync();
+        var conflict = new ConflictingWriter(DbPath, "UPDATE \"Accounts\"");
+        await using var context = CreateContext(conflict, retry: false, concurrencyToken: true);
+
+        var account = await context.Accounts.SingleAsync(a => a.Id == 1);
+        account.Balance = 100;
+
+        // The token predicate is evaluated on this transaction's snapshot, where it still matches, so only the
+        // engine's write-write conflict can stop the competing commit from being overwritten.
+        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+
+        Assert.IsNotType<DbUpdateConcurrencyException>(exception);
+        Assert.True(DuckDBTransientExceptionDetector.ShouldRetryOn(exception));
+        Assert.Equal(-1, await ReadBalanceAsync(1));
+    }
+
+    [Fact]
+    public async Task Overlapping_batched_SaveChanges_updates_report_the_conflict()
+    {
+        await SeedAsync();
+        var conflict = new ConflictingWriter(DbPath, "UPDATE \"Accounts\"");
+        await using var context = CreateContext(
+            conflict,
+            retry: false,
+            configure: duckDb => duckDb.EnableBulkUpdateBatching());
+
+        foreach (var account in await context.Accounts.ToListAsync())
+        {
+            account.Balance = 100;
+        }
+
+        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+
+        Assert.True(DuckDBTransientExceptionDetector.ShouldRetryOn(exception));
+        Assert.Equal(1, conflict.Attempts);
+        Assert.Equal(-1, await ReadBalanceAsync(1));
+        Assert.Equal(-1, await ReadBalanceAsync(2));
     }
 
     [Fact]
@@ -192,9 +237,14 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
         return Assert.Throws<DuckDBException>(() => command.ExecuteScalar());
     }
 
-    private AccountContext CreateContext(ConflictingWriter? conflict, bool retry, int maxRetryCount = 5)
+    private AccountContext CreateContext(
+        ConflictingWriter? conflict,
+        bool retry,
+        int maxRetryCount = 5,
+        bool concurrencyToken = false,
+        Action<DuckDBDbContextOptionsBuilder>? configure = null)
     {
-        var builder = new DbContextOptionsBuilder<AccountContext>()
+        var builder = new DbContextOptionsBuilder()
             .UseDuckDB(
                 $"Data Source={DbPath}",
                 duckDb =>
@@ -203,23 +253,21 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
                     {
                         duckDb.EnableRetryOnFailure(maxRetryCount, TimeSpan.FromMilliseconds(10));
                     }
+
+                    configure?.Invoke(duckDb);
                 });
         if (conflict is not null)
         {
             builder.AddInterceptors(conflict);
         }
 
-        return new AccountContext(builder.Options);
+        return concurrencyToken ? new TokenAccountContext(builder.Options) : new AccountContext(builder.Options);
     }
 
     private async Task SeedAsync()
     {
         await using var context = CreateContext(conflict: null, retry: false);
-
-        // The table deliberately has no physical primary key. DuckDB 1.5.6 does not report a write-write conflict
-        // for UPDATE ... RETURNING on a table with a primary key, and EF's update batches use RETURNING, so a keyed
-        // table would hide the conflict SaveChanges is meant to retry here.
-        await context.Database.ExecuteSqlRawAsync("""CREATE TABLE "Accounts" ("Id" INTEGER NOT NULL, "Balance" INTEGER NOT NULL);""");
+        await context.Database.EnsureCreatedAsync();
         context.AddRange(new Account { Id = 1, Balance = 0 }, new Account { Id = 2, Balance = 0 });
         await context.SaveChangesAsync();
     }
@@ -332,15 +380,29 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
         }
     }
 
-    private sealed class AccountContext(DbContextOptions<AccountContext> options) : DbContext(options)
+    private class AccountContext(DbContextOptions options) : DbContext(options)
     {
         public DbSet<Account> Accounts => Set<Account>();
 
+        protected virtual bool UsesConcurrencyToken => false;
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => modelBuilder.Entity<Account>().Property(a => a.Id).ValueGeneratedNever();
+        {
+            var account = modelBuilder.Entity<Account>();
+            account.Property(a => a.Id).ValueGeneratedNever();
+            if (UsesConcurrencyToken)
+            {
+                account.Property(a => a.Balance).IsConcurrencyToken();
+            }
+        }
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
             => optionsBuilder.ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
+    }
+
+    private sealed class TokenAccountContext(DbContextOptions options) : AccountContext(options)
+    {
+        protected override bool UsesConcurrencyToken => true;
     }
 
     private sealed class Account

@@ -1241,10 +1241,10 @@ await strategy.ExecuteAsync(async () =>
 way when they run alongside conflicting writers. A DuckLake commit message set with `SetCommitMessageAsync` belongs
 to a caller transaction, so start that transaction inside the strategy too.
 
-DuckDB 1.5.6 does not report a conflict for `UPDATE ... RETURNING` on a table with a primary key, and EF's
-`SaveChanges` update batches use `RETURNING`, so overlapping `SaveChanges` updates of the same keyed row are not
-detected and the later commit is lost. `ExecuteUpdate`, catalog changes, and DuckLake commits do report their
-conflicts. Keep updates to shared rows on a single writer. See the
+DuckDB 1.5.6 does not report a conflict for `UPDATE ... RETURNING` on a table with a primary key, so the provider
+sends tracked `SaveChanges` updates as plain `UPDATE` statements, which do. Rows affected come from the statement,
+and store-generated values are read back with a separate query in the same transaction. Deletes never conflict in
+DuckDB: a delete that overlaps an update wins. See the
 [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md#readwrite-visibility-and-conflicts).
 
 ## Compatibility

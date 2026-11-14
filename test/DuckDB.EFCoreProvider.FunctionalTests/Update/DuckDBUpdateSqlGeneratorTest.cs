@@ -191,13 +191,15 @@ public class DuckDBUpdateSqlGeneratorTest : UpdateSqlGeneratorTestBase
             stringBuilder);
     }
 
+    // DuckDB 1.5.6 does not report write-write conflicts for UPDATE ... RETURNING on keyed tables, so tracked
+    // updates are plain UPDATE statements; rows affected come from the statement and generated values from a
+    // separate read-back query.
     protected override void AppendUpdateOperation_if_store_generated_columns_exist_verification(StringBuilder stringBuilder)
     {
         AssertSql(
             """
             UPDATE dbo."Ducks" SET "Name" = $p0, "Quacks" = $p1, "ConcurrencyToken" = $p2
-            WHERE "Id" = $p3 AND "ConcurrencyToken" IS NULL
-            RETURNING "Computed";
+            WHERE "Id" = $p3 AND "ConcurrencyToken" IS NULL;
 
             """,
             stringBuilder);
@@ -208,8 +210,7 @@ public class DuckDBUpdateSqlGeneratorTest : UpdateSqlGeneratorTestBase
         AssertSql(
             """
             UPDATE dbo."Ducks" SET "Name" = $p0, "Quacks" = $p1, "ConcurrencyToken" = $p2
-            WHERE "Id" = $p3
-            RETURNING 1;
+            WHERE "Id" = $p3;
 
             """,
             stringBuilder);
@@ -220,8 +221,7 @@ public class DuckDBUpdateSqlGeneratorTest : UpdateSqlGeneratorTestBase
         AssertSql(
             """
             UPDATE dbo."Ducks" SET "Name" = $p0, "Quacks" = $p1, "ConcurrencyToken" = $p2
-            WHERE "Id" = $p3 AND "ConcurrencyToken" IS NULL
-            RETURNING 1;
+            WHERE "Id" = $p3 AND "ConcurrencyToken" IS NULL;
 
             """,
             stringBuilder);
@@ -232,8 +232,7 @@ public class DuckDBUpdateSqlGeneratorTest : UpdateSqlGeneratorTestBase
         AssertSql(
             """
             UPDATE dbo."Ducks" SET "Name" = $p0, "Quacks" = $p1, "ConcurrencyToken" = $p2
-            WHERE "Id" = $p3
-            RETURNING "Computed";
+            WHERE "Id" = $p3;
 
             """,
             stringBuilder);
