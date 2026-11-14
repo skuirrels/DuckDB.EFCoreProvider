@@ -40,7 +40,43 @@ internal sealed class DuckDBUpsertSqlRenderer(ISqlGenerationHelper sqlGeneration
         string temporaryTable,
         string? temporarySchema = null)
         => RenderUpsertFromTemporaryTable(plan, temporaryTable, temporarySchema)
-           + $" DELETE FROM {Delimit(temporaryTable, temporarySchema)};";
+           + " " + RenderClearStagingTable(temporaryTable, temporarySchema);
+
+    internal string RenderClearStagingTable(string stagingTable, string? stagingSchema = null)
+        => $"DELETE FROM {Delimit(stagingTable, stagingSchema)};";
+
+    // Returns one row per staged row, in append (input) order: the number of stored rows that match it on
+    // the conflict target, then the stored value of each read-back column. A staged row whose conflict
+    // target contains NULL matches nothing, and duplicate logical keys match more than once; callers only
+    // assign values from rows with exactly one match.
+    internal string RenderReadBack(DuckDBUpsertPlan plan, string stagingTable, string? stagingSchema = null)
+    {
+        var stagedAlias = Delimit("__duckdb_upsert_staged");
+        var storedAlias = Delimit("__duckdb_upsert_stored");
+        return new StringBuilder()
+            .Append("SELECT count(")
+            .Append(Qualify(storedAlias, plan.ConflictColumns[0]))
+            .Append(')')
+            .AppendJoin(string.Empty, plan.ReadBackColumns.Select(column => $", any_value({Qualify(storedAlias, column)})"))
+            .Append(" FROM ")
+            .Append(Delimit(stagingTable, stagingSchema))
+            .Append(" AS ")
+            .Append(stagedAlias)
+            .Append(" LEFT JOIN ")
+            .Append(Delimit(plan.Table, plan.Schema))
+            .Append(" AS ")
+            .Append(storedAlias)
+            .Append(" ON ")
+            .AppendJoin(
+                " AND ",
+                plan.ConflictColumns.Select(column => $"{Qualify(storedAlias, column)} = {Qualify(stagedAlias, column)}"))
+            .Append(" GROUP BY ")
+            .Append(stagedAlias)
+            .Append(".rowid ORDER BY ")
+            .Append(stagedAlias)
+            .Append(".rowid;")
+            .ToString();
+    }
 
     internal string RenderDropTemporaryTable(string temporaryTable, string? temporarySchema = null)
         => $"DROP TABLE IF EXISTS {Delimit(temporaryTable, temporarySchema)};";
