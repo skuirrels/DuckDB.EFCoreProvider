@@ -19,7 +19,7 @@ public class LoggingDuckDBTest : LoggingRelationalTestBase<DuckDBDbContextOption
 
     protected override DbContextOptionsBuilder CreateOptionsBuilder(
         IServiceCollection services,
-        Action<RelationalDbContextOptionsBuilder<DuckDBDbContextOptionsBuilder, DuckDBOptionsExtension>> relationalAction)
+        Action<RelationalDbContextOptionsBuilder<DuckDBDbContextOptionsBuilder, DuckDBOptionsExtension>>? relationalAction)
         => new DbContextOptionsBuilder()
             .UseInternalServiceProvider(services.AddEntityFrameworkDuckDB().BuildServiceProvider(validateScopes: true))
             .UseDuckDB("Data Source=LoggingDuckDBTest.db", relationalAction);

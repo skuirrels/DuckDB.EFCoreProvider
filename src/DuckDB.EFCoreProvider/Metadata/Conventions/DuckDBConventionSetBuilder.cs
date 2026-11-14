@@ -71,11 +71,15 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
         conventionSet.ForeignKeyNullNavigationSetConventions.Clear();
         conventionSet.ForeignKeyOwnershipChangedConventions.Clear();
         conventionSet.ForeignKeyPrincipalEndChangedConventions.Clear();
-        conventionSet.ForeignKeyPropertiesChangedConventions.Clear();
+        // Key discovery stays: it gives many-to-many join entities their composite key from the join foreign keys.
+        RetainOnly(conventionSet.ForeignKeyPropertiesChangedConventions, convention => convention is KeyDiscoveryConvention);
+        // A new foreign key takes its requiredness from its initial properties; this keeps it in step when the
+        // relationship moves onto other properties. Cascade delete stays off, so delete behaviour is unchanged.
+        conventionSet.ForeignKeyPropertiesChangedConventions.Add(new DuckDBForeignKeyRequirednessConvention());
         conventionSet.ForeignKeyRemovedConventions.Clear();
         conventionSet.ForeignKeyRequirednessChangedConventions.Clear();
         conventionSet.ForeignKeyUniquenessChangedConventions.Clear();
-        conventionSet.SkipNavigationForeignKeyChangedConventions.Clear();
+        RetainOnly(conventionSet.SkipNavigationForeignKeyChangedConventions, convention => convention is KeyDiscoveryConvention);
 
         var valueGenerationConvention = new DuckDBValueGenerationConvention(
             Dependencies,
@@ -90,6 +94,18 @@ public class DuckDBConventionSetBuilder : RelationalConventionSetBuilder
         conventionSet.ModelFinalizingConventions.Add(new DuckDBOwnedValueConvention());
 
         return conventionSet;
+    }
+
+    private static void RetainOnly<TConvention>(IList<TConvention> conventions, Func<TConvention, bool> keep)
+        where TConvention : IConvention
+    {
+        for (var i = conventions.Count - 1; i > -1; i--)
+        {
+            if (!keep(conventions[i]))
+            {
+                conventions.RemoveAt(i);
+            }
+        }
     }
 
     private void RemoveForeignKeyIndexConvention(IList<IEntityTypeBaseTypeChangedConvention> conventions)

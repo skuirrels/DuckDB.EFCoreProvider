@@ -2,13 +2,28 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
-## Unreleased
+## 1.28.0 / EF11 1.28.0-preview.1
 
 - Add LINQ translation for `GROUP BY ROLLUP`, `CUBE` and `GROUPING SETS` through the `GroupByRollup`,
   `GroupByCube` and `GroupByGroupingSets` queryable operators, plus `EF.Functions.Grouping(...)` for DuckDB's
   `GROUPING`. Rolled-up value-type key members must be nullable, key members must be scalar, and querying a
   group's elements is rejected at query compilation rather than returning incomplete subtotal groups. Works on
   native DuckDB and DuckLake.
+- Build the EF11 package family against stable EF Core 11.0.0 (`net11.0`) and allow 11.0.x servicing
+  updates. CI and publishing use the .NET 11 SDK, and the EF11 tests use xUnit v3 4.0.3. The EF11 packages
+  still ship as previews.
+- Keep EF Core's key discovery for foreign-key property and skip-navigation changes, so many-to-many join
+  entities configured with `UsingEntity` get their composite key from the join foreign keys on both EF lines.
+- Fix `ExecuteUpdate` when the filter joins two or more tables through required navigations. Later inner
+  joins are now rendered as cross joins with their predicates in `WHERE`, because DuckDB could not bind a
+  `JOIN ... ON` that referenced the update target. Affects both EF lines.
+- Infer relationship requiredness from foreign key nullability. A relationship whose foreign key is a
+  non-nullable property, discovered by convention or set with `HasForeignKey`, is now required, so its
+  navigations query through `INNER JOIN` instead of `LEFT JOIN`. Delete behaviour is unchanged and existing
+  migration snapshots produce no new operations. Call `.IsRequired(false)` to keep a relationship optional.
+  Affects both EF lines.
+- `DuckDB.EFCoreProvider.EF11.NTS` 1.1.0-preview.2 rebuilds against EF Core 11.0.0, because 1.1.0-preview.1
+  pinned EF Core 11.0.0-preview.7. `DuckDB.EFCoreProvider.NTS` 1.1.0 is unchanged.
 
 ## 1.27.0 / EF11 1.27.0-preview.1
 
