@@ -348,16 +348,17 @@ public class UpsertTests : DuckDBTestBase
             Assert.Equal(1, await context.UpsertAsync([inserted], item => item.ExternalId));
         }
 
-        Assert.Equal(999, inserted.Id);
-        Assert.Equal(-1, inserted.GeneratedValue);
-        Assert.Equal(-1, inserted.GeneratedSqlValue);
+        // The supplied Id and generated values are not staged; the stored values are read back instead.
+        Assert.NotEqual(999, inserted.Id);
+        Assert.Equal(42, inserted.GeneratedValue);
+        Assert.Equal(43, inserted.GeneratedSqlValue);
 
         long generatedId;
         await using (var context = CreateContext())
         {
             var stored = await context.GeneratedItems.AsNoTracking().SingleAsync();
             generatedId = stored.Id;
-            Assert.NotEqual(inserted.Id, stored.Id);
+            Assert.Equal(inserted.Id, stored.Id);
             Assert.Equal(42, stored.GeneratedValue);
             Assert.Equal(43, stored.GeneratedSqlValue);
         }

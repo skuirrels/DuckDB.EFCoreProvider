@@ -1,10 +1,7 @@
 using DuckDB.EFCoreProvider.Metadata;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
-using Microsoft.EntityFrameworkCore.Metadata.Internal;
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Data.Common;
-using System.Globalization;
 
 namespace DuckDB.EFCoreProvider.Extensions.Internal;
 
@@ -21,9 +18,7 @@ namespace DuckDB.EFCoreProvider.Extensions.Internal;
 internal sealed class DuckDBBulkInsertKeyReservation
 {
     private readonly IClrPropertyGetter _getter;
-    private readonly IClrPropertySetter _setter;
-    private readonly ValueConverter? _converter;
-    private readonly Type _providerClrType;
+    private readonly DuckDBStoreValueWriter _writer;
 
     internal DuckDBBulkInsertKeyReservation(IProperty property, string columnDefault)
     {
@@ -31,11 +26,7 @@ internal sealed class DuckDBBulkInsertKeyReservation
         ColumnDefault = columnDefault;
         CommandText = $"SELECT {columnDefault} FROM range($n)";
         _getter = property.GetGetter();
-        _setter = ((IRuntimePropertyBase)property).GetSetter();
-        _converter = property.GetTypeMapping().Converter;
-        _providerClrType = Nullable.GetUnderlyingType(_converter?.ProviderClrType ?? property.ClrType)
-            ?? _converter?.ProviderClrType
-            ?? property.ClrType;
+        _writer = new DuckDBStoreValueWriter(property);
     }
 
     internal IProperty Property { get; }
@@ -92,7 +83,15 @@ internal sealed class DuckDBBulkInsertKeyReservation
                 break;
             }
 
-            _setter.SetClrValueUsingContainingEntity(rows[i], ToClrValue(reader.GetValue(0)));
+            var value = reader.GetValue(0);
+            if (value is DBNull)
+            {
+                throw new InvalidOperationException(
+                    $"Bulk insert could not reserve a value for column '{Property.GetColumnName()}': "
+                    + $"its default '{ColumnDefault}' returned NULL.");
+            }
+
+            _writer.Write(rows[i], value);
             assigned++;
         }
 
@@ -104,21 +103,5 @@ internal sealed class DuckDBBulkInsertKeyReservation
         }
 
         return pending;
-    }
-
-    private object? ToClrValue(object value)
-    {
-        if (value is DBNull)
-        {
-            throw new InvalidOperationException(
-                $"Bulk insert could not reserve a value for column '{Property.GetColumnName()}': "
-                + $"its default '{ColumnDefault}' returned NULL.");
-        }
-
-        var providerValue = value.GetType() == _providerClrType || value is not IConvertible
-            ? value
-            : Convert.ChangeType(value, _providerClrType, CultureInfo.InvariantCulture);
-
-        return _converter is null ? providerValue : _converter.ConvertFromProvider(providerValue);
     }
 }

@@ -315,6 +315,70 @@ public sealed class QuackProfileTests : DuckDBTestBase
         Assert.True(diagnostics.RoundTripLatency >= TimeSpan.Zero);
     }
 
+    [QuackIntegrationFact]
+    public async Task Quack_alternate_target_upsert_reads_generated_values_back()
+    {
+        var extensionPath = Environment.GetEnvironmentVariable("DUCKDB_QUACK_EXTENSION_PATH")!;
+        var port = Environment.GetEnvironmentVariable("DUCKDB_QUACK_TEST_PORT") ?? "19494";
+        var endpoint = $"quack:localhost:{port}";
+        var serverOptions = new DbContextOptionsBuilder<QuackDimensionContext>()
+            .UseDuckDB(
+                $"Data Source={DbPath};allow_unsigned_extensions=true",
+                duckDb => duckDb.LoadExtension("httpfs"))
+            .Options;
+
+        await using var serverContext = new QuackDimensionContext(serverOptions);
+        await using var server = await serverContext.Database.StartQuackServerAsync(new DuckDBQuackServerOptions
+        {
+            Uri = endpoint,
+            Token = "integration-token",
+            DisableSsl = true,
+            ExtensionPath = extensionPath
+        });
+
+        await using var client = new QuackDimensionContext(
+            new DbContextOptionsBuilder<QuackDimensionContext>()
+                .UseDuckDB(
+                    "Data Source=:memory:;allow_unsigned_extensions=true",
+                    duckDb => duckDb.UseQuack(
+                        endpoint,
+                        "integration-token",
+                        quack => quack.DisableSsl().ExtensionPath(extensionPath)))
+                .Options);
+        Assert.True(await client.Database.EnsureCreatedAsync());
+
+        var first = new[]
+        {
+            new QuackDimension { Code = "A", Name = "alpha" },
+            new QuackDimension { Code = "B", Name = "beta" }
+        };
+        Assert.Equal(2, await client.UpsertAsync(first, dimension => dimension.Code));
+        Assert.All(first, dimension => Assert.True(dimension.Id > 0));
+        Assert.All(first, dimension => Assert.NotEqual(Guid.Empty, dimension.CorrelationId));
+        Assert.All(first, dimension => Assert.Equal("literal-default", dimension.LiteralDefault));
+
+        // The existing row receives its stored key and generated values; the new row receives fresh ones.
+        var second = new[]
+        {
+            new QuackDimension { Id = -1, Code = "B", Name = "beta updated" },
+            new QuackDimension { Code = "C", Name = "gamma" }
+        };
+        Assert.Equal(2, await client.UpsertAsync(second, dimension => dimension.Code, batchSize: 1));
+        Assert.Equal(first[1].Id, second[0].Id);
+        Assert.Equal(first[1].CorrelationId, second[0].CorrelationId);
+        Assert.True(second[1].Id > first[1].Id);
+
+        var stored = await client.Dimensions.AsNoTracking().ToDictionaryAsync(dimension => dimension.Code);
+        Assert.Equal(3, stored.Count);
+        Assert.All(first.Concat(second), dimension => Assert.Equal(stored[dimension.Code].Id, dimension.Id));
+        Assert.Equal("beta updated", stored["B"].Name);
+        Assert.Equal(
+            0,
+            await serverContext.Database.SqlQueryRaw<long>(
+                    "SELECT count(*) AS Value FROM duckdb_tables() WHERE table_name LIKE '__duckdb_upsert_%'")
+                .SingleAsync());
+    }
+
     [ConditionalFact]
     public void UseQuack_is_opt_in_and_does_not_change_native_connection_path()
     {
@@ -652,6 +716,36 @@ public sealed class QuackProfileTests : DuckDBTestBase
                 entity.Property(value => value.Value).IsRequired();
             });
         }
+    }
+
+    private sealed class QuackDimensionContext(DbContextOptions<QuackDimensionContext> options) : DbContext(options)
+    {
+        public DbSet<QuackDimension> Dimensions => Set<QuackDimension>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<QuackDimension>(entity =>
+            {
+                entity.ToTable("dimensions");
+                entity.Property(dimension => dimension.Id).HasColumnName("id").UseAutoIncrement();
+                entity.Property(dimension => dimension.Code).HasColumnName("code");
+                entity.HasIndex(dimension => dimension.Code).IsUnique();
+                entity.Property(dimension => dimension.Name).HasColumnName("name").IsRequired();
+                entity.Property(dimension => dimension.LiteralDefault)
+                    .HasColumnName("literal_default")
+                    .HasDefaultValue("literal-default");
+                entity.Property(dimension => dimension.CorrelationId)
+                    .HasColumnName("correlation_id")
+                    .HasDefaultValueSql("uuid()");
+            });
+    }
+
+    private sealed class QuackDimension
+    {
+        public long Id { get; set; }
+        public string Code { get; set; } = null!;
+        public string Name { get; set; } = null!;
+        public string LiteralDefault { get; set; } = null!;
+        public Guid CorrelationId { get; set; }
     }
 
     private sealed class QuackItem
