@@ -1,5 +1,6 @@
 ﻿using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Storage;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -369,6 +370,47 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     /// <param name="enable"><see langword="true" /> to enable table rebuilds; otherwise, <see langword="false" />.</param>
     public virtual DuckDBDbContextOptionsBuilder EnableMigrationTableRebuilds(bool enable = true)
         => WithOption(e => e.WithMigrationTableRebuilds(enable));
+
+    /// <summary>
+    ///     Retries a unit of work that fails because of a DuckDB or DuckLake write-write conflict with a
+    ///     concurrent transaction, using <see cref="DuckDBRetryingExecutionStrategy" /> with EF Core's default
+    ///     retry count and maximum delay.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Only conflicts are retried; constraint violations and other errors fail immediately. With retries
+    ///         enabled, start explicit transactions inside <c>context.Database.CreateExecutionStrategy()</c> so the
+    ///         complete transaction is replayed. The raw <c>BulkInsert</c> and <c>Upsert</c> fast paths are not retried
+    ///         automatically.
+    ///     </para>
+    /// </remarks>
+    /// <returns>The same builder instance so that multiple calls can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder EnableRetryOnFailure()
+        => ExecutionStrategy(dependencies => new DuckDBRetryingExecutionStrategy(dependencies));
+
+    /// <summary>
+    ///     Retries a unit of work that fails because of a DuckDB or DuckLake write-write conflict, up to
+    ///     <paramref name="maxRetryCount" /> times.
+    /// </summary>
+    /// <param name="maxRetryCount">The maximum number of retry attempts.</param>
+    /// <returns>The same builder instance so that multiple calls can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder EnableRetryOnFailure(int maxRetryCount)
+        => ExecutionStrategy(dependencies => new DuckDBRetryingExecutionStrategy(dependencies, maxRetryCount));
+
+    /// <summary>
+    ///     Retries a unit of work that fails because of a DuckDB or DuckLake write-write conflict, up to
+    ///     <paramref name="maxRetryCount" /> times with at most <paramref name="maxRetryDelay" /> between attempts.
+    /// </summary>
+    /// <remarks>
+    ///     DuckDB conflicts are in-process and clear as soon as the competing transaction finishes, so a short
+    ///     maximum delay is usually appropriate for native DuckDB.
+    /// </remarks>
+    /// <param name="maxRetryCount">The maximum number of retry attempts.</param>
+    /// <param name="maxRetryDelay">The maximum delay between retries.</param>
+    /// <returns>The same builder instance so that multiple calls can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder EnableRetryOnFailure(int maxRetryCount, TimeSpan maxRetryDelay)
+        => ExecutionStrategy(
+            dependencies => new DuckDBRetryingExecutionStrategy(dependencies, maxRetryCount, maxRetryDelay));
 
     /// <summary>Installs and loads a DuckDB extension whenever a provider-owned connection opens.</summary>
     /// <remarks>

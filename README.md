@@ -1203,6 +1203,50 @@ rather than failing. (For an in-memory database — `Data Source=:memory:` — s
 For the relationship between concurrent `DbContext` instances, a continuous bulk writer, and the shared thread
 budget, see the [native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md).
 
+### Retry write-write conflicts
+
+DuckDB uses optimistic concurrency control. When two transactions change the same row or catalog entry, the later
+one fails with a conflict instead of waiting, and the failed transaction has applied nothing. Opt in to a retrying
+execution strategy to run the whole operation again:
+
+```csharp
+options.UseDuckDB("Data Source=app.db", duckdb => duckdb.EnableRetryOnFailure());
+
+// Or bound the retries.
+options.UseDuckDB("Data Source=app.db", duckdb => duckdb.EnableRetryOnFailure(
+    maxRetryCount: 3,
+    maxRetryDelay: TimeSpan.FromSeconds(2)));
+
+// DuckLake catalog commit conflicts are retried too.
+options.UseDuckLake(metadataPath, duckLake => duckLake.DataPath(dataPath),
+    duckdb => duckdb.EnableRetryOnFailure());
+```
+
+Only DuckDB and DuckLake write-write conflicts are retried. Constraint violations, aborted transactions, and every
+other error fail immediately. As with any retrying EF Core strategy, an explicit transaction must run inside the
+strategy so the whole transaction can be replayed:
+
+```csharp
+var strategy = db.Database.CreateExecutionStrategy();
+await strategy.ExecuteAsync(async () =>
+{
+    db.ChangeTracker.Clear();
+    await using var transaction = await db.Database.BeginTransactionAsync();
+    // Read, change, and SaveChangesAsync here.
+    await transaction.CommitAsync();
+});
+```
+
+`BulkInsert` and `Upsert` are raw fast paths and are not retried automatically; wrap them in the strategy the same
+way when they run alongside conflicting writers. A DuckLake commit message set with `SetCommitMessageAsync` belongs
+to a caller transaction, so start that transaction inside the strategy too.
+
+DuckDB 1.5.6 does not report a conflict for `UPDATE ... RETURNING` on a table with a primary key, and EF's
+`SaveChanges` update batches use `RETURNING`, so overlapping `SaveChanges` updates of the same keyed row are not
+detected and the later commit is lost. `ExecuteUpdate`, catalog changes, and DuckLake commits do report their
+conflicts. Keep updates to shared rows on a single writer. See the
+[native DuckDB concurrency guide](docs/NATIVE-DUCKDB-CONCURRENCY.md#readwrite-visibility-and-conflicts).
+
 ## Compatibility
 
 The shared source builds for EF Core 10.0.10 on `net10.0` and EF Core 11.0.0 on `net11.0`. The EF11 packages still ship as previews. The existing package names retain EF10 on both .NET 10 and .NET 11; opt into EF11 with `DuckDB.EFCoreProvider.EF11` (and `DuckDB.EFCoreProvider.EF11.NTS` for spatial support). See [shared development and package selection](docs/EF10-EF11-SUPPORT.md). DuckDB is an embedded analytical database, so some relational features differ from server databases. Unsupported DuckDB features should fail clearly or be documented as provider limitations.

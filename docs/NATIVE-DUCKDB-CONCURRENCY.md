@@ -279,9 +279,35 @@ DuckDB uses MVCC and optimistic concurrency control within the process:
   and
 - migrations, table rebuilds, and other schema maintenance must run outside normal reader/writer traffic.
 
-The provider does not add a retrying execution strategy. If the application permits additional writers, it must
-identify retryable conflict failures and retry the complete transaction only when that is safe for the business
-operation. A single application writer is simpler for continuous ingestion.
+A transaction that loses a conflict has applied nothing, so running the same unit of work again normally succeeds.
+`EnableRetryOnFailure()` opts in to `DuckDBRetryingExecutionStrategy`, which retries DuckDB and DuckLake
+write-write conflicts and nothing else:
+
+```csharp
+options.UseDuckDB("Data Source=app.db", duckdb => duckdb.EnableRetryOnFailure(
+    maxRetryCount: 3,
+    maxRetryDelay: TimeSpan.FromSeconds(2)));
+```
+
+Retrying is only safe when the replayed operation is safe for the business process. Run explicit transactions
+inside `context.Database.CreateExecutionStrategy().ExecuteAsync(...)` so the strategy replays the whole
+transaction, and re-read the state the transaction depends on inside that delegate. `BulkInsert` and `Upsert` are
+not retried automatically; wrap them in the strategy when they share rows with other writers. Constraint violations
+are never retried. A single application writer remains simpler for continuous ingestion.
+
+DuckDB 1.5.6 does not detect every conflict. Measured against DuckDB.NET 1.5.6:
+
+| Operation from a second transaction | Same row changed by an overlapping transaction |
+|---|---|
+| `UPDATE` without `RETURNING` (`ExecuteUpdate`) | Conflict reported; retryable. |
+| `UPDATE ... RETURNING` on a table without a primary key | Conflict reported; retryable. |
+| `UPDATE ... RETURNING` on a table with a primary key (`SaveChanges` updates) | No conflict; both commits succeed and the later write is lost. |
+| `DELETE`, with or without `RETURNING` | No conflict; the delete wins. |
+| Concurrent DDL on the same catalog entry | Conflict reported; retryable. |
+
+Because `SaveChanges` update batches use `RETURNING`, overlapping `SaveChanges` updates of the same keyed row are
+not detected by DuckDB, and an EF concurrency token does not help when both transactions read the same snapshot.
+Keep updates to shared rows on a single writer, or use `ExecuteUpdate` with the retrying strategy.
 
 ## How `.Threads(...)` relates to contexts
 
@@ -337,6 +363,7 @@ for row-group parallelism, memory, remote I/O, and connection considerations.
 - [ ] Redelivery is idempotent across the database-commit/source-acknowledgement window.
 - [ ] Batch formation has both a maximum size and a maximum wait.
 - [ ] Retry, dead-letter, or fail-fast host behaviour is explicit and monitored.
+- [ ] Any additional writer runs its units of work through `EnableRetryOnFailure()` and the execution strategy.
 - [ ] All contexts use the same connection string and compatible global settings.
 - [ ] `.Threads(...)` and `MemoryLimit(...)` are tested together under concurrent reads and active ingestion.
 - [ ] Heavy read admission is bounded when load testing shows resource saturation.
