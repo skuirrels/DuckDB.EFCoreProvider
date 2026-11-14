@@ -149,8 +149,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 
         if (_capabilities.SupportsReturning)
         {
-            if (!_capabilities.SupportsReturningOnReferencedTableUpdates
-                && DuckDBUpdateFallbackPlanner.TryCreate(command, _capabilities, out var plan))
+            if (DuckDBUpdateFallbackPlanner.TryCreate(command, _capabilities, out var plan))
             {
                 return AppendUpdateFallbackOperation(
                     commandStringBuilder,

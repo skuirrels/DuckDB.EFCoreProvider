@@ -15,9 +15,6 @@ internal sealed class DuckDBSingularModificationCommandBatch(
     : SingularModificationCommandBatch(dependencies)
 {
     private readonly IDuckDBEngineCapabilities _capabilities = capabilities;
-    private readonly bool _useUpdateFallback =
-        capabilities.SupportsReturning
-        && !capabilities.SupportsReturningOnReferencedTableUpdates;
     private bool _requiresUpdateFallbackExecution;
     private bool _requiresConditionalForeignKeyExecution;
 
@@ -29,9 +26,8 @@ internal sealed class DuckDBSingularModificationCommandBatch(
         var dualRolePlan = DuckDBDualRoleUpdatePlanner.Create(modificationCommand, _capabilities);
         _requiresConditionalForeignKeyExecution = dualRolePlan.RequiresConditionalForeignKeyUpdate;
         _requiresUpdateFallbackExecution =
-            _useUpdateFallback
-            && !dualRolePlan.RequiresConditionalForeignKeyUpdate
-            && DuckDBUpdateFallbackPlanner.CanPlan(modificationCommand);
+            !dualRolePlan.RequiresConditionalForeignKeyUpdate
+            && DuckDBUpdateFallbackPlanner.CanPlan(modificationCommand, _capabilities);
         base.AddCommand(modificationCommand);
     }
 

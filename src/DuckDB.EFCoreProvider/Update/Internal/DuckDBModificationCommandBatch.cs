@@ -55,7 +55,6 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     private readonly bool _insertBatching;
     private readonly bool _updateBatching;
     private readonly bool _deleteBatching;
-    private readonly bool _useUpdateFallback;
     private readonly IDuckDBEngineCapabilities _capabilities;
     private bool _requiresUpdateFallbackExecution;
     private bool _requiresConditionalForeignKeyExecution;
@@ -92,9 +91,6 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         _updateBatching = updateBatching;
         _deleteBatching = deleteBatching;
         _capabilities = capabilities;
-        _useUpdateFallback =
-            capabilities.SupportsReturning
-            && !capabilities.SupportsReturningOnReferencedTableUpdates;
     }
 
     private new DuckDBUpdateSqlGenerator UpdateSqlGenerator
@@ -229,10 +225,9 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     private bool RequiresUpdateFallbackExecution(
         IReadOnlyModificationCommand command,
         DuckDBDualRoleUpdatePlan dualRolePlan)
-        => _useUpdateFallback
-            && !dualRolePlan.RequiresConditionalForeignKeyUpdate
+        => !dualRolePlan.RequiresConditionalForeignKeyUpdate
             && !CanUseBulkUpdate(command, dualRolePlan)
-            && DuckDBUpdateFallbackPlanner.CanPlan(command);
+            && DuckDBUpdateFallbackPlanner.CanPlan(command, _capabilities);
 
     private bool CanUseBulkUpdate(
         IReadOnlyModificationCommand command,

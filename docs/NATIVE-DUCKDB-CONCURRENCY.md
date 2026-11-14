@@ -297,17 +297,22 @@ are never retried. A single application writer remains simpler for continuous in
 
 DuckDB 1.5.6 does not detect every conflict. Measured against DuckDB.NET 1.5.6:
 
-| Operation from a second transaction | Same row changed by an overlapping transaction |
+| Statement from a second transaction | Same row changed by an overlapping transaction |
 |---|---|
-| `UPDATE` without `RETURNING` (`ExecuteUpdate`) | Conflict reported; retryable. |
+| `UPDATE` without `RETURNING` (`SaveChanges` and `ExecuteUpdate`) | Conflict reported; retryable. |
 | `UPDATE ... RETURNING` on a table without a primary key | Conflict reported; retryable. |
-| `UPDATE ... RETURNING` on a table with a primary key (`SaveChanges` updates) | No conflict; both commits succeed and the later write is lost. |
+| `UPDATE ... RETURNING` on a table with a primary key | No conflict; both commits succeed and one write is lost. |
 | `DELETE`, with or without `RETURNING` | No conflict; the delete wins. |
 | Concurrent DDL on the same catalog entry | Conflict reported; retryable. |
 
-Because `SaveChanges` update batches use `RETURNING`, overlapping `SaveChanges` updates of the same keyed row are
-not detected by DuckDB, and an EF concurrency token does not help when both transactions read the same snapshot.
-Keep updates to shared rows on a single writer, or use `ExecuteUpdate` with the retrying strategy.
+An EF concurrency token cannot catch the missing `RETURNING` conflict: its predicate is evaluated on the updating
+transaction's own snapshot, where it still matches. The provider therefore sends tracked `SaveChanges` updates as
+plain `UPDATE` statements and reads store-generated values back with a separate query in the same transaction, so
+overlapping updates fail with a retryable conflict instead of losing a write. That failure is a `DbUpdateException`
+wrapping DuckDB's `Conflict on update` error, not a `DbUpdateConcurrencyException`: the token check still applies
+to stale state read before the other transaction committed, and the conflict covers transactions that overlap.
+Handle both, or enable the retrying strategy. Overlapping deletes still win without a conflict; guard workflows that
+delete shared rows at the application level.
 
 ## How `.Threads(...)` relates to contexts
 

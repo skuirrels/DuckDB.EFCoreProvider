@@ -8,9 +8,13 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   DuckDB or a DuckLake catalog rejects it with a write-write conflict. Constraint violations, aborted
   transactions, and other errors are not retried. Overloads set the maximum retry count and delay. Explicit
   transactions must run inside the execution strategy, and `BulkInsert` and `Upsert` are not retried
-  automatically. DuckDB 1.5.6 does not report conflicts for `UPDATE ... RETURNING` on keyed tables, so
-  overlapping `SaveChanges` updates of the same row are still not detected; see the native DuckDB concurrency
-  guide.
+  automatically.
+- Fixed silent lost updates when two transactions update the same row through `SaveChanges`. DuckDB 1.5.6 does
+  not report a write-write conflict for `UPDATE ... RETURNING` on a table with a primary key: both transactions
+  committed and one write was lost, and a concurrency token could not catch it. Tracked updates on native DuckDB
+  and Quack are now plain `UPDATE` statements, which fail with a retryable conflict: a `DbUpdateException`
+  wrapping DuckDB's `Conflict on update` error, not a `DbUpdateConcurrencyException`. Rows affected come from the
+  statement, and store-generated values are read back with a separate query in the same transaction.
 - The alternate-target `UpsertAsync` overloads now read store-generated values back into the supplied entities.
   Generated columns left out of staging, such as a sequence-backed surrogate key, are read from the stored rows
   after each batch by matching on the conflict target, so inserted rows receive their new values and updated

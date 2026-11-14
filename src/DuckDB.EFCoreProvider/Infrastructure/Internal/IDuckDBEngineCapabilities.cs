@@ -32,6 +32,14 @@ public interface IDuckDBEngineCapabilities
     bool SupportsReturningOnReferencedTableUpdates => false;
 
     /// <summary>
+    ///     Indicates whether <c>UPDATE ... RETURNING</c> on a table with a primary key reports a write-write conflict
+    ///     when an overlapping transaction changed the same row. DuckDB 1.5.6 does not: both transactions commit and
+    ///     one write is lost. When this is <see langword="false" />, tracked updates use a plain <c>UPDATE</c>, which
+    ///     does report the conflict, and read store-generated values back with a separate query.
+    /// </summary>
+    bool SupportsConflictDetectingReturningUpdates => false;
+
+    /// <summary>
     ///     Indicates whether the engine can update outbound foreign-key columns on a table that is also
     ///     referenced by dependent rows.
     /// </summary>
