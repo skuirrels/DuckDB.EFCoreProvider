@@ -50,6 +50,8 @@ public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPos
             .Visit(result);
         result = new DuckDBFileSourceQueryRootRewritingExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
             .Visit(result);
+        result = new DuckDBUpdateJoinFlatteningExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
+            .Visit(result);
 
         return result;
     }

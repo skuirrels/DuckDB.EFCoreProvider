@@ -18,7 +18,7 @@ public class NorthwindDbFunctionsQueryDuckDBTest : NorthwindDbFunctionsQueryRela
             ss => ss.Set<Customer>(),
             ss => ss.Set<Customer>(),
             c => EF.Functions.Like(c.ContactName, "%M%"),
-            c => c.ContactName.Contains("M"));
+            c => c.ContactName!.Contains("M"));
     }
 
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]

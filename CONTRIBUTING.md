@@ -4,9 +4,9 @@ This repository is `DuckDB.EFCoreProvider`, an Entity Framework Core provider fo
 
 ## Compatibility
 
-- Develop functionality once in shared source for EF Core 10 / `net10.0` and EF Core 11 preview / `net11.0`.
+- Develop functionality once in shared source for EF Core 10 / `net10.0` and EF Core 11 / `net11.0`.
 - Do not add compatibility work for EF Core versions older than 10.
-- Treat EF11 as preview support until the stable release is rebuilt and validated. See [dual-target development](docs/EF10-EF11-SUPPORT.md).
+- The EF11 packages build against stable EF Core 11 and ship as previews until a stable EF11 provider release. See [dual-target development](docs/EF10-EF11-SUPPORT.md).
 - Keep Microsoft EF Core package versions aligned within each target across provider and test projects.
 
 ## Engineering Standards
@@ -64,7 +64,7 @@ Minimum expectations:
 ## Documentation
 
 - Keep `README.md` simple to start with, then include detailed examples for real usage.
-- Document the EF10 and EF11 target matrix, including the pinned EF11 preview and NuGet selection behavior.
+- Document the EF10 and EF11 target matrix, including the EF11 dependency range and NuGet selection behavior.
 - Document limitations honestly, especially OLAP/embedded DuckDB constraints and EF Core provider gaps.
 - Doc index: `README.md` (overview/usage), `samples/Quickstart` (runnable sample), `CHANGELOG.md` (release history), `docs/MIGRATIONS.md` (EF migrations), `docs/CAPABILITY-MAP.md` (feature matrix/limits), `docs/PERFORMANCE.md` (benchmarks), `SECURITY.md`, `VERSIONING.md`. Keep version references and the changelog in sync with the package version on each content change.
 

@@ -36,4 +36,8 @@ internal static class DuckDBSkipReasons
 
     /// <summary>Failure under investigation; not yet classified as limitation vs roadmap.</summary>
     public const string Investigating = "Under investigation; not yet classified.";
+
+    /// <summary>Specification coverage added in EF Core 11.0.0 that the provider does not support yet.</summary>
+    public const string NewEF11Coverage =
+        "New EF Core 11 coverage not yet supported by the DuckDB provider; see docs/EF10-EF11-SUPPORT.md.";
 }

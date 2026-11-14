@@ -40,9 +40,9 @@ The supported surface is the API a host application uses directly:
 - The EF10 packages contain only `net10.0` assets and work in compatible newer .NET applications,
   including `net11.0`, while retaining EF10. The EF11 packages contain only `net11.0` assets.
 - EF10 dependencies allow servicing versions from `10.0.10` up to, but excluding, `10.1.0`. EF11 dependencies
-  are pinned to `11.0.0-preview.7.26381.103` until a later preview or stable release is rebuilt and validated.
+  allow servicing versions from `11.0.0` up to, but excluding, `11.1.0`.
 - Microsoft EF packages remain aligned within each target. Stable EF10 packages have no prerelease
-  dependencies; EF11 packages remain prereleases while they depend on preview EF packages.
+  dependencies; EF11 provider packages remain prereleases until a stable EF11 provider release.
 - `scripts/pack.sh 10`, `scripts/pack.sh 11`, or `scripts/pack.sh all` select the package family explicitly.
   Direct `dotnet pack` requires `-p:DuckDBEFCoreMajorVersion=10` or `11`; ambiguous multi-EF packages are rejected.
 - EF10 API validation retains its published baselines. EF11 starts a new package identity without an EF10

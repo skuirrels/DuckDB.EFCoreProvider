@@ -40,7 +40,11 @@ public class MappingQueryDuckDBTest : MappingQueryTestBase<MappingQueryDuckDBTes
         protected override ITestStoreFactory TestStoreFactory
             => DuckDBNorthwindTestStoreFactory.Instance;
 
+#if NET11_0_OR_GREATER
+        protected override string DatabaseSchema { get; } = null!;
+#else
         protected override string? DatabaseSchema { get; } = null;
+#endif
 
         protected override void OnModelCreating(ModelBuilder modelBuilder, DbContext context)
         {

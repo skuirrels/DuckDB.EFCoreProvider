@@ -214,4 +214,23 @@ public class JsonTypesDuckDBTest : JsonTypesRelationalTestBase
     protected override ITestStoreFactory TestStoreFactory
 #endif
         => DuckDBTestStoreFactory.Instance;
+
+#if NET11_0_OR_GREATER
+    // The array mapping cannot yet build a JSON reader/writer for converters that return null elements.
+    [ConditionalTheory(Skip = DuckDBSkipReasons.NewEF11Coverage)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public override void Can_read_write_collection_of_nullable_int_with_null_returning_converter(bool existingCollection)
+    {
+        base.Can_read_write_collection_of_nullable_int_with_null_returning_converter(existingCollection);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.NewEF11Coverage)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public override void Can_read_write_collection_of_nullable_struct_with_null_returning_converter(bool existingCollection)
+    {
+        base.Can_read_write_collection_of_nullable_struct_with_null_returning_converter(existingCollection);
+    }
+#endif
 }

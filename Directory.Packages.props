@@ -3,10 +3,10 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <EFCoreVersion>10.0.10</EFCoreVersion>
-    <EFCoreVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">11.0.0-preview.7.26381.103</EFCoreVersion>
-    <!-- Allow EF10 servicing patches only. Preview provider contracts are pinned exactly. -->
+    <EFCoreVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">11.0.0</EFCoreVersion>
+    <!-- Allow EF servicing patches only within each supported major version. -->
     <EFCorePackageVersion>[10.0.10,10.1.0)</EFCorePackageVersion>
-    <EFCorePackageVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">[$(EFCoreVersion)]</EFCorePackageVersion>
+    <EFCorePackageVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">[$(EFCoreVersion),11.1.0)</EFCorePackageVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -42,8 +42,8 @@
     <PackageVersion Include="coverlet.msbuild" Version="10.0.1" />
     <PackageVersion Include="JetBrains.Annotations" Version="2026.2.0" />
     <PackageVersion Include="JunitXml.TestLogger" Version="8.0.0" />
-    <PackageVersion Include="xunit.v3.core.mtp-off" Version="4.0.0-pre.108" />
-    <PackageVersion Include="xunit.v3.assert" Version="4.0.0-pre.108" />
+    <PackageVersion Include="xunit.v3.core.mtp-off" Version="4.0.3" />
+    <PackageVersion Include="xunit.v3.assert" Version="4.0.3" />
     <PackageVersion Include="xunit.assert" Version="2.9.3" />
     <PackageVersion Include="xunit.core" Version="2.9.3" />
     <PackageVersion Include="xunit.extensibility.core" Version="2.9.3" />

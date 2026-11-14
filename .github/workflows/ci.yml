@@ -28,7 +28,7 @@ jobs:
       with:
         dotnet-version: |
           10.0.x
-          11.0.100-preview.7.26381.103
+          11.0.x
 
     - name: Restore local .NET tools
       run: scripts/restore-tools.sh
@@ -48,7 +48,7 @@ jobs:
       with:
         dotnet-version: |
           10.0.x
-          11.0.100-preview.7.26381.103
+          11.0.x
     - name: Validate both EF package lines
       run: scripts/pack.sh all
     - name: Test isolated package consumers
@@ -76,7 +76,7 @@ jobs:
       with:
         dotnet-version: |
           10.0.x
-          11.0.100-preview.7.26381.103
+          11.0.x
 
     - name: Run DuckLake external integration suite
       run: scripts/test-ducklake-external.sh --verbosity normal
@@ -103,7 +103,7 @@ jobs:
       with:
         dotnet-version: |
           10.0.x
-          11.0.100-preview.7.26381.103
+          11.0.x
 
     - name: Run local tiered-storage acceptance suite
       run: >
@@ -132,7 +132,7 @@ jobs:
       with:
         dotnet-version: |
           10.0.x
-          11.0.100-preview.7.26381.103
+          11.0.x
 
     - name: Run tiered storage S3 failure matrix
       run: scripts/test-tiered-storage-s3.sh --verbosity normal

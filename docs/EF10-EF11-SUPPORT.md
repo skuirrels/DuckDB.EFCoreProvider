@@ -6,22 +6,23 @@ implementation and shared tests; use target-specific code only for EF API or beh
 | Target | EF Core packages and dotnet-ef | Test framework |
 | --- | --- | --- |
 | net10.0 | 10.0.10 | xUnit v2 |
-| net11.0 | 11.0.0-preview.7.26381.103 | xUnit v3, VSTest runner |
+| net11.0 | 11.0.0 | xUnit v3, VSTest runner |
 
-EF11 is preview support. Rebuild and revalidate against subsequent previews and the stable release.
+EF11 builds against stable EF Core 11.0.0 and allows 11.0.x servicing updates. The EF11 provider packages
+still ship as previews until a stable EF11 provider release.
 The package families are separate:
 
 | EF line | Core package | NTS package | Versions (core / NTS) |
 | --- | --- | --- | --- |
-| EF10 | `DuckDB.EFCoreProvider` | `DuckDB.EFCoreProvider.NTS` | `1.27.0` / `1.1.0` |
-| EF11 | `DuckDB.EFCoreProvider.EF11` | `DuckDB.EFCoreProvider.EF11.NTS` | `1.27.0-preview.1` / `1.1.0-preview.1` |
+| EF10 | `DuckDB.EFCoreProvider` | `DuckDB.EFCoreProvider.NTS` | `1.28.0` / `1.1.0` |
+| EF11 | `DuckDB.EFCoreProvider.EF11` | `DuckDB.EFCoreProvider.EF11.NTS` | `1.28.0-preview.1` / `1.1.0-preview.2` |
 
 Adding EF11 does not change the provider major version. Version 2 is reserved for the anticipated
-DuckDB 2 transition. The EF10 package remains stable while the EF11 package depends on preview EF.
+DuckDB 2 transition. The EF10 package is stable; the EF11 package remains a provider preview.
 
 ## Developing features
 
-Install the .NET 11 SDK (`11.0.100-preview.7.26381.103` is the CI version) and the .NET 10 runtime.
+Install the .NET 11 SDK (CI uses the latest `11.0.x` SDK) and the .NET 10 runtime.
 The .NET 11 SDK builds both targets. `Directory.Build.props` defines the frameworks;
 `Directory.Packages.props` selects aligned EF packages for each framework. No source copying or second
 implementation branch is needed. Shared provider capabilities, typed expressions and immutable SQL plans
@@ -112,13 +113,68 @@ generates a migration and compiled model, builds them, and executes a consumer a
 - Partial writes inside owned JSON documents are rejected before SQL generation. The previous write
   path could replace the entire JSON column with a scalar or SQL NULL. Use whole-column JSON writes
   for these updates; shared regression tests verify rejected writes leave the document intact.
-- `FromSql` over roots containing complex JSON properties is unavailable on this EF11 preview because of
+- `FromSql` over roots containing complex JSON properties remains skipped on EF11 for
   upstream [#34627](https://github.com/dotnet/efcore/issues/34627). EF10 retains its existing test coverage.
 - EF11's missing-migrations exception remains enabled. The DuckLake capability test explicitly ignores
   it to reach the existing unsupported-migrations guard. Other EF11 behavior changes, including
   explicit `PrimitiveCollection` configuration and split-query concurrency exceptions, remain EF-owned.
 
 ## Validation
+
+### EF Core 11.0.0
+
+The EF11 build moved from 11.0.0-preview.7 to EF Core 11.0.0 with .NET SDK `11.0.100` and xUnit v3 `4.0.3`.
+Counts are passed / skipped.
+
+| Gate | EF10 | EF11 (11.0.0) |
+| --- | ---: | ---: |
+| Production write gate (`all`) | 722 / 465 | 766 / 461 |
+| Shared compatibility | 1,508 / 141 | 1,509 / 145 |
+
+| Raw full-project run | Passed | Skipped | Failed |
+| --- | ---: | ---: | ---: |
+| EF10 | 21,764 | 4,138 | 0 |
+| EF11 preview 7 (unchanged `main`) | 22,087 | 4,113 | 50 |
+| EF11 11.0.0 | 22,173 | 4,124 | 32 |
+
+Seventeen preview-7 failures pass on 11.0.0, including the empty-subquery aggregates, non-nullable
+properties through optional navigations and the many-to-many composite-reference update. EF Core 11.0.0
+moved its ad hoc JSON, complex-type and many-to-many tests into the main query test bases; the DuckDB
+overrides moved with them under `NET11_0_OR_GREATER`.
+
+The shared many-to-many fixture now relies on EF's key discovery to give join entities a composite key
+from their foreign keys. The provider convention set previously removed that convention together with the
+other foreign-key conventions; it is now kept for foreign-key property and skip-navigation changes on both
+targets. Without it, a join entity whose principals have navigations to it failed to build on EF10 too;
+`JoinEntityKeyConventionTests` covers native DuckDB and DuckLake. The EF10 full project is otherwise unchanged.
+
+The new `NorthwindBulkUpdates.Update_with_two_inner_joins` test exposed an `ExecuteUpdate` shape that also
+failed on EF10. EF Core renders the first joined table of `UPDATE ... FROM` bare and moves its join
+predicate to `WHERE`, but keeps `ON` on later inner joins, and DuckDB cannot bind an `ON` clause that
+references the update target. The provider now renders those later inner joins as `CROSS JOIN` with their
+predicates in `WHERE`; sources with outer joins keep EF's shape. `ExecuteUpdateJoinTests` covers the SQL
+shape and results on native DuckDB and DuckLake for both targets.
+
+The new `ModelBuilding101.One*OptionalWithCompositeKeyTest` failures came from relationship requiredness.
+The provider also removed EF's foreign key property discovery from foreign key property changes, so a
+relationship moved onto non-nullable properties, by convention or `HasForeignKey`, stayed optional and
+queried through `LEFT JOIN`. A provider convention now sets requiredness from foreign key nullability
+when a relationship's properties change, on both targets. It does not restore EF's full discovery
+convention, which would also change shadow foreign key types and column nullability. Cascade delete stays
+off, so delete behaviour is unchanged. `ForeignKeyRequirednessConventionTests` covers native DuckDB and
+DuckLake, including unchanged shadow foreign key nullability and a migrations diff against the earlier
+optional model that produces no operations.
+
+New 11.0.0 coverage that the provider does not support yet:
+
+| Test | Gap | Status |
+| --- | --- | --- |
+| `KeysWithConverters.*struct_key_and_required_dependents_with_shadow_FK` | Change detection severs a required relationship with a shadow FK over a converted struct key. | Skipped (`NewEF11Coverage`) |
+| `JsonTypes.Can_read_write_collection_of_nullable_*_with_null_returning_converter` | Array mappings cannot build a JSON reader/writer for converters that return null elements. | Skipped (`NewEF11Coverage`) |
+
+The remaining EF11 failures are the preview-era areas listed below.
+
+### EF11 preview 7
 
 Local validation uses .NET SDK `11.0.100-preview.7.26381.103` and compares EF10 with the unchanged
 `2d0f106` checkout. Counts below are passed / skipped; every listed gate has zero failures.

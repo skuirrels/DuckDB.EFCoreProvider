@@ -2,7 +2,7 @@
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
-public class JsonQueryDuckDBTest : JsonQueryRelationalTestBase<JsonQueryDuckDBFixture>
+public partial class JsonQueryDuckDBTest : JsonQueryRelationalTestBase<JsonQueryDuckDBFixture>
 {
     public JsonQueryDuckDBTest(JsonQueryDuckDBFixture fixture) : base(fixture)
     {

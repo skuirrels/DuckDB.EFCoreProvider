@@ -62,13 +62,21 @@ public class UpdatesDuckDBTest : UpdatesRelationalTestBase<UpdatesDuckDBTest.Upd
     }
 
     [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+#if NET11_0_OR_GREATER
+    public override Task SaveChanges_processes_all_tracked_entities(bool async)
+#else
     public new Task SaveChanges_processes_all_tracked_entities(bool async)
+#endif
     {
         return base.SaveChanges_processes_all_tracked_entities(async);
     }
 
     [ConditionalTheory(Skip = DuckDBSkipReasons.ReferencedRowsCannotBeUpdated)]
+#if NET11_0_OR_GREATER
+    public override Task SaveChanges_false_processes_all_tracked_entities_without_calling_AcceptAllChanges(bool async)
+#else
     public new Task SaveChanges_false_processes_all_tracked_entities_without_calling_AcceptAllChanges(bool async)
+#endif
     {
         return base.SaveChanges_false_processes_all_tracked_entities_without_calling_AcceptAllChanges(async);
     }

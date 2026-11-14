@@ -84,7 +84,7 @@ public class FromSqlQueryDuckDBTest : FromSqlQueryTestBase<NorthwindQueryDuckDBF
                 .FromSqlRaw(
                     NormalizeDelimitersInRawString("SELECT * FROM Customers WHERE CustomerID = $customer"),
                     CreateDbParameter("customer", "CONSH"))
-                .Where(c => c.ContactName.Contains("z")));
+                .Where(c => c.ContactName!.Contains("z")));
 
             using (var context = CreateContext())
             {
@@ -99,7 +99,7 @@ public class FromSqlQueryDuckDBTest : FromSqlQueryTestBase<NorthwindQueryDuckDBF
                 .FromSqlRaw(
                     NormalizeDelimitersInRawString("SELECT * FROM Customers WHERE CustomerID = $customer"),
                     CreateDbParameter("customer", "CONSH"))
-                .Where(c => c.ContactName.Contains("z")));
+                .Where(c => c.ContactName!.Contains("z")));
 
             using (var context = CreateContext())
             {

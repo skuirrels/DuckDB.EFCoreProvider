@@ -1,4 +1,6 @@
-﻿using Microsoft.EntityFrameworkCore.TestUtilities;
+﻿// EF Core 11 folds these ad hoc tests into the main query test base classes.
+#if !NET11_0_OR_GREATER
+using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Query;
@@ -285,3 +287,4 @@ public class AdHocJsonQueryDuckDBTest : AdHocJsonQueryRelationalTestBase
         return base.Tricky_buffering_basic();
     }
 }
+#endif

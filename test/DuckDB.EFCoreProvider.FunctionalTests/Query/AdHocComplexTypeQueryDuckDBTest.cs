@@ -1,4 +1,6 @@
-﻿using Microsoft.EntityFrameworkCore.TestUtilities;
+﻿// EF Core 11 folds these ad hoc tests into the main query test base classes.
+#if !NET11_0_OR_GREATER
+using Microsoft.EntityFrameworkCore.TestUtilities;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
@@ -15,3 +17,4 @@ public class AdHocComplexTypeQueryDuckDBTest : AdHocComplexTypeQueryRelationalTe
 #endif
         => DuckDBTestStoreFactory.Instance;
 }
+#endif
