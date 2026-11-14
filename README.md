@@ -1005,7 +1005,22 @@ var processed = await context.UpsertAsync(
 
 The alternate-target overload omits sequence-, default-, and auto-increment-backed `ValueGenerated.OnAdd`
 columns from staging and insert SQL, so DuckDB applies their defaults for new rows. Existing primary keys are
-preserved during conflict updates. Generated values are not populated back into the supplied entities.
+preserved during conflict updates. After each batch, the stored values of those generated columns are read back
+into the supplied entities by matching each staged row to its stored row on the conflict target, so inserted
+rows receive their new surrogate keys and updated rows receive their existing ones. This makes a natural-key
+dimension upsert usable as the key lookup for the fact load that follows:
+
+```csharp
+await context.UpsertAsync(customers, customer => customer.Code);
+var customerIds = customers.ToDictionary(customer => customer.Code, customer => customer.Id);
+
+var orders = rawOrders.Select(o => new Order { CustomerId = customerIds[o.CustomerCode], Amount = o.Amount });
+await context.BulkInsertAsync(orders);
+```
+
+Read-back costs one extra join of each staged batch against the target table, and only runs when the conflict
+target is not the primary key and the entity has generated columns. A row whose conflict target contains `NULL`
+matches no stored row under SQL semantics, so its entity keeps the values it was supplied with.
 
 By default the conflict target must be backed by a declared primary key, alternate key, or unique index. On native
 DuckDB that unique constraint is an in-memory ART index whose per-row write cost and memory footprint grow with
@@ -1324,7 +1339,7 @@ scripts/test-suite.sh full-project
 
 **`UseDuckDB` / `BulkInsert` / `UseAutoIncrement` not found.** Add `using DuckDB.EFCoreProvider.Extensions;`.
 
-**`BulkInsert` or `Upsert` throws about a missing key or column.** Both are raw fast paths that bypass change tracking. On native DuckDB, `BulkInsert` reserves generated primary keys from their column default and writes them back; on DuckLake and Quack it requires supplied keys. PK-targeted `Upsert` requires supplied primary-key values (configure the key as `ValueGeneratedNever()`). For a sequence-generated primary key, use the alternate-target `UpsertAsync` overload with a declared alternate key or unique index; `Upsert` does not copy generated values back into the supplied entities. Ensure the target table already exists. See [Bulk insert](#bulk-insert) and [Upsert](#upsert).
+**`BulkInsert` or `Upsert` throws about a missing key or column.** Both are raw fast paths that bypass change tracking. On native DuckDB, `BulkInsert` reserves generated primary keys from their column default and writes them back; on DuckLake and Quack it requires supplied keys. PK-targeted `Upsert` requires supplied primary-key values (configure the key as `ValueGeneratedNever()`). For a sequence-generated primary key, use the alternate-target `UpsertAsync` overload with a declared alternate key or unique index; it reads the stored generated values back into the supplied entities. Ensure the target table already exists. See [Bulk insert](#bulk-insert) and [Upsert](#upsert).
 
 **Migrations.** For the `dotnet ef` workflow, generated keys, and the DuckDB-specific `ALTER TABLE`/index limitations, see the [migrations guide](docs/MIGRATIONS.md).
 

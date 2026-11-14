@@ -36,8 +36,8 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///         <item><description>no change tracking, EF optimistic-concurrency checks, or EF command interceptors;
 ///             provider lifecycle diagnostics are emitted for the complete upsert operation;</description></item>
 ///         <item><description>the default conflict target is the entity's primary key, whose values must be supplied;
-///             the alternate-target overload permits store-generated-on-add columns and does not populate their generated
-///             values back into the supplied entities;</description></item>
+///             the alternate-target overload omits store-generated-on-add columns from staging and reads their
+///             stored values back into the supplied entities after each batch;</description></item>
 ///         <item><description>all staged non-key and non-conflict columns are overwritten from the supplied values;</description></item>
 ///         <item><description>duplicate conflict-target values within the input resolve to the last occurrence in
 ///             input order when updateable columns exist (key-only shapes keep the first inserted row); callers can
@@ -243,8 +243,11 @@ public static class DuckDBUpsertExtensions
     ///     the primary key, allowing DuckDB defaults such as sequences to generate their values for inserted rows.
     /// </summary>
     /// <remarks>
-    ///     This raw fast path does not populate store-generated values back into the supplied entities. The
-    ///     selector must contain direct property accesses, for example <c>entity =&gt; entity.ExternalId</c> or
+    ///     After each batch, the stored values of the omitted store-generated columns are read back into the
+    ///     supplied entities by matching staged rows to stored rows on the selected key: inserted rows receive
+    ///     their generated values and updated rows their existing ones. An entity whose selected key contains
+    ///     <see langword="null" /> matches no stored row and keeps its supplied values. The selector must contain
+    ///     direct property accesses, for example <c>entity =&gt; entity.ExternalId</c> or
     ///     <c>entity =&gt; new { entity.ParentId, entity.Sequence }</c>. Duplicate selected-key values resolve to the
     ///     last occurrence in input order. DuckLake rejects the current batch before mutating it when a staged key
     ///     matches multiple existing rows, but callers remain responsible for preventing concurrent duplicate inserts.
@@ -304,7 +307,7 @@ public static class DuckDBUpsertExtensions
     ///     </para>
     ///     <para>
     ///         Other behavior matches the unique-target overload: store-generated-on-add columns are omitted for
-    ///         non-primary-key targets, generated values are not populated back, and duplicate selected-key values
+    ///         non-primary-key targets and their stored values are read back, and duplicate selected-key values
     ///         within the input resolve to the last occurrence in input order.
     ///     </para>
     /// </remarks>
@@ -670,9 +673,7 @@ public static class DuckDBUpsertExtensions
         ExecuteCommand(
             connection,
             sqlRenderer.RenderInsertValues(plan, staging.RemoteTable, staging.RemoteSchema, batch));
-        ExecuteCommand(
-            connection,
-            sqlRenderer.RenderUpsertBatch(plan, staging.RemoteTable, staging.RemoteSchema));
+        MergeStagedBatch(connection, plan, sqlRenderer, staging.RemoteTable, staging.RemoteSchema, batch);
     }
 
     private static async Task UpsertRemoteBatchAsync<TEntity>(
@@ -688,9 +689,13 @@ public static class DuckDBUpsertExtensions
             connection,
             sqlRenderer.RenderInsertValues(plan, staging.RemoteTable, staging.RemoteSchema, batch),
             cancellationToken).ConfigureAwait(false);
-        await ExecuteCommandAsync(
+        await MergeStagedBatchAsync(
             connection,
-            sqlRenderer.RenderUpsertBatch(plan, staging.RemoteTable, staging.RemoteSchema),
+            plan,
+            sqlRenderer,
+            staging.RemoteTable,
+            staging.RemoteSchema,
+            batch,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -765,9 +770,7 @@ public static class DuckDBUpsertExtensions
         where TEntity : class
     {
         AppendTemporaryRows(connection, plan, tempTable, batch, cancellationToken: null);
-        using var command = connection.CreateCommand();
-        command.CommandText = sqlRenderer.RenderUpsertBatch(plan, tempTable);
-        command.ExecuteNonQuery();
+        MergeStagedBatch(connection, plan, sqlRenderer, tempTable, stagingSchema: null, batch);
     }
 
     private static async Task UpsertBatchAsync<TEntity>(
@@ -780,10 +783,126 @@ public static class DuckDBUpsertExtensions
         where TEntity : class
     {
         AppendTemporaryRows(connection, plan, tempTable, batch, cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = sqlRenderer.RenderUpsertBatch(plan, tempTable);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await MergeStagedBatchAsync(
+            connection,
+            plan,
+            sqlRenderer,
+            tempTable,
+            stagingSchema: null,
+            batch,
+            cancellationToken).ConfigureAwait(false);
     }
+
+    private static void MergeStagedBatch<TEntity>(
+        DbConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        string stagingTable,
+        string? stagingSchema,
+        List<TEntity> batch)
+        where TEntity : class
+    {
+        if (!plan.ReadsBackGeneratedValues)
+        {
+            ExecuteCommand(connection, sqlRenderer.RenderUpsertBatch(plan, stagingTable, stagingSchema));
+            return;
+        }
+
+        ExecuteCommand(connection, sqlRenderer.RenderUpsertFromTemporaryTable(plan, stagingTable, stagingSchema));
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = sqlRenderer.RenderReadBack(plan, stagingTable, stagingSchema);
+            using var reader = command.ExecuteReader();
+            var index = 0;
+            while (reader.Read())
+            {
+                ApplyReadBackRow(reader, plan, batch, index++);
+            }
+
+            EnsureReadBackCount(index, batch.Count);
+        }
+
+        ExecuteCommand(connection, sqlRenderer.RenderClearStagingTable(stagingTable, stagingSchema));
+    }
+
+    private static async Task MergeStagedBatchAsync<TEntity>(
+        DbConnection connection,
+        DuckDBUpsertPlan plan,
+        DuckDBUpsertSqlRenderer sqlRenderer,
+        string stagingTable,
+        string? stagingSchema,
+        List<TEntity> batch,
+        CancellationToken cancellationToken)
+        where TEntity : class
+    {
+        if (!plan.ReadsBackGeneratedValues)
+        {
+            await ExecuteCommandAsync(
+                connection,
+                sqlRenderer.RenderUpsertBatch(plan, stagingTable, stagingSchema),
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await ExecuteCommandAsync(
+            connection,
+            sqlRenderer.RenderUpsertFromTemporaryTable(plan, stagingTable, stagingSchema),
+            cancellationToken).ConfigureAwait(false);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = sqlRenderer.RenderReadBack(plan, stagingTable, stagingSchema);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            var index = 0;
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                ApplyReadBackRow(reader, plan, batch, index++);
+            }
+
+            EnsureReadBackCount(index, batch.Count);
+        }
+
+        await ExecuteCommandAsync(
+            connection,
+            sqlRenderer.RenderClearStagingTable(stagingTable, stagingSchema),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    // Each read-back row belongs to the staged row at the same position. Values are assigned only when the
+    // staged row matches exactly one stored row; otherwise the entity keeps the values it was supplied with.
+    private static void ApplyReadBackRow<TEntity>(
+        DbDataReader reader,
+        DuckDBUpsertPlan plan,
+        List<TEntity> batch,
+        int index)
+        where TEntity : class
+    {
+        if (index >= batch.Count)
+        {
+            throw ReadBackCountMismatch(index + 1, batch.Count);
+        }
+
+        if (Convert.ToInt64(reader.GetValue(0), System.Globalization.CultureInfo.InvariantCulture) != 1)
+        {
+            return;
+        }
+
+        var entity = batch[index];
+        for (var column = 0; column < plan.ReadBackWriters.Length; column++)
+        {
+            plan.ReadBackWriters[column].Write(entity, reader.GetValue(column + 1));
+        }
+    }
+
+    private static void EnsureReadBackCount(int readBackRows, int batchCount)
+    {
+        if (readBackRows != batchCount)
+        {
+            throw ReadBackCountMismatch(readBackRows, batchCount);
+        }
+    }
+
+    private static InvalidOperationException ReadBackCountMismatch(int readBackRows, int batchCount)
+        => new($"Upsert read back {readBackRows} rows of generated values for a batch of {batchCount} staged rows.");
 
     private static int EffectiveBatchSize(DuckDBUpsertPlan plan, int requestedBatchSize)
         => DuckDBUpsertBatching.EffectiveBatchSize(plan.ColumnCount, requestedBatchSize);

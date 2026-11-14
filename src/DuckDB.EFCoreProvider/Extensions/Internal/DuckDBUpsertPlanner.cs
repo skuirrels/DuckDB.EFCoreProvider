@@ -21,9 +21,17 @@ internal sealed record DuckDBUpsertPlan(
     DuckDBUpsertInputMode InputMode,
     bool RequiresTargetCardinalityValidation,
     ImmutableArray<DuckDBUpsertValueAccessor> ValueAccessors,
-    Action<IDuckDBAppenderRow, object>? WriteRow)
+    Action<IDuckDBAppenderRow, object>? WriteRow,
+    ImmutableArray<string> ReadBackColumns,
+    ImmutableArray<DuckDBStoreValueWriter> ReadBackWriters)
 {
     internal int ColumnCount => InsertColumns.Length;
+
+    /// <summary>
+    ///     Store-generated columns left out of staging, whose stored values are read back into the entities
+    ///     after each batch by matching staged rows to stored rows on the conflict target.
+    /// </summary>
+    internal bool ReadsBackGeneratedValues => ReadBackColumns.Length > 0;
 }
 
 internal static class DuckDBUpsertPlanner
@@ -166,6 +174,8 @@ internal static class DuckDBUpsertPlanner
         var insertColumns = new List<string>();
         var updateColumns = new List<string>();
         var writableProperties = new List<IProperty>();
+        var readBackColumns = new List<string>();
+        var readBackWriters = new List<DuckDBStoreValueWriter>();
 
         foreach (var property in entityType.GetProperties())
         {
@@ -190,6 +200,8 @@ internal static class DuckDBUpsertPlanner
                 && !conflictColumnSet.Contains(columnName)
                 && IsStoreGeneratedOnAdd(property, storeObject))
             {
+                readBackColumns.Add(columnName);
+                readBackWriters.Add(new DuckDBStoreValueWriter(property));
                 continue;
             }
 
@@ -221,7 +233,9 @@ internal static class DuckDBUpsertPlanner
                 : [],
             usesRemoteValueRendering
                 ? null
-                : DuckDBCompiledAppenderRowWriter.Create(entityType.ClrType, writableProperties));
+                : DuckDBCompiledAppenderRowWriter.Create(entityType.ClrType, writableProperties),
+            readBackColumns.ToImmutableArray(),
+            readBackWriters.ToImmutableArray());
     }
 
     private static ImmutableArray<string> GetColumns(
