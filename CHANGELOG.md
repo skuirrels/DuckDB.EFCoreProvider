@@ -2,7 +2,7 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
-## Unreleased
+## 1.29.0 / EF11 1.29.0-preview.1
 
 - `BulkInsert` and `BulkInsertAsync` now fill database-generated keys on native DuckDB. A generated primary key,
   or any `UseAutoIncrement()` property, that still holds its default value is reserved from the column default
@@ -10,6 +10,9 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   before the row is appended, so dimension keys can feed the fact load that follows. Keys you set yourself are
   kept, and keys without a column default are written as supplied. DuckLake and Quack keep the previous
   behaviour of writing every key as supplied.
+- The NuGet package descriptions now name each package line's EF Core and .NET targets and point to the
+  other line. `DuckDB.EFCoreProvider.NTS` 1.1.0 and `DuckDB.EFCoreProvider.EF11.NTS` 1.1.0-preview.2 are
+  unchanged.
 
 ## 1.28.0 / EF11 1.28.0-preview.1
 
