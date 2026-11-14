@@ -31,7 +31,7 @@ This document is the published capability matrix for the provider. It serves two
 | Optimistic concurrency | concurrency tokens |
 | Transactions | commit / rollback |
 | Migrations — create | tables, columns, indexes, sequences, comments, history table |
-| LINQ query translation | joins, grouping, ordering, paging, aggregates, string/math/temporal, row values, arrays, JSON traversal, set operations |
+| LINQ query translation | joins, grouping (including `ROLLUP` / `CUBE` / `GROUPING SETS`), ordering, paging, aggregates, string/math/temporal, row values, arrays, JSON traversal, set operations |
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | Type-mapping contract | EF model mappings and raw DuckDB.NET reader mappings are documented separately in [TYPE-MAPPINGS.md](TYPE-MAPPINGS.md) |
@@ -185,7 +185,7 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | `QUALIFY` | ❌ raw SQL only |
 | `ASOF` joins | ❌ raw SQL only |
 | `SAMPLE` | ❌ raw SQL only |
-| `GROUPING SETS` / `ROLLUP` / `CUBE` | ❌ raw SQL only |
+| `GROUPING SETS` / `ROLLUP` / `CUBE` | ✅ `GroupByRollup(...)`, `GroupByCube(...)` and `GroupByGroupingSets(...)` with `EF.Functions.Grouping(...)`; scalar key members only, aggregate projections only (group elements cannot be queried) |
 | `SUMMARIZE` | ❌ raw SQL only |
 | Window functions | ➖ only EF Core's generic support |
 
@@ -222,7 +222,7 @@ not make those types persistable EF entity properties. See [TYPE-MAPPINGS.md](TY
 
 ### Functions
 Only a subset of DuckDB's large function library is LINQ-translatable. In addition to common string / math /
-date / regex operations, the provider exposes `SplitPart`, `StandardDeviationSample`, `ArgMax`, and `ArgMin`
+date / regex operations, the provider exposes `SplitPart`, `StandardDeviationSample`, `ArgMax`, `ArgMin`, and `Grouping`
 through `EF.Functions`. Other DuckDB-specific functions (`list_*`, `map_*`, many helpers) require raw SQL.
 
 ---
