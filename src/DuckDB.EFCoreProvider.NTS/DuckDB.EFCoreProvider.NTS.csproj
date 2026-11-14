@@ -8,7 +8,8 @@
     <PackageId Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB.EFCoreProvider.EF11.NTS</PackageId>
     <FileVersion>1.1.0.0</FileVersion>
     <Authors>skuirrels</Authors>
-    <Description>NetTopologySuite (spatial) support for the DuckDB provider for Entity Framework Core.</Description>
+    <Description>NetTopologySuite (spatial) support for DuckDB.EFCoreProvider on Entity Framework Core 10. For EF Core 11, use DuckDB.EFCoreProvider.EF11.NTS.</Description>
+    <Description Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">NetTopologySuite (spatial) support for DuckDB.EFCoreProvider.EF11 on Entity Framework Core 11. The EF11 package line is in preview; for EF Core 10, use DuckDB.EFCoreProvider.NTS.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
          "Entity Framework Core" would index as three separate tokens. -->
     <PackageTags>duckdb;ducklake;efcore;ef-core;entity-framework-core;orm;provider;nettopologysuite;nts;spatial;gis;geospatial;geometry;analytics;dotnet</PackageTags>

@@ -8,7 +8,8 @@
     <PackageId Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB.EFCoreProvider.EF11</PackageId>
     <FileVersion>1.28.0.0</FileVersion>
     <Authors>skuirrels</Authors>
-    <Description>DuckDB and DuckLake provider for Entity Framework Core.</Description>
+    <Description>DuckDB, DuckLake and Parquet provider for Entity Framework Core 10, for analytics at cloud scale. Targets .NET 10 and also runs on .NET 11. For EF Core 11, use DuckDB.EFCoreProvider.EF11.</Description>
+    <Description Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB, DuckLake and Parquet provider for Entity Framework Core 11, for analytics at cloud scale. Targets .NET 11. The EF11 package line is in preview; for EF Core 10, use DuckDB.EFCoreProvider.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
          "Entity Framework Core" would index as three separate tokens. -->
     <PackageTags>duckdb;ducklake;quack;efcore;ef-core;entity-framework-core;orm;provider;database;analytics;olap;parquet;lakehouse;tiered-storage;data-lake;object-storage;bulk-insert;upsert;dotnet</PackageTags>
