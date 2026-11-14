@@ -4,6 +4,13 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 
 ## Unreleased
 
+- `EnableRetryOnFailure()` opts in to `DuckDBRetryingExecutionStrategy`, which replays a whole unit of work when
+  DuckDB or a DuckLake catalog rejects it with a write-write conflict. Constraint violations, aborted
+  transactions, and other errors are not retried. Overloads set the maximum retry count and delay. Explicit
+  transactions must run inside the execution strategy, and `BulkInsert` and `Upsert` are not retried
+  automatically. DuckDB 1.5.6 does not report conflicts for `UPDATE ... RETURNING` on keyed tables, so
+  overlapping `SaveChanges` updates of the same row are still not detected; see the native DuckDB concurrency
+  guide.
 - The alternate-target `UpsertAsync` overloads now read store-generated values back into the supplied entities.
   Generated columns left out of staging, such as a sequence-backed surrogate key, are read from the stored rows
   after each batch by matching on the conflict target, so inserted rows receive their new values and updated

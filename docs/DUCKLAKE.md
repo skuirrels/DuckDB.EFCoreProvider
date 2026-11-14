@@ -178,6 +178,18 @@ enforce the logical primary/unique keys in the EF model. Applications that permi
 their own uniqueness and workflow guarantees. The provider does not add process-local semaphores, distributed
 leases, scheduling, or authorization policy.
 
+DuckLake retries conflicting catalog commits itself, up to `ducklake_max_retry_count`. When a commit still
+conflicts, or exceeds that count, opt in to the provider's retrying execution strategy to replay the whole unit of
+work:
+
+```csharp
+options.UseDuckLake(metadataPath, duckLake => duckLake.DataPath(dataPath),
+    duckdb => duckdb.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(2)));
+```
+
+Run explicit transactions, including those that call `SetCommitMessageAsync`, inside
+`context.Database.CreateExecutionStrategy().ExecuteAsync(...)` so the strategy can replay them.
+
 ## Historical queries
 
 Use a dedicated context profile to attach the entire DuckLake catalog at one historical snapshot. Normal EF LINQ
