@@ -246,7 +246,9 @@ public static class DuckDBUpsertExtensions
     ///     After each batch, the stored values of the omitted store-generated columns are read back into the
     ///     supplied entities by matching staged rows to stored rows on the selected key: inserted rows receive
     ///     their generated values and updated rows their existing ones. An entity whose selected key contains
-    ///     <see langword="null" /> matches no stored row and keeps its supplied values. The selector must contain
+    ///     <see langword="null" /> matches no stored row and keeps its supplied values. Do not pass entities that a
+    ///     context is tracking: read-back can change their key values without the change tracker's knowledge. The
+    ///     selector must contain
     ///     direct property accesses, for example <c>entity =&gt; entity.ExternalId</c> or
     ///     <c>entity =&gt; new { entity.ParentId, entity.Sequence }</c>. Duplicate selected-key values resolve to the
     ///     last occurrence in input order. DuckLake rejects the current batch before mutating it when a staged key
@@ -673,7 +675,7 @@ public static class DuckDBUpsertExtensions
         ExecuteCommand(
             connection,
             sqlRenderer.RenderInsertValues(plan, staging.RemoteTable, staging.RemoteSchema, batch));
-        MergeStagedBatch(connection, plan, sqlRenderer, staging.RemoteTable, staging.RemoteSchema, batch);
+        MergeStagedBatch(connection, plan, sqlRenderer, staging.RemoteTable, staging.RemoteSchema);
     }
 
     private static async Task UpsertRemoteBatchAsync<TEntity>(
@@ -770,7 +772,7 @@ public static class DuckDBUpsertExtensions
         where TEntity : class
     {
         AppendTemporaryRows(connection, plan, tempTable, batch, cancellationToken: null);
-        MergeStagedBatch(connection, plan, sqlRenderer, tempTable, stagingSchema: null, batch);
+        MergeStagedBatch(connection, plan, sqlRenderer, tempTable, stagingSchema: null);
     }
 
     private static async Task UpsertBatchAsync<TEntity>(
@@ -793,36 +795,21 @@ public static class DuckDBUpsertExtensions
             cancellationToken).ConfigureAwait(false);
     }
 
-    private static void MergeStagedBatch<TEntity>(
+    // Read-back plans only come from the alternate-target overloads, which are asynchronous; the synchronous
+    // Upsert overloads target the primary key, whose plans stage every generated column.
+    private static void MergeStagedBatch(
         DbConnection connection,
         DuckDBUpsertPlan plan,
         DuckDBUpsertSqlRenderer sqlRenderer,
         string stagingTable,
-        string? stagingSchema,
-        List<TEntity> batch)
-        where TEntity : class
+        string? stagingSchema)
     {
-        if (!plan.ReadsBackGeneratedValues)
+        if (plan.ReadsBackGeneratedValues)
         {
-            ExecuteCommand(connection, sqlRenderer.RenderUpsertBatch(plan, stagingTable, stagingSchema));
-            return;
+            throw new InvalidOperationException("Generated-value read-back requires the asynchronous Upsert path.");
         }
 
-        ExecuteCommand(connection, sqlRenderer.RenderUpsertFromTemporaryTable(plan, stagingTable, stagingSchema));
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = sqlRenderer.RenderReadBack(plan, stagingTable, stagingSchema);
-            using var reader = command.ExecuteReader();
-            var index = 0;
-            while (reader.Read())
-            {
-                ApplyReadBackRow(reader, plan, batch, index++);
-            }
-
-            EnsureReadBackCount(index, batch.Count);
-        }
-
-        ExecuteCommand(connection, sqlRenderer.RenderClearStagingTable(stagingTable, stagingSchema));
+        ExecuteCommand(connection, sqlRenderer.RenderUpsertBatch(plan, stagingTable, stagingSchema));
     }
 
     private static async Task MergeStagedBatchAsync<TEntity>(
@@ -889,7 +876,7 @@ public static class DuckDBUpsertExtensions
         var entity = batch[index];
         for (var column = 0; column < plan.ReadBackWriters.Length; column++)
         {
-            plan.ReadBackWriters[column].Write(entity, reader.GetValue(column + 1));
+            plan.ReadBackWriters[column].WriteColumn(entity, reader, column + 1);
         }
     }
 

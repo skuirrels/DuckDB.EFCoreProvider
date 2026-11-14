@@ -118,6 +118,28 @@ public class UpsertGeneratedValueReadBackTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public async Task UpsertAsync_reads_back_temporal_defaults()
+    {
+        await using var context = new DimensionContext(FileOptions<DimensionContext>());
+        await context.Database.EnsureCreatedAsync();
+
+        var before = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var events = new[] { new LoadEvent { Code = "E1" }, new LoadEvent { Code = "E2" } };
+        Assert.Equal(2, await context.UpsertAsync(events, loadEvent => loadEvent.Code));
+
+        var stored = await context.LoadEvents.AsNoTracking().ToDictionaryAsync(loadEvent => loadEvent.Code);
+        Assert.All(events, loadEvent =>
+        {
+            Assert.True(loadEvent.Id > 0);
+            Assert.True(loadEvent.CreatedAt > before);
+            Assert.Equal(stored[loadEvent.Code].CreatedAt, loadEvent.CreatedAt);
+            Assert.Equal(stored[loadEvent.Code].LoadedAt, loadEvent.LoadedAt);
+            Assert.Equal(stored[loadEvent.Code].LoadedOn, loadEvent.LoadedOn);
+            Assert.NotEqual(default, loadEvent.LoadedOn);
+        });
+    }
+
+    [ConditionalFact]
     public async Task UpsertAsync_dimension_keys_feed_a_fact_BulkInsert_with_an_enforced_foreign_key()
     {
         await using var context = new DimensionContext(FileOptions<DimensionContext>());
@@ -212,6 +234,8 @@ public class UpsertGeneratedValueReadBackTests : DuckDBTestBase
 
         public DbSet<Region> Regions => Set<Region>();
 
+        public DbSet<LoadEvent> LoadEvents => Set<LoadEvent>();
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<Customer>(customer =>
@@ -229,6 +253,14 @@ public class UpsertGeneratedValueReadBackTests : DuckDBTestBase
                     .HasDefaultValueSql("uuid()")
                     .ValueGeneratedOnAdd();
                 region.HasAlternateKey(r => r.Code);
+            });
+            modelBuilder.Entity<LoadEvent>(loadEvent =>
+            {
+                loadEvent.Property(e => e.Id).UseAutoIncrement();
+                loadEvent.HasAlternateKey(e => e.Code);
+                loadEvent.Property(e => e.CreatedAt).HasDefaultValueSql("current_timestamp").ValueGeneratedOnAdd();
+                loadEvent.Property(e => e.LoadedAt).HasDefaultValueSql("localtimestamp").ValueGeneratedOnAdd();
+                loadEvent.Property(e => e.LoadedOn).HasDefaultValueSql("current_date").ValueGeneratedOnAdd();
             });
         }
 
@@ -276,6 +308,19 @@ public class UpsertGeneratedValueReadBackTests : DuckDBTestBase
         public string Code { get; set; } = "";
 
         public string Name { get; set; } = "";
+    }
+
+    private sealed class LoadEvent
+    {
+        public long Id { get; set; }
+
+        public string Code { get; set; } = "";
+
+        public DateTimeOffset CreatedAt { get; set; }
+
+        public DateTime LoadedAt { get; set; }
+
+        public DateOnly LoadedOn { get; set; }
     }
 
     private sealed class DuckLakeDimensionContext(DbContextOptions<DuckLakeDimensionContext> options) : DbContext(options)
