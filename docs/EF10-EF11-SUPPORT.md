@@ -129,13 +129,13 @@ Counts are passed / skipped.
 | Gate | EF10 | EF11 (11.0.0) |
 | --- | ---: | ---: |
 | Production write gate (`all`) | 722 / 465 | 766 / 461 |
-| Shared compatibility | 1,508 / 141 | 1,509 / 145 |
+| Shared compatibility | 1,509 / 141 | 1,510 / 145 |
 
 | Raw full-project run | Passed | Skipped | Failed |
 | --- | ---: | ---: | ---: |
-| EF10 | 21,764 | 4,138 | 0 |
+| EF10 | 21,788 | 4,138 | 0 |
 | EF11 preview 7 (unchanged `main`) | 22,087 | 4,113 | 50 |
-| EF11 11.0.0 | 22,173 | 4,124 | 32 |
+| EF11 11.0.0 | 22,197 | 4,124 | 32 |
 
 Seventeen preview-7 failures pass on 11.0.0, including the empty-subquery aggregates, non-nullable
 properties through optional navigations and the many-to-many composite-reference update. EF Core 11.0.0

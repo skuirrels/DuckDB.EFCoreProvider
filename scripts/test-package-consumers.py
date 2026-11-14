@@ -48,7 +48,10 @@ def main():
                     assert ef_range.startswith("[10.") and ef_range.endswith(", 10.1.0)"), ef_range
                     assert all("-" not in value.split(",")[0] for value in dependencies.values()), dependencies
                 else:
-                    assert ef_range.startswith("[11.") and ef_range.endswith("]") and "," not in ef_range, ef_range
+                    # The EF11 packages are previews, but they depend on stable EF Core 11 servicing versions.
+                    assert ef_range.startswith("[11.") and ef_range.endswith(", 11.1.0)"), ef_range
+                    assert all("-" not in value.split(",")[0] for key, value in dependencies.items()
+                               if key.startswith("Microsoft.")), dependencies
                 ef_versions[major] = ef_range[1:].split(",")[0].rstrip("]")
                 if package_id.endswith(".NTS"):
                     assert versions[major, core_id] in dependencies[core_id]
