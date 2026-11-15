@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
@@ -18,6 +18,18 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   it because its sequences already generate keys.
 - `BulkInsert` on the Quack profile now reserves generated keys from the remote column default, as native DuckDB
   does, and writes them back to the entities.
+- Dictionaries now map to native `MAP(K, V)` columns. `Dictionary<K,V>`, `IDictionary<K,V>` and
+  `IReadOnlyDictionary<K,V>` properties with scalar keys and values round-trip through `SaveChanges`, create
+  `MAP` columns in migrations, and are change-tracked by entry. Queries translate the indexer, `ContainsKey` and
+  `Count`. `BulkInsert` and `Upsert` reject MAP properties, because the DuckDB.NET appender cannot write them.
+- Nested lists now map to native nested `LIST` columns: `int[][]` becomes `INTEGER[][]` and
+  `List<List<string>>` becomes `VARCHAR[][]`. Queries can index into an inner list and use `Contains` on it.
+- `GetDuckDBStoreTypeMapping` and scaffolding now report supported `MAP(K, V)` store types as dictionary
+  properties, and nested `T[][]` store types as nested lists.
+- Fixed a store-type-only lookup of a list type such as `INTEGER[]` returning the element's scalar mapping.
+- Fixed compiled models for list properties whose mapping needs a value converter, such as `int[]` and
+  `List<Guid>`: the generated model failed to compile. List and MAP mappings are now rebuilt from their
+  element mappings in the compiled model.
 
 ## 1.31.0
 

@@ -1,4 +1,4 @@
-# DuckDB type mappings
+﻿# DuckDB type mappings
 
 DuckDB.EFCoreProvider has two distinct type contracts:
 
@@ -33,17 +33,45 @@ DuckDB.EFCoreProvider has two distinct type contracts:
 | `TimeOnly` | `TIME` | `TIMETZ` and `TIME_NS` can be selected explicitly. |
 | `TimeSpan` | `TIME` | Uses a provider value converter; this is not a dedicated `INTERVAL` mapping. |
 | `JsonDocument`, `JsonElement`, `string` | `JSON` | Owned JSON through `ToJson()` is also supported. |
-| `T[]`, `List<T>` | `T[]` | One-dimensional collections whose element type has a relational mapping. |
+| `T[]`, `List<T>` | `T[]` | Collections whose element type has a relational mapping. |
+| `T[][]`, `List<List<T>>` | `T[][]` | Nested lists, to any depth, whose innermost element has a scalar mapping. |
+| `Dictionary<K,V>`, `IDictionary<K,V>`, `IReadOnlyDictionary<K,V>` | `MAP(K, V)` | Keys and values must be scalar; see [MAP columns](#map-columns). |
 | EF complex property | `STRUCT(...)` | Opt in with `UseStructMapping()`; each nested field must have a supported scalar or nested complex mapping. |
 
-Native scalar-property mappings for `MAP`, `UNION`, `HUGEINT`/`UHUGEINT`, and `VARIANT` are not currently
+Native scalar-property mappings for `UNION`, `HUGEINT`/`UHUGEINT`, and `VARIANT` are not currently
 implemented. A raw reader may still return these types through DuckDB.NET.
+
+### MAP columns
+
+A dictionary property maps to a native `MAP(K, V)` column. Keys and values can be `string`, `bool`, any integer
+type, `float`, `double`, `decimal`, `Guid`, `DateTime` or `DateOnly`, including types such as enums that convert to
+one of these. A nullable value type allows `NULL` values; MAP keys are never `NULL`, so nullable key types are not
+mapped. Maps of lists, lists of maps and maps of maps are not mapped as EF properties.
+
+Change tracking compares dictionaries by their entries, so adding, removing or changing an entry is saved.
+Queries translate `dictionary[key]` to `map_extract_value`, `ContainsKey` to `map_contains`, and `Count` to
+`cardinality`. Unlike the CLR indexer, a missing key reads as `NULL` rather than throwing, so projecting
+`dictionary[key]` from a map with a non-nullable value type fails when the key is missing; cast the value to a
+nullable type in the projection, or filter with `ContainsKey` first.
+
+DuckDB.NET can read a MAP as a dictionary but cannot bind one as a parameter, so the provider sends MAP parameters
+as DuckDB's quoted MAP text, `{'key'='value'}`, which DuckDB casts to the column's MAP type. Literals, such as
+migration seed data, use the typed `MAP {key: value}` constructor. The DuckDB.NET appender cannot write MAP values,
+so `BulkInsert` and `Upsert` reject entities with MAP properties; use `SaveChanges` for them.
+
+### Nested lists
+
+`T[][]` and `List<List<T>>` map to native nested `LIST` columns such as `INTEGER[][]`. Change tracking compares
+them element by element. Queries can index into an inner list, as in `e.Matrix[1][0]`, and test it with
+`Contains`. As with one-dimensional lists, `BulkInsert` does not write list values.
 
 Use `context.Database.GetDuckDBStoreTypeMapping(storeType)` when tooling needs the mapping contract at runtime.
 The structured result distinguishes scalar properties, `STRUCT` complex properties, raw-reader-only types, and
 unsupported types. Canonical integer store types and aliases preserve DuckDB signedness: for example, `INT8` and
 `LONG` map to signed `long`, while `UBIGINT` and `UINT64` map to `ulong`.
-Variable-length `T[]` lists have EF property mappings; fixed-size `T[n]` arrays are reported as raw-reader-only.
+Variable-length `T[]` lists, including nested lists, have EF property mappings; fixed-size `T[n]` arrays are
+reported as raw-reader-only. A `MAP(K, V)` whose key and value types are supported is a scalar property, reported
+as `Dictionary<K, V?>`; any other MAP is raw-reader-only.
 The [query command-plan guide](QUERY-COMMAND-PLANS.md#inspect-catalog-store-types) shows how an external compiler or
 dynamic-model generator should consume this classification without maintaining its own store-type table.
 

@@ -1,3 +1,4 @@
+using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Internal;
@@ -51,6 +52,7 @@ internal static class DuckDBCompiledAppenderRowWriter
         Expression typedEntity,
         IReadOnlyList<IProperty> properties)
     {
+        EnsureAppendable(properties);
         var expressions = new List<Expression>(properties.Count + 1);
         foreach (var property in properties)
         {
@@ -60,6 +62,21 @@ internal static class DuckDBCompiledAppenderRowWriter
         // Action delegates require a void block even though direct AppendValue calls return the row.
         expressions.Add(Expression.Empty());
         return Expression.Block(expressions);
+    }
+
+    // DuckDB.NET's appender cannot write MAP vectors, and fails only once the appender is created. Rejecting the
+    // property while planning gives the same guidance as other unsupported appender values.
+    private static void EnsureAppendable(IReadOnlyList<IProperty> properties)
+    {
+        foreach (var property in properties)
+        {
+            if (property.GetTypeMapping() is DuckDBMapTypeMapping)
+            {
+                throw new NotSupportedException(
+                    $"DuckDB appender operations cannot write MAP property '{property.DeclaringType.DisplayName()}.{property.Name}' "
+                    + "because DuckDB.NET's appender does not support MAP values. Use SaveChanges for this entity.");
+            }
+        }
     }
 
     private static Expression CreateAppendExpression(
