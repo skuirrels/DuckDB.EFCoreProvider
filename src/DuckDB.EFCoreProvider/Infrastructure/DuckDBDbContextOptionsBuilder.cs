@@ -380,8 +380,8 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     ///     <para>
     ///         Only conflicts are retried; constraint violations and other errors fail immediately. With retries
     ///         enabled, start explicit transactions inside <c>context.Database.CreateExecutionStrategy()</c> so the
-    ///         complete transaction is replayed. The raw <c>BulkInsert</c> and <c>Upsert</c> fast paths are not retried
-    ///         automatically.
+    ///         complete transaction is replayed. <c>BulkInsert</c> and <c>Upsert</c> called outside a transaction are
+    ///         retried too, each attempt in a provider-owned transaction.
     ///     </para>
     /// </remarks>
     /// <returns>The same builder instance so that multiple calls can be chained.</returns>

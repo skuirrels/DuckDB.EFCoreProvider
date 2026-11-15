@@ -83,7 +83,7 @@ See [DUCKLAKE.md](DUCKLAKE.md) for configuration, security, model rules, and ope
 |---|---|
 | Native DuckDB file is single-writer and embedded | One process can combine concurrent reader contexts with a writer; see the [native concurrency guide](NATIVE-DUCKDB-CONCURRENCY.md). `access_mode=READ_ONLY` permits multiple native-file readers when no process is writing. DuckLake concurrency instead depends on its metadata catalog, as documented in [DUCKLAKE.md](DUCKLAKE.md#concurrency-and-read-scaling) |
 | No savepoints (no nested-transaction partial rollback) | `DuckDBRelationalTransaction.SupportsSavepoints => false` |
-| No retrying execution strategy / `EnableRetryOnFailure` | not provided (embedded model) |
+| Write-write conflicts fail the transaction instead of waiting | Opt in to `EnableRetryOnFailure()` to replay `SaveChanges`, `ExecuteUpdate`/`ExecuteDelete`, strategy-wrapped transactions, and `BulkInsert`/`Upsert` called outside a transaction. Classify a conflict yourself with `exception.IsWriteConflict()`. See the [native concurrency guide](NATIVE-DUCKDB-CONCURRENCY.md#readwrite-visibility-and-conflicts) |
 
 ### Migrations (`ALTER TABLE` surface)
 DuckDB rejects most in-place constraint changes. The provider fails clearly by default; applications can opt
