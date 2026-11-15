@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Version>1.29.0</Version>
-    <Version Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.29.0-preview.1</Version>
+    <Version>1.30.0</Version>
+    <Version Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.30.0-preview.1</Version>
     <PackageVersion>$(Version)</PackageVersion>
     <PackageId>DuckDB.EFCoreProvider</PackageId>
     <PackageId Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB.EFCoreProvider.EF11</PackageId>
-    <FileVersion>1.29.0.0</FileVersion>
+    <FileVersion>1.30.0.0</FileVersion>
     <Authors>skuirrels</Authors>
     <Description>DuckDB, DuckLake and Parquet provider for Entity Framework Core 10, for analytics at cloud scale. Targets .NET 10 and also runs on .NET 11. For EF Core 11, use DuckDB.EFCoreProvider.EF11.</Description>
     <Description Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB, DuckLake and Parquet provider for Entity Framework Core 11, for analytics at cloud scale. Targets .NET 11. The EF11 package line is in preview; for EF Core 10, use DuckDB.EFCoreProvider.</Description>
@@ -25,8 +25,13 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.28.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.29.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.30.0 (EF10) / 1.30.0-preview.1 (EF11)
+- Add EnableRetryOnFailure() and DuckDBRetryingExecutionStrategy, which replay a unit of work when DuckDB or a DuckLake catalog rejects it with a write-write conflict. Other errors are not retried; explicit transactions must run inside the execution strategy.
+- Fix silent lost updates from overlapping SaveChanges updates. DuckDB 1.5.6 does not report a conflict for UPDATE ... RETURNING on a keyed table, so tracked updates on native DuckDB and Quack are now plain UPDATE statements that fail with a retryable DbUpdateException; generated values are read back in the same transaction.
+- The alternate-target UpsertAsync overloads now read store-generated values, such as sequence-backed surrogate keys, back into the supplied entities on native DuckDB and Quack.
+
 1.29.0 (EF10) / 1.29.0-preview.1 (EF11)
 - BulkInsert and BulkInsertAsync now fill database-generated keys on native DuckDB. A generated primary key, or any UseAutoIncrement() property, still at its default is reserved from the column default (its sequence, or an expression such as uuid()) and written back to the entity before the row is appended, so dimension keys can feed the fact load that follows. Keys you set are kept; DuckLake and Quack write every key as supplied.
 - Describe the EF10 and EF11 package lines in the NuGet package descriptions.

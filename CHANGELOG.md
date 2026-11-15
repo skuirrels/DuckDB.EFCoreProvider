@@ -2,7 +2,7 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
-## Unreleased
+## 1.30.0 / EF11 1.30.0-preview.1
 
 - `EnableRetryOnFailure()` opts in to `DuckDBRetryingExecutionStrategy`, which replays a whole unit of work when
   DuckDB or a DuckLake catalog rejects it with a write-write conflict. Constraint violations, aborted
@@ -21,6 +21,7 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   rows their existing ones. Entities whose conflict target contains `NULL` keep their supplied values. The
   primary-key `Upsert` overloads are unchanged. Applies to native DuckDB and Quack; DuckLake has no
   store-generated values.
+- `DuckDB.EFCoreProvider.NTS` 1.1.0 and `DuckDB.EFCoreProvider.EF11.NTS` 1.1.0-preview.2 are unchanged.
 
 ## 1.29.0 / EF11 1.29.0-preview.1
 
