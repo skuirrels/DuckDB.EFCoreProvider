@@ -21,7 +21,11 @@ internal static class DuckDBCapabilityErrorMessages
 
     public static string AutoIncrementNotSupported(string property)
         => $"The configured DuckDB engine does not support auto-increment or sequence-backed values. Property "
-            + $"'{property}' must use a client-assigned value.";
+            + $"'{property}' must use a client-assigned value or UseHiLo().";
+
+    public static string HiLoNotSupported(string property)
+        => $"The configured DuckDB engine does not support Hi-Lo key generation. Property '{property}' must use "
+            + "UseAutoIncrement() or a client-assigned value instead.";
 
     public static string GeneratedColumnNotSupported(string property)
         => $"The configured DuckDB engine does not support generated columns. Property '{property}' must be computed "

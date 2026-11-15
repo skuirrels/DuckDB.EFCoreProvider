@@ -80,7 +80,13 @@ public interface IDuckDBEngineCapabilities
     ///     Whether <c>BulkInsert</c> can reserve database-generated key values from column defaults, such as
     ///     sequences, and write them back to the entities before appending.
     /// </summary>
-    bool SupportsBulkInsertKeyReservation => SupportsSqlDefaultExpressions && !SupportsRemoteCommandExecution;
+    bool SupportsBulkInsertKeyReservation => SupportsSqlDefaultExpressions;
+
+    /// <summary>
+    ///     Whether client-side Hi-Lo key generation can reserve blocks from a counter table on a connection
+    ///     independent of the caller's transaction.
+    /// </summary>
+    bool SupportsHiLoKeyGeneration => !SupportsRemoteCommandExecution;
 
     DuckDBUpsertStrategy UpsertStrategy { get; }
 }

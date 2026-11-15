@@ -49,7 +49,8 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
         SupportsRemoteCommandExecution = isQuack;
         SupportsRemoteBulkInsert = isQuack;
         SupportsMultipleStatementsPerCommand = !isQuack;
-        SupportsBulkInsertKeyReservation = !isDuckLake && !isQuack;
+        SupportsBulkInsertKeyReservation = !isDuckLake;
+        SupportsHiLoKeyGeneration = !isQuack;
         UpsertStrategy = isDuckLake
             ? DuckDBUpsertStrategy.Merge
             : DuckDBUpsertStrategy.InsertOnConflict;
@@ -92,6 +93,8 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
     public bool SupportsMultipleStatementsPerCommand { get; }
 
     public bool SupportsBulkInsertKeyReservation { get; }
+
+    public bool SupportsHiLoKeyGeneration { get; }
 
     public DuckDBUpsertStrategy UpsertStrategy { get; }
 }

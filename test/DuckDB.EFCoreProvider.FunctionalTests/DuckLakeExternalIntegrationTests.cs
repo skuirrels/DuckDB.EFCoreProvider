@@ -1,5 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
+using DuckDB.EFCoreProvider.ValueGeneration.Internal;
 using DuckDB.NET.Data;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using System.Globalization;
 using Xunit;
 
@@ -55,6 +57,75 @@ public sealed class DuckLakeExternalIntegrationTests
             Assert.Equal(id, item.Id);
             Assert.Equal("external", item.Name);
             Assert.Equal(7, item.Quantity);
+        }
+    }
+
+    [DuckLakeExternalFact]
+    public async Task HiLo_writers_on_a_shared_PostgreSQL_catalog_reserve_disjoint_blocks()
+    {
+        var configuration = ExternalConfiguration.Load();
+        var metadataSchema = $"hilo_{Guid.NewGuid():N}";
+        var options = new DbContextOptionsBuilder<HiLoLakeContext>()
+            .UseDuckLake(
+                duckLake => duckLake.UseNamedSecret("ducklake_external_hilo").CatalogName("hilo_lake"),
+                duckDB => duckDB
+                    .LoadExtension("httpfs")
+                    .LoadExtension("postgres")
+                    .ConfigureConnection(connection =>
+                    {
+                        InitializeSecrets(connection, configuration);
+                        using var command = connection.CreateCommand();
+                        command.CommandText =
+                            $$"""
+                            CREATE OR REPLACE SECRET ducklake_external_hilo (
+                                TYPE ducklake,
+                                METADATA_PATH '',
+                                DATA_PATH '{{EscapeSqlLiteral(configuration.DataPath)}}/{{metadataSchema}}',
+                                METADATA_SCHEMA '{{metadataSchema}}',
+                                METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'ducklake_external_postgres'}
+                            );
+                            """;
+                        command.ExecuteNonQuery();
+                    }))
+            .Options;
+
+        await using (var context = new HiLoLakeContext(options))
+        {
+            Assert.True(await context.Database.EnsureCreatedAsync());
+        }
+
+        // Each writer has its own DuckDB instance attached to the shared catalog, so their counter updates
+        // conflict in DuckLake and the losers retry with the committed value.
+        const int writers = 6;
+        const int reservationsPerWriter = 4;
+        const int blockSize = 3;
+        var lows = await Task.WhenAll(Enumerable.Range(0, writers).Select(_ => Task.Run(async () =>
+        {
+            await using var context = new HiLoLakeContext(options);
+            var allocator = context.GetService<DuckDBHiLoBlockAllocator>();
+            var counter = DuckDBHiLoCounter.For(
+                context.Model.FindEntityType(typeof(HiLoLakeItem))!.FindProperty(nameof(HiLoLakeItem.Id))!);
+            var reserved = new List<long>();
+            for (var i = 0; i < reservationsPerWriter; i++)
+            {
+                reserved.Add(await allocator.AllocateAsync(counter, blockSize, CancellationToken.None));
+            }
+
+            return reserved;
+        })));
+
+        var values = lows.SelectMany(reserved => reserved)
+            .SelectMany(low => Enumerable.Range(0, blockSize).Select(offset => low + offset))
+            .ToArray();
+        Assert.Equal(writers * reservationsPerWriter * blockSize, values.Distinct().Count());
+
+        await using (var context = new HiLoLakeContext(options))
+        {
+            context.AddRange(Enumerable.Range(0, 5).Select(i => new HiLoLakeItem { Name = $"item {i}" }));
+            Assert.Equal(5, await context.SaveChangesAsync());
+            var keys = await context.Items.Select(item => item.Id).ToListAsync();
+            Assert.Equal(5, keys.Distinct().Count());
+            Assert.All(keys, key => Assert.DoesNotContain(key, values));
         }
     }
 
@@ -170,6 +241,23 @@ public sealed class DuckLakeExternalIntegrationTests
                 entity.HasKey(item => item.Id);
                 entity.Property(item => item.Name).IsRequired();
             });
+    }
+
+    private sealed class HiLoLakeContext(DbContextOptions<HiLoLakeContext> options) : DbContext(options)
+    {
+        public DbSet<HiLoLakeItem> Items => Set<HiLoLakeItem>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.UseHiLo(blockSize: 2);
+            modelBuilder.Entity<HiLoLakeItem>().ToTable("hilo_items");
+        }
+    }
+
+    private sealed class HiLoLakeItem
+    {
+        public long Id { get; set; }
+        public string Name { get; set; } = null!;
     }
 
     private sealed class ExternalDuckLakeItem
