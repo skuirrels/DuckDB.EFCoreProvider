@@ -13,6 +13,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBUInt16TypeMapping : UShortTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBUInt16TypeMapping Default { get; } = new();
+
     public DuckDBUInt16TypeMapping() : base("USMALLINT", System.Data.DbType.UInt16)
     {
     }

@@ -13,6 +13,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBDateOnlyTypeMapping : DateOnlyTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBDateOnlyTypeMapping Default { get; } = new();
+
     public DuckDBDateOnlyTypeMapping() : base("DATE", System.Data.DbType.Date)
     {
     }

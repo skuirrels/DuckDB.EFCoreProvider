@@ -454,6 +454,14 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
             return visitedNewExpression;
         }
 
+        if (newExpression.Type == typeof(DateTimeOffset)
+            && newExpression.Constructor?.GetParameters() is [{ ParameterType: var dateTimeType }, ..] parameters
+            && dateTimeType == typeof(DateTime)
+            && (parameters.Length == 1 || parameters is [_, { ParameterType: var offsetType }] && offsetType == typeof(TimeSpan)))
+        {
+            return TranslateDateTimeOffsetConstructor(newExpression);
+        }
+
         if (newExpression.Type.IsAssignableTo(typeof(ITuple)))
         {
             return TryTranslateArguments(out var sqlArguments)
@@ -479,6 +487,30 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
 
             return true;
         }
+    }
+
+    // new DateTimeOffset(dateTime[, offset]) reads the date and time as clock time at the offset (zero when
+    // omitted, matching EF's treatment of unspecified DateTime values). Only constant offsets translate:
+    // TimeSpan values map to TIME, which cannot hold a negative offset.
+    private Expression TranslateDateTimeOffsetConstructor(NewExpression newExpression)
+    {
+        if (TranslationFailed(newExpression.Arguments[0], Visit(newExpression.Arguments[0]), out var dateTime))
+        {
+            return QueryCompilationContext.NotTranslatedExpression;
+        }
+
+        TimeSpan? offset = null;
+        if (newExpression.Arguments.Count == 2)
+        {
+            if (Visit(newExpression.Arguments[1]) is not SqlConstantExpression { Value: TimeSpan constantOffset })
+            {
+                return QueryCompilationContext.NotTranslatedExpression;
+            }
+
+            offset = constantOffset;
+        }
+
+        return ((DuckDBSqlExpressionFactory)Dependencies.SqlExpressionFactory).DateTimeOffset(dateTime!, offset);
     }
 
     [DebuggerStepThrough]

@@ -4,8 +4,10 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Storage.Json;
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Text;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
 
@@ -48,6 +50,24 @@ public class DuckDBBlobTypeMapping : ByteArrayTypeMapping
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    ///     DuckDB 1.5 reads EF's default <c>X'...'</c> literal as a string, so each byte is written as a
+    ///     <c>\xHH</c> escape in a string cast to <c>BLOB</c>.
+    /// </remarks>
+    protected override string GenerateNonNullSqlLiteral(object value)
+    {
+        var bytes = (byte[])value;
+        var builder = new StringBuilder(bytes.Length * 4 + 8);
+        builder.Append('\'');
+        foreach (var b in bytes)
+        {
+            builder.Append("\\x").Append(b.ToString("X2", CultureInfo.InvariantCulture));
+        }
+
+        return builder.Append("'::BLOB").ToString();
+    }
+
+    /// <inheritdoc />
     public override MethodInfo GetDataReaderMethod()
     {
         return typeof(DbDataReader).GetRuntimeMethod(nameof(DbDataReader.GetStream), [typeof(int)])!;
@@ -61,7 +81,7 @@ public class DuckDBBlobTypeMapping : ByteArrayTypeMapping
         return Expression.Call(readStreamMethod, expression);
     }
 
-    private static byte[] ReadStream(Stream stream)
+    internal static byte[] ReadStream(Stream stream)
     {
         // DuckDB.NET returns a seekable UnmanagedMemoryStream over the blob's native memory, so the length
         // is known up front: read once into an exact-size array instead of double-buffering through a

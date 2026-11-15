@@ -13,6 +13,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBByteTypeMapping : ByteTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBByteTypeMapping Default { get; } = new();
+
     public DuckDBByteTypeMapping() : base("UTINYINT", System.Data.DbType.Byte)
     {
     }

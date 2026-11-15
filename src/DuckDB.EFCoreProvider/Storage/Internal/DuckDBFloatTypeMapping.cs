@@ -13,6 +13,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBFloatTypeMapping : FloatTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBFloatTypeMapping Default { get; } = new();
+
     public DuckDBFloatTypeMapping() : base("FLOAT", System.Data.DbType.Single)
     {
     }

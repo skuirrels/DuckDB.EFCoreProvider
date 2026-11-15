@@ -68,4 +68,38 @@ public class OwnedNavigationsProjectionDuckDBTest : OwnedNavigationsProjectionRe
     {
         await base.Select_subquery_FirstOrDefault_complex_collection(queryTrackingBehavior);
     }
+
+#if NET11_0_OR_GREATER
+    public override Task Select_required_associate_duplicated(QueryTrackingBehavior queryTrackingBehavior)
+    {
+        Assert.SkipWhen(
+            queryTrackingBehavior == QueryTrackingBehavior.NoTracking,
+            DuckDBSkipReasons.SeparateTableOwnedValuesNotAutoIncluded);
+        return base.Select_required_associate_duplicated(queryTrackingBehavior);
+    }
+
+    public override Task Select_required_associate_and_optional_associate(QueryTrackingBehavior queryTrackingBehavior)
+    {
+        Assert.SkipWhen(
+            queryTrackingBehavior == QueryTrackingBehavior.NoTracking,
+            DuckDBSkipReasons.SeparateTableOwnedValuesNotAutoIncluded);
+        return base.Select_required_associate_and_optional_associate(queryTrackingBehavior);
+    }
+
+    public override Task Select_optional_associate_and_ints(QueryTrackingBehavior queryTrackingBehavior)
+    {
+        Assert.SkipWhen(
+            queryTrackingBehavior == QueryTrackingBehavior.NoTracking,
+            DuckDBSkipReasons.SeparateTableOwnedValuesNotAutoIncluded);
+        return base.Select_optional_associate_and_ints(queryTrackingBehavior);
+    }
+
+    public override Task Select_associate_and_target_to_index_based_binding_via_closure(QueryTrackingBehavior queryTrackingBehavior)
+    {
+        Assert.SkipWhen(
+            queryTrackingBehavior == QueryTrackingBehavior.NoTracking,
+            DuckDBSkipReasons.SeparateTableOwnedValuesNotAutoIncluded);
+        return base.Select_associate_and_target_to_index_based_binding_via_closure(queryTrackingBehavior);
+    }
+#endif
 }

@@ -114,6 +114,46 @@ public class DuckDBSqlExpressionFactory : SqlExpressionFactory
         return MakeBinary(ExpressionType.Modulo, microsecondTotal, Constant(1000), typeMapping: null)!;
     }
 
+    /// <summary>
+    ///     Renders <c>timezone('UTC', value)</c>: a <c>TIMESTAMPTZ</c> becomes its UTC <c>TIMESTAMP</c>, and a
+    ///     <c>TIMESTAMP</c> is read as UTC and becomes a <c>TIMESTAMPTZ</c>.
+    /// </summary>
+    public virtual SqlExpression AtUtc(SqlExpression value, Type returnType)
+    {
+        return Function(
+            name: "timezone",
+            arguments: [Constant("UTC"), value],
+            argumentsPropagateNullability: [false, true],
+            nullable: true,
+            returnType: returnType,
+            typeMapping: _typeMappingSource.FindMapping(returnType));
+    }
+
+    /// <summary>
+    ///     Translates <c>new DateTimeOffset(dateTime, offset)</c>: the local time minus its offset, read as UTC.
+    ///     A <see langword="null" /> offset means a zero offset.
+    /// </summary>
+    public virtual SqlExpression DateTimeOffset(SqlExpression dateTime, TimeSpan? offset)
+    {
+        var utc = offset is { } value && value != TimeSpan.Zero
+            ? new SqlBinaryExpression(
+                ExpressionType.Subtract,
+                ApplyDefaultTypeMapping(dateTime),
+                Function(
+                    name: "to_microseconds",
+                    arguments: [Constant(value.Ticks / TimeSpan.TicksPerMicrosecond)],
+                    argumentsPropagateNullability: [true],
+                    nullable: true,
+                    returnType: typeof(TimeSpan),
+                    // DuckDB has no INTERVAL mapping; the TimeSpan mapping only types this subexpression.
+                    typeMapping: _typeMappingSource.FindMapping(typeof(TimeSpan))),
+                typeof(DateTime),
+                dateTime.TypeMapping ?? _typeMappingSource.FindMapping(typeof(DateTime)))
+            : dateTime;
+
+        return AtUtc(utc, typeof(DateTimeOffset));
+    }
+
     public virtual SqlExpression AddYears(SqlExpression timestamp, SqlExpression years, Type returnType)
     {
         return DateAdd(timestamp, ToYears(years), returnType);

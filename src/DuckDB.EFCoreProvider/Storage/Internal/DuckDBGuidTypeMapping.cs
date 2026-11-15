@@ -13,6 +13,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBGuidTypeMapping : GuidTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBGuidTypeMapping Default { get; } = new();
+
     public DuckDBGuidTypeMapping() : base("UUID", System.Data.DbType.Guid)
     {
     }

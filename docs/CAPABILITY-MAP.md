@@ -125,6 +125,7 @@ Basic indexes work (single/composite column, unique, expression). The following 
 | `WITH ORDINALITY` | worked around via `generate_subscripts` |
 | `array_contains` searching for `NULL` elements | `DuckDBQueryableMethodTranslatingExpressionVisitor` |
 | `DateTimeOffset` with non-zero offset | skipped spec tests ("DateTimeOffset with non-zero offset") |
+| `DateTimeOffset.DateTime`, `Offset` and `ToOffset` | `TIMESTAMPTZ` stores the instant, not the original offset (`DuckDBSkipReasons.OffsetNotStored`); `UtcDateTime`, `LocalDateTime` and constant-offset constructors translate |
 
 ---
 

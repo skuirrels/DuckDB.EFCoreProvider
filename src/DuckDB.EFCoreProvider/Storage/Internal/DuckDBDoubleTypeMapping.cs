@@ -13,6 +13,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBDoubleTypeMapping : DoubleTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBDoubleTypeMapping Default { get; } = new();
+
     public DuckDBDoubleTypeMapping() : base("DOUBLE", System.Data.DbType.Double)
     {
     }

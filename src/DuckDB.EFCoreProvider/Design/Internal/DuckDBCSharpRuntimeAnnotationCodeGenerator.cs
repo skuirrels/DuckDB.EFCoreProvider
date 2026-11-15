@@ -50,6 +50,29 @@ public class DuckDBCSharpRuntimeAnnotationCodeGenerator : RelationalCSharpRuntim
         base.Generate(property, parameters);
     }
 
+    public override void Generate(IColumn column, CSharpRuntimeAnnotationCodeGeneratorParameters parameters)
+    {
+        // The value generation strategy is a design-time column annotation for migrations; the runtime
+        // relational model does not carry it.
+        if (!parameters.IsRuntime)
+        {
+            parameters.Annotations.Remove(DuckDBAnnotationNames.ValueGenerationStrategy);
+        }
+
+        base.Generate(column, parameters);
+    }
+
+    public override void Generate(IForeignKeyConstraint foreignKey, CSharpRuntimeAnnotationCodeGeneratorParameters parameters)
+    {
+        // Marks a struct-field foreign key for migrations only; the runtime relational model does not carry it.
+        if (!parameters.IsRuntime)
+        {
+            parameters.Annotations.Remove(DuckDBAnnotationNames.LogicalStructForeignKey);
+        }
+
+        base.Generate(foreignKey, parameters);
+    }
+
     protected override void GenerateSimpleAnnotations(CSharpRuntimeAnnotationCodeGeneratorParameters parameters)
     {
         foreach (var (name, value) in parameters.Annotations.OrderBy(annotation => annotation.Key))
