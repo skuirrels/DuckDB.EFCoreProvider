@@ -95,7 +95,9 @@ public class ProviderOperationDiagnosticsTest
             context.Database.ExecuteSqlRaw("DROP TABLE diagnostic_entities;");
             events.Clear();
 
-            var exception = Assert.Throws<InvalidOperationException>(
+            // The bulk-insert plan is cached per entity type, so the missing table surfaces either while the plan
+            // is built (InvalidOperationException) or from the appender (DuckDBException) depending on test order.
+            var exception = Assert.ThrowsAny<Exception>(
                 () => context.BulkInsert(new[] { new DiagnosticEntity { Id = 1, Value = "one" } }));
 
             Assert.Collection(
