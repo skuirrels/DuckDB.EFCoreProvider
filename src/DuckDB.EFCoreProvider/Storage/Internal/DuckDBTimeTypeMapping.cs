@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Storage.Json;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Data;
 using System.Data.Common;
+using System.Linq.Expressions;
 using System.Reflection;
 
 namespace DuckDB.EFCoreProvider.Storage.Internal;
@@ -25,6 +26,14 @@ public class DuckDBTimeTypeMapping : RelationalTypeMapping
     private static readonly MethodInfo GetTimeSpan = typeof(DbDataReader)
         .GetMethod(nameof(DbDataReader.GetFieldValue), 1, [typeof(int)])!
         .MakeGenericMethod(typeof(TimeSpan));
+
+    private static readonly MethodInfo GetTimeTz = typeof(DbDataReader)
+        .GetMethod(nameof(DbDataReader.GetFieldValue), 1, [typeof(int)])!
+        .MakeGenericMethod(typeof(DuckDBTimeTz));
+
+    private static readonly MethodInfo ConvertTimeTzToTimeOnlyMethod = typeof(DuckDBTimeTypeMapping).GetMethod(
+        nameof(ConvertTimeTzToTimeOnly),
+        BindingFlags.NonPublic | BindingFlags.Static)!;
 
     // Keyed by store-type name rather than DuckDBType because the DuckDBType enum does not contain TIME_NS.
     private static readonly IReadOnlyDictionary<string, string> Formats = new Dictionary<string, string>
@@ -66,6 +75,11 @@ public class DuckDBTimeTypeMapping : RelationalTypeMapping
         DuckDBTimeSpanToTimeOnlyValueConverter.Instance,
         DuckDBType.Time);
 
+    /// <summary>
+    ///     The <c>TIME</c> mapping that compiled models clone. The clone takes its DuckDB type from the store type.
+    /// </summary>
+    public static DuckDBTimeTypeMapping Default => (DuckDBTimeTypeMapping)Time;
+
     public DuckDBTimeTypeMapping(
         string storeType,
         Type clrType,
@@ -96,8 +110,32 @@ public class DuckDBTimeTypeMapping : RelationalTypeMapping
     /// <inheritdoc />
     protected override RelationalTypeMapping Clone(RelationalTypeMappingParameters parameters)
     {
-        return new DuckDBTimeTypeMapping(parameters, DuckDbType);
+        return new DuckDBTimeTypeMapping(parameters, ResolveDuckDbType(parameters.StoreType, DuckDbType));
     }
+
+    // A compiled model rebuilds a TIMETZ mapping by cloning Default with the new store type.
+    private static DuckDBType ResolveDuckDbType(string storeType, DuckDBType fallback)
+        => storeType.ToUpperInvariant() switch
+        {
+            "TIMETZ" or "TIME WITH TIME ZONE" => DuckDBType.TimeTz,
+            "TIME" or "TIME WITHOUT TIME ZONE" or "TIME_NS" => DuckDBType.Time,
+            _ => fallback
+        };
+
+    /// <inheritdoc />
+    public override MethodInfo GetDataReaderMethod()
+        => DuckDbType == DuckDBType.TimeTz ? GetTimeTz : base.GetDataReaderMethod();
+
+    // DuckDB.NET reads TIMETZ as DuckDBTimeTz, which does not convert to TimeOnly. The value keeps its clock time
+    // and drops the offset, because TimeOnly has nowhere to hold it.
+    /// <inheritdoc />
+    public override Expression CustomizeDataReaderExpression(Expression expression)
+        => expression.Type == typeof(DuckDBTimeTz)
+            ? Expression.Call(ConvertTimeTzToTimeOnlyMethod, expression)
+            : expression;
+
+    private static TimeOnly ConvertTimeTzToTimeOnly(DuckDBTimeTz value)
+        => value.Time;
 
     /// <inheritdoc />
     protected override void ConfigureParameter(DbParameter parameter)

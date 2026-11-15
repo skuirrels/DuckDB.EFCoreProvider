@@ -173,7 +173,6 @@ New 11.0.0 coverage that the provider does not support yet:
 | --- | --- | --- |
 | `KeysWithConverters.*struct_key_and_required_dependents_with_shadow_FK` | Change detection severs a required relationship with a shadow FK over a converted struct key. | Skipped (`NewEF11Coverage`) |
 | `JsonTypes.Can_read_write_collection_of_nullable_*_with_null_returning_converter` | Array mappings cannot build a JSON reader/writer for converters that return null elements. | Skipped (`NewEF11Coverage`) |
-| `JsonTranslations.JsonPathExists_*` | `EF.Functions.JsonPathExists` has no DuckDB translation yet. | Skipped (`NewEF11Coverage`) |
 
 ### EF11 drift fixes
 
@@ -188,6 +187,30 @@ The 32 remaining EF11 failures are resolved. Both raw full-project runs, taken b
   translate. `LocalDateTime` uses the DuckDB session `TimeZone`.
 - Compiled models: the numeric, Boolean, character, GUID and `DateOnly` type mappings expose a `Default`
   instance, and design-time-only column and foreign key annotations are no longer generated into runtime code.
+
+### After the drift fixes
+
+- `EF.Functions.JsonPathExists` translates to `json_type(json, path) IS NOT NULL` for string columns and for
+  complex and owned JSON properties. A JSON `null` at the path counts as present, and a `NULL` column gives
+  `false`. The three `JsonTranslations.JsonPathExists_*` tests now pass with SQL baselines.
+- Compiled models: the timestamp and time mappings now expose a `Default`. Generated code clones it with the
+  column's store type, so the clone takes its DuckDB type (and literal format) from that store type.
+  `TIMESTAMPTZ` has its own `DuckDBTimestampTzTypeMapping` so the clone keeps `DateTimeOffset` as its CLR
+  type. STRUCT and complex JSON columns already worked. The struct-key and row-value mappings are created
+  only during query translation and never appear in a model.
+- `TimeOnly` properties mapped to `TIMETZ` can now be read. DuckDB.NET returns `DuckDBTimeTz`, which the
+  mapping now converts to its clock time.
+
+`CompiledModelDuckDBTest.Timestamp_and_time_mappings`, `Struct_mapping` and `Json_mapping` generate, compile
+and query a NativeAOT compiled model on both package lines. `ValueTranslationRegressionTests` covers
+`JsonPathExists` and `TIMETZ` reads on native DuckDB and DuckLake.
+The compatibility gate now also runs `CompiledModelDuckDBTest`, which adds its 12 inherited skips.
+
+| Gate after these fixes | EF10 | EF11 (11.0.0) |
+| --- | ---: | ---: |
+| Production write gate (`all`) | 725 / 465 | 769 / 461 |
+| Shared compatibility | 1,556 / 154 | 1,562 / 158 |
+| Raw full project | 21,845 / 4,139 | 22,416 / 4,138 |
 
 `ValueTranslationRegressionTests` covers these translations end to end on native DuckDB and DuckLake, and runs
 in the compatibility gate. The remaining cases are provider behaviour, recorded as skips or overrides:

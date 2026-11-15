@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Scaffolding;
 
-public class CompiledModelDuckDBTest : CompiledModelRelationalTestBase
+public partial class CompiledModelDuckDBTest : CompiledModelRelationalTestBase
 {
     public CompiledModelDuckDBTest(NonSharedFixture fixture) : base(fixture)
     {
