@@ -196,7 +196,16 @@ internal static class DuckDBUpsertPlanner
                 continue;
             }
 
+            // A Hi-Lo key is assigned on the client, so a new row is inserted with it. A row that matches an existing
+            // one on an alternate target keeps its stored key, which is read back into the entity.
             if (!conflictTarget.UsesPrimaryKey
+                && !conflictColumnSet.Contains(columnName)
+                && property.GetValueGenerationStrategy() == DuckDBValueGenerationStrategy.HiLo)
+            {
+                readBackColumns.Add(columnName);
+                readBackWriters.Add(new DuckDBStoreValueWriter(property));
+            }
+            else if (!conflictTarget.UsesPrimaryKey
                 && !conflictColumnSet.Contains(columnName)
                 && IsStoreGeneratedOnAdd(property, storeObject))
             {
@@ -208,7 +217,10 @@ internal static class DuckDBUpsertPlanner
             insertColumns.Add(columnName);
             writableProperties.Add(property);
 
-            if (!keyColumnSet.Contains(columnName) && !conflictColumnSet.Contains(columnName))
+            // A Hi-Lo value is generated on add, so an update never replaces the stored one.
+            if (!keyColumnSet.Contains(columnName)
+                && !conflictColumnSet.Contains(columnName)
+                && property.GetValueGenerationStrategy() != DuckDBValueGenerationStrategy.HiLo)
             {
                 updateColumns.Add(columnName);
             }

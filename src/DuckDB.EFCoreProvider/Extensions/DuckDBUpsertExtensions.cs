@@ -101,6 +101,11 @@ public static class DuckDBUpsertExtensions
             (attemptContext, items) => UpsertAttempt(attemptContext, items, inputMode, batchSize));
     }
 
+    // The planner has already resolved and validated the entity type for TEntity.
+    private static IEnumerable<TEntity> AssignClientKeys<TEntity>(DbContext context, IEnumerable<TEntity> entities)
+        where TEntity : class
+        => DuckDBClientKeyAssignment.Assign(context, context.Model.FindEntityType(typeof(TEntity))!, entities);
+
     private static int UpsertAttempt<TEntity>(
         DbContext context,
         IEnumerable<TEntity> entities,
@@ -117,6 +122,7 @@ public static class DuckDBUpsertExtensions
         try
         {
             var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity), inputMode: inputMode);
+            entities = AssignClientKeys(context, entities);
             var sqlRenderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
             var dbConnection = context.Database.GetDbConnection();
             var openedHere = dbConnection.State != ConnectionState.Open;
@@ -420,6 +426,7 @@ public static class DuckDBUpsertExtensions
         try
         {
             var plan = DuckDBUpsertPlanner.GetOrCreate(context, typeof(TEntity), conflictPropertyNames, matchMode, inputMode);
+            entities = AssignClientKeys(context, entities);
             var sqlRenderer = new DuckDBUpsertSqlRenderer(context.GetService<ISqlGenerationHelper>());
             var dbConnection = context.Database.GetDbConnection();
             var openedHere = dbConnection.State != ConnectionState.Open;

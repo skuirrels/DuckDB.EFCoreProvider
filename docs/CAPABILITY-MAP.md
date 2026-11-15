@@ -65,7 +65,7 @@ The profile is covered by real-extension functional tests, not inferred from nat
 | Historical LINQ | ✅ `DbSet.AsOfSnapshot(long)` / `DbSet.AsOfTimestamp(DateTimeOffset)` for an explicit table root, plus catalog-wide read-only context profiles for coherent joins |
 | Additional catalogs | ✅ local catalogs through `AlsoAttach(...)` and secret-backed catalogs through `AlsoAttachNamedSecret(...)`; catalog-qualified dynamic/raw SQL is supported, while non-primary EF entity mapping remains roadmap |
 | Physical PK/FK/unique/check/index | ⛔ not supported by DuckLake; EF metadata remains logical only |
-| Sequences/store-generated values/SQL defaults | ⛔ store generation rejected; client-assigned or client-generated values required (literal defaults may exist in DDL but cannot be read back) |
+| Sequences/store-generated values/SQL defaults | ⛔ store generation rejected; client-assigned or client-generated values required (literal defaults may exist in DDL but cannot be read back). `UseHiLo()` generates integer keys on the client from a counter table, for `SaveChanges` and `BulkInsert` |
 | EF migrations | ⛔ explicitly rejected; no safe EF history/locking contract without enforced uniqueness and `RETURNING` |
 | `EnsureDeleted` | ⛔ explicitly rejected to avoid deleting shared/remote backing stores implicitly |
 | Database-first scaffolding | ✅ local metadata through the `ducklake:/path/metadata.ducklake` design-time source; catalog-scoped, read-only, and keyless-first |
@@ -219,7 +219,7 @@ not make those types persistable EF entity properties. See [TYPE-MAPPINGS.md](TY
 ### Write performance
 | DuckDB capability | Provider |
 |---|---|
-| `Appender` (high-throughput bulk load) | ✅ exposed via `DbContext.BulkInsert(...)` (raw fast path; bypasses change tracking; on native DuckDB, generated keys are reserved from their column default and written back). Native DuckDB `SaveChanges` uses `RETURNING`; DuckLake uses non-returning commands plus affected-row checks. |
+| `Appender` (high-throughput bulk load) | ✅ exposed via `DbContext.BulkInsert(...)` (raw fast path; bypasses change tracking; on native DuckDB and Quack, generated keys are reserved from their column default and written back; on DuckLake, `UseHiLo()` keys are assigned). Native DuckDB `SaveChanges` uses `RETURNING`; DuckLake uses non-returning commands plus affected-row checks. |
 
 ### Functions
 Only a subset of DuckDB's large function library is LINQ-translatable. In addition to common string / math /

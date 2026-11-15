@@ -10,6 +10,7 @@ using DuckDB.EFCoreProvider.Migrations.Internal;
 using DuckDB.EFCoreProvider.Query.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
 using DuckDB.EFCoreProvider.Update.Internal;
+using DuckDB.EFCoreProvider.ValueGeneration.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -20,6 +21,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
+using Microsoft.EntityFrameworkCore.ValueGeneration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.ComponentModel;
@@ -134,6 +136,7 @@ public static class DuckDBServiceCollectionExtensions
             .TryAdd<IQueryTranslationPreprocessorFactory, DuckDBQueryTranslationPreprocessorFactory>()
             .TryAdd<IQueryTranslationPostprocessorFactory, DuckDBQueryTranslationPostprocessorFactory>()
             .TryAdd<IUpdateSqlGenerator, DuckDBUpdateSqlGenerator>()
+            .TryAdd<IValueGeneratorSelector, DuckDBValueGeneratorSelector>()
             .TryAdd<ISqlExpressionFactory, DuckDBSqlExpressionFactory>()
             .TryAdd<IRelationalParameterBasedSqlProcessorFactory, DuckDBParameterBasedSqlProcessorFactory>()
             .TryAdd<ISingletonOptions, IDuckDBSingletonOptions>(p => p.GetRequiredService<IDuckDBSingletonOptions>())
@@ -147,7 +150,9 @@ public static class DuckDBServiceCollectionExtensions
                 .TryAddScoped(p => ActivatorUtilities.CreateInstance<DuckDBStoreTypeInspector>(p))
                 .TryAddScoped<IDuckDBArchiveFileProbe, DuckDBArchiveFileProbe>()
                 .TryAddScoped<IDuckDBTierFailureInjector, DuckDBTierFailureInjector>()
-                .TryAddScoped<IDuckDBRelationalConnection, DuckDBRelationalConnection>());
+                .TryAddScoped<IDuckDBRelationalConnection, DuckDBRelationalConnection>()
+                .TryAddSingleton<DuckDBHiLoStateCache, DuckDBHiLoStateCache>()
+                .TryAddScoped<DuckDBHiLoBlockAllocator, DuckDBHiLoBlockAllocator>());
 
         builder.TryAddCoreServices();
 

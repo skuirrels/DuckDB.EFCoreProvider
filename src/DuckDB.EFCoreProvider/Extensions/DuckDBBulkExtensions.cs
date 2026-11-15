@@ -69,6 +69,7 @@ public static class DuckDBBulkExtensions
         try
         {
             var (entityType, table, schema) = ResolveTarget(context, typeof(TEntity));
+            entities = DuckDBClientKeyAssignment.Assign(context, entityType, entities);
             var dbConnection = context.Database.GetDbConnection();
             var openedHere = dbConnection.State != ConnectionState.Open;
 
@@ -163,6 +164,7 @@ public static class DuckDBBulkExtensions
         try
         {
             var (entityType, table, schema) = ResolveTarget(context, typeof(TEntity));
+            entities = DuckDBClientKeyAssignment.Assign(context, entityType, entities);
             var dbConnection = context.Database.GetDbConnection();
             var openedHere = dbConnection.State != ConnectionState.Open;
 
@@ -299,6 +301,54 @@ public static class DuckDBBulkExtensions
         return count;
     }
 
+    private static IEnumerable<TEntity> ReserveKeysInChunks<TEntity>(
+        DbConnection connection,
+        DuckDBBulkInsertPlan<TEntity> plan,
+        IEnumerable<TEntity> entities)
+        where TEntity : class
+    {
+        var chunk = new TEntity[KeyReservationChunkSize];
+        var buffered = 0;
+        foreach (var entity in entities)
+        {
+            chunk[buffered++] = entity;
+            if (buffered == chunk.Length)
+            {
+                foreach (var reserved in ReserveChunk(connection, plan, chunk, buffered))
+                {
+                    yield return reserved;
+                }
+
+                buffered = 0;
+            }
+        }
+
+        if (buffered > 0)
+        {
+            foreach (var reserved in ReserveChunk(connection, plan, chunk, buffered))
+            {
+                yield return reserved;
+            }
+        }
+    }
+
+    private static TEntity[] ReserveChunk<TEntity>(
+        DbConnection connection,
+        DuckDBBulkInsertPlan<TEntity> plan,
+        TEntity[] chunk,
+        int count)
+        where TEntity : class
+    {
+        foreach (var reservation in plan.KeyReservations)
+        {
+            reservation.Apply(connection, chunk, count);
+        }
+
+        var reserved = chunk[..count];
+        Array.Clear(chunk, 0, count);
+        return reserved;
+    }
+
     // Large enough that reservation queries are a small fraction of append time, small enough to keep the
     // buffered entity references bounded for streamed sources.
     private const int KeyReservationChunkSize = 8192;
@@ -330,6 +380,13 @@ public static class DuckDBBulkExtensions
             ExecuteDirect(
                 connection.InnerConnection,
                 $"CREATE TEMPORARY TABLE {delimitedTemporaryTable} AS SELECT {columns} FROM {delimitedTarget} WHERE false;");
+
+            // Generated keys are reserved from the remote column default, so the remote sequence advances exactly
+            // as an INSERT through SaveChanges would advance it.
+            if (plan.KeyReservations.Count > 0)
+            {
+                entities = ReserveKeysInChunks(connection, plan, entities);
+            }
 
             var count = 0;
             using (var appender = connection.InnerConnection.CreateAppender(temporaryTable))
