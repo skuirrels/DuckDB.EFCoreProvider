@@ -6,11 +6,11 @@ using System.Reflection;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
-public class AdHocQuerySplittingQueryDuckDBTest: AdHocQuerySplittingQueryTestBase
+public class AdHocQuerySplittingQueryDuckDBTest : AdHocQuerySplittingQueryTestBase
 {
     private static readonly FieldInfo _querySplittingBehaviorFieldInfo =
         typeof(RelationalOptionsExtension).GetField("_querySplittingBehavior", BindingFlags.NonPublic | BindingFlags.Instance)!;
-    
+
     public AdHocQuerySplittingQueryDuckDBTest(NonSharedFixture fixture) : base(fixture)
     {
     }

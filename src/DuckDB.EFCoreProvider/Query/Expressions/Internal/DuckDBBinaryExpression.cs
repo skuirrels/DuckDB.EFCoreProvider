@@ -60,7 +60,7 @@ public class DuckDBBinaryExpression : SqlExpression
     {
         var left = (SqlExpression)visitor.Visit(Left);
         var right = (SqlExpression)visitor.Visit(Right);
-        
+
         return Update(left, right);
     }
 

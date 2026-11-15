@@ -5,4 +5,3 @@
 /// Used to detect when SQL parameters need wrapping with ST_GeomFromWKB()/ST_GeomFromText().
 /// </summary>
 public interface IDuckDBGeometryTypeMapping;
-

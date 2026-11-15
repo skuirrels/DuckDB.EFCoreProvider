@@ -3,7 +3,7 @@ using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
-public class NorthwindKeylessEntitiesQueryDuckDBTest: NorthwindKeylessEntitiesQueryRelationalTestBase<NorthwindQueryDuckDBFixture<NoopModelCustomizer>>
+public class NorthwindKeylessEntitiesQueryDuckDBTest : NorthwindKeylessEntitiesQueryRelationalTestBase<NorthwindQueryDuckDBFixture<NoopModelCustomizer>>
 {
     public NorthwindKeylessEntitiesQueryDuckDBTest(NorthwindQueryDuckDBFixture<NoopModelCustomizer> fixture) : base(fixture)
     {

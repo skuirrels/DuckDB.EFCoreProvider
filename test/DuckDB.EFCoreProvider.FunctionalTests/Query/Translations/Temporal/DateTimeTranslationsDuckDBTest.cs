@@ -1,5 +1,5 @@
-﻿using Xunit;
-using System.Globalization;
+﻿using System.Globalization;
+using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Query.Translations.Temporal;
 

@@ -14,9 +14,9 @@ namespace DuckDB.EFCoreProvider.Storage.ValueConverters;
 /// </summary>
 public class DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TProviderCollection>
     : ValueConverter<TModelCollection, TProviderCollection>
-    where TModelCollection: IEnumerable
-    where TConcreteModelCollection: IEnumerable
-    where TProviderCollection: IEnumerable
+    where TModelCollection : IEnumerable
+    where TConcreteModelCollection : IEnumerable
+    where TProviderCollection : IEnumerable
 {
     public virtual ValueConverter? ElementConverter { get; }
 
@@ -50,7 +50,7 @@ public class DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TP
             {
                 throw new ArgumentException($"The element's value converter model type ({elementConverter.ModelClrType}) doesn't match the array's ({modelElementType})");
             }
-            
+
             if (providerElementType.UnwrapNullableType() != elementConverter.ProviderClrType.UnwrapNullableType())
             {
                 throw new ArgumentException($"The element's value converter provider type ({elementConverter.ProviderClrType}) doesn't match the array's ({providerElementType})");
@@ -65,7 +65,7 @@ public class DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TP
         var inputElementType = typeof(TInput).IsArray
             ? typeof(TInput).GetElementType()
             : typeof(TInput).TryGetElementType(typeof(IEnumerable<>));
-        
+
         var outputElementType = typeof(TOutput).IsArray
             ? typeof(TOutput).GetElementType()
             : typeof(TOutput).TryGetElementType(typeof(IEnumerable<>));
@@ -91,7 +91,7 @@ public class DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TP
                         outputElementType)),
                 p);
         }
-        
+
         var input = Parameter(typeof(TInput), "input");
         var convertedInput = input;
         var output = Parameter(typeof(TConcreteOutput), "result");
@@ -135,7 +135,7 @@ public class DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TP
                     indexer = i => Property(convertedInput, convertedInput.Type.FindIndexerProperty()!, i);
                     break;
                 }
-            
+
             default:
                 throw new NotSupportedException($"Array value converter input type must be an IEnumerable, but is {typeof(TInput)}");
         }
@@ -184,7 +184,7 @@ public class DuckDBArrayConverter<TModelCollection, TConcreteModelCollection, TP
 
             Assign(output, instantiateOutput)
         ]);
-        
+
         if (indexer is not null)
         {
             var counter = Parameter(typeof(int), "i");

@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Microsoft.EntityFrameworkCore;
 
-public class SpatialDuckDBFixture  : SpatialFixtureBase
+public class SpatialDuckDBFixture : SpatialFixtureBase
 {
     protected override ITestStoreFactory TestStoreFactory
         => SpatialDuckDBTestStoreFactory.Instance;

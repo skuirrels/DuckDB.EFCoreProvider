@@ -71,13 +71,13 @@ public class DuckDBRowValueTranslator : IMethodCallTranslator
 
         var leftCount = arguments[1] is DuckDBRowValueExpression leftRowValue
             ? leftRowValue.Values.Count
-            : arguments[1] is SqlConstantExpression { Value : ITuple leftTuple }
+            : arguments[1] is SqlConstantExpression { Value: ITuple leftTuple }
                 ? (int?)leftTuple.Length
                 : null;
 
         var rightCount = arguments[2] is DuckDBRowValueExpression rightRowValue
             ? rightRowValue.Values.Count
-            : arguments[2] is SqlConstantExpression { Value : ITuple rightTuple }
+            : arguments[2] is SqlConstantExpression { Value: ITuple rightTuple }
                 ? (int?)rightTuple.Length
                 : null;
 

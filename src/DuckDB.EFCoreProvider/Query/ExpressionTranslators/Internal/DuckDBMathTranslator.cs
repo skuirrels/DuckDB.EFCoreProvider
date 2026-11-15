@@ -101,10 +101,10 @@ public class DuckDBMathTranslator : IMethodCallTranslator
 
         { typeof(MathF).GetMethod(nameof(MathF.Tan), [typeof(float)])!, "tan" },
         { typeof(Math).GetMethod(nameof(Math.Tan), [typeof(double)])!, "tan" },
-        
+
         { typeof(MathF).GetMethod(nameof(MathF.Tanh), [typeof(float)])!, "tanh" },
         { typeof(Math).GetMethod(nameof(Math.Tanh), [typeof(double)])!, "tanh" },
-        
+
         { typeof(Math).GetMethod(nameof(Math.Truncate), [typeof(decimal)])!, "trunc" },
         { typeof(Math).GetMethod(nameof(Math.Truncate), [typeof(double)])!, "trunc" },
         { typeof(MathF).GetMethod(nameof(MathF.Truncate), [typeof(float)])!, "trunc" },

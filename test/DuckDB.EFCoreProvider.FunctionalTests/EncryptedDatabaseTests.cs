@@ -183,7 +183,8 @@ public sealed class EncryptedDatabaseTests : IDisposable
                     opened.SignalAndWait(timeout);
                     context?.Dispose();
                 }
-            }) { IsBackground = true })
+            })
+            { IsBackground = true })
             .ToArray();
 
         foreach (var worker in workers)

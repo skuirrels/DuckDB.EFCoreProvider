@@ -16,7 +16,7 @@ public class DuckDBQueryableAggregateMethodTranslator : IAggregateMethodCallTran
 {
     private readonly ISqlExpressionFactory _sqlExpressionFactory;
 
-    public DuckDBQueryableAggregateMethodTranslator(ISqlExpressionFactory sqlExpressionFactory) 
+    public DuckDBQueryableAggregateMethodTranslator(ISqlExpressionFactory sqlExpressionFactory)
     {
         _sqlExpressionFactory = sqlExpressionFactory;
     }

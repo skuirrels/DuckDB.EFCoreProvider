@@ -2,7 +2,7 @@
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
-public class TPCManyToManyQueryDuckDBFixture: TPCManyToManyQueryRelationalFixture
+public class TPCManyToManyQueryDuckDBFixture : TPCManyToManyQueryRelationalFixture
 {
     protected override ITestStoreFactory TestStoreFactory
         => DuckDBTestStoreFactory.Instance;

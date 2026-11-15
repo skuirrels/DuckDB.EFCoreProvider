@@ -6,6 +6,9 @@
     <!-- Release packages contain one EF line; ordinary development builds still compile both. -->
     <TargetFrameworks Condition="'$(DuckDBEFCoreMajorVersion)' == '10'">net10.0</TargetFrameworks>
     <TargetFrameworks Condition="'$(DuckDBEFCoreMajorVersion)' == '11'">net11.0</TargetFrameworks>
+    <!-- True when building the EF11 package line or its net11.0 target; projects select EF11 package IDs,
+         descriptions, baselines and EF Core versions with this one property. -->
+    <DuckDBIsEF11 Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">true</DuckDBIsEF11>
     <!-- dotnet test otherwise runs target frameworks concurrently against shared test resources. -->
     <TestTfmsInParallel>false</TestTfmsInParallel>
     <Nullable>enable</Nullable>

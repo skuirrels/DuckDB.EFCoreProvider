@@ -19,7 +19,7 @@ public class TPCFiltersInheritanceQueryDuckDBTest : TPCFiltersInheritanceQueryTe
     {
         return base.Can_use_IgnoreQueryFilters_and_GetDatabaseValues(async);
     }
-    
+
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Can_use_is_kiwi_in_projection(bool async)
     {

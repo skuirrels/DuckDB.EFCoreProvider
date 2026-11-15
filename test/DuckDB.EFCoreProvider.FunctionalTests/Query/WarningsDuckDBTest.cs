@@ -1,7 +1,7 @@
 ﻿
 namespace Microsoft.EntityFrameworkCore.Query;
 
-public class WarningsDuckDBTest: WarningsTestBase<QueryNoClientEvalDuckDBFixture>
+public class WarningsDuckDBTest : WarningsTestBase<QueryNoClientEvalDuckDBFixture>
 {
     public WarningsDuckDBTest(QueryNoClientEvalDuckDBFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture)
     {

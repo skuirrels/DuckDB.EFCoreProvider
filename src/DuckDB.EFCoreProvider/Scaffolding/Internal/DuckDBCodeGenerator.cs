@@ -1,9 +1,9 @@
-using System.Reflection;
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Scaffolding;
+using System.Reflection;
 
 namespace DuckDB.EFCoreProvider.Scaffolding.Internal;
 

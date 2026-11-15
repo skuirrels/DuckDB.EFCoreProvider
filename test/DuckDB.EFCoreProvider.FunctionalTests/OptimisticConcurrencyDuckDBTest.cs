@@ -94,7 +94,7 @@ public class OptimisticConcurrencyDuckDBTest(F1DuckDBFixture fixture)
     {
         await base.Deleting_then_updating_the_same_entity_results_in_DbUpdateConcurrencyException_which_can_be_resolved_with_store_values();
     }
-    
+
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override void Nullable_client_side_concurrency_token_can_be_used()
     {

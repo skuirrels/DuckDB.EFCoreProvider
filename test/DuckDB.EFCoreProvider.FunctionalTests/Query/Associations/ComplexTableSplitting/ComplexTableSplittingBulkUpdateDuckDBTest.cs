@@ -2,7 +2,7 @@
 
 namespace Microsoft.EntityFrameworkCore.Query.Associations.ComplexTableSplitting;
 
-public class ComplexTableSplittingBulkUpdateDuckDBTest: ComplexTableSplittingBulkUpdateRelationalTestBase<ComplexTableSplittingDuckDBFixture>
+public class ComplexTableSplittingBulkUpdateDuckDBTest : ComplexTableSplittingBulkUpdateRelationalTestBase<ComplexTableSplittingDuckDBFixture>
 {
     public ComplexTableSplittingBulkUpdateDuckDBTest(ComplexTableSplittingDuckDBFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
     {

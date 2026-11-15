@@ -2,7 +2,7 @@
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
-public class OptionalDependentQueryDuckDBTest: OptionalDependentQueryTestBase<OptionalDependentQueryDuckDBFixture>
+public class OptionalDependentQueryDuckDBTest : OptionalDependentQueryTestBase<OptionalDependentQueryDuckDBFixture>
 {
     public OptionalDependentQueryDuckDBTest(OptionalDependentQueryDuckDBFixture fixture) : base(fixture)
     {

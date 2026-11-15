@@ -1,7 +1,7 @@
-using System.Reflection;
 using DuckDB.EFCoreProvider.Scaffolding.Internal;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Scaffolding;
+using System.Reflection;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Scaffolding;

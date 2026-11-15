@@ -3,10 +3,10 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <EFCoreVersion>10.0.10</EFCoreVersion>
-    <EFCoreVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">11.0.0</EFCoreVersion>
+    <EFCoreVersion Condition="'$(DuckDBIsEF11)' == 'true'">11.0.0</EFCoreVersion>
     <!-- Allow EF servicing patches only within each supported major version. -->
     <EFCorePackageVersion>[10.0.10,10.1.0)</EFCorePackageVersion>
-    <EFCorePackageVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">[$(EFCoreVersion),11.1.0)</EFCorePackageVersion>
+    <EFCorePackageVersion Condition="'$(DuckDBIsEF11)' == 'true'">[$(EFCoreVersion),11.1.0)</EFCorePackageVersion>
   </PropertyGroup>
 
   <ItemGroup>

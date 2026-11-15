@@ -1,5 +1,5 @@
-﻿using System.Runtime.CompilerServices;
-using Microsoft.EntityFrameworkCore.TestUtilities;
+﻿using Microsoft.EntityFrameworkCore.TestUtilities;
+using System.Runtime.CompilerServices;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Scaffolding;
