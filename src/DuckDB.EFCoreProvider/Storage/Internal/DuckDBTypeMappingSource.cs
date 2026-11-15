@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 
@@ -154,8 +155,12 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
     protected override RelationalTypeMapping? FindMapping(in RelationalTypeMappingInfo mappingInfo)
     {
         var mapping = base.FindMapping(mappingInfo)
-                      ?? FindRawMapping(mappingInfo)?.Clone(mappingInfo)
-                      ?? FindRowValueMapping(mappingInfo)?.Clone(mappingInfo);
+                      ?? (IsMapMappingRequest(mappingInfo)
+                          ? FindMapMapping(mappingInfo)
+                          : IsStoreTypeOnlyListRequest(mappingInfo)
+                              ? FindCollectionMapping(mappingInfo.StoreTypeName!.Trim(), null, null, null)
+                              : FindRawMapping(mappingInfo)?.Clone(mappingInfo)
+                                ?? FindRowValueMapping(mappingInfo)?.Clone(mappingInfo));
 
         return mapping != null && mappingInfo.StoreTypeName != null
             ? mapping.WithStoreTypeAndSize(mappingInfo.StoreTypeName, null)
@@ -226,7 +231,7 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
                     }
 
                     var relationalElementMapping = elementMapping as RelationalTypeMapping ?? FindMapping(elementType);
-                    if (relationalElementMapping is not { ElementTypeMapping: null })
+                    if (!IsListElementMapping(relationalElementMapping))
                     {
                         return null;
                     }
@@ -246,30 +251,25 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
                         ?? (elementType is null
                             ? FindMapping(elementStoreType)
                             : FindMapping(elementType, elementStoreType));
-                    if (relationalElementMapping is not { ElementTypeMapping: null })
+                    if (!IsListElementMapping(relationalElementMapping))
                     {
                         return null;
                     }
 
-                    if (relationalElementMapping is not null and not DuckDBArrayTypeMapping)
+                    if (modelClrType is null)
                     {
-                        if (modelClrType is null)
-                        {
-                            elementType = relationalElementMapping.ClrType;
-                            modelClrType = concreteCollectionType = typeof(List<>).MakeGenericType(elementType);
-                        }
-                        else
-                        {
-                            concreteCollectionType = FindTypeToInstantiate(modelClrType, elementType!);
-                            Debug.Assert(elementType is not null, "elementType is null");
-                        }
-
-                        return (DuckDBArrayTypeMapping)Activator.CreateInstance(
-                            typeof(DuckDBArrayTypeMapping<,,>).MakeGenericType(modelClrType, concreteCollectionType, elementType),
-                            storeType, relationalElementMapping)!;
+                        elementType = relationalElementMapping.ClrType;
+                        modelClrType = concreteCollectionType = typeof(List<>).MakeGenericType(elementType);
+                    }
+                    else
+                    {
+                        concreteCollectionType = FindTypeToInstantiate(modelClrType, elementType!);
+                        Debug.Assert(elementType is not null, "elementType is null");
                     }
 
-                    return null;
+                    return (DuckDBArrayTypeMapping)Activator.CreateInstance(
+                        typeof(DuckDBArrayTypeMapping<,,>).MakeGenericType(modelClrType, concreteCollectionType, elementType),
+                        storeType, relationalElementMapping)!;
                 }
 
 #pragma warning disable EF1001 // SelectExpression constructors are pubternal
@@ -286,6 +286,12 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
             default:
                 return null;
         }
+
+        // A LIST element is either a scalar mapping or another native LIST, which gives nested lists such as
+        // INTEGER[][]. JSON collections and MAP values cannot be bound as list elements by DuckDB.NET.
+        static bool IsListElementMapping([NotNullWhen(true)] RelationalTypeMapping? mapping)
+            => mapping is { ElementTypeMapping: null } and not DuckDBMapTypeMapping
+                || mapping is DuckDBArrayTypeMapping { ElementTypeMapping: var nested } && IsListElementMapping(nested);
 
         static Type FindTypeToInstantiate(Type collectionType, Type elementType)
         {
@@ -312,6 +318,156 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
 
             return collectionType;
         }
+    }
+
+    // A MAP store type never falls through to the affinity rules, which would otherwise match MAP(VARCHAR, INTEGER)
+    // as an integer.
+    private static bool IsMapMappingRequest(in RelationalTypeMappingInfo mappingInfo)
+        => mappingInfo.StoreTypeName is { } storeTypeName
+            ? TryParseMapStoreType(storeTypeName, out _, out _)
+                || string.Equals(mappingInfo.StoreTypeNameBase, "MAP", StringComparison.OrdinalIgnoreCase)
+            : mappingInfo.ClrType is { } clrType && TryGetMapEntryTypes(clrType, out _, out _);
+
+    // Without a CLR type, a LIST store type such as INTEGER[] must resolve as a list rather than reach the affinity
+    // rules, which would match its element name and return the scalar mapping.
+    private static bool IsStoreTypeOnlyListRequest(in RelationalTypeMappingInfo mappingInfo)
+        => mappingInfo.ClrType is null
+            && mappingInfo.StoreTypeName?.TrimEnd().EndsWith("[]", StringComparison.Ordinal) == true;
+
+    private RelationalTypeMapping? FindMapMapping(in RelationalTypeMappingInfo mappingInfo)
+    {
+        var clrType = mappingInfo.ClrType;
+        Type? keyClrType = null;
+        Type? valueClrType = null;
+        if (clrType is not null && !TryGetMapEntryTypes(clrType, out keyClrType, out valueClrType))
+        {
+            return null;
+        }
+
+        string? keyStoreType = null;
+        string? valueStoreType = null;
+        if (mappingInfo.StoreTypeName is { } storeTypeName
+            && !TryParseMapStoreType(storeTypeName, out keyStoreType, out valueStoreType))
+        {
+            return null;
+        }
+
+        // DuckDB MAP keys are never NULL, so a nullable key type has no faithful mapping.
+        if (keyClrType?.IsNullableValueType() == true)
+        {
+            return null;
+        }
+
+        var keyMapping = FindMapEntryMapping(keyClrType, keyStoreType);
+        var valueMapping = FindMapEntryMapping(valueClrType, valueStoreType);
+        if (keyMapping is null || valueMapping is null)
+        {
+            return null;
+        }
+
+        keyClrType ??= keyMapping.ClrType;
+
+        // A store-type-only lookup, as used by scaffolding, cannot know the values are non-null.
+        valueClrType ??= valueMapping.ClrType.MakeNullable();
+        clrType ??= typeof(Dictionary<,>).MakeGenericType(keyClrType, valueClrType);
+
+        return (RelationalTypeMapping)Activator.CreateInstance(
+            typeof(DuckDBMapTypeMapping<,,>).MakeGenericType(clrType, keyClrType, valueClrType),
+            mappingInfo.StoreTypeName ?? DuckDBMapTypeMapping.CreateStoreType(keyMapping, valueMapping),
+            keyMapping,
+            valueMapping)!;
+    }
+
+    private RelationalTypeMapping? FindMapEntryMapping(Type? clrType, string? storeType)
+    {
+        var mapping = (clrType, storeType) switch
+        {
+            (null, null) => null,
+            (null, not null) => FindMapping(storeType),
+            (not null, null) => FindMapping(clrType),
+            _ => FindMapping(clrType, storeType)
+        };
+
+        return mapping is { ElementTypeMapping: null } and not DuckDBMapTypeMapping
+            && DuckDBMapText.IsSupportedElementType(mapping.Converter?.ProviderClrType ?? mapping.ClrType)
+                ? mapping
+                : null;
+    }
+
+    private static bool TryGetMapEntryTypes(
+        Type clrType,
+        [NotNullWhen(true)] out Type? keyType,
+        [NotNullWhen(true)] out Type? valueType)
+    {
+        if (clrType.IsGenericType
+            && clrType.GetGenericTypeDefinition() is var definition
+            && (definition == typeof(Dictionary<,>)
+                || definition == typeof(IDictionary<,>)
+                || definition == typeof(IReadOnlyDictionary<,>)))
+        {
+            var arguments = clrType.GetGenericArguments();
+            keyType = arguments[0];
+            valueType = arguments[1];
+            return true;
+        }
+
+        keyType = null;
+        valueType = null;
+        return false;
+    }
+
+    internal static bool TryParseMapStoreType(
+        string storeType,
+        [NotNullWhen(true)] out string? keyStoreType,
+        [NotNullWhen(true)] out string? valueStoreType)
+    {
+        keyStoreType = null;
+        valueStoreType = null;
+
+        var trimmed = storeType.Trim();
+        if (!trimmed.StartsWith("MAP", StringComparison.OrdinalIgnoreCase) || !trimmed.EndsWith(')'))
+        {
+            return false;
+        }
+
+        var open = trimmed.IndexOf('(');
+        if (open < 0 || !string.IsNullOrWhiteSpace(trimmed[3..open]))
+        {
+            return false;
+        }
+
+        // Split at the single top-level comma; DECIMAL(18, 2) and nested types keep their own commas.
+        var inner = trimmed[(open + 1)..^1];
+        var depth = 0;
+        var separator = -1;
+        for (var i = 0; i < inner.Length; i++)
+        {
+            switch (inner[i])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')' when --depth < 0:
+                    return false;
+                case ',' when depth == 0:
+                    if (separator >= 0)
+                    {
+                        return false;
+                    }
+
+                    separator = i;
+                    break;
+            }
+        }
+
+        if (depth != 0 || separator < 0)
+        {
+            return false;
+        }
+
+        keyStoreType = inner[..separator].Trim();
+        valueStoreType = inner[(separator + 1)..].Trim();
+        return keyStoreType.Length > 0 && valueStoreType.Length > 0;
     }
 
     protected virtual RelationalTypeMapping? FindRowValueMapping(in RelationalTypeMappingInfo mappingInfo)

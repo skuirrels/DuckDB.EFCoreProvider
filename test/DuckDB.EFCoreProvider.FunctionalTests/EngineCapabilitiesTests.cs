@@ -36,6 +36,21 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Quack_profile_reserves_bulk_keys_remotely_and_leaves_hilo_to_sequences()
+    {
+        var options = new DbContextOptionsBuilder<CapabilityContext>()
+            .UseQuack("quack:localhost:9494", "secret-token")
+            .Options;
+        using var context = new CapabilityContext(options);
+        var capabilities = context.GetService<IDuckDBEngineCapabilities>();
+
+        Assert.True(capabilities.SupportsSequences);
+        Assert.True(capabilities.SupportsRemoteBulkInsert);
+        Assert.True(capabilities.SupportsBulkInsertKeyReservation);
+        Assert.False(capabilities.SupportsHiLoKeyGeneration);
+    }
+
+    [ConditionalFact]
     public void Scoped_batching_options_reuse_the_internal_service_provider()
     {
         using var defaultContext = new CapabilityContext(FileOptions<CapabilityContext>());
@@ -513,6 +528,7 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.Equal(supported, capabilities.SupportsDatabaseDeletion);
         Assert.True(capabilities.SupportsMultipleStatementsPerCommand);
         Assert.Equal(supported, capabilities.SupportsBulkInsertKeyReservation);
+        Assert.True(capabilities.SupportsHiLoKeyGeneration);
         Assert.Equal(
             supported ? DuckDBUpsertStrategy.InsertOnConflict : DuckDBUpsertStrategy.Merge,
             capabilities.UpsertStrategy);

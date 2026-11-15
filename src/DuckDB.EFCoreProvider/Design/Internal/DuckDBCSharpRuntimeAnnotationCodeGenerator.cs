@@ -1,7 +1,10 @@
 ﻿using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
+using DuckDB.EFCoreProvider.Storage.Internal;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Design.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DuckDB.EFCoreProvider.Design.Internal;
 
@@ -18,6 +21,71 @@ public class DuckDBCSharpRuntimeAnnotationCodeGenerator : RelationalCSharpRuntim
         RelationalCSharpRuntimeAnnotationCodeGeneratorDependencies relationalDependencies)
         : base(dependencies, relationalDependencies)
     {
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    ///     MAP and LIST mappings are rebuilt from their constructors and child mappings. <c>Default.Clone(...)</c>
+    ///     cannot carry a MAP's key and value mappings, and EF cannot render a LIST converter's looping expression
+    ///     tree as C#, so the constructor recreates the converter and comparer instead.
+    /// </remarks>
+#if NET11_0_OR_GREATER
+    public override bool Create(CoreTypeMapping typeMapping, CSharpRuntimeAnnotationCodeGeneratorParameters parameters)
+        => TryGetChildMappings(typeMapping, out var childMappings)
+            ? CreateFromConstructor((RelationalTypeMapping)typeMapping, childMappings, parameters)
+            : base.Create(typeMapping, parameters);
+#else
+    // A comparer configured on the property is emitted with the property itself, so the rebuilt mapping can keep
+    // the comparers its constructor creates.
+    public override bool Create(
+        CoreTypeMapping typeMapping,
+        CSharpRuntimeAnnotationCodeGeneratorParameters parameters,
+        ValueComparer? valueComparer = null,
+        ValueComparer? keyValueComparer = null,
+        ValueComparer? providerValueComparer = null)
+        => TryGetChildMappings(typeMapping, out var childMappings)
+            ? CreateFromConstructor((RelationalTypeMapping)typeMapping, childMappings, parameters)
+            : base.Create(typeMapping, parameters, valueComparer, keyValueComparer, providerValueComparer);
+#endif
+
+    private static bool TryGetChildMappings(
+        CoreTypeMapping typeMapping,
+        out IReadOnlyList<RelationalTypeMapping> childMappings)
+    {
+        childMappings = typeMapping switch
+        {
+            DuckDBMapTypeMapping mapMapping => [mapMapping.KeyTypeMapping, mapMapping.ValueTypeMapping],
+            DuckDBArrayTypeMapping listMapping => [listMapping.ElementTypeMapping],
+            _ => []
+        };
+        return childMappings.Count > 0;
+    }
+
+    private bool CreateFromConstructor(
+        RelationalTypeMapping typeMapping,
+        IReadOnlyList<RelationalTypeMapping> childMappings,
+        CSharpRuntimeAnnotationCodeGeneratorParameters parameters)
+    {
+        var code = Dependencies.CSharpHelper;
+        AddNamespace(typeMapping.GetType(), parameters.Namespaces);
+        parameters.MainBuilder
+            .Append("new ")
+            .Append(code.Reference(typeMapping.GetType()))
+            .AppendLine("(")
+            .IncrementIndent()
+            .Append(code.Literal(typeMapping.StoreType));
+
+        var created = true;
+        foreach (var childMapping in childMappings)
+        {
+            parameters.MainBuilder.AppendLine(",");
+            created &= Create(childMapping, parameters);
+        }
+
+        parameters.MainBuilder
+            .Append(")")
+            .DecrementIndent();
+        return created;
     }
 
     public override void Generate(IModel model, CSharpRuntimeAnnotationCodeGeneratorParameters parameters)

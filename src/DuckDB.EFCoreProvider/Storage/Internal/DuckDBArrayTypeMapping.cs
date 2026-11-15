@@ -97,6 +97,10 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
                     typeof(TCollection), typeof(TConcreteCollection), typeof(List<>).MakeGenericType(elementType)))!;
         }
 
+        var elementComparer = elementMapping is DuckDBArrayTypeMapping
+            ? CreateNestedListComparer(elementType, elementMapping.Comparer)
+            : elementMapping.Comparer;
+
 #pragma warning disable EF1001
         var comparer = typeof(TCollection).IsArray && typeof(TCollection).GetArrayRank() > 1
             // Multidimensional arrays have no element value comparer here, so change tracking compares them by
@@ -109,7 +113,7 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
                     : elementType.IsValueType
                         ? typeof(ListOfValueTypesComparer<,>).MakeGenericType(typeof(TConcreteCollection), elementType)
                         : typeof(ListOfReferenceTypesComparer<,>).MakeGenericType(typeof(TConcreteCollection), elementType),
-                elementMapping.Comparer.ToNullableComparer(elementType)!);
+                elementComparer.ToNullableComparer(elementType)!);
 #pragma warning restore EF1001
 
         var elementJsonReaderWriter = elementMapping.JsonValueReaderWriter;
@@ -137,6 +141,11 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
                 jsonValueReaderWriter: collectionJsonReaderWriter),
             storeType);
     }
+
+    private static ValueComparer CreateNestedListComparer(Type elementType, ValueComparer listComparer)
+        => (ValueComparer)Activator.CreateInstance(
+            typeof(DuckDBNestedListElementComparer<>).MakeGenericType(elementType),
+            listComparer)!;
 
     protected DuckDBArrayTypeMapping(RelationalTypeMappingParameters parameters) : base(parameters)
     {

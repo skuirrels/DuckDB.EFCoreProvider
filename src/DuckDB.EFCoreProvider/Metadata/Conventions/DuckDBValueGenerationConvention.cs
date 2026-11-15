@@ -109,6 +109,8 @@ public class DuckDBValueGenerationConvention :
         IConventionModelBuilder modelBuilder,
         IConventionContext<IConventionModelBuilder> context)
     {
+        var useHiLo = modelBuilder.Metadata[DuckDBAnnotationNames.ValueGenerationStrategy]
+            is DuckDBValueGenerationStrategy.HiLo;
         foreach (var entityType in modelBuilder.Metadata.GetEntityTypes())
         {
             foreach (var property in entityType.GetDeclaredProperties())
@@ -116,6 +118,14 @@ public class DuckDBValueGenerationConvention :
                 var annotation = property.FindAnnotation(DuckDBAnnotationNames.ValueGenerationStrategy);
                 if (annotation?.Value != null)
                 {
+                    MaterializeHiLoConfiguration(property);
+                    continue;
+                }
+
+                if (useHiLo && IsHiLoCandidate(property))
+                {
+                    property.SetValueGenerationStrategy(DuckDBValueGenerationStrategy.HiLo);
+                    MaterializeHiLoConfiguration(property);
                     continue;
                 }
 
@@ -146,6 +156,30 @@ public class DuckDBValueGenerationConvention :
             }
         }
     }
+
+    // Records the effective counter table and block size on the property, so a compiled model, which does not keep
+    // the model-level defaults, generates from the same counter.
+    private static void MaterializeHiLoConfiguration(IConventionProperty property)
+    {
+        if (property.GetValueGenerationStrategy() != DuckDBValueGenerationStrategy.HiLo)
+        {
+            return;
+        }
+
+        property.Builder.HasAnnotation(DuckDBAnnotationNames.HiLoTableName, property.GetHiLoTableName());
+        property.Builder.HasAnnotation(DuckDBAnnotationNames.HiLoBlockSize, property.GetHiLoBlockSize());
+    }
+
+    // The same keys a sequence would generate on native DuckDB: generated on add, integer, and with no converter,
+    // default, computed SQL, or custom generator of their own.
+    private static bool IsHiLoCandidate(IConventionProperty property)
+        => property.ValueGenerated == ValueGenerated.OnAdd
+            && DuckDBValueGenerationStrategyCompatibility.IsAutoIncrementCompatible(property.ClrType)
+            && !HasConverter(property)
+            && property.GetValueGeneratorFactory() is null
+            && property.FindAnnotation(RelationalAnnotationNames.DefaultValue) == null
+            && property.FindAnnotation(RelationalAnnotationNames.DefaultValueSql) == null
+            && property.FindAnnotation(RelationalAnnotationNames.ComputedColumnSql) == null;
 
     private static DuckDBValueGenerationStrategy GetValueGenerationStrategy(IConventionProperty property)
         => property.GetValueGenerationStrategy();

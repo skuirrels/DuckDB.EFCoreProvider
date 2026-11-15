@@ -11,6 +11,18 @@ public class DuckDBModelBuilderTestBase : RelationalModelBuilderTest
     public abstract class DuckDBNonRelationship(DuckDBModelBuilderFixture fixture)
         : RelationalNonRelationshipTestBase(fixture), IClassFixture<DuckDBModelBuilderFixture>
     {
+        // EF's relational providers cannot map a dictionary property; DuckDB maps it to a native MAP column.
+        [ConditionalFact]
+        protected override void Throws_for_int_keyed_dictionary()
+        {
+            var modelBuilder = CreateModelBuilder();
+
+            modelBuilder.Entity<IntDict>();
+
+            var property = modelBuilder.FinalizeModel().FindEntityType(typeof(IntDict))!.FindProperty(nameof(IntDict.Notes))!;
+            Assert.Equal("MAP(INTEGER, VARCHAR)", property.GetColumnType());
+        }
+
         [ConditionalFact]
         public void UseAutoincrement_sets_value_generation_strategy()
         {

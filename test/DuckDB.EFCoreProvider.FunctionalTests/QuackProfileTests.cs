@@ -470,6 +470,59 @@ public sealed class QuackProfileTests : DuckDBTestBase
                 .SingleAsync());
     }
 
+    [QuackIntegrationFact]
+    public async Task Quack_bulk_insert_reserves_generated_keys_from_the_remote_sequence()
+    {
+        var extensionPath = Environment.GetEnvironmentVariable("DUCKDB_QUACK_EXTENSION_PATH")!;
+        var port = Environment.GetEnvironmentVariable("DUCKDB_QUACK_TEST_PORT") ?? "19494";
+        var endpoint = $"quack:localhost:{port}";
+        var serverOptions = new DbContextOptionsBuilder<QuackDimensionContext>()
+            .UseDuckDB(
+                $"Data Source={DbPath};allow_unsigned_extensions=true",
+                duckDb => duckDb.LoadExtension("httpfs"))
+            .Options;
+
+        await using var serverContext = new QuackDimensionContext(serverOptions);
+        await using var server = await serverContext.Database.StartQuackServerAsync(new DuckDBQuackServerOptions
+        {
+            Uri = endpoint,
+            Token = "integration-token",
+            DisableSsl = true,
+            ExtensionPath = extensionPath
+        });
+
+        await using var client = new QuackDimensionContext(
+            new DbContextOptionsBuilder<QuackDimensionContext>()
+                .UseDuckDB(
+                    "Data Source=:memory:;allow_unsigned_extensions=true",
+                    duckDb => duckDb.UseQuack(
+                        endpoint,
+                        "integration-token",
+                        quack => quack.DisableSsl().ExtensionPath(extensionPath)))
+                .Options);
+        Assert.True(await client.Database.EnsureCreatedAsync());
+
+        var bulk = new[]
+        {
+            new QuackDimension { Code = "A", Name = "alpha", LiteralDefault = "x", CorrelationId = Guid.NewGuid() },
+            new QuackDimension { Code = "B", Name = "beta", LiteralDefault = "x", CorrelationId = Guid.NewGuid() },
+            new QuackDimension { Id = 1000, Code = "C", Name = "explicit", LiteralDefault = "x", CorrelationId = Guid.NewGuid() }
+        };
+        Assert.Equal(3, await client.BulkInsertAsync(bulk));
+        Assert.True(bulk[0].Id > 0);
+        Assert.Equal(bulk[0].Id + 1, bulk[1].Id);
+        Assert.Equal(1000, bulk[2].Id);
+
+        // SaveChanges draws from the same remote sequence, so it continues after the reserved keys.
+        var tracked = new QuackDimension { Code = "D", Name = "delta" };
+        client.Add(tracked);
+        await client.SaveChangesAsync();
+        Assert.Equal(bulk[1].Id + 1, tracked.Id);
+
+        var stored = await client.Dimensions.AsNoTracking().ToDictionaryAsync(dimension => dimension.Code);
+        Assert.All(bulk.Append(tracked), dimension => Assert.Equal(stored[dimension.Code].Id, dimension.Id));
+    }
+
     [ConditionalFact]
     public void UseQuack_is_opt_in_and_does_not_change_native_connection_path()
     {
@@ -486,7 +539,8 @@ public sealed class QuackProfileTests : DuckDBTestBase
         var remoteCapabilities = remote.GetService<IDuckDBEngineCapabilities>();
         Assert.True(remoteCapabilities.SupportsRemoteCommandExecution);
         Assert.True(remoteCapabilities.SupportsRemoteBulkInsert);
-        Assert.False(remoteCapabilities.SupportsBulkInsertKeyReservation);
+        Assert.True(remoteCapabilities.SupportsBulkInsertKeyReservation);
+        Assert.False(remoteCapabilities.SupportsHiLoKeyGeneration);
         Assert.True(remoteCapabilities.SupportsSequences);
         Assert.True(remoteCapabilities.SupportsGeneratedColumns);
         Assert.True(remoteCapabilities.SupportsSqlDefaultExpressions);

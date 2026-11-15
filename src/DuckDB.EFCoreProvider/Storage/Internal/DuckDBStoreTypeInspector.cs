@@ -60,6 +60,18 @@ internal sealed class DuckDBStoreTypeInspector(IRelationalTypeMappingSource type
                 null);
         }
 
+        // A MAP whose key and value types both have scalar mappings is an EF dictionary property; any other MAP
+        // can still be read through the raw reader.
+        if (DuckDBTypeMappingSource.TryParseMapStoreType(storeType, out _, out _)
+            && typeMappingSource.FindMapping(storeType) is DuckDBMapTypeMapping mapMapping)
+        {
+            return new DuckDBStoreTypeMappingInfo(
+                mapMapping.StoreType,
+                DuckDBStoreTypeSupport.ScalarProperty,
+                mapMapping.ClrType,
+                mapMapping.GetType().Name);
+        }
+
         if (RawReaderTypes.Contains(baseType))
         {
             return new DuckDBStoreTypeMappingInfo(

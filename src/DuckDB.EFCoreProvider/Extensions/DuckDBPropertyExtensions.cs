@@ -74,6 +74,54 @@ public static class DuckDBPropertyExtensions
         return value;
     }
 
+    /// <summary>
+    ///     The default counter table for Hi-Lo key generation.
+    /// </summary>
+    public const string DefaultHiLoTableName = "__EFHiLo";
+
+    /// <summary>
+    ///     The default number of key values reserved per Hi-Lo block.
+    /// </summary>
+    public const int DefaultHiLoBlockSize = 100;
+
+    /// <summary>
+    ///     Returns the counter table that reserves Hi-Lo key blocks for this property, falling back to the model
+    ///     default and then <see cref="DefaultHiLoTableName" />.
+    /// </summary>
+    /// <param name="property">The property.</param>
+    /// <returns>The counter table name.</returns>
+    public static string GetHiLoTableName(this IReadOnlyProperty property)
+        => property[DuckDBAnnotationNames.HiLoTableName] as string
+            ?? property.DeclaringType.Model[DuckDBAnnotationNames.HiLoTableName] as string
+            ?? DefaultHiLoTableName;
+
+    /// <summary>
+    ///     Returns the number of key values each Hi-Lo block reserves for this property, falling back to the model
+    ///     default and then <see cref="DefaultHiLoBlockSize" />.
+    /// </summary>
+    /// <param name="property">The property.</param>
+    /// <returns>The block size.</returns>
+    public static int GetHiLoBlockSize(this IReadOnlyProperty property)
+        => property[DuckDBAnnotationNames.HiLoBlockSize] as int?
+            ?? property.DeclaringType.Model[DuckDBAnnotationNames.HiLoBlockSize] as int?
+            ?? DefaultHiLoBlockSize;
+
+    /// <summary>
+    ///     Sets the counter table that reserves Hi-Lo key blocks for this property.
+    /// </summary>
+    /// <param name="property">The property.</param>
+    /// <param name="tableName">The counter table name, or <see langword="null" /> to use the default.</param>
+    public static void SetHiLoTableName(this IMutableProperty property, string? tableName)
+        => property.SetOrRemoveAnnotation(DuckDBAnnotationNames.HiLoTableName, tableName);
+
+    /// <summary>
+    ///     Sets the number of key values each Hi-Lo block reserves for this property.
+    /// </summary>
+    /// <param name="property">The property.</param>
+    /// <param name="blockSize">The block size, or <see langword="null" /> to use the default.</param>
+    public static void SetHiLoBlockSize(this IMutableProperty property, int? blockSize)
+        => property.SetOrRemoveAnnotation(DuckDBAnnotationNames.HiLoBlockSize, blockSize);
+
     public static void SetValueGenerationStrategy(
         this IMutableRelationalPropertyOverrides overrides,
         DuckDBValueGenerationStrategy? value)

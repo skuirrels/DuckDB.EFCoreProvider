@@ -56,7 +56,9 @@ public sealed class StoreTypeMappingTests : DuckDBTestBase
     [InlineData("INTEGER[]", DuckDBStoreTypeSupport.ScalarProperty, typeof(List<int>))]
     [InlineData("INTEGER[3]", DuckDBStoreTypeSupport.RawReaderOnly, null)]
     [InlineData("STRUCT(name VARCHAR)", DuckDBStoreTypeSupport.ComplexProperty, null)]
-    [InlineData("MAP(VARCHAR, INTEGER)", DuckDBStoreTypeSupport.RawReaderOnly, null)]
+    [InlineData("MAP(VARCHAR, INTEGER)", DuckDBStoreTypeSupport.ScalarProperty, typeof(Dictionary<string, int?>))]
+    [InlineData("MAP(VARCHAR, BLOB)", DuckDBStoreTypeSupport.RawReaderOnly, null)]
+    [InlineData("INTEGER[][]", DuckDBStoreTypeSupport.ScalarProperty, typeof(List<List<int>>))]
     [InlineData("HUGEINT", DuckDBStoreTypeSupport.RawReaderOnly, null)]
     [InlineData("NOT_A_DUCKDB_TYPE", DuckDBStoreTypeSupport.Unsupported, null)]
     public void Public_inspection_distinguishes_model_raw_and_unsupported_contracts(

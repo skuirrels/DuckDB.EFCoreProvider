@@ -2,6 +2,7 @@
 using DuckDB.EFCoreProvider.Extensions.Internal;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Internal;
+using DuckDB.EFCoreProvider.ValueGeneration.Internal;
 using DuckDB.NET.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -306,6 +307,13 @@ public class DuckDBDatabaseCreator : RelationalDatabaseCreator
     public override void Delete()
     {
         ThrowIfDatabaseDeletionUnsupported();
+
+        // A recreated database starts a new Hi-Lo counter, so blocks reserved from the deleted one must not be reused.
+        var context = Dependencies.CurrentContext.Context;
+        context.GetService<DuckDBHiLoStateCache>().Reset(
+            DuckDBHiLoStateCache.GetDatabaseIdentity(
+                context.GetService<IDbContextOptions>(),
+                Dependencies.Connection.ConnectionString));
 
         if (_encryptedDatabase is not null)
         {
