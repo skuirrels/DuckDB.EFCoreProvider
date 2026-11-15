@@ -2,7 +2,7 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
-## Unreleased
+## 1.32.0
 
 - With `EnableRetryOnFailure()`, `BulkInsert`, `BulkInsertAsync`, `Upsert` and `UpsertAsync` called outside a
   transaction are now retried after a write-write conflict. Each attempt runs in a provider-owned transaction, so
