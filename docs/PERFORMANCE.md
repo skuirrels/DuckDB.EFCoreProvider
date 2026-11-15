@@ -18,6 +18,9 @@ dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks
 # referenced-principal update regression
 dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *ReferencedPrincipalUpdateBenchmarks*
 
+# consumer-style aggregate upsert with optional orphan reconciliation
+dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter *AggregateReconciliationBenchmarks*
+
 # provider allocation, adaptive width, connection, Upsert, and tier-query regressions
 dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks -- --filter \
   '*AllocationBenchmarks*' '*HotPathReviewBenchmarks*' '*SaveChangesWidthBenchmarks*' \
@@ -42,6 +45,10 @@ dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks
   target grows from 10,000 to 1,000,000 rows.
 - `UpsertMillionRowBenchmarks` — one million alternate-key Upsert inputs against a one-million-row indexed target,
   with deterministic setup, database cloning, and result verification outside the timed operation.
+- `AggregateReconciliationBenchmarks` — consumer-style tracked upsert of roots and four sub-aggregate kinds,
+  compared with the same upsert followed by the consumer's query, set-difference, and 100-key `ExecuteDelete`
+  orphan reconciliation. It explicitly measures application-owned deletion work; raw provider `Upsert` does not
+  infer or remove absent related rows.
 - `TieredCatalogueScaleBenchmarks` — tier catalogue, regeneration, pruning, and scoped-query costs.
 - `CommandPlanExtractionBenchmarks`, `ParameterPathBenchmarks`, `SaveChangesParameterBenchmarks`, and
   `SqlGenerationPathBenchmarks` — regression coverage for scalar terminal command extraction, provider command-plan
@@ -49,6 +56,29 @@ dotnet run -f net10.0 -c Release --project test/DuckDB.EFCoreProvider.Benchmarks
 
 The implementation comparison for these provider improvements is recorded in
 [`PROVIDER-PERFORMANCE-IMPROVEMENTS-2026-08.md`](PROVIDER-PERFORMANCE-IMPROVEMENTS-2026-08.md).
+
+## Aggregate reconciliation screening measurement
+
+`AggregateReconciliationBenchmarks` models a consumer-owned tracked update: every parent and retained
+sub-aggregate is read by its alternate identifier and staged for one `SaveChangesAsync`, then the four
+sub-aggregate kinds independently read their existing keys, subtract the incoming keys, and delete stale rows in
+100-key `ExecuteDeleteAsync` batches. The fixture starts with five sub-aggregates per parent per kind, retains
+three, and therefore deletes two. Setup, input construction, and post-operation count/value checks are outside the
+timed section.
+
+This is an initial three-iteration screening run on the Apple Silicon development host (macOS 26.6.2, .NET
+10.0.11, BenchmarkDotNet 0.15.8, one warm-up, in-process toolchain). It establishes that reconciliation is a
+material part of the consumer path; the small sample is not a release-performance claim.
+
+| Parents | Retained / deleted sub-aggregates | Stage upsert only | Stage upsert + reconcile | Additional latency | Managed allocation: only / reconcile | Winner |
+|---:|---:|---:|---:|---:|---:|---|
+| 100 | 1,200 / 800 | 271.8 ms | 358.4 ms | 86.6 ms; 31.9% | 15.00 / 17.32 MB | Reconcile required for a correct snapshot |
+| 500 | 6,000 / 4,000 | 1.070 s | 1.434 s | 364.5 ms; 34.1% | 73.05 / 84.90 MB | Reconcile required for a correct snapshot |
+
+The benchmark deliberately uses the consumer's tracked read-then-stage pattern rather than the provider's raw
+`Upsert`. Raw `Upsert` writes only the supplied rows; deciding which related rows are absent, and any dependent
+delete ordering, remain consumer policy. More child tables, dependent cleanup, or a different parent filter may
+cost more than this fixture, so validate the actual consumer graph before extrapolating these values.
 
 ## Upsert performance in v1.19.1
 
