@@ -71,6 +71,16 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
     {
         var method = methodCallExpression.Method;
 
+        if (method == DuckDBQualifyMarker.QualifyMethod)
+        {
+            return TranslateQualify(methodCallExpression.Arguments[0]);
+        }
+
+        if (DuckDBQualifyMarker.IsRank(method))
+        {
+            return TranslateRankingWindow(methodCallExpression);
+        }
+
         if (method.DeclaringType == typeof(string)
             && (method == StringJoinWithStringArray
                 || method == StringJoinWithObjectArray
@@ -125,6 +135,57 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
 
         return base.VisitMethodCall(methodCallExpression);
     }
+
+    private Expression TranslateQualify(Expression predicate)
+    {
+        if (TranslationFailed(predicate, Visit(predicate), out var translatedPredicate))
+        {
+            return QueryCompilationContext.NotTranslatedExpression;
+        }
+
+        return new DuckDBQualifyExpression(
+            Dependencies.SqlExpressionFactory.ApplyDefaultTypeMapping(translatedPredicate!),
+            Dependencies.TypeMappingSource.FindMapping(typeof(bool)));
+    }
+
+    // The partition and ordering keys arrive as separate expressions, so each one is translated on its own rather than
+    // as a method argument, which would require the anonymous partition key and the key array to be SQL values.
+    private Expression TranslateRankingWindow(MethodCallExpression rank)
+    {
+        var plan = (DuckDBQualifyPlan)((ConstantExpression)rank.Arguments[2]).Value!;
+        // An anonymous type lists the partition keys, and new { } ranks all rows as one partition. Any other value,
+        // including one built by a constructor, is a single key.
+        var partitionKeys = rank.Arguments[0] is NewExpression { Members: not null } or NewExpression { Arguments: [] }
+            ? ((NewExpression)rank.Arguments[0]).Arguments
+            : (IReadOnlyList<Expression>)[rank.Arguments[0]];
+        var orderKeys = ((NewArrayExpression)rank.Arguments[1]).Expressions;
+
+        var partitions = new SqlExpression[partitionKeys.Count];
+        for (var i = 0; i < partitions.Length; i++)
+        {
+            partitions[i] = TranslateWindowKey(partitionKeys[i]);
+        }
+
+        var orderings = new OrderingExpression[orderKeys.Count];
+        for (var i = 0; i < orderings.Length; i++)
+        {
+            var key = orderKeys[i] is UnaryExpression { NodeType: ExpressionType.Convert } convert ? convert.Operand : orderKeys[i];
+            orderings[i] = new OrderingExpression(TranslateWindowKey(key), ascending: !plan.Descending[i]);
+        }
+
+        return new DuckDBRankingWindowExpression(
+            plan.Function,
+            partitions,
+            orderings,
+            Dependencies.TypeMappingSource.FindMapping(typeof(long)));
+    }
+
+    private SqlExpression TranslateWindowKey(Expression key)
+        => Visit(key) is SqlExpression translated
+            ? Dependencies.SqlExpressionFactory.ApplyDefaultTypeMapping(translated)
+            : throw new InvalidOperationException(
+                "Each QUALIFY partition and ordering key must be a single scalar value, but '" + new ExpressionPrinter().PrintExpression(key)
+                + "' is not. Partition by an anonymous type of scalar members instead of an entity or complex value.");
 
 #if NET11_0_OR_GREATER
     // EF.Functions.JsonPathExists is translated here rather than in a method translator because the JSON argument can be

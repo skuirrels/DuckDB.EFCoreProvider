@@ -19,6 +19,9 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
 {
     private readonly bool _reverseNullOrderingEnabled;
 
+    // QUALIFY conditions split from each SELECT's predicate, rendered between HAVING and ORDER BY.
+    private readonly Dictionary<SelectExpression, SqlExpression> _qualifyPredicates = new(ReferenceEqualityComparer.Instance);
+
     public DuckDBQuerySqlGenerator(QuerySqlGeneratorDependencies dependencies, bool reverseNullOrderingEnabled)
         : base(dependencies)
     {
@@ -70,6 +73,73 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         }
 
         return wholeStructExpression;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    ///     Translation records a QUALIFY condition as a top-level conjunct of the SELECT's predicate, because the
+    ///     SELECT has no QUALIFY slot of its own. The condition is split out here and rendered by
+    ///     <see cref="GenerateOrderings" />, which runs after HAVING and before ORDER BY.
+    /// </remarks>
+    protected override Expression VisitSelect(SelectExpression selectExpression)
+    {
+        if (selectExpression.Predicate is not { } predicate || !ContainsQualify(predicate))
+        {
+            return base.VisitSelect(selectExpression);
+        }
+
+        SqlExpression? remaining = null;
+        SqlExpression? qualify = null;
+        foreach (var conjunct in GetConjuncts(predicate))
+        {
+            if (conjunct is DuckDBQualifyExpression qualifyExpression)
+            {
+                qualify = qualify is null ? qualifyExpression.Predicate : new SqlBinaryExpression(
+                    ExpressionType.AndAlso, qualify, qualifyExpression.Predicate, typeof(bool), qualifyExpression.TypeMapping);
+            }
+            else
+            {
+                remaining = remaining is null ? conjunct : new SqlBinaryExpression(
+                    ExpressionType.AndAlso, remaining, conjunct, typeof(bool), conjunct.TypeMapping);
+            }
+        }
+
+        var withoutQualify = selectExpression.Update(
+            selectExpression.Tables,
+            remaining,
+            selectExpression.GroupBy,
+            selectExpression.Having,
+            selectExpression.Projection,
+            selectExpression.Orderings,
+            selectExpression.Offset,
+            selectExpression.Limit);
+        _qualifyPredicates[withoutQualify] = qualify!;
+        base.VisitSelect(withoutQualify);
+        return selectExpression;
+
+        static bool ContainsQualify(SqlExpression predicate)
+            => GetConjuncts(predicate).Any(conjunct => conjunct is DuckDBQualifyExpression);
+
+        static IEnumerable<SqlExpression> GetConjuncts(SqlExpression predicate)
+            => predicate is SqlBinaryExpression { OperatorType: ExpressionType.AndAlso } andAlso
+                ? GetConjuncts(andAlso.Left).Concat(GetConjuncts(andAlso.Right))
+                : [predicate];
+    }
+
+    /// <inheritdoc />
+    protected override void GenerateOrderings(SelectExpression selectExpression)
+    {
+        GenerateQualify(selectExpression);
+        base.GenerateOrderings(selectExpression);
+    }
+
+    private void GenerateQualify(SelectExpression selectExpression)
+    {
+        if (_qualifyPredicates.Remove(selectExpression, out var qualify))
+        {
+            Sql.AppendLine().Append("QUALIFY ");
+            Visit(qualify);
+        }
     }
 
     /// <inheritdoc />
@@ -137,6 +207,11 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
             DuckDBStructFieldExpression e => VisitStructField(e),
             DuckDBWholeStructExpression e => VisitWholeStruct(e),
             DuckDBGroupingSetsExpression e => VisitGroupingSets(e),
+            DuckDBRankingWindowExpression e => VisitRankingWindow(e),
+            DuckDBAsOfJoinExpression e => VisitAsOfJoin(e),
+            DuckDBQualifyExpression => throw new InvalidOperationException(
+                "A QUALIFY condition can only be a top-level condition of a query's filter. Simplify the query around "
+                + "the QualifyRowNumber, QualifyRank or QualifyDenseRank operator."),
             _ => base.VisitExtension(extensionExpression)
         };
     }
@@ -353,6 +428,48 @@ public partial class DuckDBQuerySqlGenerator : QuerySqlGenerator
         }
 
         return binaryExpression;
+    }
+
+    /// <summary>Renders <c>row_number()</c>, <c>rank()</c> or <c>dense_rank()</c> with its OVER clause.</summary>
+    protected virtual Expression VisitRankingWindow(DuckDBRankingWindowExpression rankingWindowExpression)
+    {
+        Sql.Append(rankingWindowExpression.FunctionName).Append("() OVER (");
+        if (rankingWindowExpression.Partitions.Count > 0)
+        {
+            Sql.Append("PARTITION BY ");
+            GenerateCommaSeparated(rankingWindowExpression.Partitions);
+            Sql.Append(" ");
+        }
+
+        Sql.Append("ORDER BY ");
+        GenerateCommaSeparated(rankingWindowExpression.Orderings);
+        Sql.Append(")");
+        return rankingWindowExpression;
+    }
+
+    private void GenerateCommaSeparated(IEnumerable<Expression> expressions)
+    {
+        var isFirst = true;
+        foreach (var expression in expressions)
+        {
+            if (!isFirst)
+            {
+                Sql.Append(", ");
+            }
+
+            isFirst = false;
+            Visit(expression);
+        }
+    }
+
+    /// <summary>Renders <c>ASOF JOIN</c> or <c>ASOF LEFT JOIN</c>.</summary>
+    protected virtual Expression VisitAsOfJoin(DuckDBAsOfJoinExpression asOfJoinExpression)
+    {
+        Sql.Append(asOfJoinExpression.IsLeft ? "ASOF LEFT JOIN " : "ASOF JOIN ");
+        Visit(asOfJoinExpression.Table);
+        Sql.Append(" ON ");
+        Visit(asOfJoinExpression.JoinPredicate);
+        return asOfJoinExpression;
     }
 
     /// <summary>Renders a ROLLUP, CUBE or GROUPING SETS element of a GROUP BY clause.</summary>

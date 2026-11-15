@@ -2,6 +2,17 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- `QUALIFY`: `QualifyRowNumber`, `QualifyRank` and `QualifyDenseRank` filter an ordered query by
+  `row_number()`, `rank()` or `dense_rank()` over a partition, for example the latest order per customer. The
+  query's ordering becomes the window ordering; `new { }` ranks all rows as one partition. Paging or `DISTINCT`
+  before the operator is applied first, and later operators compose over the filtered rows.
+- `ASOF` joins: `AsOfJoin` and `LeftAsOfJoin` match each outer row with the nearest inner row, translating to
+  `ASOF JOIN` and `ASOF LEFT JOIN`. The condition combines up to six equalities with exactly one inequality, and
+  the inner side can be a filtered or paged query.
+- Both operators validate their arguments when called and run on native DuckDB and DuckLake.
+
 ## 1.31.0
 
 - `DuckDB.EFCoreProvider.EF11` and `DuckDB.EFCoreProvider.EF11.NTS` are now stable releases. They build

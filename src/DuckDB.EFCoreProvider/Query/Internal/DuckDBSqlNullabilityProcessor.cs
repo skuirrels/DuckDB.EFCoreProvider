@@ -31,6 +31,7 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
         => node switch
         {
             DuckDBUnnestExpression unnestExpression => VisitUnnest(unnestExpression),
+            DuckDBAsOfJoinExpression asOfJoinExpression => VisitAsOfJoin(asOfJoinExpression),
             _ => base.VisitExtension(node)
         };
 
@@ -218,8 +219,40 @@ public class DuckDBSqlNullabilityProcessor : SqlNullabilityProcessor
             DuckDBStructFieldExpression e => VisitStructField(e, allowOptimizedExpansion, out nullable),
             DuckDBWholeStructExpression e => VisitWholeStruct(e, allowOptimizedExpansion, out nullable),
             DuckDBGroupingSetsExpression e => VisitGroupingSets(e, out nullable),
+            DuckDBQualifyExpression e => VisitQualify(e, allowOptimizedExpansion, out nullable),
+            DuckDBRankingWindowExpression e => VisitRankingWindow(e, out nullable),
             _ => base.VisitCustomSqlExpression(sqlExpression, allowOptimizedExpansion, out nullable)
         };
+    }
+
+    // DuckDB requires an ASOF condition to be equalities and one inequality, so, like EF Core's join predicates,
+    // the comparisons are kept as they are: a NULL key matches nothing, without IS NULL compensation.
+    protected virtual Expression VisitAsOfJoin(DuckDBAsOfJoinExpression asOfJoinExpression)
+    {
+        var table = (TableExpressionBase)Visit(asOfJoinExpression.Table);
+        var conjuncts = DuckDBAsOfJoinPostprocessor.GetConjuncts(asOfJoinExpression.JoinPredicate)
+            .Cast<SqlBinaryExpression>()
+            .Select(comparison => comparison.Update(Visit(comparison.Left, out _), Visit(comparison.Right, out _)));
+        var predicate = conjuncts.Aggregate<SqlExpression>((left, right) => _sqlExpressionFactory.AndAlso(left, right));
+        return asOfJoinExpression.Update(table, predicate);
+    }
+
+    protected virtual SqlExpression VisitQualify(
+        DuckDBQualifyExpression qualifyExpression,
+        bool allowOptimizedExpansion,
+        out bool nullable)
+        => qualifyExpression.Update(Visit(qualifyExpression.Predicate, allowOptimizedExpansion, out nullable));
+
+    protected virtual SqlExpression VisitRankingWindow(DuckDBRankingWindowExpression rankingWindowExpression, out bool nullable)
+    {
+        var partitions = rankingWindowExpression.Partitions.Select(partition => Visit(partition, out _)).ToArray();
+        var orderings = rankingWindowExpression.Orderings
+            .Select(ordering => ordering.Update(Visit(ordering.Expression, out _)))
+            .ToArray();
+
+        // Ranking functions number every row, so the result is never NULL.
+        nullable = false;
+        return rankingWindowExpression.Update(partitions, orderings);
     }
 
     protected virtual SqlExpression VisitGroupingSets(DuckDBGroupingSetsExpression groupingSetsExpression, out bool nullable)

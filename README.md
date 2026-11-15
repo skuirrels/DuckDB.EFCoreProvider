@@ -1151,6 +1151,66 @@ can be projected: querying a group's elements (`g.ToList()`,
 group becomes `HAVING`, and ordering, paging and parameters compose as with `GroupBy`. The same SQL runs on
 native DuckDB and DuckLake.
 
+### Latest row per group with QUALIFY
+
+`QualifyRowNumber`, `QualifyRank`, and `QualifyDenseRank` (namespace `DuckDB.EFCoreProvider.Extensions`)
+filter an ordered query by a ranking window function, translating to DuckDB's `QUALIFY`. The query's
+`OrderBy`/`ThenBy` becomes the window ordering, the first lambda is the partition, and the second lambda filters
+on the rank.
+
+```csharp
+using DuckDB.EFCoreProvider.Extensions;
+
+// The latest order for each customer.
+var latest = await db.Orders
+    .OrderByDescending(o => o.PlacedAt)
+    .QualifyRowNumber(o => o.CustomerId, n => n == 1)
+    .ToListAsync();
+
+// The top three products per region and year, keeping ties.
+var top = await db.Sales
+    .OrderByDescending(s => s.Amount)
+    .QualifyRank(s => new { s.Store.Region, s.Year }, rank => rank <= 3)
+    .ToListAsync();
+```
+
+An ordering is required, because ranking an unordered partition is not deterministic. Partition and ordering
+keys must be scalar values (an anonymous type combines several, and `new { }` ranks all rows as one partition), so
+an entity or owned type is rejected. The rank predicate must use the rank, for example `n => n == 1`.
+`Take`, `Skip` or `Distinct` before the operator are applied first, and further `Where`, `OrderBy`,
+`Select` and paging after it compose as usual.
+
+### Nearest-match joins with ASOF
+
+`AsOfJoin` and `LeftAsOfJoin` match each outer row with the nearest inner row by an ordering key, translating to
+DuckDB's `ASOF JOIN`. The condition combines any number of equalities, up to six, with exactly one inequality,
+each comparing an outer value with an inner value. With `>=` DuckDB picks the latest inner row at or before the
+outer value.
+
+```csharp
+using DuckDB.EFCoreProvider.Extensions;
+
+// The price in force at each trade.
+var priced = await db.Trades
+    .AsOfJoin(
+        db.Prices,
+        (trade, price) => trade.Symbol == price.Symbol && trade.At >= price.At,
+        (trade, price) => new { trade.Id, trade.Quantity, price.Value })
+    .ToListAsync();
+
+// Keep trades that have no earlier price; price is null for those.
+var all = await db.Trades
+    .LeftAsOfJoin(
+        db.Prices,
+        (trade, price) => trade.Symbol == price.Symbol && trade.At >= price.At,
+        (trade, price) => new { trade.Id, Value = (decimal?)price!.Value })
+    .ToListAsync();
+```
+
+`AsOfJoin` drops outer rows without a match, like an inner join; `LeftAsOfJoin` keeps them. Each compared value
+must be a scalar, and an unsupported condition (no inequality, two inequalities, `||`, or a comparison that uses
+only one side) is rejected when the operator is called. The same SQL runs on native DuckDB and DuckLake.
+
 ### Spatial queries
 
 Spatial support lives in the separate `DuckDB.EFCoreProvider.NTS` project and assembly. Reference that
