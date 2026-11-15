@@ -51,7 +51,19 @@ jobs:
         fi
         case "$major" in 10|11) ;; *) exit 1 ;; esac
         expected=$(dotnet msbuild src/DuckDB.EFCoreProvider/DuckDB.EFCoreProvider.csproj -nologo -p:DuckDBEFCoreMajorVersion="$major" -getProperty:PackageVersion)
-        if [[ "$GITHUB_EVENT_NAME" == release && "$version" != "$expected" ]]; then
+        if [[ "$GITHUB_EVENT_NAME" != release ]]; then
+          # A manual run must target a release tag, so it cannot publish unreleased code from a branch.
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            echo "Run the manual publish against a release tag (v<version> or ef11-v<version>), not $GITHUB_REF_NAME." >&2
+            exit 1
+          fi
+          case "$GITHUB_REF_NAME" in
+            ef11-v*) version="${GITHUB_REF_NAME#ef11-v}" ;;
+            v*) version="${GITHUB_REF_NAME#v}" ;;
+            *) echo "Expected a v<version> or ef11-v<version> tag, not $GITHUB_REF_NAME." >&2; exit 1 ;;
+          esac
+        fi
+        if [[ "$version" != "$expected" ]]; then
           echo "Release version $version does not match EF$major package version $expected." >&2
           exit 1
         fi

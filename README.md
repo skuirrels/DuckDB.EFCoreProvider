@@ -4,6 +4,8 @@
 
 [![NuGet](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.svg)](https://www.nuget.org/packages/DuckDB.EFCoreProvider)
 [![NuGet (NTS)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.NTS.svg?label=NuGet%20%28NTS%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.NTS)
+[![NuGet (EF11)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.EF11.svg?label=NuGet%20%28EF11%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.EF11)
+[![NuGet (EF11 NTS)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.EF11.NTS.svg?label=NuGet%20%28EF11%20NTS%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.EF11.NTS)
 [![EF Core 10 and 11](https://img.shields.io/badge/EF%20Core-10%20%7C%2011-512BD4)](https://learn.microsoft.com/ef/core/)
 [![.NET 10 and 11](https://img.shields.io/badge/.NET-10%20%7C%2011-512BD4)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
