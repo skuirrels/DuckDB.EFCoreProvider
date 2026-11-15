@@ -1,9 +1,11 @@
 # DuckDB.EFCoreProvider
 
-**An Entity Framework Core provider for EF10 and EF11 preview with first-class support for [DuckDB](https://duckdb.org) and [DuckLake](https://ducklake.select), designed for analytical .NET workloads.**
+**An Entity Framework Core provider for EF10 and EF11 with first-class support for [DuckDB](https://duckdb.org) and [DuckLake](https://ducklake.select), designed for analytical .NET workloads.**
 
 [![NuGet](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.svg)](https://www.nuget.org/packages/DuckDB.EFCoreProvider)
 [![NuGet (NTS)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.NTS.svg?label=NuGet%20%28NTS%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.NTS)
+[![NuGet (EF11)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.EF11.svg?label=NuGet%20%28EF11%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.EF11)
+[![NuGet (EF11 NTS)](https://img.shields.io/nuget/v/DuckDB.EFCoreProvider.EF11.NTS.svg?label=NuGet%20%28EF11%20NTS%29)](https://www.nuget.org/packages/DuckDB.EFCoreProvider.EF11.NTS)
 [![EF Core 10 and 11](https://img.shields.io/badge/EF%20Core-10%20%7C%2011-512BD4)](https://learn.microsoft.com/ef/core/)
 [![.NET 10 and 11](https://img.shields.io/badge/.NET-10%20%7C%2011-512BD4)](https://dotnet.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -29,18 +31,18 @@
 
 ## Getting started
 
-EF11 preview support is available through the `DuckDB.EFCoreProvider.EF11` package family.
+EF11 support is available through the `DuckDB.EFCoreProvider.EF11` package family.
 The existing `DuckDB.EFCoreProvider` package retains EF10, including when used from .NET 11. See the
-[shared EF10/EF11 guide](docs/EF10-EF11-SUPPORT.md) for build instructions and known preview limitations.
+[shared EF10/EF11 guide](docs/EF10-EF11-SUPPORT.md) for build instructions and known EF11 limitations.
 
 ```bash
 dotnet add package DuckDB.EFCoreProvider
 ```
 
-For EF11 preview, select the EF11 package (requires `net11.0`):
+For EF11, select the EF11 package (requires `net11.0`):
 
 ```bash
-dotnet add package DuckDB.EFCoreProvider.EF11 --version 1.30.0-preview.1
+dotnet add package DuckDB.EFCoreProvider.EF11
 ```
 
 Package Manager Console: `Install-Package DuckDB.EFCoreProvider`
@@ -1249,7 +1251,7 @@ DuckDB: a delete that overlaps an update wins. See the
 
 ## Compatibility
 
-The shared source builds for EF Core 10.0.10 on `net10.0` and EF Core 11.0.0 on `net11.0`. The EF11 packages still ship as previews. The existing package names retain EF10 on both .NET 10 and .NET 11; opt into EF11 with `DuckDB.EFCoreProvider.EF11` (and `DuckDB.EFCoreProvider.EF11.NTS` for spatial support). See [shared development and package selection](docs/EF10-EF11-SUPPORT.md). DuckDB is an embedded analytical database, so some relational features differ from server databases. Unsupported DuckDB features should fail clearly or be documented as provider limitations.
+The shared source builds for EF Core 10.0.10 on `net10.0` and EF Core 11.0.0 on `net11.0`. Both package families are stable releases. The existing package names retain EF10 on both .NET 10 and .NET 11; opt into EF11 with `DuckDB.EFCoreProvider.EF11` (and `DuckDB.EFCoreProvider.EF11.NTS` for spatial support). See [shared development and package selection](docs/EF10-EF11-SUPPORT.md). DuckDB is an embedded analytical database, so some relational features differ from server databases. Unsupported DuckDB features should fail clearly or be documented as provider limitations.
 
 For the full feature support matrix, the DuckDB engine limitations, and the roadmap, see
 [docs/CAPABILITY-MAP.md](docs/CAPABILITY-MAP.md). For the `dotnet ef` migrations workflow and its

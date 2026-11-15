@@ -34,19 +34,20 @@ The supported surface is the API a host application uses directly:
 - Package identity selects the EF line. `DuckDB.EFCoreProvider` and `DuckDB.EFCoreProvider.NTS` target EF10;
   `DuckDB.EFCoreProvider.EF11` and `DuckDB.EFCoreProvider.EF11.NTS` target EF11. Assembly names, namespaces
   and public entry points remain unchanged. Reference only one family in an application.
-- Core `1.26.0` / NTS `1.1.0` are the EF10 release versions. EF11 initially uses core `1.26.0-preview.1` /
-  NTS `1.1.0-preview.1`. Adding EF11 does not consume provider major version 2, which is reserved for
-  the anticipated DuckDB 2 transition. Existing public-API breaking-change rules still apply.
+- Both families share one version number. EF11 shipped as previews from core `1.26.0-preview.1` to
+  `1.30.0-preview.1` (NTS `1.1.0-preview.1` and `1.1.0-preview.2`) and is stable from the release after
+  `1.30.0`. Adding EF11 does not consume provider major version 2, which is reserved for the anticipated
+  DuckDB 2 transition. Existing public-API breaking-change rules still apply.
 - The EF10 packages contain only `net10.0` assets and work in compatible newer .NET applications,
   including `net11.0`, while retaining EF10. The EF11 packages contain only `net11.0` assets.
 - EF10 dependencies allow servicing versions from `10.0.10` up to, but excluding, `10.1.0`. EF11 dependencies
   allow servicing versions from `11.0.0` up to, but excluding, `11.1.0`.
-- Microsoft EF packages remain aligned within each target. Stable EF10 packages have no prerelease
-  dependencies; EF11 provider packages remain prereleases until a stable EF11 provider release.
+- Microsoft EF packages remain aligned within each target. Neither family has prerelease
+  dependencies.
 - `scripts/pack.sh 10`, `scripts/pack.sh 11`, or `scripts/pack.sh all` select the package family explicitly.
   Direct `dotnet pack` requires `-p:DuckDBEFCoreMajorVersion=10` or `11`; ambiguous multi-EF packages are rejected.
-- EF10 API validation retains its published baselines. EF11 starts a new package identity without an EF10
-  baseline or cross-target JSON mapping suppressions; establish its own baseline after its first release.
+- Each family validates its API against its own last published release: EF10 against `1.29.0` / `1.0.7`,
+  EF11 against `1.30.0-preview.1` / `1.1.0-preview.2`. No cross-target JSON mapping suppressions are needed.
 - Every target must pass the production and compatibility gates. Package CI additionally tests
   .NET10/EF10, .NET11/EF10 and .NET11/EF11 consumers and diagnoses incompatible EF dependency combinations.
 - Publishing selects exactly one family. EF10 releases use `v<core-version>` tags; EF11 uses

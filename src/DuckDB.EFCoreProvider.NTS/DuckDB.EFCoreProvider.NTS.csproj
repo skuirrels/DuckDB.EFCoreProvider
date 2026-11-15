@@ -2,14 +2,13 @@
 
   <PropertyGroup>
     <Version>1.1.0</Version>
-    <Version Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.1.0-preview.2</Version>
     <PackageVersion>$(Version)</PackageVersion>
     <PackageId>DuckDB.EFCoreProvider.NTS</PackageId>
     <PackageId Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB.EFCoreProvider.EF11.NTS</PackageId>
     <FileVersion>1.1.0.0</FileVersion>
     <Authors>skuirrels</Authors>
     <Description>NetTopologySuite (spatial) support for DuckDB.EFCoreProvider on Entity Framework Core 10. For EF Core 11, use DuckDB.EFCoreProvider.EF11.NTS.</Description>
-    <Description Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">NetTopologySuite (spatial) support for DuckDB.EFCoreProvider.EF11 on Entity Framework Core 11. The EF11 package line is in preview; for EF Core 10, use DuckDB.EFCoreProvider.NTS.</Description>
+    <Description Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">NetTopologySuite (spatial) support for DuckDB.EFCoreProvider.EF11 on Entity Framework Core 11. For EF Core 10, use DuckDB.EFCoreProvider.NTS.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
          "Entity Framework Core" would index as three separate tokens. -->
     <PackageTags>duckdb;ducklake;efcore;ef-core;entity-framework-core;orm;provider;nettopologysuite;nts;spatial;gis;geospatial;geometry;analytics;dotnet</PackageTags>
@@ -26,12 +25,16 @@
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
     <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.0.7</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.1.0-preview.2</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.1.0 (EF11)
+- First stable release of the EF11 spatial package, built against stable EF Core 11.0.0 and allowing 11.0.x servicing updates. Tracks the stable DuckDB.EFCoreProvider.EF11 release. No NTS behavioural changes.
+
 1.1.0-preview.2 (EF11)
 - Build against stable EF Core 11.0.0 and allow 11.0.x servicing updates. Tracks DuckDB.EFCoreProvider.EF11 1.28.0-preview.1. No NTS behavioural changes.
 
 1.1.0 (EF10) / 1.1.0-preview.1 (EF11)
-- Ship separate EF10 and EF11 release lines from shared source. The EF10 package can also be used by net11.0 applications without upgrading EF. EF11 support is preview support.
+- Ship separate EF10 and EF11 release lines from shared source. The EF10 package can also be used by net11.0 applications without upgrading EF.
 - Preserve native DuckDB array materialization under EF11 and validate matching migration and compiled-model tooling for each target.
 
 1.0.8
