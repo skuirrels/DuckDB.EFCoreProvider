@@ -15,7 +15,7 @@ Suites:
   migrations       Migration SQL and migration infrastructure coverage.
   updates          EF update, graph update, and bulk update coverage.
   all              Complete production write-provider gate.
-  full-project     Raw full functional test project; useful for backlog discovery.
+  full-project     Complete functional test project; CI runs this after the production gate.
   compatibility    Shared query, mapping, write and backend compatibility coverage.
 
 Both target frameworks run by default. Set DUCKDB_TEST_FRAMEWORK=net10.0 or net11.0
@@ -51,10 +51,72 @@ if [[ $# -gt 0 ]]; then
     extra_args=("$@")
 fi
 
-write_critical_filter='FullyQualifiedName~ProductionWriteDuckDBTest|FullyQualifiedName~DuckDBUpdateSqlGeneratorTest|FullyQualifiedName~DuckDBMigrationsSqlGeneratorTest.AddColumnOperation_with_auto_increment_creates_sequence_and_default|FullyQualifiedName~DuckDBMigrationsSqlGeneratorTest.CreateTableOperation_with_auto_increment_creates_sequence_and_default|FullyQualifiedName~DuckDBGenericNonRelationship|FullyQualifiedName~ReferencedPrincipalUpdateTests|FullyQualifiedName~DualRolePrincipalUpdateTests'
-write_broad_filter="${write_critical_filter}|FullyQualifiedName~StoreGeneratedDuckDBTest|FullyQualifiedName~TransactionDuckDBTest|FullyQualifiedName~UpdatesDuckDBTest"
-production_gate_filter="${write_broad_filter}|FullyQualifiedName~Migrations|FullyQualifiedName~StructDesignTimeWorkflowTests|FullyQualifiedName~RetryingExecutionStrategyTests|FullyQualifiedName~HiLoKeyGenerationTests"
-compatibility_filter='FullyQualifiedName~Query.PrecompiledQueryDuckDBTest.FromSql|FullyQualifiedName~PrecompiledSqlPregenerationQueryDuckDBTest|FullyQualifiedName~DuckDBApiConsistencyTest.Public_api_bool_parameters_should_not_be_prefixed|FullyQualifiedName~NorthwindAggregateOperatorsQueryDuckDBTest.Average_on_float_column|FullyQualifiedName~JsonUpdateDuckDBTest.Edit_single_property_nullable|FullyQualifiedName~Struct|FullyQualifiedName~ArrayRoundTrip|FullyQualifiedName~NativeArrayCompatibility|FullyQualifiedName~CharacterConversionCompatibility|FullyQualifiedName~BinaryJsonCompatibility|FullyQualifiedName~OwnedNavigationsSetOperationsDuckDBTest.Over_associate_collection_projected|FullyQualifiedName~OwnedNavigationCompatibility|FullyQualifiedName~JsonPathRewriting|FullyQualifiedName~AnalyticalTranslation|FullyQualifiedName~DuckLake|FullyQualifiedName~Quack|FullyQualifiedName~BulkInsert|FullyQualifiedName~Upsert|FullyQualifiedName~AdoNetSubstitution|FullyQualifiedName~FileSource|FullyQualifiedName~Spatial|FullyQualifiedName~ValueTranslationRegression|FullyQualifiedName~Scaffolding.CompiledModelDuckDBTest'
+# Each entry is matched as FullyQualifiedName~<pattern>; one pattern per line keeps diffs reviewable.
+write_critical_patterns=(
+    ProductionWriteDuckDBTest
+    DuckDBUpdateSqlGeneratorTest
+    DuckDBMigrationsSqlGeneratorTest.AddColumnOperation_with_auto_increment_creates_sequence_and_default
+    DuckDBMigrationsSqlGeneratorTest.CreateTableOperation_with_auto_increment_creates_sequence_and_default
+    DuckDBGenericNonRelationship
+    ReferencedPrincipalUpdateTests
+    DualRolePrincipalUpdateTests
+)
+write_broad_patterns=(
+    "${write_critical_patterns[@]}"
+    StoreGeneratedDuckDBTest
+    TransactionDuckDBTest
+    UpdatesDuckDBTest
+)
+production_gate_patterns=(
+    "${write_broad_patterns[@]}"
+    Migrations
+    MigrationTableRebuildTests
+    StructDesignTimeWorkflowTests
+    RetryingExecutionStrategyTests
+    HiLoKeyGenerationTests
+)
+compatibility_patterns=(
+    Query.PrecompiledQueryDuckDBTest.FromSql
+    PrecompiledSqlPregenerationQueryDuckDBTest
+    DuckDBApiConsistencyTest.Public_api_bool_parameters_should_not_be_prefixed
+    NorthwindAggregateOperatorsQueryDuckDBTest.Average_on_float_column
+    JsonUpdateDuckDBTest.Edit_single_property_nullable
+    Struct
+    ArrayRoundTrip
+    NativeArrayCompatibility
+    CharacterConversionCompatibility
+    BinaryJsonCompatibility
+    OwnedNavigationsSetOperationsDuckDBTest.Over_associate_collection_projected
+    OwnedNavigationCompatibility
+    JsonPathRewriting
+    AnalyticalTranslation
+    DuckLake
+    Quack
+    BulkInsert
+    Upsert
+    AdoNetSubstitution
+    FileSource
+    Spatial
+    ValueTranslationRegression
+    Scaffolding.CompiledModelDuckDBTest
+    GroupingSetsTranslationTests
+    QualifyAndAsOfJoinTests
+    MapAndNestedListTests
+    StoreTypeMappingTests
+)
+
+to_filter() {
+    local filter="" pattern
+    for pattern in "$@"; do
+        filter+="${filter:+|}FullyQualifiedName~${pattern}"
+    done
+    printf '%s' "$filter"
+}
+
+write_critical_filter="$(to_filter "${write_critical_patterns[@]}")"
+write_broad_filter="$(to_filter "${write_broad_patterns[@]}")"
+production_gate_filter="$(to_filter "${production_gate_patterns[@]}")"
+compatibility_filter="$(to_filter "${compatibility_patterns[@]}")"
 
 framework_args=()
 if [[ -n "${DUCKDB_TEST_FRAMEWORK:-}" ]]; then

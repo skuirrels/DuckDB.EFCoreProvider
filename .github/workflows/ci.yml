@@ -36,8 +36,8 @@ jobs:
     - name: Run production write test suite
       run: scripts/test-suite.sh all -- --verbosity normal
 
-    - name: Run shared compatibility suite
-      run: scripts/test-suite.sh compatibility -- --verbosity normal
+    - name: Run full functional test project
+      run: scripts/test-suite.sh full-project -- --verbosity normal
 
   packages:
     name: Package identities and consumer compatibility
