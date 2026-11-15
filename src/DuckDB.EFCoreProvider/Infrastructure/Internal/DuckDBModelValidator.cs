@@ -521,6 +521,11 @@ public class DuckDBModelValidator : RelationalModelValidator
                             propertyName));
                 }
 
+                if (property.GetValueGenerationStrategy() == DuckDBValueGenerationStrategy.HiLo)
+                {
+                    ValidateHiLo(property, propertyName, capabilities);
+                }
+
                 if (!capabilities.SupportsGeneratedColumns && property.GetComputedColumnSql() is not null)
                 {
                     throw new InvalidOperationException(
@@ -552,6 +557,43 @@ public class DuckDBModelValidator : RelationalModelValidator
                             propertyName));
                 }
             }
+        }
+    }
+
+    private static void ValidateHiLo(
+        IReadOnlyProperty property,
+        string propertyName,
+        IDuckDBEngineCapabilities capabilities)
+    {
+        if (!capabilities.SupportsHiLoKeyGeneration)
+        {
+            throw new InvalidOperationException(DuckDBCapabilityErrorMessages.HiLoNotSupported(propertyName));
+        }
+
+        if (property is not IReadOnlyProperty { DeclaringType: IReadOnlyEntityType }
+            || !DuckDBValueGenerationStrategyCompatibility.IsAutoIncrementCompatible(property.ClrType)
+            || (property.GetValueConverter() ?? property.FindTypeMapping()?.Converter) is not null)
+        {
+            throw new InvalidOperationException(
+                $"'{propertyName}' uses Hi-Lo key generation, which needs an integer entity property without a "
+                + "value converter.");
+        }
+
+        if (string.IsNullOrWhiteSpace(property.GetHiLoTableName()) || property.GetHiLoBlockSize() < 1)
+        {
+            throw new InvalidOperationException(
+                $"'{propertyName}' uses Hi-Lo key generation, which needs a counter table name and a block size of at "
+                + "least 1.");
+        }
+
+        if (property.ValueGenerated != ValueGenerated.OnAdd
+            || property.GetDefaultValueSql() is not null
+            || property.FindAnnotation(RelationalAnnotationNames.DefaultValue) is not null
+            || property.GetComputedColumnSql() is not null)
+        {
+            throw new InvalidOperationException(
+                $"'{propertyName}' uses Hi-Lo key generation, which assigns the value on add, so it cannot also have "
+                + "a default, a computed column, or a different ValueGenerated setting.");
         }
     }
 

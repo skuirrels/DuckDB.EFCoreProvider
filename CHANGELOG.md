@@ -11,6 +11,13 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   as before, and without a retrying strategy they do not start a transaction.
 - New `exception.IsWriteConflict()` extension method reports whether an exception, or any exception it wraps, is a
   DuckDB or DuckLake write-write conflict: the same classification the retrying strategy uses.
+- New `UseHiLo()` on `ModelBuilder` and on key properties generates integer keys on the client from blocks
+  reserved in a one-row counter table (`__EFHiLo` by default), so DuckLake, which has no sequences, can generate
+  keys for `SaveChanges` and `BulkInsert`. The counter is created on first use above the largest existing key, and
+  blocks are committed outside the caller's transaction. It also works on native DuckDB; the Quack profile rejects
+  it because its sequences already generate keys.
+- `BulkInsert` on the Quack profile now reserves generated keys from the remote column default, as native DuckDB
+  does, and writes them back to the entities.
 - Dictionaries now map to native `MAP(K, V)` columns. `Dictionary<K,V>`, `IDictionary<K,V>` and
   `IReadOnlyDictionary<K,V>` properties with scalar keys and values round-trip through `SaveChanges`, create
   `MAP` columns in migrations, and are change-tracked by entry. Queries translate the indexer, `ContainsKey` and

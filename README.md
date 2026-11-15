@@ -151,7 +151,7 @@ Supported workflows include LINQ, tracked `SaveChanges`, transactions, optimisti
 profiles, typed maintenance, additional local or named-secret catalogs, streaming dynamic SQL, and local-metadata
 database-first scaffolding. DuckLake does
 not physically enforce keys, foreign keys, unique/check constraints, or indexes, and it does not support
-sequences, store-generated values, or `RETURNING`. EF migrations, `EnsureDeleted`, provider tiered storage,
+sequences, store-generated values, or `RETURNING`; generate integer keys on the client with `UseHiLo()` instead. EF migrations, `EnsureDeleted`, provider tiered storage,
 `SaveChanges` batching, and EF entity mappings to non-primary attached catalogs are therefore deliberately
 unavailable in this profile. See the complete
 [DuckLake configuration, security, and limitations guide](docs/DUCKLAKE.md).
@@ -353,6 +353,8 @@ instead.
 ### Generated keys and `RETURNING`
 
 Use `UseAutoIncrement()` for DuckDB-backed generated integer keys. The provider generates sequence-backed migrations and uses `RETURNING` so EF Core receives generated values after `SaveChanges`.
+
+Where sequences are not available, as on DuckLake, use `UseHiLo()` on the model or on a key property. Keys are then generated on the client from blocks reserved in a one-row counter table (`__EFHiLo` by default), which is created on first use above the largest existing key. `SaveChanges` and `BulkInsert` both assign Hi-Lo keys. Blocks are committed outside the caller's transaction, so a rollback leaves a gap rather than reusing values. Hi-Lo also works on native DuckDB; the Quack profile rejects it because its sequences already generate keys. See the [DuckLake guide](docs/DUCKLAKE.md#hi-lo-keys) for concurrency details.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
@@ -940,7 +942,7 @@ modelBuilder.ToTieredStore<Record>(i => i.EffectiveAt, "/var/data/archive/record
 
 For high-throughput loading, `BulkInsert` / `BulkInsertAsync` append rows directly through DuckDB's columnar `Appender` — much faster than `SaveChanges` for large batches. It is a deliberate raw fast path: it bypasses the change tracker, concurrency checks, and EF command interceptors, and the target table must already exist. The provider still emits one structured start/completion/failure diagnostic for the overall operation.
 
-On native DuckDB, database-generated keys work on this path. When a generated primary key (or any `UseAutoIncrement()` property) still holds its default value, `BulkInsert` reserves values from the column's default, such as its sequence or `uuid()`, in chunks of 8,192 rows and writes them onto the entities before appending. After the call, the supplied entities carry their keys, so a dimension load can feed the fact load that references it. Keys you set yourself are kept. Other columns must be given a value, and reserved sequence values are not returned if the transaction rolls back. DuckLake has no sequences or column defaults, and the Quack profile does not reserve keys, so on those profiles supply every key yourself.
+On native DuckDB, database-generated keys work on this path. When a generated primary key (or any `UseAutoIncrement()` property) still holds its default value, `BulkInsert` reserves values from the column's default, such as its sequence or `uuid()`, in chunks of 8,192 rows and writes them onto the entities before appending. After the call, the supplied entities carry their keys, so a dimension load can feed the fact load that references it. Keys you set yourself are kept. Other columns must be given a value, and reserved sequence values are not returned if the transaction rolls back. The Quack profile reserves keys the same way, evaluating the default on the server. DuckLake has no sequences or column defaults, so on DuckLake configure keys with `UseHiLo()`, which `BulkInsert` also uses, or supply every key yourself.
 
 ```csharp
 using DuckDB.EFCoreProvider.Extensions;
@@ -1409,7 +1411,7 @@ scripts/test-suite.sh full-project
 
 **`UseDuckDB` / `BulkInsert` / `UseAutoIncrement` not found.** Add `using DuckDB.EFCoreProvider.Extensions;`.
 
-**`BulkInsert` or `Upsert` throws about a missing key or column.** Both are raw fast paths that bypass change tracking. On native DuckDB, `BulkInsert` reserves generated primary keys from their column default and writes them back; on DuckLake and Quack it requires supplied keys. PK-targeted `Upsert` requires supplied primary-key values (configure the key as `ValueGeneratedNever()`). For a sequence-generated primary key, use the alternate-target `UpsertAsync` overload with a declared alternate key or unique index; it reads the stored generated values back into the supplied entities. Ensure the target table already exists. See [Bulk insert](#bulk-insert) and [Upsert](#upsert).
+**`BulkInsert` or `Upsert` throws about a missing key or column.** Both are raw fast paths that bypass change tracking. On native DuckDB and Quack, `BulkInsert` reserves generated primary keys from their column default and writes them back; on DuckLake it assigns `UseHiLo()` keys and otherwise requires supplied keys. PK-targeted `Upsert` requires supplied primary-key values (configure the key as `ValueGeneratedNever()`). For a sequence-generated primary key, use the alternate-target `UpsertAsync` overload with a declared alternate key or unique index; it reads the stored generated values back into the supplied entities. Ensure the target table already exists. See [Bulk insert](#bulk-insert) and [Upsert](#upsert).
 
 **Migrations.** For the `dotnet ef` workflow, generated keys, and the DuckDB-specific `ALTER TABLE`/index limitations, see the [migrations guide](docs/MIGRATIONS.md).
 

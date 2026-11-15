@@ -11,6 +11,8 @@ public static class DuckDBAnnotationNames
     public const string Prefix = "DuckDB:";
 
     public const string ValueGenerationStrategy = Prefix + "ValueGenerationStrategy";
+    public const string HiLoTableName = Prefix + "HiLoTableName";
+    public const string HiLoBlockSize = Prefix + "HiLoBlockSize";
 
     public const string FileSourceFunction = Prefix + "FileSourceFunction";
 
