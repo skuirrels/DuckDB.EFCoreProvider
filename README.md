@@ -1457,7 +1457,7 @@ scripts/test-suite.sh full-project
 
 `write-critical` is the minimum gate for write-provider changes. It covers SQL generation, `RETURNING`, generated keys, optimistic concurrency, generated-key migrations, model validation, and read-only existence checks.
 
-`all` is the complete production write-provider gate and is intended to stay green in CI. `full-project` runs the raw EF Core functional test project for broader provider-backlog discovery; it includes unrelated query/spec coverage that may fail until those areas are implemented.
+`all` is the complete production write-provider gate. `full-project` runs the whole functional test project, including the EF Core specification tests; unsupported cases are skipped with a recorded reason. CI runs `all` first and then `full-project` on both target frameworks, so both must stay green.
 
 ## Troubleshooting and FAQ
 
