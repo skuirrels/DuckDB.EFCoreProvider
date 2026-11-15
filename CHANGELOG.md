@@ -2,7 +2,7 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
-## Unreleased
+## 1.31.0
 
 - `DuckDB.EFCoreProvider.EF11` and `DuckDB.EFCoreProvider.EF11.NTS` are now stable releases. They build
   against stable EF Core 11.0.0, share the EF10 version number, and validate their API against the last EF11

@@ -35,8 +35,8 @@ The supported surface is the API a host application uses directly:
   `DuckDB.EFCoreProvider.EF11` and `DuckDB.EFCoreProvider.EF11.NTS` target EF11. Assembly names, namespaces
   and public entry points remain unchanged. Reference only one family in an application.
 - Both families share one version number. EF11 shipped as previews from core `1.26.0-preview.1` to
-  `1.30.0-preview.1` (NTS `1.1.0-preview.1` and `1.1.0-preview.2`) and is stable from the release after
-  `1.30.0`. Adding EF11 does not consume provider major version 2, which is reserved for the anticipated
+  `1.30.0-preview.1` (NTS `1.1.0-preview.1` and `1.1.0-preview.2`) and is stable from
+  `1.31.0`. Adding EF11 does not consume provider major version 2, which is reserved for the anticipated
   DuckDB 2 transition. Existing public-API breaking-change rules still apply.
 - The EF10 packages contain only `net10.0` assets and work in compatible newer .NET applications,
   including `net11.0`, while retaining EF10. The EF11 packages contain only `net11.0` assets.

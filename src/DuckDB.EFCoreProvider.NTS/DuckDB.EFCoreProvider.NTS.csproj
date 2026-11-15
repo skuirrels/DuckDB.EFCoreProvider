@@ -28,7 +28,7 @@
     <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.1.0-preview.2</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
 1.1.0 (EF11)
-- First stable release of the EF11 spatial package, built against stable EF Core 11.0.0 and allowing 11.0.x servicing updates. Tracks the stable DuckDB.EFCoreProvider.EF11 release. No NTS behavioural changes.
+- First stable release of the EF11 spatial package, built against stable EF Core 11.0.0 and allowing 11.0.x servicing updates. Tracks DuckDB.EFCoreProvider.EF11 1.31.0. No NTS behavioural changes.
 
 1.1.0-preview.2 (EF11)
 - Build against stable EF Core 11.0.0 and allow 11.0.x servicing updates. Tracks DuckDB.EFCoreProvider.EF11 1.28.0-preview.1. No NTS behavioural changes.
