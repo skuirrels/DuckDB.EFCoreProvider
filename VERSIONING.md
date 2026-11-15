@@ -46,7 +46,7 @@ The supported surface is the API a host application uses directly:
   dependencies.
 - `scripts/pack.sh 10`, `scripts/pack.sh 11`, or `scripts/pack.sh all` select the package family explicitly.
   Direct `dotnet pack` requires `-p:DuckDBEFCoreMajorVersion=10` or `11`; ambiguous multi-EF packages are rejected.
-- Each family validates its API against its own last published release: EF10 against `1.29.0` / `1.0.7`,
+- Each family validates its API against its own last published release: EF10 against `1.30.0` / `1.1.0`,
   EF11 against `1.30.0-preview.1` / `1.1.0-preview.2`. No cross-target JSON mapping suppressions are needed.
 - Every target must pass the production and compatibility gates. Package CI additionally tests
   .NET10/EF10, .NET11/EF10 and .NET11/EF11 consumers and diagnoses incompatible EF dependency combinations.

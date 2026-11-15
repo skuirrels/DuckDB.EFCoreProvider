@@ -2,7 +2,7 @@
 
 namespace Microsoft.EntityFrameworkCore.Query.Associations.ComplexJson;
 
-public class ComplexJsonSetOperationsDuckDBTest: ComplexJsonSetOperationsRelationalTestBase<ComplexJsonDuckDBFixture>
+public class ComplexJsonSetOperationsDuckDBTest : ComplexJsonSetOperationsRelationalTestBase<ComplexJsonDuckDBFixture>
 {
     public ComplexJsonSetOperationsDuckDBTest(ComplexJsonDuckDBFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
     {

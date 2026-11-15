@@ -272,4 +272,3 @@ public class TPCGearsOfWarQueryDuckDBTest : TPCGearsOfWarQueryRelationalTestBase
         return base.Where_subquery_with_ElementAt_using_column_as_index(async);
     }
 }
-

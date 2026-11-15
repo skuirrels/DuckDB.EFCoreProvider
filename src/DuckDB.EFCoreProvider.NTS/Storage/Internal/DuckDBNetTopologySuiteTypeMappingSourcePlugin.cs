@@ -1,7 +1,7 @@
-﻿using System.Diagnostics.CodeAnalysis;
-using Microsoft.EntityFrameworkCore.Storage;
+﻿using Microsoft.EntityFrameworkCore.Storage;
 using NetTopologySuite;
 using NetTopologySuite.Geometries;
+using System.Diagnostics.CodeAnalysis;
 
 namespace DuckDB.EFCoreProvider.NTS.Storage.Internal;
 

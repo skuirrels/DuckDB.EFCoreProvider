@@ -4,11 +4,11 @@
     <Version>1.31.0</Version>
     <PackageVersion>$(Version)</PackageVersion>
     <PackageId>DuckDB.EFCoreProvider</PackageId>
-    <PackageId Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB.EFCoreProvider.EF11</PackageId>
+    <PackageId Condition="'$(DuckDBIsEF11)' == 'true'">DuckDB.EFCoreProvider.EF11</PackageId>
     <FileVersion>1.31.0.0</FileVersion>
     <Authors>skuirrels</Authors>
     <Description>DuckDB, DuckLake and Parquet provider for Entity Framework Core 10, for analytics at cloud scale. Targets .NET 10 and also runs on .NET 11. For EF Core 11, use DuckDB.EFCoreProvider.EF11.</Description>
-    <Description Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB, DuckLake and Parquet provider for Entity Framework Core 11, for analytics at cloud scale. Targets .NET 11. For EF Core 10, use DuckDB.EFCoreProvider.</Description>
+    <Description Condition="'$(DuckDBIsEF11)' == 'true'">DuckDB, DuckLake and Parquet provider for Entity Framework Core 11, for analytics at cloud scale. Targets .NET 11. For EF Core 10, use DuckDB.EFCoreProvider.</Description>
     <!-- Space-delimited once written to the nuspec, so multi-word tags must be hyphenated:
          "Entity Framework Core" would index as three separate tokens. -->
     <PackageTags>duckdb;ducklake;quack;efcore;ef-core;entity-framework-core;orm;provider;database;analytics;olap;parquet;lakehouse;tiered-storage;data-lake;object-storage;bulk-insert;upsert;dotnet</PackageTags>
@@ -24,8 +24,8 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.30.0</PackageValidationBaselineVersion>
-    <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.30.0-preview.1</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(DuckDBIsEF11)' != 'true'">1.30.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(DuckDBIsEF11)' == 'true'">1.30.0-preview.1</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
 1.31.0 (EF10 and EF11)
 - The EF11 packages, DuckDB.EFCoreProvider.EF11 and DuckDB.EFCoreProvider.EF11.NTS, are now stable releases built against stable EF Core 11.0.0, and share the EF10 version number.

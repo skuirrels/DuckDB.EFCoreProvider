@@ -37,7 +37,7 @@ public class DuckDBArrayIndexExpression : SqlExpression, IEquatable<DuckDBArrayI
     {
         ArgumentNullException.ThrowIfNull(array);
         ArgumentNullException.ThrowIfNull(index);
-        
+
         if (!array.Type.TryGetElementType(out var elementType))
         {
             throw new ArgumentException("Array expression must be of an array type", nameof(array));

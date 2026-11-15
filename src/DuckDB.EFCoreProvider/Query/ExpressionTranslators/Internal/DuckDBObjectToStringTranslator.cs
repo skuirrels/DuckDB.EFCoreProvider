@@ -68,7 +68,7 @@ public class DuckDBObjectToStringTranslator : IMethodCallTranslator
 
         if (instanceType == typeof(bool))
         {
-            var trueConst  = _sqlExpressionFactory.Constant(bool.TrueString,  _varcharTypeMapping);
+            var trueConst = _sqlExpressionFactory.Constant(bool.TrueString, _varcharTypeMapping);
             var falseConst = _sqlExpressionFactory.Constant(bool.FalseString, _varcharTypeMapping);
             var emptyConst = _sqlExpressionFactory.Constant(string.Empty, _varcharTypeMapping);
 

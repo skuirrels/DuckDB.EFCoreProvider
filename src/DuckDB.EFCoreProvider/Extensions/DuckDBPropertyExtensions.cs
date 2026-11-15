@@ -73,7 +73,7 @@ public static class DuckDBPropertyExtensions
         property.SetOrRemoveAnnotation(DuckDBAnnotationNames.ValueGenerationStrategy, value, fromDataAnnotation);
         return value;
     }
-    
+
     public static void SetValueGenerationStrategy(
         this IMutableRelationalPropertyOverrides overrides,
         DuckDBValueGenerationStrategy? value)

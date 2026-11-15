@@ -16,7 +16,7 @@ public class DuckDBArrayPreprocessor : ExpressionVisitor
     protected override Expression VisitMethodCall(MethodCallExpression node)
     {
         var method = node.Method;
-        
+
         if (method.DeclaringType == typeof(Enumerable))
         {
             if (method.Name == nameof(Enumerable.Prepend))

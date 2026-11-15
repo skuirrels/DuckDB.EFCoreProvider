@@ -153,7 +153,7 @@ public abstract class UpdatesDuckDBTest : UpdatesRelationalTestBase<UpdatesDuckD
     {
         return base.Save_partial_update();
     }
-    
+
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Save_partial_update_on_concurrency_token_original_value_mismatch_throws()
     {

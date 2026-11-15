@@ -433,7 +433,7 @@ public class ManyToManySplitQueryDuckDBTest : ManyToManyQueryRelationalTestBase<
     {
         return base.Select_many_over_skip_navigation_cast_unidirectional(async);
     }
-    
+
     [ConditionalTheory(Skip = DuckDBSkipReasons.Tbd)]
     public override Task Select_many_over_skip_navigation_unidirectional(bool async)
     {

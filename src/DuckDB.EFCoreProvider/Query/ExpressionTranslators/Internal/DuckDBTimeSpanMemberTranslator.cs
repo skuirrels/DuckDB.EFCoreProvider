@@ -19,7 +19,7 @@ public class DuckDBTimeSpanMemberTranslator : IMemberTranslator
     private static readonly MemberInfo Minute = typeof(TimeSpan).GetRuntimeProperty(nameof(TimeSpan.Minutes))!;
     private static readonly MemberInfo Second = typeof(TimeSpan).GetRuntimeProperty(nameof(TimeSpan.Seconds))!;
     private static readonly MemberInfo Microseconds = typeof(TimeSpan).GetRuntimeProperty(nameof(TimeSpan.Microseconds))!;
-    
+
     private readonly DuckDBSqlExpressionFactory _sqlExpressionFactory;
 
     public DuckDBTimeSpanMemberTranslator(ISqlExpressionFactory sqlExpressionFactory)

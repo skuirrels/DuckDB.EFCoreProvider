@@ -23,7 +23,7 @@ public class DuckDBNewArrayExpression : SqlExpression
         : base(type, typeMapping)
     {
         ArgumentNullException.ThrowIfNull(expressions);
-        
+
         if (type.TryGetElementType(typeof(IEnumerable<>)) is null)
         {
             throw new ArgumentException($"{nameof(DuckDBNewArrayExpression)} must have an IEnumerable<T> type");

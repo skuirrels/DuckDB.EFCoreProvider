@@ -27,4 +27,3 @@ public class DuckDBNtsQuerySqlGeneratorFactory : DuckDBQuerySqlGeneratorFactory
     public override QuerySqlGenerator Create()
         => new DuckDBNtsQuerySqlGenerator(_dependencies, _options.ReverseNullOrderingEnabled);
 }
-

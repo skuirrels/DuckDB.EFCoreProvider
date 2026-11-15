@@ -1,6 +1,6 @@
-using System.Data.Common;
 using DuckDB.EFCoreProvider.Extensions;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using System.Data.Common;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;

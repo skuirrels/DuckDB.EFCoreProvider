@@ -16,7 +16,7 @@ namespace DuckDB.EFCoreProvider.Query.ExpressionTranslators.Internal;
 public class DuckDBRegexMethodTranslator : IMethodCallTranslator
 {
     private static readonly MethodInfo IsMatch = typeof(Regex).GetMethod(nameof(Regex.IsMatch), [typeof(string), typeof(string)])!;
-    
+
     private readonly ISqlExpressionFactory _sqlExpressionFactory;
 
     public DuckDBRegexMethodTranslator(ISqlExpressionFactory sqlExpressionFactory)

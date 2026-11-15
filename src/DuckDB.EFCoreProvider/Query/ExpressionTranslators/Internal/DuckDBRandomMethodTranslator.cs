@@ -15,7 +15,7 @@ namespace DuckDB.EFCoreProvider.Query.ExpressionTranslators.Internal;
 public class DuckDBRandomMethodTranslator : IMethodCallTranslator
 {
     private static readonly MethodInfo Random = typeof(DbFunctionsExtensions).GetRuntimeMethod(nameof(DbFunctionsExtensions.Random), [typeof(DbFunctions)])!;
-    
+
     private readonly ISqlExpressionFactory _sqlExpressionFactory;
 
     public DuckDBRandomMethodTranslator(ISqlExpressionFactory sqlExpressionFactory)

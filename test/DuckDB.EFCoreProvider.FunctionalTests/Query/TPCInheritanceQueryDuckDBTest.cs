@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Query;
 
-public class TPCInheritanceQueryDuckDBTest: TPCInheritanceQueryTestBase<TPCInheritanceQueryDuckDBFixture>
+public class TPCInheritanceQueryDuckDBTest : TPCInheritanceQueryTestBase<TPCInheritanceQueryDuckDBFixture>
 {
     public TPCInheritanceQueryDuckDBTest(TPCInheritanceQueryDuckDBFixture fixture, ITestOutputHelper testOutputHelper) : base(fixture, testOutputHelper)
     {

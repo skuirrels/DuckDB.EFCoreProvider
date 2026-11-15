@@ -6,7 +6,7 @@ namespace Microsoft.EntityFrameworkCore.TestUtilities;
 public class DuckDBTestStoreFactory : RelationalTestStoreFactory
 {
     public static DuckDBTestStoreFactory Instance { get; } = new();
-    
+
     public override TestStore Create(string storeName)
     {
         return DuckDBTestStore.Create(storeName);

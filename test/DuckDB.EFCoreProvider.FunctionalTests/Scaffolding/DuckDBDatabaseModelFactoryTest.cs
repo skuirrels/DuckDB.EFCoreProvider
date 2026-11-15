@@ -9,9 +9,9 @@ public class DuckDBDatabaseModelFactoryTest : IClassFixture<DuckDBDatabaseModelF
     {
         Fixture = fixture;
     }
-    
+
     protected DuckDBDatabaseModelFixture Fixture { get; }
-    
+
     public class DuckDBDatabaseModelFixture : SharedStoreFixtureBase<PoolableDbContext>
     {
         protected override string StoreName

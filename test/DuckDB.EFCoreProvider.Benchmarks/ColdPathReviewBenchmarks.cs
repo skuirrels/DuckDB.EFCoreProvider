@@ -1,5 +1,5 @@
-using System.Text.RegularExpressions;
 using BenchmarkDotNet.Attributes;
+using System.Text.RegularExpressions;
 
 namespace DuckDB.EFCoreProvider.Benchmarks;
 

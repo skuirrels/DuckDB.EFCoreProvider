@@ -772,7 +772,7 @@ public class GraphUpdatesDuckDBSnapshotNotificationsTest : GraphUpdatesDuckDBTes
     {
         await base.Update_root_by_collection_replacement_of_inserted_second_level(async);
     }
-    
+
     protected override void UseTransaction(DatabaseFacade facade, IDbContextTransaction transaction)
         => facade.UseTransaction(transaction.GetDbTransaction());
 

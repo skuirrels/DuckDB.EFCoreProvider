@@ -56,4 +56,3 @@ public class DuckDBNtsQuerySqlGenerator : DuckDBQuerySqlGenerator
         return base.VisitProjection(projectionExpression);
     }
 }
-
