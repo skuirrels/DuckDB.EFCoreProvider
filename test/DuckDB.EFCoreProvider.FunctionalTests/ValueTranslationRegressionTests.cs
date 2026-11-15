@@ -1,4 +1,4 @@
-using DuckDB.EFCoreProvider.Extensions;
+﻿using DuckDB.EFCoreProvider.Extensions;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Xunit;
 
@@ -6,7 +6,7 @@ namespace Microsoft.EntityFrameworkCore;
 
 /// <summary>
 ///     End-to-end coverage for BLOB literals and list reads, numeric Parse, byte-array Any, and the DateTimeOffset
-///     members and constructors, on both the native DuckDB and the DuckLake profiles.
+///     members and constructors, TIMETZ reads, and JsonPathExists, on both the native DuckDB and the DuckLake profiles.
 /// </summary>
 public sealed class ValueTranslationRegressionTests : DuckDBTestBase
 {
@@ -113,6 +113,44 @@ public sealed class ValueTranslationRegressionTests : DuckDBTestBase
                 .ToArray());
         });
 
+    [ConditionalTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TimeOnly_mapped_to_TIMETZ_round_trips(bool duckLake)
+        => Run(duckLake, context =>
+        {
+            Assert.Equal(
+                [new TimeOnly(10, 5, 30), new TimeOnly(23, 59)],
+                context.Rows.OrderBy(row => row.Id).Select(row => row.ClockTz).ToArray());
+            Assert.Equal([2], context.Rows.Where(row => row.ClockTz == new TimeOnly(23, 59)).Select(row => row.Id).ToArray());
+        });
+
+#if NET11_0_OR_GREATER
+    [ConditionalTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void JsonPathExists_treats_a_json_null_as_present_and_a_null_column_as_false(bool duckLake)
+        => Run(duckLake, context =>
+        {
+            var filtered = context.Rows
+                .Where(row => EF.Functions.JsonPathExists(row.Json!, "$.OptionalInt"))
+                .Select(row => row.Id);
+
+            Assert.Contains("json_type(", filtered.ToQueryString());
+            Assert.Equal([1], filtered.ToArray());
+
+            var projected = context.Rows.OrderBy(row => row.Id)
+                .Select(row => new
+                {
+                    Present = EF.Functions.JsonPathExists(row.Json!, "$.OptionalInt"),
+                    Missing = EF.Functions.JsonPathExists(row.Json!, "$.Other")
+                })
+                .ToArray();
+
+            Assert.Equal([(true, false), (false, false)], projected.Select(row => (row.Present, row.Missing)));
+        });
+#endif
+
     private void Run(bool duckLake, Action<ValueContext> test)
     {
         var root = Path.Combine(Path.GetTempPath(), $"value_translation_{Guid.NewGuid():N}");
@@ -143,8 +181,10 @@ public sealed class ValueTranslationRegressionTests : DuckDBTestBase
                     Data = [0x01, 0xAB, 0x00],
                     Blobs = [[0x01, 0x02], [], [0xFF]],
                     Number = "42",
+                    Json = """{"OptionalInt": null}""",
                     Stamp = Stamp,
-                    Clock = Clock
+                    Clock = Clock,
+                    ClockTz = new TimeOnly(10, 5, 30)
                 },
                 new ValueRow
                 {
@@ -153,7 +193,8 @@ public sealed class ValueTranslationRegressionTests : DuckDBTestBase
                     Blobs = [],
                     Number = "7",
                     Stamp = Stamp.AddDays(1),
-                    Clock = Clock.AddDays(1)
+                    Clock = Clock.AddDays(1),
+                    ClockTz = new TimeOnly(23, 59)
                 });
             context.SaveChanges();
             context.ChangeTracker.Clear();
@@ -174,7 +215,12 @@ public sealed class ValueTranslationRegressionTests : DuckDBTestBase
         public DbSet<ValueRow> Rows => Set<ValueRow>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
-            => modelBuilder.Entity<ValueRow>(entity => entity.Property(row => row.Id).ValueGeneratedNever());
+            => modelBuilder.Entity<ValueRow>(
+                entity =>
+                {
+                    entity.Property(row => row.Id).ValueGeneratedNever();
+                    entity.Property(row => row.ClockTz).HasColumnType("TIMETZ");
+                });
     }
 
     private sealed class ValueRow
@@ -187,8 +233,12 @@ public sealed class ValueTranslationRegressionTests : DuckDBTestBase
 
         public string Number { get; set; } = "";
 
+        public string? Json { get; set; }
+
         public DateTimeOffset Stamp { get; set; }
 
         public DateTime Clock { get; set; }
+
+        public TimeOnly ClockTz { get; set; }
     }
 }

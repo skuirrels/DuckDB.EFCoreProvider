@@ -13,20 +13,44 @@ public class JsonTranslationsDuckDBTest : JsonTranslationsRelationalTestBase<Jso
         Fixture.TestSqlLoggerFactory.SetTestOutputHelper(testOutputHelper);
     }
 
-    // EF.Functions.JsonPathExists is new in EF Core 11 and has no DuckDB translation yet.
-    [ConditionalFact(Skip = DuckDBSkipReasons.NewEF11Coverage)]
-    public override Task JsonPathExists_on_scalar_string_column()
-        => base.JsonPathExists_on_scalar_string_column();
+    public override async Task JsonPathExists_on_scalar_string_column()
+    {
+        await base.JsonPathExists_on_scalar_string_column();
 
-    // EF.Functions.JsonPathExists is new in EF Core 11 and has no DuckDB translation yet.
-    [ConditionalFact(Skip = DuckDBSkipReasons.NewEF11Coverage)]
-    public override Task JsonPathExists_on_complex_property()
-        => base.JsonPathExists_on_complex_property();
+        AssertSql(
+            """
+SELECT j."Id", j."JsonString", j."JsonComplexType", j."JsonOwnedType"
+FROM "JsonEntities" AS j
+WHERE json_type(j."JsonString", '$.OptionalInt') IS NOT NULL
+""");
+    }
 
-    // EF.Functions.JsonPathExists is new in EF Core 11 and has no DuckDB translation yet.
-    [ConditionalFact(Skip = DuckDBSkipReasons.NewEF11Coverage)]
-    public override Task JsonPathExists_on_owned_entity()
-        => base.JsonPathExists_on_owned_entity();
+    public override async Task JsonPathExists_on_complex_property()
+    {
+        await base.JsonPathExists_on_complex_property();
+
+        AssertSql(
+            """
+SELECT j."Id", j."JsonString", j."JsonComplexType", j."JsonOwnedType"
+FROM "JsonEntities" AS j
+WHERE json_type(j."JsonComplexType", '$.OptionalInt') IS NOT NULL
+""");
+    }
+
+    public override async Task JsonPathExists_on_owned_entity()
+    {
+        await base.JsonPathExists_on_owned_entity();
+
+        AssertSql(
+            """
+SELECT j."Id", j."JsonString", j."JsonComplexType", j."JsonOwnedType"
+FROM "JsonEntities" AS j
+WHERE json_type(j."JsonOwnedType", '$.OptionalInt') IS NOT NULL
+""");
+    }
+
+    private void AssertSql(params string[] expected)
+        => Fixture.TestSqlLoggerFactory.AssertBaseline(expected);
 
     public class JsonTranslationsQueryDuckDBFixture : JsonTranslationsQueryFixtureBase
     {

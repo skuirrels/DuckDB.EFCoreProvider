@@ -15,10 +15,16 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   as UTC, as other EF Core providers do, rather than applying the machine's local offset. `LocalDateTime` uses
   the DuckDB session `TimeZone`. `DateTimeOffset.DateTime`, `Offset` and `ToOffset` stay untranslated, because
   `TIMESTAMPTZ` does not store the original offset.
-- Compiled models (NativeAOT): the numeric, Boolean, character, GUID and `DateOnly` type mappings now expose
-  a `Default` instance for generated code, and design-time-only column and foreign key annotations are no
-  longer emitted into runtime code. This fixes the owned-entity compiled-model case; timestamp, time, struct
-  and JSON mappings are unchanged.
+- Compiled models (NativeAOT): the numeric, Boolean, character, GUID, `DateOnly`, timestamp and time type
+  mappings now expose a `Default` instance for generated code, and design-time-only column and foreign key
+  annotations are no longer emitted into runtime code. Models with `TIMESTAMP_NS`, `TIMESTAMP_MS`,
+  `TIMESTAMP_S`, `TIMESTAMPTZ`, `TIME`, `TIMETZ` and `TimeSpan` columns can now be compiled, and keep their
+  literal formats. `TIMESTAMPTZ` uses a new `DuckDBTimestampTzTypeMapping` subclass. STRUCT and complex JSON
+  columns are covered by compiled-model tests.
+- Fixed `TimeOnly` properties mapped to `TIMETZ` failing to read with an `InvalidCastException`. The value
+  keeps its clock time and drops the offset.
+- EF11: `EF.Functions.JsonPathExists` translates to `json_type(json, path) IS NOT NULL` for string columns and
+  complex or owned JSON properties. A JSON `null` at the path counts as present; a `NULL` column gives `false`.
 - EF11: the specification tests added in EF Core 11.0.0 now pass or are skipped with a recorded reason. The
   EF10 package line gets the same fixes.
 

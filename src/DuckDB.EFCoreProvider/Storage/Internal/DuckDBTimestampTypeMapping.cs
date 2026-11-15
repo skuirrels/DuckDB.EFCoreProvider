@@ -63,12 +63,12 @@ public class DuckDBTimestampTypeMapping : RelationalTypeMapping
         JsonDateTimeReaderWriter.Instance,
         DuckDBType.TimestampS);
 
-    public static readonly DuckDBTimestampTypeMapping TimestampTz = new(
-        typeof(DateTimeOffset),
-        "TIMESTAMPTZ",
-        System.Data.DbType.DateTimeOffset,
-        JsonDateTimeOffsetReaderWriter.Instance,
-        DuckDBType.TimestampTz);
+    public static readonly DuckDBTimestampTypeMapping TimestampTz = new DuckDBTimestampTzTypeMapping();
+
+    /// <summary>
+    ///     The <c>TIMESTAMP</c> mapping that compiled models clone. The clone takes its precision from the store type.
+    /// </summary>
+    public static DuckDBTimestampTypeMapping Default => Timestamp;
 
     public DuckDBTimestampTypeMapping(
         Type clrType,
@@ -96,8 +96,20 @@ public class DuckDBTimestampTypeMapping : RelationalTypeMapping
     /// <inheritdoc />
     protected override RelationalTypeMapping Clone(RelationalTypeMappingParameters parameters)
     {
-        return new DuckDBTimestampTypeMapping(parameters, DuckDbType);
+        return new DuckDBTimestampTypeMapping(parameters, ResolveDuckDbType(parameters.StoreType, DuckDbType));
     }
+
+    // A compiled model rebuilds a TIMESTAMP_MS mapping, for example, by cloning Default with the new store type, so
+    // the DuckDB type that selects the literal format and parameter metadata follows the store type.
+    private static DuckDBType ResolveDuckDbType(string storeType, DuckDBType fallback)
+        => storeType.ToUpperInvariant() switch
+        {
+            "TIMESTAMP_NS" => DuckDBType.TimestampNs,
+            "TIMESTAMP_MS" => DuckDBType.TimestampMs,
+            "TIMESTAMP_S" => DuckDBType.TimestampS,
+            "TIMESTAMP" or "DATETIME" or "TIMESTAMP WITHOUT TIME ZONE" => DuckDBType.Timestamp,
+            _ => fallback
+        };
 
     /// <inheritdoc />
     public override MethodInfo GetDataReaderMethod()

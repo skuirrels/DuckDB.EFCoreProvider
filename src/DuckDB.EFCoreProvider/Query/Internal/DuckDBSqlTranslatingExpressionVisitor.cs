@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using DuckDB.EFCoreProvider.Storage.Internal;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
@@ -113,8 +114,51 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
                 typeof(string));
         }
 
+#if NET11_0_OR_GREATER
+        if (method.DeclaringType == typeof(RelationalDbFunctionsExtensions)
+            && method.Name == nameof(RelationalDbFunctionsExtensions.JsonPathExists)
+            && methodCallExpression.Arguments is [_, var json, var path])
+        {
+            return TranslateJsonPathExists(json, path);
+        }
+#endif
+
         return base.VisitMethodCall(methodCallExpression);
     }
+
+#if NET11_0_OR_GREATER
+    // EF.Functions.JsonPathExists is translated here rather than in a method translator because the JSON argument can be
+    // a complex or owned JSON property, which only the projection translation resolves to its JSON column.
+    private Expression TranslateJsonPathExists(Expression json, Expression path)
+    {
+        if (Translate(path) is not SqlExpression translatedPath)
+        {
+            return QueryCompilationContext.NotTranslatedExpression;
+        }
+
+        var translatedJson = TranslateProjection(json) switch
+        {
+            SqlExpression scalar => scalar,
+            RelationalStructuralTypeShaperExpression { ValueBufferExpression: JsonQueryExpression { JsonColumn: var column } } => column,
+            _ => null
+        };
+
+        if (translatedJson is null)
+        {
+            return QueryCompilationContext.NotTranslatedExpression;
+        }
+
+        // json_type returns NULL only when the path is missing (a JSON null at the path is 'NULL'), so IS NOT NULL keeps
+        // the result two-valued when the JSON value itself is NULL.
+        return Dependencies.SqlExpressionFactory.IsNotNull(
+            Dependencies.SqlExpressionFactory.Function(
+                "json_type",
+                [translatedJson, translatedPath],
+                nullable: true,
+                argumentsPropagateNullability: [false, false],
+                typeof(string)));
+    }
+#endif
 
     /// <inheritdoc />
     protected override Expression VisitMember(MemberExpression memberExpression)
