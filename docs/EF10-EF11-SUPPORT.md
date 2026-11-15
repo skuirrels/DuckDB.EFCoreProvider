@@ -61,8 +61,8 @@ numbers describe the original EF10 runs and are not measurements of EF11.
 
 The production gate covers writes and migrations. The compatibility gate adds STRUCTs, native arrays,
 owned value loading, binary JSON, aggregate query translation, raw-SQL precompilation, ordinary SQL
-pregeneration, API parameter naming, file sources, ADO.NET substitution, bulk writes, DuckLake,
-Quack and spatial coverage. The raw full project also exercises upstream specification backlog and is
+pregeneration, API parameter naming, file sources, ADO.NET substitution, bulk writes, value translations,
+DuckLake, Quack and spatial coverage. The raw full project also exercises upstream specification backlog and is
 not interchangeable with the production gate. External PostgreSQL/MinIO and tiered-storage CI jobs run
 for both targets. Local runs can select `DUCKDB_TEST_FRAMEWORK` with the same integration scripts. By default the
 PostgreSQL/MinIO runner recreates its disposable backend for each target, so EF11 starts with an empty catalog.
@@ -136,6 +136,8 @@ Counts are passed / skipped.
 | EF10 | 21,788 | 4,138 | 0 |
 | EF11 preview 7 (unchanged `main`) | 22,087 | 4,113 | 50 |
 | EF11 11.0.0 | 22,197 | 4,124 | 32 |
+| EF10 after the EF11 drift fixes | 21,827 | 4,139 | 0 |
+| EF11 11.0.0 after the EF11 drift fixes | 22,393 | 4,141 | 0 |
 
 Seventeen preview-7 failures pass on 11.0.0, including the empty-subquery aggregates, non-nullable
 properties through optional navigations and the many-to-many composite-reference update. EF Core 11.0.0
@@ -171,8 +173,41 @@ New 11.0.0 coverage that the provider does not support yet:
 | --- | --- | --- |
 | `KeysWithConverters.*struct_key_and_required_dependents_with_shadow_FK` | Change detection severs a required relationship with a shadow FK over a converted struct key. | Skipped (`NewEF11Coverage`) |
 | `JsonTypes.Can_read_write_collection_of_nullable_*_with_null_returning_converter` | Array mappings cannot build a JSON reader/writer for converters that return null elements. | Skipped (`NewEF11Coverage`) |
+| `JsonTranslations.JsonPathExists_*` | `EF.Functions.JsonPathExists` has no DuckDB translation yet. | Skipped (`NewEF11Coverage`) |
 
-The remaining EF11 failures are the preview-era areas listed below.
+### EF11 drift fixes
+
+The 32 remaining EF11 failures are resolved. Both raw full-project runs, taken before
+`ValueTranslationRegressionTests` was added, have zero failures. The provider fixes apply to both package lines:
+
+- Byte-array constants render as `'\x..'::BLOB`, because DuckDB 1.5.6 reads `X'...'` as `VARCHAR`.
+- `BLOB[]` columns are read as streams and copied, because DuckDB.NET cannot materialize `BLOB` list
+  elements as `byte[]`.
+- Numeric `Parse(string)`, byte-array `Any()`, `DateTimeOffset.UtcDateTime` and `LocalDateTime`, and the
+  `DateTimeOffset(DateTime)` and `DateTimeOffset(DateTime, TimeSpan)` constructors with a constant offset now
+  translate. `LocalDateTime` uses the DuckDB session `TimeZone`.
+- Compiled models: the numeric, Boolean, character, GUID and `DateOnly` type mappings expose a `Default`
+  instance, and design-time-only column and foreign key annotations are no longer generated into runtime code.
+
+`ValueTranslationRegressionTests` covers these translations end to end on native DuckDB and DuckLake, and runs
+in the compatibility gate. The remaining cases are provider behaviour, recorded as skips or overrides:
+
+| Test | Reason | Status |
+| --- | --- | --- |
+| `DateTimeOffsetTranslations.DateTime`, `ToOffset` | `TIMESTAMPTZ` does not store the original offset. | Skipped (`OffsetNotStored`) |
+| `NorthwindGroupByQuery.GroupBy_Select_Entire_Entity_*` | EF renders an unordered `First()` over a group, so the row is undefined. | Skipped (`UnorderedFirstInGroup`) |
+| Four `OwnedNavigationsProjection` and `OwnedTableSplittingProjection` no-tracking cases | Owned values in separate tables are not auto-included by design. | Skipped (`SeparateTableOwnedValuesNotAutoIncluded`) |
+| `CompiledModel.Owned_entity_sharing_table_with_owner_that_has_an_index` | The provider omits automatic foreign key indexes, so the test declares its index. | Overridden |
+| `NavigationsBulkUpdate` | The base targets complex types; EF rejects whole-navigation setters before SQL generation, and entity-typed associates change the expected row counts. | Overridden |
+| `RuntimeMigrationTestBase` | Its non-virtual tests expect cascade delete and automatic foreign key indexes. | Ignored in `DuckDBComplianceTest` |
+
+New EF11 test bases for TPC, TPH and TPT JSON and table-splitting inheritance, JSON translations and navigation
+bulk updates now have DuckDB fixtures.
+
+| Gate after the drift fixes | EF10 | EF11 (11.0.0) |
+| --- | ---: | ---: |
+| Production write gate (`all`) | 725 / 465 | 769 / 461 |
+| Shared compatibility | 1,549 / 142 | 1,551 / 146 |
 
 ### EF11 preview 7
 
@@ -209,8 +244,8 @@ Repository-wide formatting still reports pre-existing diagnostics; introduced fo
 
 ### Raw specification backlog
 
-The unfiltered EF10 project is green with its existing skips. EF11 still has specification gaps; keep
-those failures visible when developing further EF11 functionality. Passing the production and compatibility
+The unfiltered EF10 and EF11 projects are green with their existing skips. Keep new upstream failures
+visible when developing further EF11 functionality. Passing the production and compatibility
 gates does not claim complete upstream conformance.
 
 The unchanged EF10 baseline had three failures: `PrecompiledQueryDuckDBTest.FromSqlRaw`,
@@ -221,7 +256,7 @@ runtime argument expansion; the metadata fix renames only a private nested helpe
 `rootNullable`, preserving public constructor parameter names and behavior. Shared regression tests
 also check argument rebinding, null values and LINQ composition.
 
-Additional EF11 specification coverage exposes these remaining areas:
+The preview-7 specification coverage exposed these areas; all are now resolved (see EF11 drift fixes):
 
 | Area | Remaining work |
 | --- | --- |

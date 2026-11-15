@@ -12,6 +12,7 @@ using System.Collections.ObjectModel;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 
@@ -278,6 +279,35 @@ public class DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement> 
             return GetDataReaderMethod(typeof(List<>).MakeGenericType(providerElementType));
         }
 
+        // DuckDB.NET cannot materialize BLOB list elements as byte[]; it returns them as streams instead.
+        if (elementType == typeof(byte[]))
+        {
+            return GetDataReaderMethod(typeof(List<Stream?>));
+        }
+
         return GetDataReaderMethod(typeof(List<>).MakeGenericType(elementType));
+    }
+
+    /// <inheritdoc />
+    public override Expression CustomizeDataReaderExpression(Expression expression)
+    {
+        return expression.Type == typeof(List<Stream?>)
+            ? Expression.Call(ReadBlobListMethod, expression)
+            : base.CustomizeDataReaderExpression(expression);
+    }
+
+    private static readonly MethodInfo ReadBlobListMethod =
+        typeof(DuckDBArrayTypeMapping<TCollection, TConcreteCollection, TElement>)
+            .GetMethod(nameof(ReadBlobList), BindingFlags.Static | BindingFlags.NonPublic)!;
+
+    private static List<byte[]?> ReadBlobList(List<Stream?> streams)
+    {
+        var blobs = new List<byte[]?>(streams.Count);
+        foreach (var stream in streams)
+        {
+            blobs.Add(stream is null ? null : DuckDBBlobTypeMapping.ReadStream(stream));
+        }
+
+        return blobs;
     }
 }

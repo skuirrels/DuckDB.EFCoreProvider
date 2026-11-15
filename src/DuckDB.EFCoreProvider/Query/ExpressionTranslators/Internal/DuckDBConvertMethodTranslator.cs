@@ -14,6 +14,13 @@ namespace DuckDB.EFCoreProvider.Query.ExpressionTranslators.Internal;
 /// </summary>
 public class DuckDBConvertMethodTranslator : IMethodCallTranslator
 {
+    // The single-string Parse overloads; DuckDB's CAST accepts the same invariant numeric text.
+    private static readonly HashSet<Type> ParseableNumericTypes =
+    [
+        typeof(byte), typeof(sbyte), typeof(short), typeof(ushort), typeof(int), typeof(uint),
+        typeof(long), typeof(ulong), typeof(decimal), typeof(double), typeof(float)
+    ];
+
     private readonly ISqlExpressionFactory _sqlExpressionFactory;
 
     public DuckDBConvertMethodTranslator(ISqlExpressionFactory sqlExpressionFactory)
@@ -41,6 +48,15 @@ public class DuckDBConvertMethodTranslator : IMethodCallTranslator
                 nameof(Convert.ToString) => _sqlExpressionFactory.Convert(arguments[0], typeof(string)),
                 _ => null
             };
+        }
+
+        if (method.Name == nameof(int.Parse)
+            && method.IsStatic
+            && ParseableNumericTypes.Contains(method.DeclaringType!)
+            && arguments.Count == 1
+            && arguments[0].Type == typeof(string))
+        {
+            return _sqlExpressionFactory.Convert(arguments[0], method.DeclaringType!);
         }
 
         return null;

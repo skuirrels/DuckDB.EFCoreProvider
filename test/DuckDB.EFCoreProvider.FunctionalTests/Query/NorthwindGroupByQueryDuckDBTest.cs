@@ -16,4 +16,24 @@ public class NorthwindGroupByQueryDuckDBTest : NorthwindGroupByQueryRelationalTe
     {
         return base.GroupBy_aggregate_projecting_conditional_expression(async);
     }
+
+#if NET11_0_OR_GREATER
+    [ConditionalTheory(Skip = DuckDBSkipReasons.UnorderedFirstInGroup)]
+    public override Task GroupBy_Select_Entire_Entity_Where(bool async)
+    {
+        return base.GroupBy_Select_Entire_Entity_Where(async);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.UnorderedFirstInGroup)]
+    public override Task GroupBy_Select_Entire_Entity_Order(bool async)
+    {
+        return base.GroupBy_Select_Entire_Entity_Order(async);
+    }
+
+    [ConditionalTheory(Skip = DuckDBSkipReasons.UnorderedFirstInGroup)]
+    public override Task GroupBy_Select_Entire_Entity_composite_key_Select(bool async)
+    {
+        return base.GroupBy_Select_Entire_Entity_composite_key_Select(async);
+    }
+#endif
 }

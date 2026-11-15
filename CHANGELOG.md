@@ -2,6 +2,26 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- Fixed byte-array constants rendering as `X'...'` literals, which DuckDB 1.5.6 reads as `VARCHAR`, so equality
+  against a `BLOB` column failed. Constants now render as `'\x..'::BLOB`.
+- `List<byte[]>` (`BLOB[]`) columns can now be read. DuckDB.NET cannot materialize `BLOB` list elements as
+  `byte[]`, so the provider reads them as streams and copies them.
+- New translations: numeric `Parse(string)` methods become a `CAST` (`decimal.Parse` uses the default
+  `DECIMAL(18,3)`, like `Convert.ToDecimal`); `byteArray.Any()` on a `BLOB` becomes `octet_length(...) > 0`;
+  `DateTimeOffset.UtcDateTime` and `LocalDateTime`; and `new DateTimeOffset(dateTime)` and
+  `new DateTimeOffset(dateTime, offset)` with a constant offset. The one-argument constructor reads the value
+  as UTC, as other EF Core providers do, rather than applying the machine's local offset. `LocalDateTime` uses
+  the DuckDB session `TimeZone`. `DateTimeOffset.DateTime`, `Offset` and `ToOffset` stay untranslated, because
+  `TIMESTAMPTZ` does not store the original offset.
+- Compiled models (NativeAOT): the numeric, Boolean, character, GUID and `DateOnly` type mappings now expose
+  a `Default` instance for generated code, and design-time-only column and foreign key annotations are no
+  longer emitted into runtime code. This fixes the owned-entity compiled-model case; timestamp, time, struct
+  and JSON mappings are unchanged.
+- EF11: the specification tests added in EF Core 11.0.0 now pass or are skipped with a recorded reason. The
+  EF10 package line gets the same fixes.
+
 ## 1.30.0 / EF11 1.30.0-preview.1
 
 - `EnableRetryOnFailure()` opts in to `DuckDBRetryingExecutionStrategy`, which replays a whole unit of work when

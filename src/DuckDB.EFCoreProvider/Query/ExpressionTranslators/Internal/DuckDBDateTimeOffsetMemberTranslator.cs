@@ -21,6 +21,8 @@ public class DuckDBDateTimeOffsetMemberTranslator : IMemberTranslator
     private static readonly MemberInfo Hour = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.Hour))!;
     private static readonly MemberInfo Minute = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.Minute))!;
     private static readonly MemberInfo Second = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.Second))!;
+    private static readonly MemberInfo UtcDateTime = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.UtcDateTime))!;
+    private static readonly MemberInfo LocalDateTime = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.LocalDateTime))!;
 
     private readonly DuckDBSqlExpressionFactory _sqlExpressionFactory;
 
@@ -65,6 +67,19 @@ public class DuckDBDateTimeOffsetMemberTranslator : IMemberTranslator
             return _sqlExpressionFactory.Second(instance!);
         }
 
+        if (member == UtcDateTime)
+        {
+            return _sqlExpressionFactory.AtUtc(instance!, typeof(DateTime));
+        }
+
+        if (member == LocalDateTime)
+        {
+            // A TIMESTAMPTZ cast to TIMESTAMP takes the clock time in the session's TimeZone setting, which
+            // DuckDB sets from the local machine by default.
+            return _sqlExpressionFactory.Convert(instance!, typeof(DateTime));
+        }
+
+        // DateTime and the offset-based members need the original offset, which TIMESTAMPTZ does not store.
         return null;
     }
 }

@@ -16,6 +16,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBCharTypeMapping : CharTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBCharTypeMapping Default { get; } = new();
+
     public DuckDBCharTypeMapping()
         : base(new RelationalTypeMappingParameters(
             new CoreTypeMappingParameters(

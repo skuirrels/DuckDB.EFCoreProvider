@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.TestUtilities;
+﻿using System.Runtime.CompilerServices;
+using Microsoft.EntityFrameworkCore.TestUtilities;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore.Scaffolding;
@@ -81,8 +82,29 @@ public class CompiledModelDuckDBTest : CompiledModelRelationalTestBase
         return base.SimpleModel();
     }
 
+#if NET11_0_OR_GREATER
+    // The provider does not add EF's automatic foreign key indexes, so the scenario declares the index it needs.
+    public override Task Owned_entity_sharing_table_with_owner_that_has_an_index()
+        => Test(
+            modelBuilder => modelBuilder.Entity<Post>(
+                eb =>
+                {
+                    eb.HasOne<Blog>().WithMany(b => b.Posts).IsRequired();
+                    eb.HasIndex("BlogId");
+                    eb.OwnsOne(p => p.Author);
+                }),
+            model => Assert.Contains(model.GetRelationalModel().Tables, t => t.Indexes.Any()));
+
+#endif
     protected override TestHelpers TestHelpers
         => DuckDBTestHelpers.Instance;
+
+    protected override BuildSource AddReferences(BuildSource build, [CallerFilePath] string filePath = "")
+    {
+        base.AddReferences(build, filePath);
+        build.References.Add(BuildReference.ByName("DuckDB.EFCoreProvider"));
+        return build;
+    }
 
 #if NET11_0_OR_GREATER
     protected override ITestStoreFactory NonSharedTestStoreFactory

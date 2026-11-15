@@ -130,4 +130,18 @@ public class DateTimeOffsetTranslationsDuckDBTest : DateTimeOffsetTranslationsTe
     {
         return base.UtcNow();
     }
+
+#if NET11_0_OR_GREATER
+    [ConditionalFact(Skip = DuckDBSkipReasons.OffsetNotStored)]
+    public override Task DateTime()
+    {
+        return base.DateTime();
+    }
+
+    [ConditionalFact(Skip = DuckDBSkipReasons.OffsetNotStored)]
+    public override Task ToOffset()
+    {
+        return base.ToOffset();
+    }
+#endif
 }

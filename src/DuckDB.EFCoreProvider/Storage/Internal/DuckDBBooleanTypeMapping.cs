@@ -13,6 +13,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBBooleanTypeMapping : BoolTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBBooleanTypeMapping Default { get; } = new();
+
     public DuckDBBooleanTypeMapping() : base("BOOLEAN", System.Data.DbType.Boolean)
     {
     }

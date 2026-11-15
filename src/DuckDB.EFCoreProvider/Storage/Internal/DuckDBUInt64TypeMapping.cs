@@ -13,6 +13,11 @@ namespace DuckDB.EFCoreProvider.Storage.Internal;
 /// </summary>
 public class DuckDBUInt64TypeMapping : ULongTypeMapping
 {
+    /// <summary>
+    ///     The default mapping, which compiled models clone from.
+    /// </summary>
+    public static new DuckDBUInt64TypeMapping Default { get; } = new();
+
     public DuckDBUInt64TypeMapping() : base("UBIGINT", System.Data.DbType.UInt64)
     {
     }

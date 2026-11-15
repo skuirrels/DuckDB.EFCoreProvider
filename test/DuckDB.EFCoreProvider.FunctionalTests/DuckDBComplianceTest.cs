@@ -21,6 +21,11 @@ public class DuckDBComplianceTest : RelationalComplianceTestBase
         typeof(UpdatesTestBase<>), // TODO  Some tests are non-virtual, could not override
         typeof(PropertyValuesRelationalTestBase<>), // TODO  Some tests are non-virtual, could not override
         typeof(ManyToManyTrackingTestBase<>), // TODO  Some tests are non-virtual, could not override
+#if NET11_0_OR_GREATER
+        // Non-virtual tests expect ON DELETE CASCADE and an automatic foreign key index, which DuckDB and the
+        // provider do not create; the remaining runtime migration tests pass.
+        typeof(RuntimeMigrationTestBase<>),
+#endif
     };
 
     protected override Assembly TargetAssembly { get; } = typeof(DuckDBComplianceTest).Assembly;
