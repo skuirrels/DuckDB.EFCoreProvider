@@ -183,6 +183,143 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
         Assert.Equal(transient, DuckDBTransientExceptionDetector.ShouldRetryOn(exception));
         Assert.Equal(transient, DuckDBTransientExceptionDetector.ShouldRetryOn(new DbUpdateException("wrapped", exception)));
         Assert.False(DuckDBTransientExceptionDetector.ShouldRetryOn(new InvalidOperationException(message)));
+        Assert.Equal(transient, exception.IsWriteConflict());
+        Assert.Equal(transient, new DbUpdateException("wrapped", exception).IsWriteConflict());
+        Assert.False(new InvalidOperationException(message).IsWriteConflict());
+    }
+
+    [Fact]
+    public async Task Upsert_retries_after_a_write_write_conflict()
+    {
+        await SeedAsync();
+        var conflict = new SnapshotConflict(DbPath);
+        await using var context = CreateContext(conflict, retry: true);
+
+        Assert.Equal(2, await context.UpsertAsync([new Account { Id = 1, Balance = 100 }, new Account { Id = 3, Balance = 7 }]));
+
+        Assert.Equal(2, conflict.Attempts);
+        Assert.Equal(100, await ReadBalanceAsync(1));
+        Assert.Equal(-1, await ReadBalanceAsync(2));
+        Assert.Equal(7, await ReadBalanceAsync(3));
+    }
+
+    [Fact]
+    public async Task Without_retries_an_Upsert_conflict_fails_and_reports_a_write_conflict()
+    {
+        await SeedAsync();
+        var conflict = new SnapshotConflict(DbPath);
+        await using var context = CreateContext(conflict, retry: false);
+
+        // Without a retrying strategy the call starts no transaction; pin a snapshot the competitor then outdates.
+        await using var transaction = await context.Database.BeginTransactionAsync();
+        var exception = await Assert.ThrowsAsync<DuckDBException>(
+            () => context.UpsertAsync([new Account { Id = 1, Balance = 100 }]));
+
+        Assert.True(exception.IsWriteConflict());
+        Assert.Equal(1, conflict.Attempts);
+    }
+
+    [ConditionalTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Bulk_writes_replay_in_a_provider_owned_transaction(bool duckLake, bool upsert)
+    {
+        var conflict = new CommitConflict();
+        await RunAsync(duckLake, conflict, retry: true, async context =>
+        {
+            // A single-pass input must be buffered, or the replay would see no entities.
+            var count = upsert
+                ? await context.UpsertAsync(SinglePass(new Account { Id = 1, Balance = 100 }, new Account { Id = 3, Balance = 7 }))
+                : await context.BulkInsertAsync(SinglePass(new Account { Id = 3, Balance = 7 }, new Account { Id = 4, Balance = 8 }));
+
+            Assert.Equal(2, count);
+            Assert.Equal(2, conflict.Started);
+            Assert.Equal(2, conflict.Commits);
+
+            // The failed attempt rolled back, so the replay neither duplicated a key nor left partial rows.
+            var balances = await context.Accounts.AsNoTracking().OrderBy(a => a.Id).Select(a => new { a.Id, a.Balance }).ToListAsync();
+            Assert.Equal(
+                upsert ? [(1, 100), (2, 0), (3, 7)] : [(1, 0), (2, 0), (3, 7), (4, 8)],
+                balances.Select(row => (row.Id, row.Balance)));
+        });
+    }
+
+    [ConditionalTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Synchronous_bulk_writes_replay_in_a_provider_owned_transaction(bool duckLake)
+    {
+        var conflict = new CommitConflict(failures: 2);
+        RunAsync(duckLake, conflict, retry: true, context =>
+        {
+            Assert.Equal(1, context.BulkInsert([new Account { Id = 3, Balance = 7 }]));
+            Assert.Equal(1, context.Upsert([new Account { Id = 1, Balance = 100 }]));
+
+            Assert.Equal(4, conflict.Started);
+            Assert.Equal(7, context.Accounts.AsNoTracking().Single(a => a.Id == 3).Balance);
+            Assert.Equal(100, context.Accounts.AsNoTracking().Single(a => a.Id == 1).Balance);
+            return Task.CompletedTask;
+        }).GetAwaiter().GetResult();
+    }
+
+    [ConditionalTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Bulk_writes_inside_the_caller_strategy_are_replayed_by_that_strategy(bool duckLake)
+    {
+        var conflict = new CommitConflict();
+        await RunAsync(duckLake, conflict, retry: true, async context =>
+        {
+            var attempts = 0;
+            await context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                // The nested call runs once in its own transaction; the caller's strategy replays the delegate.
+                attempts++;
+                Assert.Equal(1, await context.BulkInsertAsync([new Account { Id = 3, Balance = 7 }]));
+            });
+
+            Assert.Equal(2, attempts);
+            Assert.Equal(2, conflict.Started);
+            Assert.Equal([1, 2, 3], await context.Accounts.AsNoTracking().OrderBy(a => a.Id).Select(a => a.Id).ToListAsync());
+        });
+    }
+
+    [ConditionalTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Bulk_writes_inside_a_caller_transaction_run_once_in_that_transaction(bool duckLake)
+    {
+        var conflict = new CommitConflict(failures: 0);
+        await RunAsync(duckLake, conflict, retry: true, async context =>
+        {
+            await using (var transaction = await context.Database.BeginTransactionAsync())
+            {
+                Assert.Equal(1, await context.BulkInsertAsync([new Account { Id = 3, Balance = 7 }]));
+                Assert.Equal(1, await context.UpsertAsync([new Account { Id = 1, Balance = 100 }]));
+                await transaction.RollbackAsync();
+            }
+
+            // Only the caller's transaction was started, and rolling it back discarded both writes.
+            Assert.Equal(1, conflict.Started);
+            Assert.Equal([(1, 0), (2, 0)], (await context.Accounts.AsNoTracking().OrderBy(a => a.Id).ToListAsync()).Select(a => (a.Id, a.Balance)));
+        });
+    }
+
+    [ConditionalTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Without_retries_bulk_writes_start_no_transaction(bool duckLake)
+    {
+        var conflict = new CommitConflict(failures: 0);
+        await RunAsync(duckLake, conflict, retry: false, async context =>
+        {
+            Assert.Equal(1, await context.BulkInsertAsync([new Account { Id = 3, Balance = 7 }]));
+            Assert.Equal(1, await context.UpsertAsync([new Account { Id = 1, Balance = 100 }]));
+
+            Assert.Equal(0, conflict.Started);
+        });
     }
 
     [Fact]
@@ -237,8 +374,76 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
         return Assert.Throws<DuckDBException>(() => command.ExecuteScalar());
     }
 
+    private static IEnumerable<Account> SinglePass(params Account[] accounts)
+    {
+        foreach (var account in accounts)
+        {
+            yield return account;
+        }
+    }
+
+    /// <summary>
+    ///     Seeds accounts 1 and 2 with a zero balance on the selected profile, then runs <paramref name="test" /> with a
+    ///     context that uses <paramref name="interceptor" />.
+    /// </summary>
+    private async Task RunAsync(bool duckLake, IInterceptor interceptor, bool retry, Func<AccountContext, Task> test)
+    {
+        if (!duckLake)
+        {
+            await SeedAsync();
+            await using var context = CreateContext(interceptor, retry);
+            await test(context);
+            return;
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"ducklake-retry-{Guid.NewGuid():N}");
+        var dataPath = Path.Combine(root, "data");
+        Directory.CreateDirectory(Path.Combine(root, "metadata"));
+        Directory.CreateDirectory(dataPath);
+        try
+        {
+            AccountContext CreateLakeContext(IInterceptor? lakeInterceptor)
+            {
+                var builder = new DbContextOptionsBuilder<AccountContext>()
+                    .UseDuckLake(
+                        Path.Combine(root, "metadata", "catalog.ducklake"),
+                        duckLake => duckLake.DataPath(dataPath),
+                        duckDb =>
+                        {
+                            if (retry)
+                            {
+                                duckDb.EnableRetryOnFailure(5, TimeSpan.FromMilliseconds(10));
+                            }
+                        });
+                if (lakeInterceptor is not null)
+                {
+                    builder.AddInterceptors(lakeInterceptor);
+                }
+
+                return new AccountContext(builder.Options);
+            }
+
+            await using (var seed = CreateLakeContext(lakeInterceptor: null))
+            {
+                await seed.Database.EnsureCreatedAsync();
+                seed.AddRange(new Account { Id = 1, Balance = 0 }, new Account { Id = 2, Balance = 0 });
+                await seed.SaveChangesAsync();
+            }
+
+            await using var context = CreateLakeContext(interceptor);
+            await test(context);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private AccountContext CreateContext(
-        ConflictingWriter? conflict,
+        IInterceptor? conflict,
         bool retry,
         int maxRetryCount = 5,
         bool concurrencyToken = false,
@@ -377,6 +582,113 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    ///     Counts transactions started and commits attempted, and fails the first <paramref name="failures" /> commits
+    ///     with a genuine DuckDB write-write conflict error, as a conflict detected at commit would.
+    /// </summary>
+    private sealed class CommitConflict(int failures = 1) : DbTransactionInterceptor
+    {
+        internal int Started { get; private set; }
+
+        internal int Commits { get; private set; }
+
+        public override DbTransaction TransactionStarted(
+            DbConnection connection,
+            TransactionEndEventData eventData,
+            DbTransaction result)
+        {
+            Started++;
+            return result;
+        }
+
+        public override ValueTask<DbTransaction> TransactionStartedAsync(
+            DbConnection connection,
+            TransactionEndEventData eventData,
+            DbTransaction result,
+            CancellationToken cancellationToken = default)
+        {
+            Started++;
+            return ValueTask.FromResult(result);
+        }
+
+        public override InterceptionResult TransactionCommitting(
+            DbTransaction transaction,
+            TransactionEventData eventData,
+            InterceptionResult result)
+        {
+            FailIfDue();
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(
+            DbTransaction transaction,
+            TransactionEventData eventData,
+            InterceptionResult result,
+            CancellationToken cancellationToken = default)
+        {
+            FailIfDue();
+            return ValueTask.FromResult(result);
+        }
+
+        private void FailIfDue()
+        {
+            if (++Commits <= failures)
+            {
+                throw RaiseDuckDBException("TransactionContext Error: Conflict on update!");
+            }
+        }
+    }
+
+    /// <summary>
+    ///     On the first transaction, reads the accounts so the transaction's snapshot is pinned, then a second
+    ///     connection updates and commits every account. The first write to an account in that transaction then
+    ///     fails with a real write-write conflict; later transactions start after the competing commit and succeed.
+    /// </summary>
+    private sealed class SnapshotConflict(string dbPath) : DbTransactionInterceptor
+    {
+        internal int Attempts { get; private set; }
+
+        public override DbTransaction TransactionStarted(
+            DbConnection connection,
+            TransactionEndEventData eventData,
+            DbTransaction result)
+        {
+            Prepare(connection, result);
+            return result;
+        }
+
+        public override ValueTask<DbTransaction> TransactionStartedAsync(
+            DbConnection connection,
+            TransactionEndEventData eventData,
+            DbTransaction result,
+            CancellationToken cancellationToken = default)
+        {
+            Prepare(connection, result);
+            return ValueTask.FromResult(result);
+        }
+
+        private void Prepare(DbConnection connection, DbTransaction transaction)
+        {
+            if (++Attempts != 1)
+            {
+                return;
+            }
+
+            using (var read = connection.CreateCommand())
+            {
+                read.Transaction = transaction;
+                read.CommandText = "SELECT count(*) FROM \"Accounts\"";
+                read.ExecuteScalar();
+            }
+
+            using var competitor = new DuckDBConnection($"Data Source={dbPath}");
+            competitor.Open();
+            using var update = competitor.CreateCommand();
+            update.CommandText = "UPDATE \"Accounts\" SET \"Balance\" = \"Balance\" - 1";
+            update.ExecuteNonQuery();
         }
     }
 

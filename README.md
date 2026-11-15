@@ -1245,8 +1245,26 @@ await strategy.ExecuteAsync(async () =>
 });
 ```
 
-`BulkInsert` and `Upsert` are raw fast paths and are not retried automatically; wrap them in the strategy the same
-way when they run alongside conflicting writers. A DuckLake commit message set with `SetCommitMessageAsync` belongs
+`BulkInsert` and `Upsert` called outside a transaction are retried too. Each attempt runs in a provider-owned
+transaction, so the whole call, including every `Upsert` batch, commits or rolls back as one unit, and an input that
+can only be enumerated once is buffered so a replay sees the same entities. Inside a caller's transaction they run
+once, and the caller's strategy replays that transaction instead. Inside a caller's strategy delegate without a
+transaction, each call commits in its own transaction and the caller's strategy replays the delegate. Without
+`EnableRetryOnFailure()`, neither call starts a transaction, as before. Because a retried call is one transaction, a very large load holds its rows until
+it commits and buffers a streamed input in memory; split such a load into several calls, or run it in a context
+without retries, when that matters more than automatic replay.
+
+A write-write conflict surfaces as a `DbUpdateException` (or, from `BulkInsert` and `Upsert`, a `DuckDBException`),
+not a `DbUpdateConcurrencyException`. To classify one without retrying, call `IsWriteConflict()`:
+
+```csharp
+catch (Exception exception) when (exception.IsWriteConflict())
+{
+    // Re-read and replay the unit of work, or report the conflict.
+}
+```
+
+A DuckLake commit message set with `SetCommitMessageAsync` belongs
 to a caller transaction, so start that transaction inside the strategy too.
 
 DuckDB 1.5.6 does not report a conflict for `UPDATE ... RETURNING` on a table with a primary key, so the provider

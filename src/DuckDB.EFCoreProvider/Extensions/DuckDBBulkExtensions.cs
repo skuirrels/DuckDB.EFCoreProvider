@@ -30,6 +30,10 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///             (for example its sequence) and written back to the entity before the row is appended; every other
 ///             mapped column must be given a value;</description></item>
 ///         <item><description>the target table must already exist;</description></item>
+///         <item><description>with <c>EnableRetryOnFailure()</c> and no active transaction, the whole call runs in a
+///             provider-owned transaction and is replayed after a write-write conflict; an input that is not a
+///             collection is buffered first so a replay sees the same entities, and a very large load then commits
+///             as one transaction instead of in autocommit chunks;</description></item>
 ///         <item><description>EF column mappings and value converters are applied; shadow properties,
 ///             computed/generated columns, and unmapped columns are not supported.</description></item>
 ///     </list>
@@ -50,6 +54,12 @@ public static class DuckDBBulkExtensions
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(entities);
 
+        return DuckDBRetryableWrite.Execute(context, entities, static (attemptContext, items) => BulkInsertAttempt(attemptContext, items));
+    }
+
+    private static int BulkInsertAttempt<TEntity>(DbContext context, IEnumerable<TEntity> entities)
+        where TEntity : class
+    {
         var operation = DuckDBOperationDiagnostics.StartCommand(
             context,
             DuckDBProviderOperation.BulkInsert,
@@ -131,6 +141,19 @@ public static class DuckDBBulkExtensions
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(entities);
 
+        return await DuckDBRetryableWrite.ExecuteAsync(
+            context,
+            entities,
+            static (attemptContext, items, token) => BulkInsertAttemptAsync(attemptContext, items, token),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> BulkInsertAttemptAsync<TEntity>(
+        DbContext context,
+        IEnumerable<TEntity> entities,
+        CancellationToken cancellationToken)
+        where TEntity : class
+    {
         var operation = DuckDBOperationDiagnostics.StartCommand(
             context,
             DuckDBProviderOperation.BulkInsert,

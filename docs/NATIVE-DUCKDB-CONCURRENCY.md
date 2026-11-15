@@ -291,8 +291,10 @@ options.UseDuckDB("Data Source=app.db", duckdb => duckdb.EnableRetryOnFailure(
 
 Retrying is only safe when the replayed operation is safe for the business process. Run explicit transactions
 inside `context.Database.CreateExecutionStrategy().ExecuteAsync(...)` so the strategy replays the whole
-transaction, and re-read the state the transaction depends on inside that delegate. `BulkInsert` and `Upsert` are
-not retried automatically; wrap them in the strategy when they share rows with other writers. Constraint violations
+transaction, and re-read the state the transaction depends on inside that delegate. `BulkInsert` and `Upsert` called
+outside a transaction are retried too: each attempt runs in a provider-owned transaction, so the whole call commits
+or rolls back as one unit. Inside a caller's transaction they run once and the caller's strategy replays the
+transaction. Use `exception.IsWriteConflict()` to classify a conflict yourself. Constraint violations
 are never retried. A single application writer remains simpler for continuous ingestion.
 
 DuckDB 1.5.6 does not detect every conflict. Measured against DuckDB.NET 1.5.6:
