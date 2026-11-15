@@ -18,8 +18,10 @@ namespace DuckDB.EFCoreProvider.Storage;
 ///         As with every retrying EF Core execution strategy, an explicit transaction must be started inside
 ///         <see cref="IExecutionStrategy.Execute{TState,TResult}" />, for example through
 ///         <c>context.Database.CreateExecutionStrategy().ExecuteAsync(...)</c>, so the strategy can replay the whole
-///         transaction. The raw <c>BulkInsert</c> and <c>Upsert</c> fast paths are not retried automatically; wrap them
-///         in the strategy in the same way when they run alongside conflicting writers.
+///         transaction. <c>BulkInsert</c> and <c>Upsert</c> called outside a transaction are retried automatically: each
+///         attempt runs in a provider-owned transaction, so the whole call commits or rolls back as one unit. Inside a
+///         caller's transaction they run once, and the caller's strategy replays that transaction instead. To classify
+///         a conflict without retrying, use <c>exception.IsWriteConflict()</c>.
 ///     </para>
 /// </remarks>
 public class DuckDBRetryingExecutionStrategy : ExecutionStrategy

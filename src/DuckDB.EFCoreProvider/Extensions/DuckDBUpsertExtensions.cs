@@ -40,8 +40,13 @@ namespace DuckDB.EFCoreProvider.Extensions;
 ///             stored values back into the supplied entities after each batch;</description></item>
 ///         <item><description>all staged non-key and non-conflict columns are overwritten from the supplied values;</description></item>
 ///         <item><description>duplicate conflict-target values within the input resolve to the last occurrence in
-///             input order when updateable columns exist (key-only shapes keep the first inserted row); callers can
-///             wrap the operation in an explicit transaction when all batches must commit atomically;</description></item>
+///             input order when updateable columns exist (key-only shapes keep the first inserted row); without a
+///             retrying strategy, callers can wrap the operation in an explicit transaction when all batches must
+///             commit atomically;</description></item>
+///         <item><description>with <c>EnableRetryOnFailure()</c> and no active transaction, the whole call runs in a
+///             provider-owned transaction and is replayed after a write-write conflict, so its batches commit
+///             atomically; an input that is not a collection is buffered first so a replay sees the same
+///             entities;</description></item>
 ///         <item><description><see cref="DuckDBUpsertInputMode.DistinctConflictTargets" /> bypasses staging
 ///             deduplication when the caller guarantees that conflict-target values are distinct across the complete
 ///             input; the provider does not validate that guarantee;</description></item>
@@ -90,6 +95,19 @@ public static class DuckDBUpsertExtensions
         ArgumentNullException.ThrowIfNull(entities);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
 
+        return DuckDBRetryableWrite.Execute(
+            context,
+            entities,
+            (attemptContext, items) => UpsertAttempt(attemptContext, items, inputMode, batchSize));
+    }
+
+    private static int UpsertAttempt<TEntity>(
+        DbContext context,
+        IEnumerable<TEntity> entities,
+        DuckDBUpsertInputMode inputMode,
+        int batchSize)
+        where TEntity : class
+    {
         var operation = DuckDBOperationDiagnostics.StartCommand(
             context,
             DuckDBProviderOperation.Upsert,
@@ -369,6 +387,30 @@ public static class DuckDBUpsertExtensions
         ArgumentNullException.ThrowIfNull(entities);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
 
+        return await DuckDBRetryableWrite.ExecuteAsync(
+            context,
+            entities,
+            (attemptContext, items, token) => UpsertAttemptAsync(
+                attemptContext,
+                items,
+                conflictPropertyNames,
+                matchMode,
+                inputMode,
+                batchSize,
+                token),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> UpsertAttemptAsync<TEntity>(
+        DbContext context,
+        IEnumerable<TEntity> entities,
+        IReadOnlyList<string>? conflictPropertyNames,
+        DuckDBUpsertMatchMode matchMode,
+        DuckDBUpsertInputMode inputMode,
+        int batchSize,
+        CancellationToken cancellationToken)
+        where TEntity : class
+    {
         var operation = DuckDBOperationDiagnostics.StartCommand(
             context,
             DuckDBProviderOperation.Upsert,
