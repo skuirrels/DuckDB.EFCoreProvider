@@ -4,6 +4,9 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 
 ## Unreleased
 
+- `DuckDB.EFCoreProvider.EF11` and `DuckDB.EFCoreProvider.EF11.NTS` are now stable releases. They build
+  against stable EF Core 11.0.0, share the EF10 version number, and validate their API against the last EF11
+  packages published as previews (`1.30.0-preview.1` and `1.1.0-preview.2`).
 - Fixed byte-array constants rendering as `X'...'` literals, which DuckDB 1.5.6 reads as `VARCHAR`, so equality
   against a `BLOB` column failed. Constants now render as `'\x..'::BLOB`.
 - `List<byte[]>` (`BLOB[]`) columns can now be read. DuckDB.NET cannot materialize `BLOB` list elements as

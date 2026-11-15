@@ -36,7 +36,7 @@ def main():
                 metadata = root.find("{*}metadata")
                 version = metadata.find("{*}version").text
                 versions[major, package_id] = version
-                assert ("-" in version) == (major == 11), (package_id, version)
+                assert "-" not in version, (package_id, version)
                 assemblies = [n for n in package.namelist() if n.startswith("lib/") and n.endswith(".dll")]
                 assembly_name = "DuckDB.EFCoreProvider" + (".NTS" if package_id.endswith(".NTS") else "")
                 assert assemblies == [f"lib/net{major}.0/{assembly_name}.dll"], assemblies
@@ -48,7 +48,7 @@ def main():
                     assert ef_range.startswith("[10.") and ef_range.endswith(", 10.1.0)"), ef_range
                     assert all("-" not in value.split(",")[0] for value in dependencies.values()), dependencies
                 else:
-                    # The EF11 packages are previews, but they depend on stable EF Core 11 servicing versions.
+                    # The EF11 packages depend on stable EF Core 11 servicing versions.
                     assert ef_range.startswith("[11.") and ef_range.endswith(", 11.1.0)"), ef_range
                     assert all("-" not in value.split(",")[0] for key, value in dependencies.items()
                                if key.startswith("Microsoft.")), dependencies

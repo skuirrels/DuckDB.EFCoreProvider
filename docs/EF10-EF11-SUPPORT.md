@@ -8,17 +8,17 @@ implementation and shared tests; use target-specific code only for EF API or beh
 | net10.0 | 10.0.10 | xUnit v2 |
 | net11.0 | 11.0.0 | xUnit v3, VSTest runner |
 
-EF11 builds against stable EF Core 11.0.0 and allows 11.0.x servicing updates. The EF11 provider packages
-still ship as previews until a stable EF11 provider release.
+EF11 builds against stable EF Core 11.0.0 and allows 11.0.x servicing updates. Both package families are
+stable and share one version number.
 The package families are separate:
 
 | EF line | Core package | NTS package | Versions (core / NTS) |
 | --- | --- | --- | --- |
 | EF10 | `DuckDB.EFCoreProvider` | `DuckDB.EFCoreProvider.NTS` | `1.30.0` / `1.1.0` |
-| EF11 | `DuckDB.EFCoreProvider.EF11` | `DuckDB.EFCoreProvider.EF11.NTS` | `1.30.0-preview.1` / `1.1.0-preview.2` |
+| EF11 | `DuckDB.EFCoreProvider.EF11` | `DuckDB.EFCoreProvider.EF11.NTS` | `1.30.0` / `1.1.0` |
 
 Adding EF11 does not change the provider major version. Version 2 is reserved for the anticipated
-DuckDB 2 transition. The EF10 package is stable; the EF11 package remains a provider preview.
+DuckDB 2 transition. The EF11 packages shipped as previews up to `1.30.0-preview.1` / `1.1.0-preview.2`.
 
 ## Developing features
 
@@ -89,11 +89,11 @@ generates a migration and compiled model, builds them, and executes a consumer a
 - Package identity selects EF. The EF10 family contains only `net10.0` assets, which NuGet can also select
   for `net11.0` applications without changing their EF major. The EF11 family contains only `net11.0` assets.
   A .NET framework upgrade therefore does not implicitly opt an EF10 consumer into EF11.
-- EF10 dependencies permit `10.0.x` servicing patches starting at `10.0.10`. EF11 dependencies pin the
-  tested preview exactly. Incompatible explicit EF references produce NuGet dependency diagnostics.
+- EF10 dependencies permit `10.0.x` servicing patches starting at `10.0.10`. EF11 dependencies permit `11.0.x`
+  servicing patches starting at `11.0.0`. Incompatible explicit EF references produce NuGet dependency diagnostics.
 - EF11 uses new JSON mapping bases and expression/metadata contracts. Conditional adaptations stay in
-  existing integration boundaries. EF10 retains its package/API baselines; the new EF11 package family
-  will establish its own baseline after first publication. No cross-target mapping suppressions are needed.
+  existing integration boundaries. Each family validates its package API against its own last published
+  release; EF11 uses `1.30.0-preview.1` / `1.1.0-preview.2`. No cross-target mapping suppressions are needed.
 - Native DuckDB array converters declare their existing null-preserving behavior on EF11 to avoid its
   JSON-string collection materializer. Native array migration defaults use typed empty arrays instead
   of EF11's generic JSON default. Tests cover null, empty, nullable and converted elements, projections,

@@ -6,7 +6,7 @@ This repository is `DuckDB.EFCoreProvider`, an Entity Framework Core provider fo
 
 - Develop functionality once in shared source for EF Core 10 / `net10.0` and EF Core 11 / `net11.0`.
 - Do not add compatibility work for EF Core versions older than 10.
-- The EF11 packages build against stable EF Core 11 and ship as previews until a stable EF11 provider release. See [dual-target development](docs/EF10-EF11-SUPPORT.md).
+- The EF11 packages build against stable EF Core 11 and ship as stable releases, versioned in step with the EF10 packages. See [dual-target development](docs/EF10-EF11-SUPPORT.md).
 - Keep Microsoft EF Core package versions aligned within each target across provider and test projects.
 
 ## Engineering Standards
@@ -45,7 +45,7 @@ scripts/test-suite.sh full-project
 scripts/test-ducklake-external.sh
 ```
 
-Install the .NET 11 preview SDK and .NET 10 runtime. Both targets run by default; use
+Install the .NET 11 SDK and .NET 10 runtime. Both targets run by default; use
 `DUCKDB_TEST_FRAMEWORK=net10.0` or `net11.0` to select one test target. Restore both EF tools with
 `scripts/restore-tools.sh`. Package each EF family with `scripts/pack.sh all`, then run
 `python3 scripts/test-package-consumers.py artifacts` to validate consumer selection.
