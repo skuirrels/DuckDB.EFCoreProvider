@@ -42,4 +42,14 @@ public class DuckDBQueryCompilationContext : RelationalQueryCompilationContext
     /// <summary>Records a translated multi-level grouping for query postprocessing.</summary>
     public virtual void AddGroupingSets(DuckDBGroupingSetsBinding binding)
         => (_groupingSets ??= []).Add(binding);
+
+    private List<DuckDBAsOfJoinBinding>? _asOfJoins;
+
+    /// <summary>The ASOF joins recorded during translation, which postprocessing turns into ASOF join tables.</summary>
+    public virtual IReadOnlyList<DuckDBAsOfJoinBinding> AsOfJoins
+        => _asOfJoins ?? (IReadOnlyList<DuckDBAsOfJoinBinding>)[];
+
+    /// <summary>Records a translated ASOF join for query postprocessing.</summary>
+    public virtual void AddAsOfJoin(DuckDBAsOfJoinBinding binding)
+        => (_asOfJoins ??= []).Add(binding);
 }

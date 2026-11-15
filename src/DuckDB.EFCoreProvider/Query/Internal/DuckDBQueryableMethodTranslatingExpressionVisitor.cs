@@ -381,6 +381,11 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
     /// <inheritdoc />
     protected override ShapedQueryExpression? TranslateWhere(ShapedQueryExpression source, LambdaExpression predicate)
     {
+        if (DuckDBQualifyMarker.IsQualify(predicate.Body))
+        {
+            return TranslateQualify(source, predicate);
+        }
+
         // Simplify x.Array.Where(i => i != 3) => array_remove(x.Array, 3) instead of subquery
         if (predicate.Body is BinaryExpression
             {
@@ -427,6 +432,87 @@ public partial class DuckDBQueryableMethodTranslatingExpressionVisitor : Relatio
         }
 
         return base.TranslateWhere(source, predicate);
+    }
+
+    // QUALIFY runs after WHERE, GROUP BY and HAVING but before DISTINCT and LIMIT, so a source that already applies
+    // DISTINCT, LIMIT, OFFSET or grouping is ranked as a subquery. The filtered query is then pushed down too, so a
+    // later Where, join or grouping applies to the filtered rows instead of joining this SELECT's WHERE clause.
+    private ShapedQueryExpression? TranslateQualify(ShapedQueryExpression source, LambdaExpression predicate)
+    {
+        var select = (SelectExpression)source.QueryExpression;
+        if (select is not { Limit: null, Offset: null, IsDistinct: false, GroupBy: [], Having: null })
+        {
+            select.PushdownIntoSubquery();
+        }
+
+        var filtered = base.TranslateWhere(source, predicate);
+        if (filtered?.QueryExpression is SelectExpression filteredSelect)
+        {
+            filteredSelect.PushdownIntoSubquery();
+        }
+
+        return filtered;
+    }
+
+    /// <inheritdoc />
+    protected override ShapedQueryExpression? TranslateJoin(
+        ShapedQueryExpression outer,
+        ShapedQueryExpression inner,
+        LambdaExpression outerKeySelector,
+        LambdaExpression innerKeySelector,
+        LambdaExpression resultSelector)
+        => DuckDBAsOfJoinMarker.TryUnwrap(
+            outerKeySelector,
+            innerKeySelector,
+            out var unmarkedOuterKeySelector,
+            out var unmarkedInnerKeySelector,
+            out var plan)
+            ? RecordAsOfJoin(base.TranslateJoin(outer, inner, unmarkedOuterKeySelector, unmarkedInnerKeySelector, resultSelector), plan, isLeft: false)
+            : base.TranslateJoin(outer, inner, outerKeySelector, innerKeySelector, resultSelector);
+
+    /// <inheritdoc />
+    protected override ShapedQueryExpression? TranslateLeftJoin(
+        ShapedQueryExpression outer,
+        ShapedQueryExpression inner,
+        LambdaExpression outerKeySelector,
+        LambdaExpression innerKeySelector,
+        LambdaExpression resultSelector)
+        => DuckDBAsOfJoinMarker.TryUnwrap(
+            outerKeySelector,
+            innerKeySelector,
+            out var unmarkedOuterKeySelector,
+            out var unmarkedInnerKeySelector,
+            out var plan)
+            ? RecordAsOfJoin(base.TranslateLeftJoin(outer, inner, unmarkedOuterKeySelector, unmarkedInnerKeySelector, resultSelector), plan, isLeft: true)
+            : base.TranslateLeftJoin(outer, inner, outerKeySelector, innerKeySelector, resultSelector);
+
+    // EF Core translates the planned key into equalities on its members; the postprocessor later swaps the join for an
+    // ASOF join, so the join and the number of compared members are checked and recorded here.
+    private ShapedQueryExpression? RecordAsOfJoin(ShapedQueryExpression? joined, DuckDBAsOfJoinPlan plan, bool isLeft)
+    {
+        if (joined is null)
+        {
+            return null;
+        }
+
+        var join = joined.QueryExpression is SelectExpression { Tables: [.., var last] }
+            ? isLeft ? last as LeftJoinExpression : (PredicateJoinExpressionBase?)(last as InnerJoinExpression)
+            : null;
+        if (join is null)
+        {
+            throw new InvalidOperationException(DuckDBAsOfJoinPostprocessor.RestructuredJoin);
+        }
+
+        if (DuckDBAsOfJoinPostprocessor.GetKeyComparisons(join.JoinPredicate) is not { } comparisons
+            || comparisons.Count != plan.KeyCount)
+        {
+            throw new InvalidOperationException(
+                "Each value compared in an ASOF join condition must be a single scalar value. Compare scalar members "
+                + "instead of entities or complex values.");
+        }
+
+        ((DuckDBQueryCompilationContext)_queryCompilationContext).AddAsOfJoin(new DuckDBAsOfJoinBinding(join.JoinPredicate, plan, isLeft));
+        return joined;
     }
 
     /// <inheritdoc />

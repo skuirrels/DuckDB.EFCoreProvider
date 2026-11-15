@@ -31,7 +31,7 @@ This document is the published capability matrix for the provider. It serves two
 | Optimistic concurrency | concurrency tokens |
 | Transactions | commit / rollback |
 | Migrations — create | tables, columns, indexes, sequences, comments, history table |
-| LINQ query translation | joins, grouping (including `ROLLUP` / `CUBE` / `GROUPING SETS`), ordering, paging, aggregates, string/math/temporal, row values, arrays, JSON traversal, set operations |
+| LINQ query translation | joins (including `ASOF` joins), grouping (including `ROLLUP` / `CUBE` / `GROUPING SETS`), `QUALIFY` ranking filters, ordering, paging, aggregates, string/math/temporal, row values, arrays, JSON traversal, set operations |
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | Type-mapping contract | EF model mappings and raw DuckDB.NET reader mappings are documented separately in [TYPE-MAPPINGS.md](TYPE-MAPPINGS.md) |
@@ -183,12 +183,12 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | DuckDB feature | Provider |
 |---|---|
 | `PIVOT` / `UNPIVOT` | ❌ raw SQL only |
-| `QUALIFY` | ❌ raw SQL only |
-| `ASOF` joins | ❌ raw SQL only |
+| `QUALIFY` | ✅ `QualifyRowNumber(...)`, `QualifyRank(...)` and `QualifyDenseRank(...)` on an ordered query; the ordering becomes the window ordering, and partition and ordering keys must be scalar values |
+| `ASOF` joins | ✅ `AsOfJoin(...)` and `LeftAsOfJoin(...)`; the condition combines up to six equalities with exactly one inequality, each comparing scalar outer and inner values |
 | `SAMPLE` | ❌ raw SQL only |
 | `GROUPING SETS` / `ROLLUP` / `CUBE` | ✅ `GroupByRollup(...)`, `GroupByCube(...)` and `GroupByGroupingSets(...)` with `EF.Functions.Grouping(...)`; scalar key members only, aggregate projections only (group elements cannot be queried) |
 | `SUMMARIZE` | ❌ raw SQL only |
-| Window functions | ➖ only EF Core's generic support |
+| Window functions | ➖ only EF Core's generic support, plus the ranking functions used by the `QUALIFY` operators |
 
 ### Types
 | DuckDB type | Provider |
@@ -236,5 +236,5 @@ through `EF.Functions`. Other DuckDB-specific functions (`list_*`, `map_*`, many
 | Embedded / edge / desktop local store | ✅ Good fit |
 | ETL / Parquet querying | ✅ Strong fit |
 | Shared lakehouse catalog / object-storage analytics through DuckLake | ✅ Good fit when the application owns logical uniqueness and schema deployment |
-| Using DuckDB as a full analytical engine (PIVOT/ASOF/SUMMARIZE, CSV/JSON/remote ingestion, native nested types, bulk-load) | ➖ Largely via raw SQL only — see §4 |
+| Using DuckDB as a full analytical engine (PIVOT/SUMMARIZE, CSV/JSON/remote ingestion, native nested types, bulk-load) | ➖ Largely via raw SQL only — see §4 |
 | Multi-instance / high-concurrency OLTP system-of-record | ⛔ Not suitable (engine) |

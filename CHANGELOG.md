@@ -30,6 +30,14 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 - Fixed compiled models for list properties whose mapping needs a value converter, such as `int[]` and
   `List<Guid>`: the generated model failed to compile. List and MAP mappings are now rebuilt from their
   element mappings in the compiled model.
+- `QUALIFY`: `QualifyRowNumber`, `QualifyRank` and `QualifyDenseRank` filter an ordered query by
+  `row_number()`, `rank()` or `dense_rank()` over a partition, for example the latest order per customer. The
+  query's ordering becomes the window ordering; `new { }` ranks all rows as one partition. Paging or `DISTINCT`
+  before the operator is applied first, and later operators compose over the filtered rows.
+- `ASOF` joins: `AsOfJoin` and `LeftAsOfJoin` match each outer row with the nearest inner row, translating to
+  `ASOF JOIN` and `ASOF LEFT JOIN`. The condition combines up to six equalities with exactly one inequality, and
+  the inner side can be a filtered or paged query.
+- Both operators validate their arguments when called and run on native DuckDB and DuckLake.
 
 ## 1.31.0
 
