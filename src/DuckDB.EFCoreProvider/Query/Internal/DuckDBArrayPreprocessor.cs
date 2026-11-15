@@ -13,9 +13,48 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 public class DuckDBArrayPreprocessor : ExpressionVisitor
 {
     /// <inheritdoc />
+    protected override Expression VisitBinary(BinaryExpression node)
+    {
+        if (node.NodeType == ExpressionType.ArrayIndex)
+        {
+            var source = Visit(node.Left);
+            var index = Visit(node.Right);
+            return DuckDBNestedListElement.TryGetIndexedElementType(source, out var elementType)
+                ? CreateNestedListElement(source, index, elementType)
+                : node.Update(source, node.Conversion, index);
+        }
+
+        return base.VisitBinary(node);
+    }
+
+    /// <inheritdoc />
     protected override Expression VisitMethodCall(MethodCallExpression node)
     {
         var method = node.Method;
+
+        // list[i] and ElementAt(list, i) on a list of lists, or on an inner list taken from one.
+        if (node is { Object: { } instance, Method.Name: "get_Item", Arguments: [{ Type: var indexType } index] }
+            && indexType == typeof(int))
+        {
+            // Each operand is visited once, so a long indexing chain is rewritten in linear time.
+            var source = Visit(instance);
+            var visitedIndex = Visit(index);
+            return DuckDBNestedListElement.TryGetIndexedElementType(source, out var itemType)
+                ? CreateNestedListElement(source, visitedIndex, itemType)
+                : node.Update(source, [visitedIndex]);
+        }
+
+        if (method.DeclaringType == typeof(Enumerable)
+            && method.Name == nameof(Enumerable.ElementAt)
+            && node.Arguments is [var elementSource, { Type: var elementIndexType } elementIndex]
+            && elementIndexType == typeof(int))
+        {
+            var source = Visit(elementSource);
+            var visitedIndex = Visit(elementIndex);
+            return DuckDBNestedListElement.TryGetIndexedElementType(source, out var elementAtType)
+                ? CreateNestedListElement(source, visitedIndex, elementAtType)
+                : node.Update(null, [source, visitedIndex]);
+        }
 
         if (method.DeclaringType == typeof(Enumerable))
         {
@@ -56,6 +95,12 @@ public class DuckDBArrayPreprocessor : ExpressionVisitor
             _ => base.VisitExtension(node)
         };
     }
+
+    private static Expression CreateNestedListElement(Expression source, Expression index, Type elementType)
+        => Expression.Call(
+            DuckDBNestedListElement.ElementAtMethod.MakeGenericMethod(source.Type, elementType),
+            source,
+            index);
 
     private Expression EnsureQueryable(Expression source, Type elementType)
     {

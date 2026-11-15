@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DuckDB.EFCoreProvider.Infrastructure.Internal;
 
@@ -63,6 +64,116 @@ public class DuckDBModelValidator : RelationalModelValidator
 
         ValidateEngineCapabilities(model, _capabilities);
     }
+
+#if NET11_0_OR_GREATER
+    /// <inheritdoc />
+    /// <remarks>
+    ///     EF's relational validator rejects every collection of collections because its providers store primitive
+    ///     collections as JSON. DuckDB stores <c>T[][]</c> and <c>List&lt;List&lt;T&gt;&gt;</c> as native nested
+    ///     LISTs, so such a property applies EF's core rules here instead.
+    /// </remarks>
+    protected override void ValidatePrimitiveCollection(
+        IProperty property,
+        IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
+    {
+        if (!property.IsPrimitiveCollection || !IsNativeNestedList(property.GetTypeMapping()))
+        {
+            base.ValidatePrimitiveCollection(property, logger);
+            return;
+        }
+
+        // Mirrors ModelValidator: the element must be mapped and a non-array collection must be an ordered list.
+        if (property.GetElementType() is { } elementType && elementType.FindTypeMapping() is null)
+        {
+            throw new InvalidOperationException(
+                $"The element type '{elementType.ClrType.ShortDisplayName()}' of property "
+                + $"'{property.DeclaringType.DisplayName()}.{property.Name}' is not mapped.");
+        }
+
+        ThrowIfNotAnOrderedList(property);
+    }
+#else
+    /// <inheritdoc />
+    /// <remarks>
+    ///     EF's relational validator rejects every collection of collections because its providers store primitive
+    ///     collections as JSON. DuckDB stores <c>T[][]</c> and <c>List&lt;List&lt;T&gt;&gt;</c> as native nested
+    ///     LISTs, so a model with such properties applies EF's rules here, exempting only native nested lists.
+    /// </remarks>
+    protected override void ValidatePrimitiveCollections(
+        IModel model,
+        IDiagnosticsLogger<DbLoggerCategory.Model.Validation> logger)
+    {
+        if (!model.GetEntityTypes().Any(HasNativeNestedList))
+        {
+            base.ValidatePrimitiveCollections(model, logger);
+            return;
+        }
+
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            ValidatePrimitiveCollections(entityType);
+        }
+
+        static void ValidatePrimitiveCollections(ITypeBase structuralType)
+        {
+            foreach (var property in structuralType.GetDeclaredProperties())
+            {
+                if (!property.IsPrimitiveCollection)
+                {
+                    continue;
+                }
+
+                // Mirrors ModelValidator: a non-array collection must be an ordered list.
+                ThrowIfNotAnOrderedList(property);
+
+                // Mirrors RelationalModelValidator, except for DuckDB's native nested LIST mappings.
+                var typeMapping = property.GetTypeMapping();
+                if (typeMapping.ElementTypeMapping?.ElementTypeMapping is not null && !IsNativeNestedList(typeMapping))
+                {
+                    throw new InvalidOperationException(
+                        $"The property '{property.ClrType.ShortDisplayName()} {structuralType.DisplayName()}.{property.Name}' "
+                        + "is a primitive collection of a primitive collection. Nested primitive collections are not "
+                        + "yet supported with relational database providers.");
+                }
+            }
+
+            foreach (var complexProperty in structuralType.GetDeclaredComplexProperties())
+            {
+                ValidatePrimitiveCollections(complexProperty.ComplexType);
+            }
+        }
+    }
+
+#endif
+
+    private static void ThrowIfNotAnOrderedList(IProperty property)
+    {
+        if (!property.ClrType.IsArray
+            && property.ClrType.IsSealed
+            && property.ClrType.TryGetElementType(typeof(IList<>)) is null)
+        {
+            throw new InvalidOperationException(
+                $"The type '{property.ClrType.ShortDisplayName()}' cannot be used as a primitive collection "
+                + "because it is not an array and does not implement 'IList<T>'. Collections of primitive "
+                + "types must be arrays or ordered lists.");
+        }
+    }
+
+#if !NET11_0_OR_GREATER
+    private static bool HasNativeNestedList(ITypeBase structuralType)
+        => structuralType.GetDeclaredProperties()
+                .Any(property => property.IsPrimitiveCollection && IsNativeNestedList(property.GetTypeMapping()))
+            || structuralType.GetDeclaredComplexProperties().Any(complex => HasNativeNestedList(complex.ComplexType));
+
+#endif
+
+    /// <summary>A native LIST whose elements are native LISTs, at every level down to a scalar element.</summary>
+    private static bool IsNativeNestedList(CoreTypeMapping mapping)
+        => mapping is DuckDBArrayTypeMapping { ElementTypeMapping: DuckDBArrayTypeMapping } && IsNativeList(mapping);
+
+    private static bool IsNativeList(CoreTypeMapping mapping)
+        => mapping is DuckDBArrayTypeMapping { ElementTypeMapping: var element }
+            && (element.ElementTypeMapping is null || IsNativeList(element));
 
     protected override void ValidatePropertyMapping(
 #if NET11_0_OR_GREATER

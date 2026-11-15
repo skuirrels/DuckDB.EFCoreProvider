@@ -1,4 +1,5 @@
-using DuckDB.EFCoreProvider.Storage.Internal;
+﻿using DuckDB.EFCoreProvider.Storage.Internal;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage;
 using Xunit;
 
@@ -110,6 +111,67 @@ public partial class CompiledModelDuckDBTest
                 var read = await context.Set<JsonRow>().SingleAsync(r => r.Detail.Count == 3);
                 Assert.Equal("first", read.Detail.Name);
             });
+
+    [ConditionalFact]
+    public virtual Task Map_and_nested_list_mappings()
+        => Test(
+            modelBuilder => modelBuilder.Entity<CollectionRow>(
+                entity =>
+                {
+                    entity.Property(row => row.Id).ValueGeneratedNever();
+                    entity.PrimitiveCollection(row => row.Ids).Metadata.SetValueComparer(new GuidListComparer());
+                }),
+            model =>
+            {
+                var entityType = model.FindEntityType(typeof(CollectionRow))!;
+                // The custom comparer hashes by count, which the default list comparer does not.
+                var idsComparer = entityType.FindProperty(nameof(CollectionRow.Ids))!.GetValueComparer();
+                Assert.Equal(2, idsComparer.GetHashCode(new List<Guid> { Guid.NewGuid(), Guid.NewGuid() }));
+                Assert.Equal("MAP(VARCHAR, INTEGER)", entityType.FindProperty(nameof(CollectionRow.Tags))!.GetColumnType());
+                Assert.Equal("INTEGER[][]", entityType.FindProperty(nameof(CollectionRow.Matrix))!.GetColumnType());
+            },
+            async context =>
+            {
+                context.Add(new CollectionRow
+                {
+                    Id = 1,
+                    Tags = new() { ["a"] = 1, ["b"] = null },
+                    Matrix = [[1, 2], [3]],
+                    Grid = [["x"]],
+                    Flat = [5, 6],
+                    Ids = [Guid.Empty]
+                });
+                await context.SaveChangesAsync();
+                context.ChangeTracker.Clear();
+
+                var read = await context.Set<CollectionRow>().SingleAsync(r => r.Tags!["a"] == 1);
+                Assert.Equal(new Dictionary<string, int?> { ["a"] = 1, ["b"] = null }, read.Tags);
+                Assert.Equal([[1, 2], [3]], read.Matrix);
+                Assert.Equal([["x"]], read.Grid);
+                Assert.Equal([5, 6], read.Flat!);
+                Assert.Equal([Guid.Empty], read.Ids);
+
+                read.Tags!["c"] = 3;
+                read.Matrix![1][0] = 4;
+                Assert.Equal(1, await context.SaveChangesAsync());
+            });
+
+    public class GuidListComparer() : ValueComparer<List<Guid>>(
+        (left, right) => left == null ? right == null : right != null && left.SequenceEqual(right),
+        list => list.Count,
+        list => list.ToList());
+
+    public class CollectionRow
+    {
+        public int Id { get; set; }
+        public Dictionary<string, int?>? Tags { get; set; }
+        public int[][]? Matrix { get; set; }
+        public List<List<string>>? Grid { get; set; }
+
+        public int[]? Flat { get; set; }
+
+        public List<Guid>? Ids { get; set; }
+    }
 
     public class TemporalRow
     {

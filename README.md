@@ -1079,6 +1079,10 @@ every staging command.
 
 DuckDB JSON columns can be mapped to `string`, `JsonDocument`, or `JsonElement`. EF Core owned JSON documents can be mapped through `ToJson()`, and CLR arrays/lists map to DuckDB array types. Partial updates inside owned JSON documents are rejected; use whole-column JSON writes for updates.
 
+Nested lists such as `int[][]` and `List<List<string>>` map to native nested `LIST` columns, and dictionaries map to
+native `MAP(K, V)` columns. Queries can index into inner lists and use a dictionary's indexer, `ContainsKey` and
+`Count`. See the [type-mapping guide](docs/TYPE-MAPPINGS.md#map-columns) for the supported key and value types.
+
 ```csharp
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -1088,6 +1092,8 @@ public class EventRecord
     public int Id { get; set; }
     public JsonDocument? Payload { get; set; }
     public List<int> Scores { get; set; } = [];
+    public int[][] Matrix { get; set; } = [];                  // INTEGER[][]
+    public Dictionary<string, string?> Labels { get; set; } = []; // MAP(VARCHAR, VARCHAR)
     public EventDetails Details { get; set; } = new();
 }
 

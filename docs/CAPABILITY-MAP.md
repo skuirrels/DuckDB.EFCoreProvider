@@ -194,9 +194,9 @@ They are distinct from §2 (which is what DuckDB itself cannot do). Most remain 
 | DuckDB type | Provider |
 |---|---|
 | `STRUCT` | ✅ opt-in EF complex-property mapping through `UseStructMapping()`; scalar `Dictionary<string, object>` properties remain unsupported |
-| `MAP` | ❌ no mapping |
+| `MAP` | ✅ `Dictionary<K,V>`, `IDictionary<K,V>` and `IReadOnlyDictionary<K,V>` with scalar keys and values; indexer, `ContainsKey` and `Count` translate; not supported by `BulkInsert`/`Upsert` |
 | `UNION` | ❌ no mapping |
-| `LIST` / `ARRAY` (1-D) | ✅ arrays / `List<T>` |
+| `LIST` / `ARRAY` | ✅ arrays / `List<T>`, and nested `T[][]` / `List<List<T>>` |
 | Multidimensional arrays | ⛔ unsupported (`NotSupportedException`) — see §2 |
 | `HUGEINT` / Int128 | ❌ no mapping |
 | native `ENUM` | ❌ CLR enums map to the underlying numeric/string, not a DuckDB `ENUM` |
