@@ -7,7 +7,7 @@ This document is the published capability matrix for the provider. It serves two
    many are skipped. This map sorts the *reasons* into two buckets so the skip list is a capability map
    rather than an opaque "TBD".
 
-**Targets:** EF Core 10.0.x · .NET 10 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-08-04.
+**Targets:** EF Core 10.0.x and 11.0.x · .NET 10 and .NET 11 · DuckDB.NET 1.5.x · DuckLake 1.0. Last reviewed: 2026-11-15.
 
 ---
 
