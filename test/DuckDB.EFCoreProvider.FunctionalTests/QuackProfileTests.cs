@@ -14,6 +14,97 @@ namespace Microsoft.EntityFrameworkCore;
 public sealed class QuackProfileTests : DuckDBTestBase
 {
     [QuackIntegrationFact]
+    public async Task Quack_profile_replays_bulk_writes_in_a_provider_owned_transaction()
+    {
+        var extensionPath = Environment.GetEnvironmentVariable("DUCKDB_QUACK_EXTENSION_PATH")!;
+        var port = Environment.GetEnvironmentVariable("DUCKDB_QUACK_TEST_PORT") ?? "19494";
+        var endpoint = $"quack:localhost:{port}";
+        var serverOptions = new DbContextOptionsBuilder<QuackContext>()
+            .UseDuckDB(
+                $"Data Source={DbPath};allow_unsigned_extensions=true",
+                duckDb => duckDb.LoadExtension("httpfs"))
+            .Options;
+
+        await using var serverContext = new QuackContext(serverOptions);
+        await using var server = await serverContext.Database.StartQuackServerAsync(new DuckDBQuackServerOptions
+        {
+            Uri = endpoint,
+            Token = "integration-token",
+            DisableSsl = true,
+            ExtensionPath = extensionPath
+        });
+
+        var conflict = new FailFirstCommit();
+        var clientOptions = new DbContextOptionsBuilder<QuackContext>()
+            .UseDuckDB(
+                "Data Source=:memory:;allow_unsigned_extensions=true",
+                duckDb =>
+                {
+                    duckDb.UseQuack(
+                        endpoint,
+                        "integration-token",
+                        quack => quack.DisableSsl().ExtensionPath(extensionPath));
+                    duckDb.EnableRetryOnFailure(3, TimeSpan.FromMilliseconds(10));
+                })
+            .AddInterceptors(conflict)
+            .Options;
+        await using var client = new QuackContext(clientOptions);
+        Assert.True(await client.Database.EnsureCreatedAsync());
+
+        // Each call's first commit fails with a write-write conflict; the rolled-back attempt must leave no rows,
+        // so the replay neither duplicates a key nor applies a partial write.
+        conflict.Reset();
+        Assert.Equal(2, await client.BulkInsertAsync(
+        [
+            new QuackItem { Id = 1, Name = "bulk-one" },
+            new QuackItem { Id = 2, Name = "bulk-two" }
+        ]));
+        conflict.Reset();
+        Assert.Equal(2, await client.UpsertAsync(
+        [
+            new QuackItem { Id = 1, Name = "upserted" },
+            new QuackItem { Id = 3, Name = "inserted" }
+        ]));
+
+        Assert.Equal(2, conflict.Failures);
+        client.ChangeTracker.Clear();
+        Assert.Equal(
+            [(1, "upserted"), (2, "bulk-two"), (3, "inserted")],
+            (await client.Items.AsNoTracking().OrderBy(item => item.Id).ToListAsync()).Select(item => (item.Id, item.Name)));
+    }
+
+    /// <summary>Fails the first commit after each <see cref="Reset" /> with a DuckDB write-write conflict.</summary>
+    private sealed class FailFirstCommit : Microsoft.EntityFrameworkCore.Diagnostics.DbTransactionInterceptor
+    {
+        private bool _failed = true;
+
+        internal int Failures { get; private set; }
+
+        internal void Reset()
+            => _failed = false;
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult> TransactionCommittingAsync(
+            System.Data.Common.DbTransaction transaction,
+            Microsoft.EntityFrameworkCore.Diagnostics.TransactionEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult result,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_failed)
+            {
+                _failed = true;
+                Failures++;
+                using var connection = new DuckDBConnection("Data Source=:memory:");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT error('TransactionContext Error: Conflict on update!')";
+                throw Assert.Throws<DuckDBException>(() => command.ExecuteScalar());
+            }
+
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    [QuackIntegrationFact]
     public async Task Quack_profile_round_trips_ef_commands_transactions_bulk_and_upsert()
     {
         var extensionPath = Environment.GetEnvironmentVariable("DUCKDB_QUACK_EXTENSION_PATH")!;

@@ -4,6 +4,13 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 
 ## Unreleased
 
+- With `EnableRetryOnFailure()`, `BulkInsert`, `BulkInsertAsync`, `Upsert` and `UpsertAsync` called outside a
+  transaction are now retried after a write-write conflict. Each attempt runs in a provider-owned transaction, so
+  the whole call, including every `Upsert` batch, commits or rolls back as one unit. Inputs that can only be
+  enumerated once are buffered so a replay sees the same entities. Inside a caller's transaction the calls run once,
+  as before, and without a retrying strategy they do not start a transaction.
+- New `exception.IsWriteConflict()` extension method reports whether an exception, or any exception it wraps, is a
+  DuckDB or DuckLake write-write conflict: the same classification the retrying strategy uses.
 - `QUALIFY`: `QualifyRowNumber`, `QualifyRank` and `QualifyDenseRank` filter an ordered query by
   `row_number()`, `rank()` or `dense_rank()` over a partition, for example the latest order per customer. The
   query's ordering becomes the window ordering; `new { }` ranks all rows as one partition. Paging or `DISTINCT`
