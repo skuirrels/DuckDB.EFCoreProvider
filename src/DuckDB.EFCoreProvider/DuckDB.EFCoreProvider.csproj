@@ -1,11 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Version>1.30.0</Version>
+    <Version>1.31.0</Version>
     <PackageVersion>$(Version)</PackageVersion>
     <PackageId>DuckDB.EFCoreProvider</PackageId>
     <PackageId Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB.EFCoreProvider.EF11</PackageId>
-    <FileVersion>1.30.0.0</FileVersion>
+    <FileVersion>1.31.0.0</FileVersion>
     <Authors>skuirrels</Authors>
     <Description>DuckDB, DuckLake and Parquet provider for Entity Framework Core 10, for analytics at cloud scale. Targets .NET 10 and also runs on .NET 11. For EF Core 11, use DuckDB.EFCoreProvider.EF11.</Description>
     <Description Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">DuckDB, DuckLake and Parquet provider for Entity Framework Core 11, for analytics at cloud scale. Targets .NET 11. For EF Core 10, use DuckDB.EFCoreProvider.</Description>
@@ -24,9 +24,17 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.29.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' != '11' And '$(TargetFramework)' != 'net11.0'">1.30.0</PackageValidationBaselineVersion>
     <PackageValidationBaselineVersion Condition="'$(DuckDBEFCoreMajorVersion)' == '11' Or '$(TargetFramework)' == 'net11.0'">1.30.0-preview.1</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.31.0 (EF10 and EF11)
+- The EF11 packages, DuckDB.EFCoreProvider.EF11 and DuckDB.EFCoreProvider.EF11.NTS, are now stable releases built against stable EF Core 11.0.0, and share the EF10 version number.
+- Fix byte-array constants against BLOB columns, which now render as '\x..'::BLOB, and reading List&lt;byte[]&gt; (BLOB[]) columns.
+- New translations: numeric Parse(string) to CAST, byteArray.Any() on a BLOB, DateTimeOffset.UtcDateTime and LocalDateTime, and the DateTimeOffset(dateTime) and DateTimeOffset(dateTime, offset) constructors with a constant offset.
+- Compiled models (NativeAOT) now work with every timestamp and time column type, including TIMESTAMPTZ, TIMETZ and TimeSpan, and no longer emit design-time-only annotations.
+- Fix TimeOnly properties mapped to TIMETZ failing to read with an InvalidCastException.
+- EF11: translate EF.Functions.JsonPathExists to json_type(json, path) IS NOT NULL for string columns and complex or owned JSON properties. The EF Core 11.0.0 specification tests now pass or are skipped with a recorded reason.
+
 1.30.0 (EF10) / 1.30.0-preview.1 (EF11)
 - Add EnableRetryOnFailure() and DuckDBRetryingExecutionStrategy, which replay a unit of work when DuckDB or a DuckLake catalog rejects it with a write-write conflict. Other errors are not retried; explicit transactions must run inside the execution strategy.
 - Fix silent lost updates from overlapping SaveChanges updates. DuckDB 1.5.6 does not report a conflict for UPDATE ... RETURNING on a keyed table, so tracked updates on native DuckDB and Quack are now plain UPDATE statements that fail with a retryable DbUpdateException; generated values are read back in the same transaction.
