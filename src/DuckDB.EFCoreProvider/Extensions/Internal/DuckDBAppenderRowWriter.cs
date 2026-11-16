@@ -22,6 +22,10 @@ internal static class DuckDBCompiledAppenderRowWriter
         typeof(DuckDBCompiledAppenderRowWriter)
             .GetMethod(nameof(AppendPropertyValue), BindingFlags.NonPublic | BindingFlags.Static)!;
 
+    private static readonly MethodInfo AppendMapValueMethod =
+        typeof(DuckDBCompiledAppenderRowWriter)
+            .GetMethod(nameof(AppendMapValue), BindingFlags.NonPublic | BindingFlags.Static)!;
+
     internal static Action<IDuckDBAppenderRow, TEntity> Create<TEntity>(IReadOnlyList<IProperty> properties)
         where TEntity : class
     {
@@ -52,7 +56,6 @@ internal static class DuckDBCompiledAppenderRowWriter
         Expression typedEntity,
         IReadOnlyList<IProperty> properties)
     {
-        EnsureAppendable(properties);
         var expressions = new List<Expression>(properties.Count + 1);
         foreach (var property in properties)
         {
@@ -64,21 +67,6 @@ internal static class DuckDBCompiledAppenderRowWriter
         return Expression.Block(expressions);
     }
 
-    // DuckDB.NET's appender cannot write MAP vectors, and fails only once the appender is created. Rejecting the
-    // property while planning gives the same guidance as other unsupported appender values.
-    private static void EnsureAppendable(IReadOnlyList<IProperty> properties)
-    {
-        foreach (var property in properties)
-        {
-            if (property.GetTypeMapping() is DuckDBMapTypeMapping)
-            {
-                throw new NotSupportedException(
-                    $"DuckDB appender operations cannot write MAP property '{property.DeclaringType.DisplayName()}.{property.Name}' "
-                    + "because DuckDB.NET's appender does not support MAP values. Use SaveChanges for this entity.");
-            }
-        }
-    }
-
     private static Expression CreateAppendExpression(
         ParameterExpression row,
         ParameterExpression entity,
@@ -86,7 +74,20 @@ internal static class DuckDBCompiledAppenderRowWriter
         IProperty property)
     {
         var getter = property.GetGetter();
-        var converter = property.GetTypeMapping().Converter;
+        var typeMapping = property.GetTypeMapping();
+
+        // MAP entries carry their own key and value converters, so the mapping builds the provider dictionary.
+        if (typeMapping is DuckDBMapTypeMapping mapMapping)
+        {
+            return Expression.Call(
+                AppendMapValueMethod,
+                row,
+                entity,
+                Expression.Constant(getter, typeof(IClrPropertyGetter)),
+                Expression.Constant(mapMapping, typeof(DuckDBMapTypeMapping)));
+        }
+
+        var converter = typeMapping.Converter;
         if (converter is not null
             && TryCreateConvertedAppendExpression(row, typedEntity, property, converter, out var convertedAppend))
         {
@@ -242,6 +243,13 @@ internal static class DuckDBCompiledAppenderRowWriter
         IClrPropertyGetter getter,
         ValueConverter converter)
         => AppendValue(row, converter.ConvertToProvider(getter.GetClrValue(entity)));
+
+    private static void AppendMapValue(
+        IDuckDBAppenderRow row,
+        object entity,
+        IClrPropertyGetter getter,
+        DuckDBMapTypeMapping mapping)
+        => row.AppendValue(mapping.ConvertToProviderDictionary(getter.GetClrValue(entity)));
 
     private static void AppendPropertyValue(
         IDuckDBAppenderRow row,

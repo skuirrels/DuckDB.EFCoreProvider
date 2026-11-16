@@ -389,7 +389,7 @@ public class DuckDBTypeMappingSource : RelationalTypeMappingSource
         };
 
         return mapping is { ElementTypeMapping: null } and not DuckDBMapTypeMapping
-            && DuckDBMapText.IsSupportedElementType(mapping.Converter?.ProviderClrType ?? mapping.ClrType)
+            && DuckDBMapTypeMapping.IsSupportedElementType(mapping.Converter?.ProviderClrType ?? mapping.ClrType)
                 ? mapping
                 : null;
     }

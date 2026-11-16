@@ -252,19 +252,50 @@ public sealed class MapAndNestedListTests : DuckDBTestBase
     }
 
     [Fact]
-    public void Map_parameters_quote_every_element()
+    public void Map_parameters_bind_provider_dictionaries()
     {
         using var context = new Store(false, DbPath).Create();
-        var mapping = context.Model.FindEntityType(typeof(Document))!
-            .FindProperty(nameof(Document.Tags))!.GetRelationalTypeMapping();
+        var entityType = context.Model.FindEntityType(typeof(Document))!;
         using var command = context.Database.GetDbConnection().CreateCommand();
 
-        var parameter = mapping.CreateParameter(
-            command,
-            "p",
-            new Dictionary<string, string?> { ["a'b\\c"] = "x=y, z", ["n"] = null, ["s"] = "NULL" });
+        // Without element converters the dictionary is passed through unchanged.
+        var tags = new Dictionary<string, string?> { ["a'b\\c"] = "x=y, z", ["n"] = null };
+        var tagsParameter = entityType.FindProperty(nameof(Document.Tags))!.GetRelationalTypeMapping()
+            .CreateParameter(command, "tags", tags);
+        Assert.Same(tags, tagsParameter.Value);
+        Assert.Equal(System.Data.DbType.Object, tagsParameter.DbType);
 
-        Assert.Equal(@"{'a\'b\\c'='x=y, z', 'n'=NULL, 's'='NULL'}", parameter.Value);
+        // Converted keys are bound as their provider values.
+        var settingsParameter = entityType.FindProperty(nameof(Document.Settings))!.GetRelationalTypeMapping()
+            .CreateParameter(command, "settings", new Dictionary<Level, bool> { [Level.High] = true });
+        Assert.Equal(new Dictionary<int, bool> { [(int)Level.High] = true }, Assert.IsType<Dictionary<int, bool>>(settingsParameter.Value));
+
+        var nullParameter = entityType.FindProperty(nameof(Document.Tags))!.GetRelationalTypeMapping()
+            .CreateParameter(command, "none", null);
+        Assert.Equal(DBNull.Value, nullParameter.Value);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Dictionaries_compare_against_bound_map_parameters(bool duckLake)
+    {
+        await using var store = Store.Create(duckLake, DbPath);
+        await using (var context = store.Create())
+        {
+            await context.Database.EnsureCreatedAsync();
+            context.AddRange(
+                new Document { Id = 1, Settings = new Dictionary<Level, bool> { [Level.High] = true } },
+                new Document { Id = 2, Settings = new Dictionary<Level, bool> { [Level.Low] = false } });
+            await context.SaveChangesAsync();
+        }
+
+        await using (var context = store.Create())
+        {
+            IReadOnlyDictionary<Level, bool> settings = new Dictionary<Level, bool> { [Level.High] = true };
+            var ids = await context.Documents.Where(d => d.Settings == settings).Select(d => d.Id).ToListAsync();
+            Assert.Equal([1], ids);
+        }
     }
 
     [Fact]
@@ -322,15 +353,92 @@ public sealed class MapAndNestedListTests : DuckDBTestBase
         Assert.Contains(nameof(UnsupportedEntity.Blobs), exception.Message, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void Bulk_insert_reports_map_columns_as_unsupported_by_the_appender()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Dictionaries_round_trip_through_BulkInsert_and_Upsert(bool duckLake)
     {
-        using var context = new Store(false, DbPath).Create();
-        context.Database.EnsureCreated();
+        await using var store = Store.Create(duckLake, DbPath);
+        await using (var context = store.Create())
+        {
+            await context.Database.EnsureCreatedAsync();
+            context.BulkInsert(
+            [
+                new Document
+                {
+                    Id = 1,
+                    Tags = new() { ["colour"] = "blue", ["NULL"] = null },
+                    Counts = new Dictionary<int, long> { [1] = 10, [-2] = long.MaxValue },
+                    Scores = new Dictionary<string, double?> { ["pi"] = Math.PI, ["missing"] = null },
+                    Settings = new Dictionary<Level, bool> { [Level.High] = true, [Level.Low] = false },
+                    Dates = new Dictionary<Guid, DateTime> { [KnownGuid] = new DateTime(2024, 2, 29, 13, 14, 15, 123) },
+                    Prices = new Dictionary<DateOnly, decimal> { [new DateOnly(2024, 1, 2)] = 12.34m }
+                },
+                new Document { Id = 2, Tags = [] }
+            ]);
+        }
 
-        var exception = Assert.Throws<NotSupportedException>(
-            () => context.BulkInsert([new Document { Id = 1, Tags = new() { ["a"] = "b" } }]));
-        Assert.Contains("SaveChanges", exception.Message, StringComparison.Ordinal);
+        await using (var context = store.Create())
+        {
+            context.Upsert([new Document { Id = 2, Tags = new() { ["updated"] = "yes" } }]);
+        }
+
+        await using (var context = store.Create())
+        {
+            var documents = await context.Documents.OrderBy(d => d.Id).ToListAsync();
+            Assert.Equal(new Dictionary<string, string?> { ["colour"] = "blue", ["NULL"] = null }, documents[0].Tags);
+            Assert.Equal(new Dictionary<int, long> { [1] = 10, [-2] = long.MaxValue }, documents[0].Counts);
+            Assert.Equal(Math.PI, documents[0].Scores!["pi"]);
+            Assert.Null(documents[0].Scores!["missing"]);
+            Assert.Equal(new Dictionary<Level, bool> { [Level.High] = true, [Level.Low] = false }, documents[0].Settings);
+            Assert.Equal(new DateTime(2024, 2, 29, 13, 14, 15, 123), documents[0].Dates![KnownGuid]);
+            Assert.Equal(12.34m, documents[0].Prices![new DateOnly(2024, 1, 2)]);
+            Assert.Equal(new Dictionary<string, string?> { ["updated"] = "yes" }, documents[1].Tags);
+            Assert.Null(documents[1].Counts);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Dictionaries_write_to_map_columns_with_configured_element_types(bool duckLake)
+    {
+        // SaveChanges casts bound parameters to the column type, while the appender writes the provider values
+        // directly, so each write path must accept MAP columns whose element types differ from the CLR defaults.
+        static WidenedDocument CreateDocument(int id)
+            => new()
+            {
+                Id = id,
+                Wide = new() { ["a"] = int.MaxValue },
+                Narrow = new() { ["a"] = short.MinValue },
+                Money = new() { ["a"] = 12.34m },
+                Ratios = new() { [Level.High] = 0.5 }
+            };
+
+        await using var store = Store.Create(duckLake, DbPath);
+        await using (var context = store.Create<WidenedContext>(options => new(options)))
+        {
+            await context.Database.EnsureCreatedAsync();
+            context.Add(CreateDocument(1));
+            await context.SaveChangesAsync();
+            context.BulkInsert([CreateDocument(2)]);
+            context.Upsert([CreateDocument(3)]);
+        }
+
+        await using (var context = store.Create<WidenedContext>(options => new(options)))
+        {
+            var documents = await context.Documents.OrderBy(document => document.Id).ToListAsync();
+            Assert.Equal([1, 2, 3], documents.Select(document => document.Id));
+            Assert.All(
+                documents,
+                document =>
+                {
+                    Assert.Equal(int.MaxValue, document.Wide!["a"]);
+                    Assert.Equal(short.MinValue, document.Narrow!["a"]);
+                    Assert.Equal(12.34m, document.Money!["a"]);
+                    Assert.Equal(0.5, document.Ratios![Level.High]);
+                });
+        }
     }
 
     private static readonly Guid KnownGuid = new("8f1f6c9e-1c0e-4d63-9e0c-0a7b7f1d2a33");
@@ -367,6 +475,30 @@ public sealed class MapAndNestedListTests : DuckDBTestBase
         public DbSet<Document> Documents => Set<Document>();
     }
 
+    public sealed class WidenedDocument
+    {
+        public int Id { get; set; }
+        public Dictionary<string, int>? Wide { get; set; }
+        public Dictionary<string, int>? Narrow { get; set; }
+        public Dictionary<string, decimal>? Money { get; set; }
+        public Dictionary<Level, double>? Ratios { get; set; }
+    }
+
+    private sealed class WidenedContext(DbContextOptions<WidenedContext> options) : DbContext(options)
+    {
+        public DbSet<WidenedDocument> Documents => Set<WidenedDocument>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<WidenedDocument>(entity =>
+            {
+                entity.Property(document => document.Id).ValueGeneratedNever();
+                entity.Property(document => document.Wide).HasColumnType("MAP(VARCHAR, BIGINT)");
+                entity.Property(document => document.Narrow).HasColumnType("MAP(VARCHAR, SMALLINT)");
+                entity.Property(document => document.Money).HasColumnType("MAP(VARCHAR, DECIMAL(10,2))");
+                entity.Property(document => document.Ratios).HasColumnType("MAP(BIGINT, DOUBLE)");
+            });
+    }
+
     private sealed class UnsupportedContext(DbContextOptions<UnsupportedContext> options) : DbContext(options)
     {
         public DbSet<UnsupportedEntity> Entities => Set<UnsupportedEntity>();
@@ -380,8 +512,12 @@ public sealed class MapAndNestedListTests : DuckDBTestBase
             => new(duckLake, databasePath);
 
         public DocumentContext Create()
+            => Create<DocumentContext>(options => new(options));
+
+        public TContext Create<TContext>(Func<DbContextOptions<TContext>, TContext> factory)
+            where TContext : DbContext
         {
-            var builder = new DbContextOptionsBuilder<DocumentContext>()
+            var builder = new DbContextOptionsBuilder<TContext>()
                 .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
             if (duckLake)
             {
@@ -394,7 +530,7 @@ public sealed class MapAndNestedListTests : DuckDBTestBase
                 builder.UseDuckDB($"DataSource={databasePath}");
             }
 
-            return new DocumentContext(builder.Options);
+            return factory(builder.Options);
         }
 
         public ValueTask DisposeAsync()
