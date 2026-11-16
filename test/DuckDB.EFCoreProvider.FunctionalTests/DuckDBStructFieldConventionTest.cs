@@ -3,6 +3,7 @@ using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using DuckDB.EFCoreProvider.Query.Expressions.Internal;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 using System.Data;
@@ -125,7 +126,8 @@ public class DuckDBStructFieldConventionTest
         var optionsBuilder = new DbContextOptionsBuilder<TestDbContext<T>>();
         optionsBuilder
             .UseDuckDB("DataSource=:memory:")
-            .EnableServiceProviderCaching(false);
+            .EnableServiceProviderCaching(false)
+            .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
         using var ctx = new TestDbContext<T>(optionsBuilder.Options, configure);
         var model = ctx.Model;
         return model;
@@ -451,7 +453,8 @@ public class DuckDBStructFieldConventionTest
 
         var builder = new DbContextOptionsBuilder<NestedQueryContext>()
             .UseDuckDB("DataSource=:memory:")
-            .EnableServiceProviderCaching(false);
+            .EnableServiceProviderCaching(false)
+            .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
         using var context = new NestedQueryContext(builder.Options);
 
         // Use the underlying DuckDB connection directly for DDL/DML to avoid

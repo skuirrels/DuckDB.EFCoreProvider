@@ -54,10 +54,9 @@ Queries translate `dictionary[key]` to `map_extract_value`, `ContainsKey` to `ma
 `dictionary[key]` from a map with a non-nullable value type fails when the key is missing; cast the value to a
 nullable type in the projection, or filter with `ContainsKey` first.
 
-DuckDB.NET can read a MAP as a dictionary but cannot bind one as a parameter, so the provider sends MAP parameters
-as DuckDB's quoted MAP text, `{'key'='value'}`, which DuckDB casts to the column's MAP type. Literals, such as
-migration seed data, use the typed `MAP {key: value}` constructor. The DuckDB.NET appender cannot write MAP values,
-so `BulkInsert` and `Upsert` reject entities with MAP properties; use `SaveChanges` for them.
+MAP parameters bind as native DuckDB MAP values, and `BulkInsert` and `Upsert` write MAP properties through the
+DuckDB.NET appender. Keys and values that need a value converter, such as enums, are converted before they are
+bound or appended. Literals, such as migration seed data, use the typed `MAP {key: value}` constructor.
 
 ### Nested lists
 
