@@ -1,6 +1,7 @@
 ﻿using DuckDB.EFCoreProvider.Extensions.Internal;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Collections;
 using System.Data;
 using System.Data.Common;
@@ -90,7 +91,12 @@ public class DuckDBMapTypeMapping<TDictionary, TKey, TValue> : DuckDBMapTypeMapp
 
     private readonly RelationalTypeMapping _keyTypeMapping;
     private readonly RelationalTypeMapping _valueTypeMapping;
+    private static readonly MethodInfo ConvertToProviderMethod =
+        typeof(DuckDBMapTypeMapping<TDictionary, TKey, TValue>)
+            .GetMethod(nameof(ConvertToProvider), BindingFlags.Static | BindingFlags.NonPublic)!;
+
     private readonly Type _providerDictionaryType;
+    private readonly Func<TDictionary, ValueConverter?, ValueConverter?, IDictionary> _convertToProvider;
 
     public DuckDBMapTypeMapping(RelationalTypeMapping keyTypeMapping, RelationalTypeMapping valueTypeMapping)
         : this(CreateStoreType(keyTypeMapping, valueTypeMapping), keyTypeMapping, valueTypeMapping)
@@ -127,6 +133,9 @@ public class DuckDBMapTypeMapping<TDictionary, TKey, TValue> : DuckDBMapTypeMapp
         _keyTypeMapping = keyTypeMapping;
         _valueTypeMapping = valueTypeMapping;
         _providerDictionaryType = typeof(Dictionary<,>).MakeGenericType(ProviderKeyType, ProviderValueType);
+        _convertToProvider = ConvertToProviderMethod
+            .MakeGenericMethod(ProviderKeyType, ProviderValueType)
+            .CreateDelegate<Func<TDictionary, ValueConverter?, ValueConverter?, IDictionary>>();
     }
 
     /// <inheritdoc />
@@ -226,22 +235,35 @@ public class DuckDBMapTypeMapping<TDictionary, TKey, TValue> : DuckDBMapTypeMapp
         }
 
         var dictionary = (TDictionary)value;
-        var keyConverter = KeyTypeMapping.Converter;
-        var valueConverter = ValueTypeMapping.Converter;
 
         // Without converters DuckDB.NET takes the dictionary as it is. A dictionary type that is only generic is
-        // copied, because the appender and the parameter binder both accept a non-generic IDictionary.
-        if (keyConverter is null && valueConverter is null && dictionary is IDictionary providerDictionary)
+        // copied, because the provider appends maps through the appender's non-generic IDictionary overload.
+        if (KeyTypeMapping.Converter is null && ValueTypeMapping.Converter is null
+            && dictionary is IDictionary providerDictionary)
         {
             return providerDictionary;
         }
 
-        var provider = (IDictionary)Activator.CreateInstance(_providerDictionaryType)!;
+        return _convertToProvider(dictionary, KeyTypeMapping.Converter, ValueTypeMapping.Converter);
+    }
+
+    // Builds a typed, pre-sized provider dictionary, so appending a converted map does not go through reflection
+    // and the non-generic IDictionary.Add for every row.
+    private static IDictionary ConvertToProvider<TProviderKey, TProviderValue>(
+        TDictionary dictionary,
+        ValueConverter? keyConverter,
+        ValueConverter? valueConverter)
+        where TProviderKey : notnull
+    {
+        var provider = new Dictionary<TProviderKey, TProviderValue>(
+            dictionary.TryGetNonEnumeratedCount(out var count) ? count : 0);
         foreach (var (key, element) in dictionary)
         {
-            provider.Add(
-                keyConverter is null ? key : keyConverter.ConvertToProvider(key)!,
-                element is null || valueConverter is null ? element : valueConverter.ConvertToProvider(element));
+            var providerKey = keyConverter is null ? (object)key : keyConverter.ConvertToProvider(key);
+            var providerValue = element is null || valueConverter is null
+                ? element
+                : valueConverter.ConvertToProvider(element);
+            provider.Add((TProviderKey)providerKey!, (TProviderValue)providerValue!);
         }
 
         return provider;

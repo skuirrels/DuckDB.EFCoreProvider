@@ -2,14 +2,16 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
-## Unreleased
+## 1.33.0
 
 - MAP parameters now bind as native DuckDB MAP values instead of DuckDB's quoted MAP text, so the provider no longer
   formats or escapes map entries itself.
 - `BulkInsert` and `Upsert` now write `Dictionary<K,V>`, `IDictionary<K,V>` and `IReadOnlyDictionary<K,V>` MAP
   properties through the appender instead of rejecting them. Keys and values with value converters, such as enums,
   are converted first.
-- Updates `Skuirrels.DuckDB.NET.Data.Full` to 1.5.7, which adds MAP parameter binding and appender writes.
+- Upgrade `Skuirrels.DuckDB.NET.Data.Full` from 1.5.6 to 1.5.7, which adds MAP parameter binding and appender writes,
+  rejects out-of-range and lossy numeric appender writes instead of corrupting the column, and discards incomplete
+  appender rows instead of flushing them.
 
 ## 1.32.0
 
