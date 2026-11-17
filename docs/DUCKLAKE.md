@@ -192,22 +192,27 @@ Applied in place:
   rendered as an untyped literal, such as `DEFAULT 'false'` or `DEFAULT '2026-01-01 00:00:00'`, because
   `ADD COLUMN` rejects typed literals such as `false` or `TIMESTAMP '...'` as non-literal defaults. `CREATE TABLE`
   accepts them and is unchanged;
-- `DROP NOT NULL`, and `SET NOT NULL` when the column has no `NULL` values and DuckLake has statistics for it.
-  DuckLake rejects `SET NOT NULL` on an empty table and on a column added with `ADD COLUMN`.
+- `DROP NOT NULL`.
 
 Rejected while the migration script is generated, before any SQL runs:
 
 - other type changes, such as `BIGINT` to `INTEGER`, `VARCHAR` to `INTEGER` or a decimal scale change;
 - adding a required column to an existing table, because DuckLake rejects `ADD COLUMN ... NOT NULL` and cannot set
   `NOT NULL` on the added column afterwards;
+- making an optional column required, because DuckLake rejects `SET NOT NULL` on an empty table and on a column added
+  with `ADD COLUMN`, and the provider cannot tell which applies while it generates the script;
 - moving a table to another schema (`ALTER TABLE ... SET SCHEMA`);
 - SQL default expressions, computed columns and sequences, as for `EnsureCreated()`.
 
 Indexes and physical constraints in a migration are omitted, as they are for `EnsureCreated()`. With
-`EnableMigrationTableRebuilds()` in the `UseDuckLake(...)` DuckDB options, type conversions and required columns are
-applied by recreating the table from the migration's target model: the rows are copied to a backup table, the table is
-dropped and recreated, the rows are copied back with the new column's default, and the backup is dropped, all in the
-migration transaction. Other column changes to that table must go in a separate migration. A rebuilt table is a new
+`EnableMigrationTableRebuilds()` in the `UseDuckLake(...)` DuckDB options, type conversions, required columns and
+columns made required are applied by recreating the table from the migration's target model: the rows are copied to a
+backup table, the table is dropped and recreated, the rows are copied back, and the backup is dropped, all in the
+migration transaction. The rebuild also applies the migration's other column changes to that table, including renames.
+An added column is filled with the `defaultValue` of its `AddColumn`, and a column made required replaces existing
+`NULL` values with the `defaultValue` of its `AlterColumn`, which EF scaffolds even though the model snapshot has no
+default. If a column made required has no `defaultValue` and holds `NULL` values, the copy fails and the migration
+rolls back. A rebuilt table is a new
 DuckLake table, so `AsOfSnapshot(...)`, `AsOfTimestamp(...)` and DuckLake time travel on it cannot reach back past the
 migration that rebuilt it. Expire or keep snapshots with that in mind.
 

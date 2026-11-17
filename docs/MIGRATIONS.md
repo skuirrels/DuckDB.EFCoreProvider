@@ -105,8 +105,9 @@ changes and constraint rebuilds must be placed in separate migrations; the provi
 rather than risking an ambiguous copy. Rebuilding a table referenced by foreign keys from other tables may also
 be rejected by DuckDB, so rebuild dependants first or use an application-managed maintenance migration.
 
-On the DuckLake profile the same option also rebuilds tables for type conversions and required columns, which
-DuckLake cannot apply in place. See [DUCKLAKE.md](DUCKLAKE.md#ef-core-migrations) for the DuckLake lock, history
+On the DuckLake profile the same option also rebuilds tables for type conversions, required columns and columns
+made required, which DuckLake cannot apply in place. Such a rebuild also applies the migration's other column changes
+to that table, so they do not need a separate migration. See [DUCKLAKE.md](DUCKLAKE.md#ef-core-migrations) for the DuckLake lock, history
 table and supported operations.
 
 For the complete capability matrix and the engine-limitation rationale, see [CAPABILITY-MAP.md](CAPABILITY-MAP.md).

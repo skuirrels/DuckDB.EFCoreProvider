@@ -1,4 +1,5 @@
 using DuckDB.EFCoreProvider.Migrations.Internal;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -100,5 +101,66 @@ public sealed class DuckDBMigrationColumnPlannerTests
 
         Assert.Contains("'Items.Tags'", exception.Message);
         Assert.Contains("numeric and string default literals", exception.Message);
+    }
+
+    [Fact]
+    public void Rebuild_copy_maps_renamed_columns_and_takes_fallbacks_from_the_operations()
+    {
+        var quantity = new AddColumnOperation { Table = "Items", Name = "Quantity", IsNullable = false, DefaultValue = 0 };
+        var title = new AlterColumnOperation
+        {
+            Table = "Items",
+            Name = "Title",
+            IsNullable = false,
+            DefaultValue = "",
+            OldColumn = new AddColumnOperation { Table = "Items", Name = "Title", IsNullable = true }
+        };
+
+        var copies = DuckDBTableRebuildCopyPlanner.Plan(
+            ["Id", "Note", "Quantity", "Title"],
+            [
+                new RenameColumnOperation { Table = "Items", Name = "Label", NewName = "Title" },
+                title,
+                quantity,
+                new AddColumnOperation { Table = "Items", Name = "Note", IsNullable = true }
+            ]);
+
+        Assert.Equal(
+            [
+                new DuckDBRebuildColumnCopy("Id", "Id", null),
+                new DuckDBRebuildColumnCopy("Note", null, null),
+                new DuckDBRebuildColumnCopy("Quantity", null, quantity),
+                new DuckDBRebuildColumnCopy("Title", "Label", title)
+            ],
+            copies);
+    }
+
+    [Fact]
+    public void Rebuild_copy_does_not_copy_a_dropped_column_into_a_new_column_of_the_same_name()
+    {
+        var copies = DuckDBTableRebuildCopyPlanner.Plan(
+            ["Id", "Code"],
+            [
+                new DropColumnOperation { Table = "Items", Name = "Code" },
+                new AddColumnOperation { Table = "Items", Name = "Code", IsNullable = true }
+            ]);
+
+        Assert.Equal([new DuckDBRebuildColumnCopy("Id", "Id", null), new DuckDBRebuildColumnCopy("Code", null, null)], copies);
+    }
+
+    [Fact]
+    public void Rebuild_copy_keeps_values_unchanged_when_a_column_becomes_required_without_a_default()
+    {
+        var copies = DuckDBTableRebuildCopyPlanner.Plan(
+            ["Title"],
+            [
+                new AlterColumnOperation
+                {
+                    Table = "Items", Name = "Title", IsNullable = false,
+                    OldColumn = new AddColumnOperation { Table = "Items", Name = "Title", IsNullable = true }
+                }
+            ]);
+
+        Assert.Equal([new DuckDBRebuildColumnCopy("Title", "Title", null)], copies);
     }
 }

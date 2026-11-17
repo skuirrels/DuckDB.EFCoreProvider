@@ -193,6 +193,20 @@ public sealed class DuckLakeMigrationsTests : IDisposable
     }
 
     [Fact]
+    public void Lock_timeout_reports_a_missing_lock_row_with_the_statement_that_restores_it()
+    {
+        using var context = new EvolvingContext(
+            Options<EvolvingContext>(duckdb => duckdb.MigrationLockTimeout(TimeSpan.FromMilliseconds(200))));
+        context.GetService<IHistoryRepository>().AcquireDatabaseLock().Dispose();
+        context.Database.ExecuteSqlRaw("DELETE FROM \"__EFMigrationsLock\"");
+
+        var exception = Assert.Throws<TimeoutException>(() => context.GetService<IHistoryRepository>().AcquireDatabaseLock());
+
+        Assert.Contains("lock row is missing", exception.Message);
+        Assert.Contains("INSERT INTO \"__EFMigrationsLock\" (\"Id\", \"Holder\", \"Timestamp\") VALUES (1, NULL, NULL)", exception.Message);
+    }
+
+    [Fact]
     public void Script_generation_renders_DuckLake_safe_history_and_default_SQL()
     {
         using var context = new EvolvingContext(Options<EvolvingContext>());
@@ -235,6 +249,21 @@ public sealed class DuckLakeMigrationsTests : IDisposable
         ]));
         Assert.Contains("'Blogs.Required'", requiredColumn.Message);
         Assert.Contains("EnableMigrationTableRebuilds", requiredColumn.Message);
+
+        var becomesRequired = Assert.Throws<NotSupportedException>(() => generator.Generate(
+        [
+            new AlterColumnOperation
+            {
+                Table = "Blogs", Name = "Url", ClrType = typeof(string), ColumnType = "VARCHAR",
+                IsNullable = false, DefaultValue = "",
+                OldColumn = new AddColumnOperation
+                {
+                    Table = "Blogs", Name = "Url", ClrType = typeof(string), ColumnType = "VARCHAR", IsNullable = true
+                }
+            }
+        ]));
+        Assert.Contains("'Blogs.Url' required", becomesRequired.Message);
+        Assert.Contains("EnableMigrationTableRebuilds", becomesRequired.Message);
 
         var schemaTransfer = Assert.Throws<NotSupportedException>(() => generator.Generate(
             [new RenameTableOperation { Name = "Blogs", NewName = "Blogs", NewSchema = "archive" }]));
@@ -303,28 +332,32 @@ public sealed class DuckLakeMigrationsTests : IDisposable
     [Fact]
     public void Table_rebuild_converts_types_and_adds_required_columns_on_DuckLake()
     {
-        using (var context = new RebuildingContext(Options<RebuildingContext>(duckdb => duckdb.EnableMigrationTableRebuilds())))
-        {
-            context.GetService<IMigrator>().Migrate(CreateItems.Id);
-            context.Database.ExecuteSqlRaw("INSERT INTO \"Items\" (\"Id\", \"Code\") VALUES (1, '12'), (2, '34')");
+        using var context = new RebuildingContext(Options<RebuildingContext>(duckdb => duckdb.EnableMigrationTableRebuilds()));
+        context.GetService<IMigrator>().Migrate(CreateItems.Id);
+        context.Database.ExecuteSqlRaw("INSERT INTO \"Items\" (\"Id\", \"Code\", \"Label\") VALUES (1, '12', NULL), (2, '34', 'b')");
 
-            context.Database.Migrate();
+        context.GetService<IMigrator>().Migrate(ConvertItemCode.Id);
 
-            Assert.Equal([CreateItems.Id, ConvertItemCode.Id], AppliedMigrations(context));
-            Assert.Equal(["Id:INTEGER", "Code:INTEGER", "Quantity:INTEGER"], Columns(context, "Items", ordered: true));
-            Assert.Equal(
-                ["1|12|0", "2|34|0"],
-                context.Database.SqlQueryRaw<string>(
-                        "SELECT concat_ws('|', \"Id\", \"Code\", \"Quantity\") AS \"Value\" FROM \"Items\" ORDER BY \"Id\"")
-                    .ToList());
-            Assert.False(TableExists(context, "__ef_rebuild_Items"));
+        // The scaffolded target model has no default for Quantity, so the copy takes the AddColumn backfill value.
+        Assert.Equal(
+            ["Id:INTEGER", "Code:INTEGER", "Label:VARCHAR", "Note:VARCHAR", "Quantity:INTEGER"],
+            Columns(context, "Items", ordered: true));
+        Assert.Equal(["1|12|<null>|<null>|0", "2|34|b|<null>|0"], Items(context, "Label"));
+        Assert.False(TableExists(context, "__ef_rebuild_Items"));
+        Assert.ThrowsAny<Exception>(() => context.Database.ExecuteSqlRaw(
+            "INSERT INTO \"Items\" (\"Id\", \"Code\", \"Quantity\") VALUES (3, 56, NULL)"));
 
-            // The rebuilt table carries the required column's NOT NULL constraint and literal default.
-            Assert.ThrowsAny<Exception>(() => context.Database.ExecuteSqlRaw(
-                "INSERT INTO \"Items\" (\"Id\", \"Code\", \"Quantity\") VALUES (3, 56, NULL)"));
-            context.Database.ExecuteSqlRaw("INSERT INTO \"Items\" (\"Id\", \"Code\") VALUES (4, 78)");
-            Assert.Equal(0, context.Database.SqlQueryRaw<int>("SELECT \"Quantity\" AS \"Value\" FROM \"Items\" WHERE \"Id\" = 4").Single());
-        }
+        context.Database.Migrate();
+
+        // The rename is mapped in the copy, and the column that became required keeps its values with NULL replaced.
+        Assert.Equal([CreateItems.Id, ConvertItemCode.Id, RequireItemTitle.Id], AppliedMigrations(context));
+        Assert.Equal(
+            ["Id:INTEGER", "Code:INTEGER", "Note:VARCHAR", "Quantity:INTEGER", "Title:VARCHAR"],
+            Columns(context, "Items", ordered: true));
+        Assert.Equal(["1|12||<null>|0", "2|34|b|<null>|0"], Items(context, "Title"));
+        Assert.ThrowsAny<Exception>(() => context.Database.ExecuteSqlRaw(
+            "INSERT INTO \"Items\" (\"Id\", \"Code\", \"Quantity\", \"Title\") VALUES (3, 56, 0, NULL)"));
+        Assert.False(TableExists(context, "__ef_rebuild_Items"));
     }
 
     [Fact]
@@ -332,13 +365,32 @@ public sealed class DuckLakeMigrationsTests : IDisposable
     {
         using var context = new RebuildingContext(Options<RebuildingContext>(duckdb => duckdb.EnableMigrationTableRebuilds()));
 
-        var script = context.GetService<IMigrator>().GenerateScript(CreateItems.Id, ConvertItemCode.Id);
+        var script = context.GetService<IMigrator>().GenerateScript(CreateItems.Id, RequireItemTitle.Id);
 
         Assert.Contains("CREATE TABLE \"__ef_rebuild_Items\" AS SELECT * FROM \"Items\"", script);
-        Assert.Contains("INSERT INTO \"Items\" (\"Id\", \"Code\") SELECT \"Id\", \"Code\" FROM \"__ef_rebuild_Items\"", script);
-        Assert.Contains("\"Quantity\" INTEGER NOT NULL DEFAULT 0", script);
+        Assert.Contains(
+            "INSERT INTO \"Items\" (\"Id\", \"Code\", \"Label\", \"Quantity\") SELECT \"Id\", \"Code\", \"Label\", 0 FROM \"__ef_rebuild_Items\"",
+            script);
+        Assert.Contains(
+            "INSERT INTO \"Items\" (\"Id\", \"Code\", \"Note\", \"Quantity\", \"Title\") SELECT \"Id\", \"Code\", \"Note\", \"Quantity\", COALESCE(\"Label\", '') FROM \"__ef_rebuild_Items\"",
+            script);
+        Assert.DoesNotContain("\"Quantity\" INTEGER NOT NULL DEFAULT", script);
+        Assert.DoesNotContain("ADD \"Note\"", script);
+        Assert.DoesNotContain("RENAME", script);
+        Assert.DoesNotContain("SET NOT NULL", script);
         Assert.DoesNotContain("PRIMARY KEY", script);
         Assert.DoesNotContain("CREATE INDEX", script);
+    }
+
+    private static string[] Items(DbContext context, string textColumn)
+    {
+        // textColumn is one of this class's constant column names.
+        var sql = $"""
+                   SELECT concat_ws('|', "Id", "Code", coalesce("{textColumn}", '<null>'), coalesce("Note", '<null>'), "Quantity")
+                       AS "Value"
+                   FROM "Items" ORDER BY "Id"
+                   """;
+        return context.Database.SqlQueryRaw<string>(sql).ToArray();
     }
 
     private DbContextOptions<TContext> Options<TContext>(Action<DuckDBDbContextOptionsBuilder>? duckdb = null)
@@ -517,7 +569,8 @@ public sealed class DuckLakeMigrationsTests : IDisposable
                 columns: table => new
                 {
                     Id = table.Column<int>(type: "INTEGER", nullable: false),
-                    Code = table.Column<string>(type: "VARCHAR", nullable: false)
+                    Code = table.Column<string>(type: "VARCHAR", nullable: false),
+                    Label = table.Column<string>(type: "VARCHAR", nullable: true)
                 },
                 constraints: table => table.PrimaryKey("PK_Items", item => item.Id));
         }
@@ -531,12 +584,42 @@ public sealed class DuckLakeMigrationsTests : IDisposable
 
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            // No oldType: the old store type is resolved from the old CLR type, not from the target model.
             migrationBuilder.AlterColumn<int>(
-                name: "Code", table: "Items", type: "INTEGER", nullable: false,
-                oldClrType: typeof(string), oldType: "VARCHAR");
+                name: "Code", table: "Items", type: "INTEGER", nullable: false, oldClrType: typeof(string));
             migrationBuilder.AddColumn<int>(
                 name: "Quantity", table: "Items", type: "INTEGER", nullable: false, defaultValue: 0);
+            migrationBuilder.AddColumn<string>(name: "Note", table: "Items", type: "VARCHAR", nullable: true);
             migrationBuilder.CreateIndex(name: "IX_Items_Code", table: "Items", column: "Code");
+        }
+
+        // As scaffolded: EF puts the backfill value on the AddColumn operation only, never on the snapshot.
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
+            => modelBuilder.Entity("Items", entity =>
+            {
+                entity.Property<int>("Id").HasColumnType("INTEGER");
+                entity.Property<int>("Code").HasColumnType("INTEGER");
+                entity.Property<string>("Label").HasColumnType("VARCHAR");
+                entity.Property<string>("Note").HasColumnType("VARCHAR");
+                entity.Property<int>("Quantity").HasColumnType("INTEGER");
+                entity.HasKey("Id");
+                entity.HasIndex("Code");
+                entity.ToTable("Items");
+            });
+    }
+
+    [DbContext(typeof(RebuildingContext))]
+    [Migration(Id)]
+    public sealed class RequireItemTitle : Migration
+    {
+        public const string Id = "20260103000002_RequireItemTitle";
+
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.RenameColumn(name: "Label", table: "Items", newName: "Title");
+            migrationBuilder.AlterColumn<string>(
+                name: "Title", table: "Items", type: "VARCHAR", nullable: false, defaultValue: "",
+                oldClrType: typeof(string), oldType: "VARCHAR", oldNullable: true);
         }
 
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -544,7 +627,9 @@ public sealed class DuckLakeMigrationsTests : IDisposable
             {
                 entity.Property<int>("Id").HasColumnType("INTEGER");
                 entity.Property<int>("Code").HasColumnType("INTEGER");
-                entity.Property<int>("Quantity").HasColumnType("INTEGER").HasDefaultValue(0);
+                entity.Property<string>("Note").HasColumnType("VARCHAR");
+                entity.Property<int>("Quantity").HasColumnType("INTEGER");
+                entity.Property<string>("Title").HasColumnType("VARCHAR").IsRequired();
                 entity.HasKey("Id");
                 entity.HasIndex("Code");
                 entity.ToTable("Items");

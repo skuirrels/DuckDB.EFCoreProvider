@@ -76,9 +76,7 @@ public class DuckDBHistoryRepository : HistoryRepository
 
     private IMigrationsDatabaseLock AcquireKeyedLock()
     {
-        if (!InterpretExistsResult(
-                Dependencies.RawSqlCommandBuilder.Build(CreateExistsSql(LockTableName))
-                    .ExecuteScalar(CreateRelationalCommandParameters())))
+        if (!LockTableExists())
         {
             CreateLockTableCommand().ExecuteNonQuery(CreateRelationalCommandParameters());
         }
@@ -112,9 +110,7 @@ public class DuckDBHistoryRepository : HistoryRepository
 
     private async Task<IMigrationsDatabaseLock> AcquireKeyedLockAsync(CancellationToken cancellationToken)
     {
-        if (!InterpretExistsResult(
-                await Dependencies.RawSqlCommandBuilder.Build(CreateExistsSql(LockTableName))
-                    .ExecuteScalarAsync(CreateRelationalCommandParameters(), cancellationToken).ConfigureAwait(false)))
+        if (!await LockTableExistsAsync(cancellationToken).ConfigureAwait(false))
         {
             await CreateLockTableCommand().ExecuteNonQueryAsync(CreateRelationalCommandParameters(), cancellationToken)
                 .ConfigureAwait(false);
@@ -239,7 +235,8 @@ public class DuckDBHistoryRepository : HistoryRepository
     // The keyless lock table is created and seeded with its single row in one transaction. Concurrent creators of
     // the same table conflict at commit, so exactly one seeded table survives; the losers find it on the re-check.
     // A plain CREATE TABLE (not IF NOT EXISTS) keeps a creator whose snapshot already contains the table from
-    // inserting a second row.
+    // inserting a second row. The re-check runs in the catch body, after the failed transaction has been disposed
+    // (rolled back): an exception filter would run before that and query through the aborted transaction.
     private void EnsureClaimLockTable()
     {
         if (LockTableExists())
@@ -256,8 +253,13 @@ public class DuckDBHistoryRepository : HistoryRepository
             CreateSeedClaimLockCommand().ExecuteNonQuery(CreateRelationalCommandParameters());
             transaction.Commit();
         }
-        catch (Exception) when (LockTableExists())
+        catch (Exception)
         {
+            if (!LockTableExists())
+            {
+                throw;
+            }
+
             // Another migrator created and seeded the lock table first.
         }
         finally
@@ -398,20 +400,22 @@ public class DuckDBHistoryRepository : HistoryRepository
         string holder;
         try
         {
-            var rows = Convert.ToInt64(
-                Dependencies.RawSqlCommandBuilder
-                    .Build($"""SELECT count(*) FROM {DelimitedLockTableName} WHERE "Id" = 1""")
-                    .ExecuteScalar(CreateRelationalCommandParameters()),
-                CultureInfo.InvariantCulture);
-            var heldSince = rows == 0
-                ? null
-                : Dependencies.RawSqlCommandBuilder
-                    .Build($"""SELECT max("Timestamp") FROM {DelimitedLockTableName} WHERE "Id" = 1""")
-                    .ExecuteScalar(CreateRelationalCommandParameters());
+            long rows;
+            object? heldSince;
+            using (var reader = Dependencies.RawSqlCommandBuilder
+                       .Build($"""SELECT count(*), max("Timestamp") FROM {DelimitedLockTableName} WHERE "Id" = 1""")
+                       .ExecuteReader(CreateRelationalCommandParameters()))
+            {
+                var row = reader.DbDataReader;
+                row.Read();
+                rows = Convert.ToInt64(row.GetValue(0), CultureInfo.InvariantCulture);
+                heldSince = row.IsDBNull(1) ? null : row.GetValue(1);
+            }
+
             holder = rows == 0
                 ? "The lock row is missing, so no migrator can claim it. Restore it with: INSERT INTO"
                     + $""" {DelimitedLockTableName} ("Id", "Holder", "Timestamp") VALUES (1, NULL, NULL)."""
-                : heldSince is null or DBNull
+                : heldSince is null
                     ? "The lock row is free, so the holder may have just released it; retrying may succeed."
                     : $"The lock has been held since {heldSince} (UTC).";
         }

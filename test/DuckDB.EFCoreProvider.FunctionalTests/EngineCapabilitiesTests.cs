@@ -4,12 +4,15 @@ using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
 using DuckDB.EFCoreProvider.Migrations;
 using DuckDB.EFCoreProvider.Update.Internal;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 using Microsoft.Extensions.DependencyInjection;
+using System.Data.Common;
 using Xunit;
 
 namespace Microsoft.EntityFrameworkCore;
@@ -569,6 +572,63 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Migration_capabilities_gate_columns_becoming_required_independently()
+    {
+        using var context = new CapabilityContext(FileOptions<CapabilityContext>());
+        var becomesRequired = new AlterColumnOperation
+        {
+            Table = "Items",
+            Name = "Quantity",
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+            DefaultValue = 0,
+            OldColumn = new AddColumnOperation
+            {
+                Table = "Items",
+                Name = "Quantity",
+                ClrType = typeof(int),
+                ColumnType = "INTEGER",
+                IsNullable = true
+            }
+        };
+
+        var native = Sql(CreateMigrationsGenerator(context, new TestCapabilities()).Generate([becomesRequired]));
+        var exception = Assert.Throws<NotSupportedException>(() => CreateMigrationsGenerator(
+                context,
+                new TestCapabilities(SupportsSetNotNullOnAddedColumns: false))
+            .Generate([becomesRequired]));
+
+        Assert.Contains("ALTER \"Quantity\" SET NOT NULL", native);
+        Assert.Contains("'Items.Quantity' required", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Migration_capabilities_resolve_an_untyped_old_column_without_the_target_model()
+    {
+        using var context = new CapabilityContext(
+            FileOptions<CapabilityContext>(options => options.EnableMigrationTableRebuilds()));
+        var generator = CreateMigrationsGenerator(
+            context,
+            new TestCapabilities(SupportsColumnTypeConversions: false));
+        // Neither side names a store type. The target model maps Name to VARCHAR, which must not be read as the old
+        // type: the old INTEGER column is resolved from its CLR type, so the change is a conversion.
+        var conversion = new AlterColumnOperation
+        {
+            Table = "CapabilityItems",
+            Name = "Name",
+            ClrType = typeof(string),
+            OldColumn = new AddColumnOperation { Table = "CapabilityItems", Name = "Name", ClrType = typeof(int) }
+        };
+
+        var sql = Sql(generator.Generate([conversion], context.GetService<IDesignTimeModel>().Model));
+
+        Assert.Contains("__ef_rebuild_CapabilityItems", sql);
+        Assert.DoesNotContain("ALTER \"Name\" TYPE", sql);
+    }
+
+    [ConditionalFact]
     public void Migration_capabilities_gate_table_schema_transfers_independently()
     {
         using var context = new CapabilityContext(FileOptions<CapabilityContext>());
@@ -612,6 +672,102 @@ public class EngineCapabilitiesTests : DuckDBTestBase
 
         heldLock.Dispose();
         using var acquired = waiter.GetService<IHistoryRepository>().AcquireDatabaseLock();
+    }
+
+    [ConditionalTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Conditional_update_lock_creator_that_loses_the_creation_race_claims_the_winners_lock(bool async)
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<ConditionalUpdateLockCapabilities>();
+        await using var winner = new CapabilityContext(FileOptionsWithCapabilities<CapabilityContext>(serviceProvider));
+        var race = new LockTableCreationRace(winner);
+        await using var loser = new CapabilityContext(
+            new DbContextOptionsBuilder<CapabilityContext>(FileOptionsWithCapabilities<CapabilityContext>(serviceProvider))
+                .AddInterceptors(race)
+                .Options);
+        var repository = loser.GetService<IHistoryRepository>();
+
+        var claimed = async ? await repository.AcquireDatabaseLockAsync() : repository.AcquireDatabaseLock();
+
+        Assert.True(race.LoserFailed);
+        Assert.Equal(["held"], LockStates(loser));
+        await claimed.DisposeAsync();
+        Assert.Equal(["free"], LockStates(loser));
+    }
+
+    private static string[] LockStates(DbContext context)
+        => context.Database.SqlQueryRaw<string>(
+                "SELECT CASE WHEN \"Holder\" IS NULL THEN 'free' ELSE 'held' END AS \"Value\" FROM \"__EFMigrationsLock\"")
+            .ToArray();
+
+    // Reproduces two migrators creating the lock table at once. When the loser sends its CREATE TABLE, the winner has
+    // created and seeded the table in a transaction it has not committed, so the loser's statement fails with a
+    // write-write conflict that aborts the loser's transaction. The winner commits as that failure is reported. The
+    // loser must roll back before it re-checks for the table: a re-check inside its aborted transaction fails.
+    private sealed class LockTableCreationRace(DbContext winner) : DbCommandInterceptor
+    {
+        private IDbContextTransaction? _winnerTransaction;
+
+        public bool LoserFailed { get; private set; }
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result)
+        {
+            StartWinner(command);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            StartWinner(command);
+            return ValueTask.FromResult(result);
+        }
+
+        public override void CommandFailed(DbCommand command, CommandErrorEventData eventData)
+            => CommitWinner();
+
+        public override Task CommandFailedAsync(
+            DbCommand command,
+            CommandErrorEventData eventData,
+            CancellationToken cancellationToken = default)
+        {
+            CommitWinner();
+            return Task.CompletedTask;
+        }
+
+        private void StartWinner(DbCommand command)
+        {
+            if (_winnerTransaction is not null
+                || !command.CommandText.Contains("CREATE TABLE \"__EFMigrationsLock\"", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _winnerTransaction = winner.Database.BeginTransaction();
+            winner.Database.ExecuteSqlRaw(
+                "CREATE TABLE \"__EFMigrationsLock\" (\"Id\" INTEGER NOT NULL, \"Holder\" TEXT NULL, \"Timestamp\" TEXT NULL)");
+            winner.Database.ExecuteSqlRaw(
+                "INSERT INTO \"__EFMigrationsLock\" (\"Id\", \"Holder\", \"Timestamp\") VALUES (1, NULL, NULL)");
+        }
+
+        private void CommitWinner()
+        {
+            if (_winnerTransaction is null || LoserFailed)
+            {
+                return;
+            }
+
+            LoserFailed = true;
+            _winnerTransaction.Commit();
+            _winnerTransaction.Dispose();
+        }
     }
 
     private static string Sql(IEnumerable<MigrationCommand> commands)
