@@ -227,8 +227,8 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | Option | What it does | Default |
 |---|---|---|
 | `.EnableBulkInsertBatching()` | Merge consecutive `SaveChanges` inserts into one multi-row statement (~10× faster). | off |
-| `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~8× faster). | off |
-| `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~14× faster). | off |
+| `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~4× faster). | off |
+| `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~4× faster). | off |
 | `.UseCaseInsensitiveStringSearches()` | Make simple `StartsWith`, `Contains`, and `EndsWith` queries case-insensitive for this context; literal `%` and `_` remain literals. | off |
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
 | `.Threads(4)` | Set the global thread count used by DuckDB query execution when the connection opens. | DuckDB default |
@@ -1373,11 +1373,11 @@ options.UseDuckDB(
         .EnableBulkDeleteBatching()); // DELETE FROM t WHERE key IN (..)
 ```
 
-- **An order of magnitude faster** in local measurements (all while **keeping change tracking and
+- **Several times faster** in local measurements (all while **keeping change tracking and
   store-generated values**, which `BulkInsert` limits to keys):
   - inserts ~120k rows/s (vs ~12k),
-  - updates ~52k rows/s (vs ~6k),
-  - deletes ~119k rows/s (vs ~9k) — delete batching is especially effective for **orphan cleanup** and
+  - updates ~40k rows/s (vs ~9k),
+  - deletes ~34k rows/s (vs ~9k) — delete batching is especially effective for **orphan cleanup** and
     **child-collection replacement**, which issue one delete per orphaned row by default.
 - **All disabled by default**, and independent (enable any combination). When enabled, each merged run is
   **atomic**: if any row in the run fails, none of the rows in that run are applied, even when `SaveChanges`

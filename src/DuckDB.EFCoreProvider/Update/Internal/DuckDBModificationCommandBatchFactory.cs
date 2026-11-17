@@ -71,7 +71,11 @@ public class DuckDBModificationCommandBatchFactory : IModificationCommandBatchFa
     {
         var batchingEnabled = _bulkInsertBatching || _bulkUpdateBatching || _bulkDeleteBatching;
 
-        if (batchingEnabled && !_capabilities.SupportsSaveChangesBatching)
+        // Without RETURNING, batched updates and deletes are each preceded by a row-count query, which needs a
+        // transport that runs several statements in one command.
+        if (batchingEnabled
+            && (!_capabilities.SupportsSaveChangesBatching
+                || (!_capabilities.SupportsReturning && !_capabilities.SupportsMultipleStatementsPerCommand)))
         {
             throw new NotSupportedException(
                 DuckDBCapabilityErrorMessages.SaveChangesBatchingNotSupported);

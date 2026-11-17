@@ -654,14 +654,7 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         int commandPosition,
         out bool requiresTransaction)
     {
-        commandStringBuilder
-            .Append("SELECT CAST(COUNT(*) AS INTEGER) FROM ")
-            .Append(SqlGenerationHelper.DelimitIdentifier(command.TableName, command.Schema))
-            .Append(" WHERE ");
-        AppendConditions(
-            commandStringBuilder,
-            command.ColumnModifications.Where(operation => operation.IsCondition).ToArray());
-        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
+        AppendConditionRowCount(commandStringBuilder, command);
 
         var statementMapping = command.EntityState == EntityState.Deleted
             ? AppendDeleteOperation(commandStringBuilder, command, commandPosition, out _)
@@ -674,6 +667,22 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 
         requiresTransaction = true;
         return ResultSetMapping.LastInResultSet | ResultSetMapping.ResultSetWithRowsAffectedOnly;
+    }
+
+    /// <summary>
+    ///     Appends a query that counts the rows matching a command's conditions: its original key values and any
+    ///     concurrency tokens.
+    /// </summary>
+    internal void AppendConditionRowCount(StringBuilder commandStringBuilder, IReadOnlyModificationCommand command)
+    {
+        commandStringBuilder
+            .Append("SELECT CAST(COUNT(*) AS INTEGER) FROM ")
+            .Append(SqlGenerationHelper.DelimitIdentifier(command.TableName, command.Schema))
+            .Append(" WHERE ");
+        AppendConditions(
+            commandStringBuilder,
+            command.ColumnModifications.Where(operation => operation.IsCondition).ToArray());
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
     }
 
     private static void AppendBulkUpdateOperationCore(

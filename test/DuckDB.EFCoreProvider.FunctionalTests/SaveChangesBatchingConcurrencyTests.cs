@@ -82,10 +82,80 @@ public sealed class SaveChangesBatchingConcurrencyTests : DuckDBTestBase
         }
 
         var exception = await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => stale.SaveChangesAsync());
-        Assert.NotEmpty(exception.Entries);
+        Assert.Equal(2, Assert.IsType<Item>(Assert.Single(exception.Entries).Entity).Id);
 
         await using var verification = store.Create();
         Assert.Equal(["one", "three"], await verification.Items.OrderBy(item => item.Id).Select(item => item.Name).ToListAsync());
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Synchronous_batched_write_of_a_deleted_row_throws_and_changes_nothing(bool duckLake, bool delete)
+    {
+        using var store = new Store(duckLake, DbPath);
+        SeedAsync(store).GetAwaiter().GetResult();
+
+        using var stale = store.Create();
+        var items = stale.Items.OrderBy(item => item.Id).ToList();
+        DeleteItemAsync(store, 2).GetAwaiter().GetResult();
+
+        foreach (var item in items)
+        {
+            if (delete)
+            {
+                stale.Items.Remove(item);
+            }
+            else
+            {
+                item.Name += "-updated";
+            }
+        }
+
+        var exception = Assert.Throws<DbUpdateConcurrencyException>(() => stale.SaveChanges());
+        Assert.Equal(2, Assert.IsType<Item>(Assert.Single(exception.Entries).Entity).Id);
+
+        using var verification = store.Create();
+        Assert.Equal(["one", "three"], verification.Items.OrderBy(item => item.Id).Select(item => item.Name).ToList());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Batched_writes_without_an_EF_transaction_still_run_in_one(bool duckLake)
+    {
+        await using var store = new Store(duckLake, DbPath);
+        await SeedAsync(store);
+
+        var transactions = new TransactionCounter();
+        await using (var context = store.Create(transactionInterceptor: transactions))
+        {
+            context.Database.AutoTransactionBehavior = AutoTransactionBehavior.Never;
+            foreach (var item in await context.Items.ToListAsync())
+            {
+                item.Name += "-updated";
+            }
+
+            Assert.Equal(3, await context.SaveChangesAsync());
+        }
+
+        Assert.Equal(1, transactions.Started);
+        Assert.Equal(1, transactions.Committed);
+
+        await using var stale = store.Create(transactionInterceptor: transactions);
+        stale.Database.AutoTransactionBehavior = AutoTransactionBehavior.Never;
+        var items = await stale.Items.ToListAsync();
+        await DeleteItemAsync(store, 2);
+        stale.Items.RemoveRange(items);
+
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => stale.SaveChangesAsync());
+        Assert.Equal(2, transactions.Started);
+        Assert.Equal(1, transactions.Committed);
+
+        await using var verification = store.Create();
+        Assert.Equal([1, 3], await verification.Items.OrderBy(item => item.Id).Select(item => item.Id).ToListAsync());
     }
 
     [Theory]
@@ -136,7 +206,8 @@ public sealed class SaveChangesBatchingConcurrencyTests : DuckDBTestBase
 
         stale.Items.RemoveRange(items);
 
-        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => stale.SaveChangesAsync());
+        var exception = await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => stale.SaveChangesAsync());
+        Assert.Equal(2, Assert.IsType<Item>(Assert.Single(exception.Entries).Entity).Id);
 
         await using var verification = store.Create();
         Assert.Equal([1, 3], await verification.Items.OrderBy(item => item.Id).Select(item => item.Id).ToListAsync());
@@ -246,7 +317,12 @@ public sealed class SaveChangesBatchingConcurrencyTests : DuckDBTestBase
             }
         }
 
-        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => stale.SaveChangesAsync());
+        var exception = await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => stale.SaveChangesAsync());
+        if (!hideMissingRow)
+        {
+            // Only key 1 is duplicated, so only its entity is reported.
+            Assert.Equal(1, Assert.IsType<Item>(Assert.Single(exception.Entries).Entity).Id);
+        }
 
         await using var verification = store.Create();
         Assert.Equal(
@@ -273,11 +349,13 @@ public sealed class SaveChangesBatchingConcurrencyTests : DuckDBTestBase
         await other.SaveChangesAsync();
     }
 
-    private sealed class Store(bool duckLake, string databasePath) : IAsyncDisposable
+    private sealed class Store(bool duckLake, string databasePath) : IAsyncDisposable, IDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), $"ducklake-batching-{Guid.NewGuid():N}");
 
-        public BatchingContext Create(DbCommandInterceptor? interceptor = null)
+        public BatchingContext Create(
+            DbCommandInterceptor? interceptor = null,
+            DbTransactionInterceptor? transactionInterceptor = null)
         {
             var builder = new DbContextOptionsBuilder<BatchingContext>()
                 .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning));
@@ -300,20 +378,55 @@ public sealed class SaveChangesBatchingConcurrencyTests : DuckDBTestBase
                 builder.AddInterceptors(interceptor);
             }
 
+            if (transactionInterceptor is not null)
+            {
+                builder.AddInterceptors(transactionInterceptor);
+            }
+
             return new BatchingContext(builder.Options);
         }
 
         private static void ConfigureBatching(DuckDB.EFCoreProvider.Infrastructure.DuckDBDbContextOptionsBuilder duckDB)
             => duckDB.EnableBulkInsertBatching().EnableBulkUpdateBatching().EnableBulkDeleteBatching();
 
-        public ValueTask DisposeAsync()
+        public void Dispose()
         {
             if (Directory.Exists(_root))
             {
                 Directory.Delete(_root, recursive: true);
             }
+        }
 
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class TransactionCounter : DbTransactionInterceptor
+    {
+        public int Started { get; private set; }
+
+        public int Committed { get; private set; }
+
+        public override ValueTask<DbTransaction> TransactionStartedAsync(
+            DbConnection connection,
+            TransactionEndEventData eventData,
+            DbTransaction result,
+            CancellationToken cancellationToken = default)
+        {
+            Started++;
+            return ValueTask.FromResult(result);
+        }
+
+        public override Task TransactionCommittedAsync(
+            DbTransaction transaction,
+            TransactionEndEventData eventData,
+            CancellationToken cancellationToken = default)
+        {
+            Committed++;
+            return Task.CompletedTask;
         }
     }
 

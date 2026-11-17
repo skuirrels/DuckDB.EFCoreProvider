@@ -197,6 +197,49 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void Single_statement_capability_keeps_per_row_deletes_with_delete_batching()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Item { Id = 1, Name = "one", Value = 10 },
+                new Item { Id = 2, Name = "two", Value = 20 });
+            context.SaveChanges();
+        }
+
+        using var serviceProvider = new ServiceCollection()
+            .AddEntityFrameworkDuckDB()
+            .AddSingleton<IDuckDBEngineCapabilities, SingleStatementCapabilities>()
+            .BuildServiceProvider(validateScopes: true);
+        var interceptor = new CommandCaptureInterceptor();
+        var options = new DbContextOptionsBuilder<UpdateContext>(
+                FileOptions<UpdateContext>(duckdb => duckdb.EnableBulkDeleteBatching()))
+            .UseInternalServiceProvider(serviceProvider)
+            .AddInterceptors(interceptor)
+            .Options;
+
+        using (var context = new UpdateContext(options))
+        {
+            context.Items.RemoveRange(context.Items.ToList());
+            Assert.Equal(2, context.SaveChanges());
+        }
+
+        var deleteCommands = interceptor.CommandTexts
+            .Where(commandText => commandText.Contains("DELETE ", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, deleteCommands.Length);
+        Assert.All(deleteCommands, sql =>
+        {
+            Assert.StartsWith("DELETE ", sql, StringComparison.Ordinal);
+            Assert.DoesNotContain(" IN (", sql, StringComparison.Ordinal);
+        });
+
+        using var verification = CreateContext();
+        Assert.Empty(verification.Items);
+    }
+
+    [ConditionalFact]
     public void SaveChanges_with_update_batching_handles_composite_keys()
     {
         using (var context = CreateContext())

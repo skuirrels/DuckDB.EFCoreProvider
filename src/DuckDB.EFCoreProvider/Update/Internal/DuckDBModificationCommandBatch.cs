@@ -1,9 +1,12 @@
 using DuckDB.EFCoreProvider.Diagnostics;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update;
 using Microsoft.Extensions.Logging;
+using System.Data;
+using System.Text;
 
 namespace DuckDB.EFCoreProvider.Update.Internal;
 
@@ -61,6 +64,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     private readonly IDuckDBEngineCapabilities _capabilities;
     private bool _requiresUpdateFallbackExecution;
     private bool _requiresConditionalForeignKeyExecution;
+    private bool _hasRowChecks;
     private IReadOnlyModificationCommand? _commandBeingAdded;
     private DuckDBDualRoleUpdatePlan? _commandBeingAddedPlan;
     private DuckDBBulkInsertShape? _pendingBulkInsertShape;
@@ -228,6 +232,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
                 out var requiresTransaction));
             AddParameters(modificationCommand);
             SetRequiresTransaction(commandPosition > 0 || requiresTransaction);
+            _hasRowChecks = true;
         }
         else
         {
@@ -361,6 +366,47 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
     /// <inheritdoc />
     public override void Execute(IRelationalConnection connection)
     {
+        // A row check and the write it guards must read one snapshot. EF normally runs the batch in its own
+        // transaction because the batch requires one; when it does not (AutoTransactionBehavior.Never), the batch
+        // opens a transaction for itself so a concurrent change cannot slip between the check and the write.
+        if (RequiresOwnTransaction(connection))
+        {
+            using var transaction = connection.BeginTransaction();
+            ExecuteCore(connection);
+            transaction.Commit();
+            return;
+        }
+
+        ExecuteCore(connection);
+    }
+
+    /// <inheritdoc />
+    public override async Task ExecuteAsync(
+        IRelationalConnection connection,
+        CancellationToken cancellationToken = default)
+    {
+        if (RequiresOwnTransaction(connection))
+        {
+            var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            await using (transaction.ConfigureAwait(false))
+            {
+                await ExecuteCoreAsync(connection, cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        await ExecuteCoreAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    private bool RequiresOwnTransaction(IRelationalConnection connection)
+        => _hasRowChecks
+            && connection.CurrentTransaction is null
+            && System.Transactions.Transaction.Current is null;
+
+    private void ExecuteCore(IRelationalConnection connection)
+    {
         if (_requiresUpdateFallbackExecution)
         {
             DuckDBUpdateFallbackExecutor.Execute(
@@ -388,10 +434,9 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         }
     }
 
-    /// <inheritdoc />
-    public override async Task ExecuteAsync(
+    private async Task ExecuteCoreAsync(
         IRelationalConnection connection,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         if (_requiresUpdateFallbackExecution)
         {
@@ -422,6 +467,214 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
                 _capabilities);
         }
     }
+
+    /// <inheritdoc />
+    protected override void ThrowAggregateUpdateConcurrencyException(
+        RelationalDataReader reader,
+        int commandIndex,
+        int expectedRowsAffected,
+        int rowsAffected)
+    {
+        var unmatched = FindUnmatchedRunCommands(reader, commandIndex, expectedRowsAffected);
+        if (unmatched is null)
+        {
+            base.ThrowAggregateUpdateConcurrencyException(reader, commandIndex, expectedRowsAffected, rowsAffected);
+            return;
+        }
+
+        var entries = unmatched.SelectMany(command => command.Entries).ToList();
+        var exception = CreateConcurrencyException(expectedRowsAffected, rowsAffected, entries);
+        if (!Dependencies.UpdateLogger.OptimisticConcurrencyException(
+                Dependencies.CurrentContext.Context,
+                entries,
+                exception,
+                (context, concurrencyException, eventEntries, definition) => CreateConcurrencyExceptionEventData(
+                    context,
+                    reader,
+                    concurrencyException,
+                    eventEntries,
+                    definition)).IsSuppressed)
+        {
+            throw exception;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override async Task ThrowAggregateUpdateConcurrencyExceptionAsync(
+        RelationalDataReader reader,
+        int commandIndex,
+        int expectedRowsAffected,
+        int rowsAffected,
+        CancellationToken cancellationToken)
+    {
+        var unmatched = await FindUnmatchedRunCommandsAsync(
+                reader,
+                commandIndex,
+                expectedRowsAffected,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (unmatched is null)
+        {
+            await base.ThrowAggregateUpdateConcurrencyExceptionAsync(
+                    reader,
+                    commandIndex,
+                    expectedRowsAffected,
+                    rowsAffected,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        var entries = unmatched.SelectMany(command => command.Entries).ToList();
+        var exception = CreateConcurrencyException(expectedRowsAffected, rowsAffected, entries);
+        if (!(await Dependencies.UpdateLogger.OptimisticConcurrencyExceptionAsync(
+                    Dependencies.CurrentContext.Context,
+                    entries,
+                    exception,
+                    (context, concurrencyException, eventEntries, definition) => CreateConcurrencyExceptionEventData(
+                        context,
+                        reader,
+                        concurrencyException,
+                        eventEntries,
+                        definition),
+                    cancellationToken)
+                .ConfigureAwait(false)).IsSuppressed)
+        {
+            throw exception;
+        }
+    }
+
+    // A merged run reports one row-check value, so EF can only name every entry in the run. Counting each
+    // command's rows again finds the commands whose row is missing or, where keys are not enforced, duplicated.
+    // The run's write has not run, so the counts see the same rows as the check. Returns null when the run's
+    // commands cannot be narrowed, so EF reports the whole run.
+    private List<IReadOnlyModificationCommand>? FindUnmatchedRunCommands(
+        RelationalDataReader reader,
+        int commandIndex,
+        int commandCount)
+    {
+        if (commandCount < 2)
+        {
+            return null;
+        }
+
+        try
+        {
+            var unmatched = new List<IReadOnlyModificationCommand>();
+            for (var i = commandIndex - commandCount; i < commandIndex; i++)
+            {
+                var command = ModificationCommands[i];
+                var rows = CreateConditionRowCountCommand(command)
+                    .ExecuteScalar(CreateRowCountParameterObject(reader.RelationalConnection));
+                if (Convert.ToInt32(rows, System.Globalization.CultureInfo.InvariantCulture) != 1)
+                {
+                    unmatched.Add(command);
+                }
+            }
+
+            return unmatched.Count is > 0 && unmatched.Count < commandCount ? unmatched : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private async Task<List<IReadOnlyModificationCommand>?> FindUnmatchedRunCommandsAsync(
+        RelationalDataReader reader,
+        int commandIndex,
+        int commandCount,
+        CancellationToken cancellationToken)
+    {
+        if (commandCount < 2)
+        {
+            return null;
+        }
+
+        try
+        {
+            var unmatched = new List<IReadOnlyModificationCommand>();
+            for (var i = commandIndex - commandCount; i < commandIndex; i++)
+            {
+                var command = ModificationCommands[i];
+                var rows = await CreateConditionRowCountCommand(command)
+                    .ExecuteScalarAsync(CreateRowCountParameterObject(reader.RelationalConnection), cancellationToken)
+                    .ConfigureAwait(false);
+                if (Convert.ToInt32(rows, System.Globalization.CultureInfo.InvariantCulture) != 1)
+                {
+                    unmatched.Add(command);
+                }
+            }
+
+            return unmatched.Count is > 0 && unmatched.Count < commandCount ? unmatched : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private IRelationalCommand CreateConditionRowCountCommand(IReadOnlyModificationCommand command)
+    {
+        var sql = new StringBuilder();
+        UpdateSqlGenerator.AppendConditionRowCount(sql, command);
+
+        var builder = Dependencies.CommandBuilderFactory.Create().Append(sql.ToString());
+        foreach (var modification in command.ColumnModifications)
+        {
+            if (!modification.IsCondition || !modification.UseParameter)
+            {
+                continue;
+            }
+
+            var parameterName = modification.UseOriginalValueParameter
+                ? modification.OriginalParameterName!
+                : modification.ParameterName!;
+            builder.AddParameter(
+                parameterName,
+                Dependencies.SqlGenerationHelper.GenerateParameterName(parameterName),
+                modification.TypeMapping!,
+                modification.IsNullable,
+                ParameterDirection.Input);
+        }
+
+        return builder.Build();
+    }
+
+    private RelationalCommandParameterObject CreateRowCountParameterObject(IRelationalConnection connection)
+        => new(
+            connection,
+            ParameterValues,
+            null,
+            Dependencies.CurrentContext.Context,
+            Dependencies.Logger,
+            CommandSource.SaveChanges);
+
+    private static DbUpdateConcurrencyException CreateConcurrencyException(
+        int expectedRowsAffected,
+        int rowsAffected,
+        IReadOnlyList<IUpdateEntry> entries)
+        => new(RelationalStrings.UpdateConcurrencyException(expectedRowsAffected, rowsAffected), entries);
+
+    private static RelationalConcurrencyExceptionEventData CreateConcurrencyExceptionEventData(
+        DbContext context,
+        RelationalDataReader reader,
+        DbUpdateConcurrencyException exception,
+        IReadOnlyList<IUpdateEntry> entries,
+        EventDefinition<Exception> definition)
+        => new(
+            definition,
+            static (eventDefinition, payload)
+                => ((EventDefinition<Exception>)eventDefinition)
+                    .GenerateMessage(((ConcurrencyExceptionEventData)payload).Exception),
+            context,
+            reader.RelationalConnection.DbConnection,
+            reader.DbCommand,
+            reader.DbDataReader,
+            reader.CommandId,
+            reader.RelationalConnection.ConnectionId,
+            entries,
+            exception);
 
     private void ApplyPendingBulkInsertCommands(string reason)
     {
@@ -480,6 +733,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         SetRequiresTransaction(!wasCommandTextEmpty || requiresTransaction);
 
         AddKeyedRunResultSetMappings(_pendingBulkUpdateCommands.Count, resultSetMapping);
+        _hasRowChecks = true;
     }
 
     private void ApplyPendingBulkDeleteCommands(string reason)
@@ -506,6 +760,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         SetRequiresTransaction(!wasCommandTextEmpty || requiresTransaction);
 
         AddKeyedRunResultSetMappings(_pendingBulkDeleteCommands.Count, resultSetMapping);
+        _hasRowChecks = true;
     }
 
     // Every command in the run shares the run's single row-check value; marking the final command as the last in

@@ -1,11 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Version>1.33.0</Version>
+    <Version>1.34.0</Version>
     <PackageVersion>$(Version)</PackageVersion>
     <PackageId>DuckDB.EFCoreProvider</PackageId>
     <PackageId Condition="'$(DuckDBIsEF11)' == 'true'">DuckDB.EFCoreProvider.EF11</PackageId>
-    <FileVersion>1.33.0.0</FileVersion>
+    <FileVersion>1.34.0.0</FileVersion>
     <Authors>skuirrels</Authors>
     <Description>DuckDB, DuckLake and Parquet provider for Entity Framework Core 10, for analytics at cloud scale. Targets .NET 10 and also runs on .NET 11. For EF Core 11, use DuckDB.EFCoreProvider.EF11.</Description>
     <Description Condition="'$(DuckDBIsEF11)' == 'true'">DuckDB, DuckLake and Parquet provider for Entity Framework Core 11, for analytics at cloud scale. Targets .NET 11. For EF Core 10, use DuckDB.EFCoreProvider.</Description>
@@ -24,9 +24,14 @@
     <NoWarn>$(NoWarn);EF1001;EF9100;CS1591</NoWarn>
     <IsPackable>true</IsPackable>
     <!-- Compare the packed public API against the last published release (see Directory.Build.props). -->
-    <PackageValidationBaselineVersion Condition="'$(DuckDBIsEF11)' != 'true'">1.32.0</PackageValidationBaselineVersion>
-    <PackageValidationBaselineVersion Condition="'$(DuckDBIsEF11)' == 'true'">1.32.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(DuckDBIsEF11)' != 'true'">1.33.0</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion Condition="'$(DuckDBIsEF11)' == 'true'">1.33.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
+1.34.0 (EF10 and EF11)
+- Fix EnableBulkUpdateBatching() and EnableBulkDeleteBatching() silently skipping a row that another context had already deleted. Each merged run is now preceded by a count of its keys that match exactly one row, so a missing row raises DbUpdateConcurrencyException before anything changes, naming only the affected entities. Batched updates and deletes stay about four times faster than unbatched.
+- A merged update or delete run now always runs in a transaction, including with AutoTransactionBehavior.Never. Errors from a merged run surface while EF reads the results, so DbCommandInterceptor.CommandFailed is not raised for them.
+- SaveChanges batching now works on the DuckLake profile instead of throwing NotSupportedException.
+- On the Quack profile, SaveChanges updates and deletes keep the per-row path. A custom capability set without RETURNING and without multiple statements per command now rejects SaveChanges batching.
 1.33.0 (EF10 and EF11)
 - BulkInsert, BulkInsertAsync, Upsert and UpsertAsync now write Dictionary&lt;K,V&gt;, IDictionary&lt;K,V&gt; and IReadOnlyDictionary&lt;K,V&gt; MAP properties through the appender instead of rejecting them. Keys and values with value converters, such as enums, are converted first.
 - MAP parameters now bind as native DuckDB MAP values instead of DuckDB's quoted MAP text.
