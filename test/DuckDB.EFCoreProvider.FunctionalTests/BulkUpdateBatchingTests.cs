@@ -107,7 +107,11 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
         }
 
         var sql = Assert.Single(interceptor.CommandTexts.Where(
-            commandText => commandText.StartsWith("UPDATE ", StringComparison.Ordinal)));
+            commandText => commandText.Contains("UPDATE ", StringComparison.Ordinal)));
+        Assert.StartsWith(
+            "SELECT CAST(COUNT(*) AS INTEGER) FROM (SELECT 1 FROM \"Items\" WHERE \"Id\" IN ($p0, $p3)"
+            + " GROUP BY \"Id\" HAVING COUNT(*) = 1);",
+            sql);
         Assert.Contains("UPDATE \"Items\" SET \"Name\" = v.\"Name\", \"Value\" = v.\"Value\"", sql);
         Assert.Contains(
             "FROM (VALUES ($p0, $p1, $p2), ($p3, $p4, $p5)) AS v(\"Id\", \"Name\", \"Value\")",
@@ -190,6 +194,49 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
             .ToArray();
         Assert.Equal(2, updateCommands.Length);
         Assert.All(updateCommands, sql => Assert.Equal(1, sql.Split("UPDATE ", StringSplitOptions.None).Length - 1));
+    }
+
+    [ConditionalFact]
+    public void Single_statement_capability_keeps_per_row_deletes_with_delete_batching()
+    {
+        using (var context = CreateContext())
+        {
+            context.Database.EnsureCreated();
+            context.AddRange(
+                new Item { Id = 1, Name = "one", Value = 10 },
+                new Item { Id = 2, Name = "two", Value = 20 });
+            context.SaveChanges();
+        }
+
+        using var serviceProvider = new ServiceCollection()
+            .AddEntityFrameworkDuckDB()
+            .AddSingleton<IDuckDBEngineCapabilities, SingleStatementCapabilities>()
+            .BuildServiceProvider(validateScopes: true);
+        var interceptor = new CommandCaptureInterceptor();
+        var options = new DbContextOptionsBuilder<UpdateContext>(
+                FileOptions<UpdateContext>(duckdb => duckdb.EnableBulkDeleteBatching()))
+            .UseInternalServiceProvider(serviceProvider)
+            .AddInterceptors(interceptor)
+            .Options;
+
+        using (var context = new UpdateContext(options))
+        {
+            context.Items.RemoveRange(context.Items.ToList());
+            Assert.Equal(2, context.SaveChanges());
+        }
+
+        var deleteCommands = interceptor.CommandTexts
+            .Where(commandText => commandText.Contains("DELETE ", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, deleteCommands.Length);
+        Assert.All(deleteCommands, sql =>
+        {
+            Assert.StartsWith("DELETE ", sql, StringComparison.Ordinal);
+            Assert.DoesNotContain(" IN (", sql, StringComparison.Ordinal);
+        });
+
+        using var verification = CreateContext();
+        Assert.Empty(verification.Items);
     }
 
     [ConditionalFact]

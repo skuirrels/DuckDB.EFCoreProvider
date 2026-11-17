@@ -69,7 +69,7 @@ The profile is covered by real-extension functional tests, not inferred from nat
 | EF migrations | ⛔ explicitly rejected; no safe EF history/locking contract without enforced uniqueness and `RETURNING` |
 | `EnsureDeleted` | ⛔ explicitly rejected to avoid deleting shared/remote backing stores implicitly |
 | Database-first scaffolding | ✅ local metadata through the `ducklake:/path/metadata.ducklake` design-time source; catalog-scoped, read-only, and keyless-first |
-| SaveChanges batching | ⛔ profile rejects current batching; use `BulkInsert` or `Upsert` |
+| SaveChanges batching | ✅ opt-in insert, update and delete batching; merged updates and deletes are preceded by a per-key row check, and unmerged updates and deletes by a condition row count, so missing rows, stale concurrency tokens and duplicated logical keys raise `DbUpdateConcurrencyException` before mutation |
 | Provider tiered storage | ⛔ incompatible; DuckLake owns Parquet layout and file lifecycle |
 
 See [DUCKLAKE.md](DUCKLAKE.md) for configuration, security, model rules, and operational guidance.

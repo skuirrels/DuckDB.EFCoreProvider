@@ -4,6 +4,7 @@ using DuckDB.EFCoreProvider.Internal;
 using DuckDB.EFCoreProvider.Update.Internal;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.TestUtilities;
 using System.Data.Common;
 using Xunit;
 
@@ -446,7 +447,7 @@ public class DualRolePrincipalUpdateTests : DuckDBTestBase
             .Options;
 
     private static IEnumerable<string> UpdateCommands(CommandCaptureInterceptor interceptor)
-        => interceptor.CommandTexts.Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal));
+        => interceptor.CommandTexts.Where(command => BatchedCommandText.WithoutRowCheck(command).StartsWith("UPDATE ", StringComparison.Ordinal));
 
     private static Guid ExternalIdFor(int id)
         => new($"00000000-0000-0000-0000-{id:D12}");

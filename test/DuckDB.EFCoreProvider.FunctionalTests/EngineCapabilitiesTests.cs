@@ -265,6 +265,23 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     }
 
     [ConditionalFact]
+    public void SaveChanges_batching_without_returning_requires_multiple_statements_per_command()
+    {
+        using var serviceProvider =
+            CreateCapabilityServiceProvider<SingleStatementBatchingWithoutReturningCapabilities>();
+        var options = new DbContextOptionsBuilder<CapabilityContext>(
+                FileOptions<CapabilityContext>(duckDB => duckDB.EnableBulkUpdateBatching()))
+            .UseInternalServiceProvider(serviceProvider)
+            .Options;
+        using var context = new CapabilityContext(options);
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => context.GetService<IModificationCommandBatchFactory>().Create());
+
+        Assert.Contains("SaveChanges batching is not supported", exception.Message);
+    }
+
+    [ConditionalFact]
     public void SaveChanges_batching_without_returning_rejects_store_generated_values()
     {
         using var serviceProvider = CreateCapabilityServiceProvider<BatchingWithoutReturningCapabilities>();
@@ -516,7 +533,7 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.False(capabilities.SupportsReturningOnReferencedTableUpdates);
         Assert.False(capabilities.SupportsConflictDetectingReturningUpdates);
         Assert.Equal(!supported, capabilities.SupportsReferencedTableForeignKeyUpdates);
-        Assert.Equal(supported, capabilities.SupportsSaveChangesBatching);
+        Assert.True(capabilities.SupportsSaveChangesBatching);
         Assert.Equal(supported, capabilities.SupportsSequences);
         Assert.Equal(supported, capabilities.SupportsGeneratedColumns);
         Assert.Equal(supported, capabilities.SupportsSqlDefaultExpressions);
@@ -660,6 +677,13 @@ public class EngineCapabilitiesTests : DuckDBTestBase
     private sealed class BatchingWithoutReturningCapabilities : NativeCapabilities
     {
         public override bool SupportsReturning => false;
+    }
+
+    private sealed class SingleStatementBatchingWithoutReturningCapabilities
+        : NativeCapabilities, IDuckDBEngineCapabilities
+    {
+        public override bool SupportsReturning => false;
+        public bool SupportsMultipleStatementsPerCommand => false;
     }
 
     private sealed class NoTieredStorageCapabilities : NativeCapabilities

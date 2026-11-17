@@ -152,7 +152,7 @@ profiles, typed maintenance, additional local or named-secret catalogs, streamin
 database-first scaffolding. DuckLake does
 not physically enforce keys, foreign keys, unique/check constraints, or indexes, and it does not support
 sequences, store-generated values, or `RETURNING`; generate integer keys on the client with `UseHiLo()` instead. EF migrations, `EnsureDeleted`, provider tiered storage,
-`SaveChanges` batching, and EF entity mappings to non-primary attached catalogs are therefore deliberately
+and EF entity mappings to non-primary attached catalogs are therefore deliberately
 unavailable in this profile. See the complete
 [DuckLake configuration, security, and limitations guide](docs/DUCKLAKE.md).
 
@@ -227,8 +227,8 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | Option | What it does | Default |
 |---|---|---|
 | `.EnableBulkInsertBatching()` | Merge consecutive `SaveChanges` inserts into one multi-row statement (~10× faster). | off |
-| `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~8× faster). | off |
-| `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~14× faster). | off |
+| `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~4× faster). | off |
+| `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~4× faster). | off |
 | `.UseCaseInsensitiveStringSearches()` | Make simple `StartsWith`, `Contains`, and `EndsWith` queries case-insensitive for this context; literal `%` and `_` remain literals. | off |
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
 | `.Threads(4)` | Set the global thread count used by DuckDB query execution when the connection opens. | DuckDB default |
@@ -1373,11 +1373,11 @@ options.UseDuckDB(
         .EnableBulkDeleteBatching()); // DELETE FROM t WHERE key IN (..)
 ```
 
-- **An order of magnitude faster** in local measurements (all while **keeping change tracking and
+- **Several times faster** in local measurements (all while **keeping change tracking and
   store-generated values**, which `BulkInsert` limits to keys):
   - inserts ~120k rows/s (vs ~12k),
-  - updates ~52k rows/s (vs ~6k),
-  - deletes ~119k rows/s (vs ~9k) — delete batching is especially effective for **orphan cleanup** and
+  - updates ~40k rows/s (vs ~9k),
+  - deletes ~34k rows/s (vs ~9k) — delete batching is especially effective for **orphan cleanup** and
     **child-collection replacement**, which issue one delete per orphaned row by default.
 - **All disabled by default**, and independent (enable any combination). When enabled, each merged run is
   **atomic**: if any row in the run fails, none of the rows in that run are applied, even when `SaveChanges`
@@ -1389,6 +1389,11 @@ options.UseDuckDB(
   key (and, for updates, which read no database-computed values back). Operations that use **concurrency
   tokens** (or, for updates, **computed columns**) automatically fall back to the standard per-row path, so
   their concurrency-detection and value-propagation behaviour is unchanged.
+- **Merged updates and deletes still report missing rows.** Each merged run is preceded by a count of its keys
+  that match exactly one row. If a row was deleted by someone else, or, on DuckLake, which does not enforce keys,
+  a key matches more than one row, `SaveChanges` throws `DbUpdateConcurrencyException` before the run changes
+  anything. The count costs one extra query per run. On the Quack profile, which runs one statement per command,
+  updates and deletes keep the per-row path.
 - Tune the merge size with the standard `MaxBatchSize` option. The default of 100 is based on local benchmark
   results; very large batches regress.
 - For pure bulk inserts that do not need change tracking or generated values other than keys, `BulkInsert`

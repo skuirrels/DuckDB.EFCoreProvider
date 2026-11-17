@@ -2,6 +2,28 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## 1.34.0
+
+- Fix `EnableBulkUpdateBatching()` and `EnableBulkDeleteBatching()` silently skipping a row that another context
+  had already deleted. Each merged update or delete run is now preceded by a count of its keys that match exactly
+  one row, so a missing row raises `DbUpdateConcurrencyException` before the run changes anything, as the
+  unbatched path does. The exception's `Entries` name only the entities whose row is missing or duplicated. The
+  count costs one extra query per run: in a local 20,000-row measurement, batched updates took about 35% longer
+  and batched deletes about 55% longer, and both remain about four times faster than unbatched.
+- A merged update or delete run now always runs in a transaction. With `AutoTransactionBehavior.Never`, the batch
+  opens and commits its own transaction so a concurrent change cannot slip between the row count and the write.
+- A database error raised by a merged update or delete, such as a write-write conflict, now surfaces while EF reads
+  the batch's results rather than when the command starts. `SaveChanges` still throws the same `DbUpdateException`,
+  and `EnableRetryOnFailure()` still retries conflicts, but `DbCommandInterceptor.CommandFailed` is not raised for
+  it, which matches EF's behaviour for later statements in a batch.
+- `EnableBulkInsertBatching()`, `EnableBulkUpdateBatching()` and `EnableBulkDeleteBatching()` now work on the
+  DuckLake profile instead of throwing `NotSupportedException`. Because DuckLake does not enforce keys, a key shared
+  by several rows also fails the run, and updates and deletes that cannot be merged, such as those with a
+  concurrency token, are preceded by a count of the rows their conditions match.
+- On the Quack profile, which runs one statement per command, `SaveChanges` updates and deletes keep the per-row
+  path; insert batching is unchanged. A custom engine capability set without `RETURNING` and without multiple
+  statements per command now rejects `SaveChanges` batching with `NotSupportedException`.
+
 ## 1.33.0
 
 - MAP parameters now bind as native DuckDB MAP values instead of DuckDB's quoted MAP text, so the provider no longer

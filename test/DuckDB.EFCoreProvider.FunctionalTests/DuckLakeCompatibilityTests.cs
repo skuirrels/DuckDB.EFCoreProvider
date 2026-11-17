@@ -690,7 +690,7 @@ public sealed class DuckLakeCompatibilityTests
     }
 
     [Fact]
-    public void SaveChanges_batching_and_unsafe_profile_values_fail_fast()
+    public void Unsafe_profile_values_fail_fast_and_SaveChanges_batching_is_supported()
     {
         Assert.Throws<ArgumentException>(() =>
             new DbContextOptionsBuilder().UseDuckLake("catalog.ducklake", lake => lake.CatalogName("bad-name")));
@@ -709,11 +709,12 @@ public sealed class DuckLakeCompatibilityTests
                 .Options;
             using var context = new DuckLakeContext(options);
             context.Database.EnsureCreated();
-            context.Items.Add(new DuckLakeItem { Id = Guid.NewGuid(), Name = "batched", Quantity = 1 });
+            context.Items.AddRange(
+                new DuckLakeItem { Id = Guid.NewGuid(), Name = "batched", Quantity = 1 },
+                new DuckLakeItem { Id = Guid.NewGuid(), Name = "batched", Quantity = 2 });
 
-            var exception = Assert.Throws<NotSupportedException>(() => context.SaveChanges());
-            Assert.Contains("SaveChanges batching is not supported", exception.Message);
-            Assert.DoesNotContain("DuckLake", exception.Message);
+            Assert.Equal(2, context.SaveChanges());
+            Assert.Equal(2, context.Items.Count(item => item.Name == "batched"));
         }
         finally
         {
