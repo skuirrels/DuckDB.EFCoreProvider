@@ -156,9 +156,65 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 ## Schema lifecycle
 
 `EnsureCreated()` is supported for initial provisioning and is idempotent for a non-empty catalog. EF Core
-migrations are deliberately rejected: the current migrations history and lock contract depends on an enforced
-unique key and `RETURNING`, neither of which DuckLake provides. Apply reviewed DuckLake schema-evolution SQL
-through a controlled deployment process instead.
+migrations (`Database.Migrate()`, `dotnet ef database update` and `dotnet ef migrations script`) are supported too;
+see [EF Core migrations](#ef-core-migrations) for the shapes DuckLake can apply.
+
+### EF Core migrations
+
+DuckLake has no enforced keys and no `RETURNING`, so the provider adapts EF's migrations contract:
+
+- **History table.** `__EFMigrationsHistory` is created without a physical primary key. Only one migrator runs at a
+  time, so the lock, not a key, keeps each migration from being recorded twice.
+- **Lock.** `__EFMigrationsLock` holds one seeded row, created together with the table in one transaction. A migrator
+  claims it with `UPDATE ... SET "Holder" = ... WHERE "Id" = 1 AND "Holder" IS NULL` in its own committed
+  transaction, before the migration transaction starts. When two migrators claim the free row at once, DuckLake
+  commits the first and fails the second with a commit conflict, so the loser waits and retries until
+  `MigrationLockTimeout(...)` (5 minutes by default). Release clears the row only when the holder matches.
+- **Stale lock.** If a migrator crashes while holding the lock, the timeout message reports how long it has been held.
+  Once you have confirmed that no migration is running, clear it with
+  `UPDATE "__EFMigrationsLock" SET "Holder" = NULL, "Timestamp" = NULL WHERE "Id" = 1`. Do not delete the row: no
+  migrator can claim a missing row, and the timeout message then shows the `INSERT` that restores it.
+- **Transactions.** DuckLake DDL is transactional, so a failing migration rolls back its schema changes and its
+  history row.
+- **Catalogs.** The lock relies on DuckLake's commit conflicts, which the functional tests verify with a DuckDB-file
+  catalog shared by contexts in one process. Migrators in separate processes need a catalog that supports concurrent
+  clients, such as PostgreSQL; the external test suite runs concurrent migrators, each on its own DuckDB instance,
+  against a PostgreSQL catalog. Two separate instances on a SQLite catalog fail with "database is locked". Create the
+  catalog before migrators start in parallel: DuckLake's first attach of a new catalog is not safe to run
+  concurrently, on either a DuckDB-file or a PostgreSQL catalog.
+
+Applied in place:
+
+- create, drop and rename tables; add, drop and rename columns; schemas, views and comments;
+- widening type changes, such as `INTEGER` to `BIGINT`, `FLOAT` to `DOUBLE`, `DECIMAL(10,2)` to `DECIMAL(12,2)` or
+  `DATE` to `TIMESTAMP`;
+- optional columns with a literal default, which DuckLake writes into existing rows. An added column's default is
+  rendered as an untyped literal, such as `DEFAULT 'false'` or `DEFAULT '2026-01-01 00:00:00'`, because
+  `ADD COLUMN` rejects typed literals such as `false` or `TIMESTAMP '...'` as non-literal defaults. `CREATE TABLE`
+  accepts them and is unchanged;
+- `DROP NOT NULL`.
+
+Rejected while the migration script is generated, before any SQL runs:
+
+- other type changes, such as `BIGINT` to `INTEGER`, `VARCHAR` to `INTEGER` or a decimal scale change;
+- adding a required column to an existing table, because DuckLake rejects `ADD COLUMN ... NOT NULL` and cannot set
+  `NOT NULL` on the added column afterwards;
+- making an optional column required, because DuckLake rejects `SET NOT NULL` on an empty table and on a column added
+  with `ADD COLUMN`, and the provider cannot tell which applies while it generates the script;
+- moving a table to another schema (`ALTER TABLE ... SET SCHEMA`);
+- SQL default expressions, computed columns and sequences, as for `EnsureCreated()`.
+
+Indexes and physical constraints in a migration are omitted, as they are for `EnsureCreated()`. With
+`EnableMigrationTableRebuilds()` in the `UseDuckLake(...)` DuckDB options, type conversions, required columns and
+columns made required are applied by recreating the table from the migration's target model: the rows are copied to a
+backup table, the table is dropped and recreated, the rows are copied back, and the backup is dropped, all in the
+migration transaction. The rebuild also applies the migration's other column changes to that table, including renames.
+An added column is filled with the `defaultValue` of its `AddColumn`, and a column made required replaces existing
+`NULL` values with the `defaultValue` of its `AlterColumn`, which EF scaffolds even though the model snapshot has no
+default. If a column made required has no `defaultValue` and holds `NULL` values, the copy fails and the migration
+rolls back. A rebuilt table is a new
+DuckLake table, so `AsOfSnapshot(...)`, `AsOfTimestamp(...)` and DuckLake time travel on it cannot reach back past the
+migration that rebuilt it. Expire or keep snapshots with that in mind.
 
 `Database.CanConnect()` and `CanConnectAsync()` use a non-creating, read-only attachment probe. They return
 `false` for a missing catalog even when the configured profile allows `EnsureCreated()` to create it, so health

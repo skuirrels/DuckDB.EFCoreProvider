@@ -1,8 +1,10 @@
 ﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using DuckDB.EFCoreProvider.Storage.Internal;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage;
+using System.Globalization;
 
 namespace DuckDB.EFCoreProvider.Migrations.Internal;
 
@@ -57,9 +59,24 @@ public class DuckDBHistoryRepository : HistoryRepository
         EnsureMigrationsSupported();
         Dependencies.MigrationsLogger.AcquiringMigrationLock();
 
-        if (!InterpretExistsResult(
-                Dependencies.RawSqlCommandBuilder.Build(CreateExistsSql(LockTableName))
-                    .ExecuteScalar(CreateRelationalCommandParameters())))
+        return _capabilities.MigrationLockStrategy == DuckDBMigrationLockStrategy.ConditionalUpdate
+            ? AcquireClaimedLock()
+            : AcquireKeyedLock();
+    }
+
+    public override Task<IMigrationsDatabaseLock> AcquireDatabaseLockAsync(CancellationToken cancellationToken = new())
+    {
+        EnsureMigrationsSupported();
+        Dependencies.MigrationsLogger.AcquiringMigrationLock();
+
+        return _capabilities.MigrationLockStrategy == DuckDBMigrationLockStrategy.ConditionalUpdate
+            ? AcquireClaimedLockAsync(cancellationToken)
+            : AcquireKeyedLockAsync(cancellationToken);
+    }
+
+    private IMigrationsDatabaseLock AcquireKeyedLock()
+    {
+        if (!LockTableExists())
         {
             CreateLockTableCommand().ExecuteNonQuery(CreateRelationalCommandParameters());
         }
@@ -80,7 +97,7 @@ public class DuckDBHistoryRepository : HistoryRepository
             var now = DateTimeOffset.UtcNow;
             if (now >= deadline)
             {
-                throw CreateLockTimeoutException(timeout);
+                throw CreateKeyedLockTimeoutException(timeout);
             }
 
             Thread.Sleep(ClampToDeadline(retryDelay, now, deadline));
@@ -91,14 +108,9 @@ public class DuckDBHistoryRepository : HistoryRepository
         }
     }
 
-    public override async Task<IMigrationsDatabaseLock> AcquireDatabaseLockAsync(CancellationToken cancellationToken = new())
+    private async Task<IMigrationsDatabaseLock> AcquireKeyedLockAsync(CancellationToken cancellationToken)
     {
-        EnsureMigrationsSupported();
-        Dependencies.MigrationsLogger.AcquiringMigrationLock();
-
-        if (!InterpretExistsResult(
-                await Dependencies.RawSqlCommandBuilder.Build(CreateExistsSql(LockTableName))
-                    .ExecuteScalarAsync(CreateRelationalCommandParameters(), cancellationToken).ConfigureAwait(false)))
+        if (!await LockTableExistsAsync(cancellationToken).ConfigureAwait(false))
         {
             await CreateLockTableCommand().ExecuteNonQueryAsync(CreateRelationalCommandParameters(), cancellationToken)
                 .ConfigureAwait(false);
@@ -121,7 +133,7 @@ public class DuckDBHistoryRepository : HistoryRepository
             var now = DateTimeOffset.UtcNow;
             if (now >= deadline)
             {
-                throw CreateLockTimeoutException(timeout);
+                throw CreateKeyedLockTimeoutException(timeout);
             }
 
             await Task.Delay(ClampToDeadline(retryDelay, now, deadline), cancellationToken).ConfigureAwait(false);
@@ -131,6 +143,176 @@ public class DuckDBHistoryRepository : HistoryRepository
             }
         }
     }
+
+    private IMigrationsDatabaseLock AcquireClaimedLock()
+    {
+        EnsureClaimLockTable();
+
+        var holder = Guid.NewGuid().ToString("N");
+        var timeout = GetLockTimeout();
+        var deadline = GetDeadline(timeout);
+        var retryDelay = RetryDelay;
+        while (true)
+        {
+            if (TryClaimLock(holder))
+            {
+                return CreateClaimedMigrationDatabaseLock(holder);
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (now >= deadline)
+            {
+                throw CreateClaimedLockTimeoutException(timeout);
+            }
+
+            Thread.Sleep(ClampToDeadline(retryDelay, now, deadline));
+            if (retryDelay < MaxRetryDelay)
+            {
+                retryDelay = retryDelay.Add(retryDelay);
+            }
+        }
+    }
+
+    private async Task<IMigrationsDatabaseLock> AcquireClaimedLockAsync(CancellationToken cancellationToken)
+    {
+        await EnsureClaimLockTableAsync(cancellationToken).ConfigureAwait(false);
+
+        var holder = Guid.NewGuid().ToString("N");
+        var timeout = GetLockTimeout();
+        var deadline = GetDeadline(timeout);
+        var retryDelay = RetryDelay;
+        while (true)
+        {
+            if (await TryClaimLockAsync(holder, cancellationToken).ConfigureAwait(false))
+            {
+                return CreateClaimedMigrationDatabaseLock(holder);
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (now >= deadline)
+            {
+                throw CreateClaimedLockTimeoutException(timeout);
+            }
+
+            await Task.Delay(ClampToDeadline(retryDelay, now, deadline), cancellationToken).ConfigureAwait(false);
+            if (retryDelay < MaxRetryDelay)
+            {
+                retryDelay = retryDelay.Add(retryDelay);
+            }
+        }
+    }
+
+    // The claim is a single autocommit UPDATE, so it commits (or conflicts) before the migrator opens its migration
+    // transaction. Zero affected rows means another migrator holds the lock; a commit conflict means another migrator
+    // claimed the free row first. Both are treated as busy and retried until the lock timeout.
+    private bool TryClaimLock(string holder)
+    {
+        try
+        {
+            return CreateClaimLockCommand(holder, DateTimeOffset.UtcNow)
+                .ExecuteNonQuery(CreateRelationalCommandParameters()) > 0;
+        }
+        catch (Exception exception) when (DuckDBTransientExceptionDetector.ShouldRetryOn(exception))
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> TryClaimLockAsync(string holder, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await CreateClaimLockCommand(holder, DateTimeOffset.UtcNow)
+                .ExecuteNonQueryAsync(CreateRelationalCommandParameters(), cancellationToken)
+                .ConfigureAwait(false) > 0;
+        }
+        catch (Exception exception) when (DuckDBTransientExceptionDetector.ShouldRetryOn(exception))
+        {
+            return false;
+        }
+    }
+
+    // The keyless lock table is created and seeded with its single row in one transaction. Concurrent creators of
+    // the same table conflict at commit, so exactly one seeded table survives; the losers find it on the re-check.
+    // A plain CREATE TABLE (not IF NOT EXISTS) keeps a creator whose snapshot already contains the table from
+    // inserting a second row. The re-check runs in the catch body, after the failed transaction has been disposed
+    // (rolled back): an exception filter would run before that and query through the aborted transaction.
+    private void EnsureClaimLockTable()
+    {
+        if (LockTableExists())
+        {
+            return;
+        }
+
+        var connection = Dependencies.Connection;
+        connection.Open();
+        try
+        {
+            using var transaction = connection.BeginTransaction();
+            CreateClaimLockTableCommand().ExecuteNonQuery(CreateRelationalCommandParameters());
+            CreateSeedClaimLockCommand().ExecuteNonQuery(CreateRelationalCommandParameters());
+            transaction.Commit();
+        }
+        catch (Exception)
+        {
+            if (!LockTableExists())
+            {
+                throw;
+            }
+
+            // Another migrator created and seeded the lock table first.
+        }
+        finally
+        {
+            connection.Close();
+        }
+    }
+
+    private async Task EnsureClaimLockTableAsync(CancellationToken cancellationToken)
+    {
+        if (await LockTableExistsAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var connection = Dependencies.Connection;
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            await CreateClaimLockTableCommand()
+                .ExecuteNonQueryAsync(CreateRelationalCommandParameters(), cancellationToken)
+                .ConfigureAwait(false);
+            await CreateSeedClaimLockCommand()
+                .ExecuteNonQueryAsync(CreateRelationalCommandParameters(), cancellationToken)
+                .ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            if (!await LockTableExistsAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw;
+            }
+
+            // Another migrator created and seeded the lock table first.
+        }
+        finally
+        {
+            await connection.CloseAsync().ConfigureAwait(false);
+        }
+    }
+
+    private bool LockTableExists()
+        => InterpretExistsResult(
+            Dependencies.RawSqlCommandBuilder.Build(CreateExistsSql(LockTableName))
+                .ExecuteScalar(CreateRelationalCommandParameters()));
+
+    private async Task<bool> LockTableExistsAsync(CancellationToken cancellationToken)
+        => InterpretExistsResult(
+            await Dependencies.RawSqlCommandBuilder.Build(CreateExistsSql(LockTableName))
+                .ExecuteScalarAsync(CreateRelationalCommandParameters(), cancellationToken)
+                .ConfigureAwait(false));
 
     public override string GetCreateIfNotExistsScript()
     {
@@ -190,13 +372,13 @@ public class DuckDBHistoryRepository : HistoryRepository
     private static TimeSpan ClampToDeadline(TimeSpan delay, DateTimeOffset now, DateTimeOffset deadline)
         => deadline == DateTimeOffset.MaxValue || now + delay <= deadline ? delay : deadline - now;
 
-    private TimeoutException CreateLockTimeoutException(TimeSpan timeout)
+    private TimeoutException CreateKeyedLockTimeoutException(TimeSpan timeout)
     {
         string holder;
         try
         {
             var heldSince = Dependencies.RawSqlCommandBuilder
-                .Build($"""SELECT "Timestamp" FROM "{LockTableName}" WHERE "Id" = 1""")
+                .Build($"""SELECT "Timestamp" FROM {DelimitedLockTableName} WHERE "Id" = 1""")
                 .ExecuteScalar(CreateRelationalCommandParameters());
             holder = heldSince is null
                 ? "The lock row no longer exists, so the holder may have just released it; retrying may succeed."
@@ -207,13 +389,54 @@ public class DuckDBHistoryRepository : HistoryRepository
             holder = "The current holder could not be determined.";
         }
 
-        return new TimeoutException(
+        return CreateLockTimeoutException(
+            timeout,
+            holder,
+            $"DELETE FROM {DelimitedLockTableName}");
+    }
+
+    private TimeoutException CreateClaimedLockTimeoutException(TimeSpan timeout)
+    {
+        string holder;
+        try
+        {
+            long rows;
+            object? heldSince;
+            using (var reader = Dependencies.RawSqlCommandBuilder
+                       .Build($"""SELECT count(*), max("Timestamp") FROM {DelimitedLockTableName} WHERE "Id" = 1""")
+                       .ExecuteReader(CreateRelationalCommandParameters()))
+            {
+                var row = reader.DbDataReader;
+                row.Read();
+                rows = Convert.ToInt64(row.GetValue(0), CultureInfo.InvariantCulture);
+                heldSince = row.IsDBNull(1) ? null : row.GetValue(1);
+            }
+
+            holder = rows == 0
+                ? "The lock row is missing, so no migrator can claim it. Restore it with: INSERT INTO"
+                    + $""" {DelimitedLockTableName} ("Id", "Holder", "Timestamp") VALUES (1, NULL, NULL)."""
+                : heldSince is null
+                    ? "The lock row is free, so the holder may have just released it; retrying may succeed."
+                    : $"The lock has been held since {heldSince} (UTC).";
+        }
+        catch (Exception)
+        {
+            holder = "The current holder could not be determined.";
+        }
+
+        return CreateLockTimeoutException(
+            timeout,
+            holder,
+            $"""UPDATE {DelimitedLockTableName} SET "Holder" = NULL, "Timestamp" = NULL WHERE "Id" = 1""");
+    }
+
+    private TimeoutException CreateLockTimeoutException(TimeSpan timeout, string holder, string releaseSql)
+        => new(
             $"Could not acquire the migrations lock within {timeout}. Another migration appears to be in"
             + $" progress: migrators coordinate through a row in the '{LockTableName}' table. {holder}"
             + " If the process that created the lock is no longer running (for example, it crashed or was"
-            + $""" killed mid-migration), remove the stale lock with: DELETE FROM "{LockTableName}"."""
+            + $" killed mid-migration), remove the stale lock with: {releaseSql}."
             + " The wait time can be configured with 'UseDuckDB(o => o.MigrationLockTimeout(...))'.");
-    }
 
     private string CreateExistsSql(string tableName)
     {
@@ -228,6 +451,51 @@ public class DuckDBHistoryRepository : HistoryRepository
                    AND "database_name" = current_database();
                 """;
     }
+
+    private string DelimitedLockTableName
+        => Dependencies.SqlGenerationHelper.DelimitIdentifier(LockTableName);
+
+    private IRelationalCommand CreateClaimLockTableCommand()
+        => Dependencies.RawSqlCommandBuilder.Build(
+            $"""
+             CREATE TABLE {DelimitedLockTableName} (
+                 "Id" INTEGER NOT NULL,
+                 "Holder" TEXT NULL,
+                 "Timestamp" TEXT NULL
+             );
+             """);
+
+    private IRelationalCommand CreateSeedClaimLockCommand()
+        => Dependencies.RawSqlCommandBuilder.Build(
+            $"""
+             INSERT INTO {DelimitedLockTableName} ("Id", "Holder", "Timestamp") VALUES (1, NULL, NULL);
+             """);
+
+    private IRelationalCommand CreateClaimLockCommand(string holder, DateTimeOffset timestamp)
+    {
+        var stringMapping = Dependencies.TypeMappingSource.GetMapping(typeof(string));
+        var timestampLiteral = stringMapping.GenerateSqlLiteral(
+            timestamp.ToString("yyyy-MM-dd HH:mm:ss.fffffffzzz", CultureInfo.InvariantCulture));
+
+        return Dependencies.RawSqlCommandBuilder.Build(
+            $"""
+             UPDATE {DelimitedLockTableName}
+             SET "Holder" = {stringMapping.GenerateSqlLiteral(holder)}, "Timestamp" = {timestampLiteral}
+             WHERE "Id" = 1 AND "Holder" IS NULL;
+             """);
+    }
+
+    private IRelationalCommand CreateReleaseClaimedLockCommand(string holder)
+        => Dependencies.RawSqlCommandBuilder.Build(
+            $"""
+             UPDATE {DelimitedLockTableName}
+             SET "Holder" = NULL, "Timestamp" = NULL
+             WHERE "Id" = 1 AND "Holder" = {Dependencies.TypeMappingSource.GetMapping(typeof(string)).GenerateSqlLiteral(holder)};
+             """);
+
+    // Release is not tied to the acquiring call's cancellation token: a cancelled release would leave a stale lock.
+    private DuckDBMigrationDatabaseLock CreateClaimedMigrationDatabaseLock(string holder)
+        => new(CreateReleaseClaimedLockCommand(holder), CreateRelationalCommandParameters(), this);
 
     private IRelationalCommand CreateLockTableCommand()
         => Dependencies.RawSqlCommandBuilder.Build(

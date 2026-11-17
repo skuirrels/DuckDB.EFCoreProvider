@@ -147,11 +147,11 @@ Create the referenced PostgreSQL and object-storage secrets on the same connecti
 contains only `application_lake`.
 
 Supported workflows include LINQ, tracked `SaveChanges`, transactions, optimistic concurrency, initial
-`EnsureCreated`, appender-backed `BulkInsert`, `MERGE`-backed `Upsert`, read-only profiles, historical LINQ
+`EnsureCreated`, EF migrations, appender-backed `BulkInsert`, `MERGE`-backed `Upsert`, read-only profiles, historical LINQ
 profiles, typed maintenance, additional local or named-secret catalogs, streaming dynamic SQL, and local-metadata
 database-first scaffolding. DuckLake does
 not physically enforce keys, foreign keys, unique/check constraints, or indexes, and it does not support
-sequences, store-generated values, or `RETURNING`; generate integer keys on the client with `UseHiLo()` instead. EF migrations, `EnsureDeleted`, provider tiered storage,
+sequences, store-generated values, or `RETURNING`; generate integer keys on the client with `UseHiLo()` instead. `EnsureDeleted`, provider tiered storage,
 and EF entity mappings to non-primary attached catalogs are therefore deliberately
 unavailable in this profile. See the complete
 [DuckLake configuration, security, and limitations guide](docs/DUCKLAKE.md).
@@ -235,7 +235,7 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.CheckpointThreshold("1GB")` | Raise the WAL size that triggers automatic checkpoints; defers ART-index re-serialization during sustained ingest. Pair with explicit `CHECKPOINT` statements at ingest boundaries. | 16 MB |
 | `.FileSearchPath("/data")` | Base directory (or comma-separated directories) for resolving relative file paths. | DuckDB default |
 | `.MigrationLockTimeout(TimeSpan.FromMinutes(10))` | Maximum wait for the migrations lock before failing with guidance (use `Timeout.InfiniteTimeSpan` to wait forever). | 5 minutes |
-| `.EnableMigrationTableRebuilds()` | Opt in to rebuilding tables for constraint changes DuckDB cannot apply in place. | off |
+| `.EnableMigrationTableRebuilds()` | Opt in to rebuilding tables for changes the engine cannot apply in place: constraint changes on DuckDB, type conversions and required columns on DuckLake. | off |
 | `.LoadExtension("httpfs")` | Install and load a DuckDB extension whenever the connection opens. | none |
 | `.LoadExtension("httpfs", DuckDBExtensionLoadMode.LoadOnly)` | Load a preinstalled extension without downloading it; `CallerManaged` records the dependency without running SQL. | install and load |
 | `.UseEncryptedDatabase(path, keyProvider)` | Store the context's data in an AES-256-GCM encrypted DuckDB file, attached as the default catalog. | off |

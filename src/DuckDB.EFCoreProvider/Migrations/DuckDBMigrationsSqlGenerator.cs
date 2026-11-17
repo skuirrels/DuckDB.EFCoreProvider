@@ -2,11 +2,13 @@ using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Internal;
 using DuckDB.EFCoreProvider.Metadata;
 using DuckDB.EFCoreProvider.Metadata.Internal;
+using DuckDB.EFCoreProvider.Migrations.Internal;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Text;
@@ -31,6 +33,9 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
 {
     private readonly bool _migrationTableRebuilds;
     private readonly IDuckDBEngineCapabilities _capabilities;
+
+    // Set while ALTER TABLE ... ADD COLUMN is rendered, the only statement whose default literal is capability-gated.
+    private bool _renderingAddedColumn;
 
     /// <summary>
     ///     Creates a new instance of <see cref="DuckDBMigrationsSqlGenerator" />.
@@ -62,7 +67,7 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         MigrationsSqlGenerationOptions options = MigrationsSqlGenerationOptions.Default)
     {
         operations = DuckDBStructSchemaPlanner.OmitLogicalForeignKeyOperations(operations);
-        ValidateUnsupportedOperations(operations);
+        ValidateUnsupportedOperations(operations, model);
 
         if (_capabilities.SupportsIndexes && _capabilities.SupportsSchemaConstraints)
         {
@@ -130,8 +135,21 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
                 or DropCheckConstraintOperation);
     }
 
-    private void ValidateUnsupportedOperations(IReadOnlyList<MigrationOperation> operations)
+    private void ValidateUnsupportedOperations(IReadOnlyList<MigrationOperation> operations, IModel? model)
     {
+        if (!_capabilities.SupportsTableSchemaTransfer
+            && operations.OfType<RenameTableOperation>().FirstOrDefault(IsSchemaTransfer) is { } transfer)
+        {
+            throw new NotSupportedException(
+                DuckDBCapabilityErrorMessages.TableSchemaTransferNotSupported(transfer.Name, transfer.NewSchema!));
+        }
+
+        if (!_migrationTableRebuilds
+            && operations.FirstOrDefault(operation => RequiresCapabilityRebuild(operation, model)) is ITableMigrationOperation rebuild)
+        {
+            throw new NotSupportedException(CapabilityRebuildRequired(rebuild, model));
+        }
+
         var columnOperations = operations
             .SelectMany(operation => operation is CreateTableOperation table
                 ? table.Columns.Cast<MigrationOperation>()
@@ -151,6 +169,19 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
                 DuckDBCapabilityErrorMessages.SequencesNotSupported);
         }
 
+        if (!_capabilities.SupportsTypedAddColumnDefaults)
+        {
+            // A column added to a rebuilt table is copied with a typed SELECT expression, not rendered as ADD COLUMN.
+            var rebuiltTables = _migrationTableRebuilds ? CapabilityRebuildTables(operations, model) : [];
+            foreach (var column in operations.OfType<AddColumnOperation>()
+                         .Where(column => column.DefaultValue is not null and not DBNull
+                             && !rebuiltTables.Contains((column.Table, column.Schema))))
+            {
+                // Plans every default up front so an unsupported value fails before any SQL is generated.
+                DuckDBUntypedDefaultLiteral.Plan(column.DefaultValue!, column.Table, column.Name);
+            }
+        }
+
         if (_capabilities.SupportsGeneratedColumns && _capabilities.SupportsSqlDefaultExpressions)
         {
             return;
@@ -167,6 +198,80 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
                     unsupportedColumn.Name));
         }
     }
+
+    private static bool IsSchemaTransfer(RenameTableOperation operation)
+        => operation.NewSchema is not null && operation.NewSchema != operation.Schema;
+
+    // Column changes the configured engine cannot apply in place but a table rebuild can: a type change that is not a
+    // widening promotion, a required column added to an existing table, and a column that becomes required, where the
+    // engine cannot SET NOT NULL reliably.
+    private bool RequiresCapabilityRebuild(MigrationOperation operation, IModel? model)
+        => operation switch
+        {
+            AlterColumnOperation alter => RequiresTypeConversion(alter, model) || RequiresSetNotNullRebuild(alter),
+            AddColumnOperation add => !_capabilities.SupportsSetNotNullOnAddedColumns
+                && !add.IsNullable
+                && add.ComputedColumnSql is null,
+            _ => false
+        };
+
+    private bool RequiresTypeConversion(AlterColumnOperation alter, IModel? model)
+        => !_capabilities.SupportsColumnTypeConversions
+            && DuckDBColumnTypePromotion.Classify(ResolveOldColumnType(alter.OldColumn), ResolveColumnType(alter, model))
+            == DuckDBColumnTypeChange.Conversion;
+
+    private bool RequiresSetNotNullRebuild(AlterColumnOperation alter)
+        => !_capabilities.SupportsSetNotNullOnAddedColumns
+            && alter.OldColumn.IsNullable
+            && !alter.IsNullable
+            && alter.ComputedColumnSql is null;
+
+    // The tables whose rebuild also absorbs the migration's other column operations on them.
+    private HashSet<(string Table, string? Schema)> CapabilityRebuildTables(
+        IEnumerable<MigrationOperation> operations,
+        IModel? model)
+        => operations
+            .Where(operation => RequiresCapabilityRebuild(operation, model))
+            .Cast<ITableMigrationOperation>()
+            .Select(operation => (operation.Table, operation.Schema))
+            .ToHashSet();
+
+    private static bool IsColumnShapeOperation(MigrationOperation operation)
+        => operation is AddColumnOperation or AlterColumnOperation or DropColumnOperation or RenameColumnOperation;
+
+    private string? ResolveColumnType(ColumnOperation operation, IModel? model)
+        => operation.ColumnType
+            ?? (operation.ClrType is null
+                ? null
+                : GetColumnType(operation.Schema, operation.Table, operation.Name, operation, model));
+
+    // The target model describes the new column, so an old column without a store type is resolved from its own facets
+    // only. A column that still has no type is classified as a conversion.
+    private string? ResolveOldColumnType(ColumnOperation oldColumn)
+        => ResolveColumnType(oldColumn, model: null);
+
+    private string CapabilityRebuildRequired(ITableMigrationOperation operation, IModel? model)
+        => operation switch
+        {
+            AlterColumnOperation alter when RequiresTypeConversion(alter, model) =>
+                $"The configured DuckDB engine can only widen column types in place, so it cannot change column "
+                + $"'{alter.Table}.{alter.Name}' from '{ResolveOldColumnType(alter.OldColumn) ?? "an unknown type"}' to "
+                + $"'{ResolveColumnType(alter, model)}'. Enable opt-in table rebuilds with "
+                + "UseDuckDB(options => options.EnableMigrationTableRebuilds()) to recreate the table with the new type, "
+                + "or add a new column and copy the data explicitly.",
+            AlterColumnOperation alter =>
+                $"The configured DuckDB engine cannot make column '{alter.Table}.{alter.Name}' required in place: it "
+                + "cannot SET NOT NULL reliably on an existing column. Enable opt-in table rebuilds with "
+                + "UseDuckDB(options => options.EnableMigrationTableRebuilds()) to recreate the table with the column "
+                + "required (existing NULL values take the migration's default value), or keep the property optional.",
+            AddColumnOperation add =>
+                $"The configured DuckDB engine cannot add the required column '{add.Table}.{add.Name}' to an existing "
+                + "table: it rejects ADD COLUMN ... NOT NULL and cannot SET NOT NULL on a column added after the table "
+                + "was created. Enable opt-in table rebuilds with "
+                + "UseDuckDB(options => options.EnableMigrationTableRebuilds()) to recreate the table with the column, "
+                + "or make the property optional.",
+            _ => throw new InvalidOperationException($"Unexpected rebuild operation '{operation.GetType().Name}'.")
+        };
 
     private static bool IsAutoIncrement(ColumnOperation column)
         => column[DuckDBAnnotationNames.ValueGenerationStrategy] is DuckDBValueGenerationStrategy.AutoIncrement;
@@ -263,8 +368,15 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         IReadOnlyList<MigrationOperation> operations,
         IModel? model)
     {
+        // A capability rebuild recreates the table from the target model, so it also absorbs the migration's other
+        // column changes on that table; the copy maps renamed columns and fills added or newly required ones.
+        var capabilityTables = CapabilityRebuildTables(operations, model);
         var rebuildOperations = operations
-            .Where(IsConstraintAlterOperation)
+            .Where(operation => IsConstraintAlterOperation(operation)
+                || RequiresCapabilityRebuild(operation, model)
+                || (IsColumnShapeOperation(operation)
+                    && operation is ITableMigrationOperation column
+                    && capabilityTables.Contains((column.Table, column.Schema))))
             .Cast<ITableMigrationOperation>()
             .GroupBy(operation => (operation.Table, operation.Schema))
             .ToDictionary(group => group.Key, group => group.Cast<MigrationOperation>().ToHashSet());
@@ -281,10 +393,12 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         }
 
         var rebuildKeys = rebuildOperations.Keys.ToHashSet();
+        var rebuildOperationSet = rebuildOperations.Values.SelectMany(group => group).ToHashSet();
         var mixedShapeOperation = operations
             .OfType<ITableMigrationOperation>()
             .FirstOrDefault(operation => rebuildKeys.Contains((operation.Table, operation.Schema))
-                && operation is AddColumnOperation or AlterColumnOperation or DropColumnOperation or RenameColumnOperation);
+                && IsColumnShapeOperation((MigrationOperation)operation)
+                && !rebuildOperationSet.Contains((MigrationOperation)operation));
         if (mixedShapeOperation is not null)
         {
             throw new NotSupportedException(
@@ -316,14 +430,20 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
             {
                 var table = model.GetRelationalModel().FindTable(key.Table, key.Schema)
                     ?? throw new InvalidOperationException($"The target model does not contain table '{key.Table}'.");
-                AddTableRebuild(rewritten, table);
+                var tableOperations = operations
+                    .Where(candidate => operationTables.TryGetValue(candidate, out var candidateKey) && candidateKey == key)
+                    .ToArray();
+                AddTableRebuild(rewritten, table, tableOperations);
             }
         }
 
         return rewritten;
     }
 
-    private void AddTableRebuild(List<MigrationOperation> operations, ITable table)
+    private void AddTableRebuild(
+        List<MigrationOperation> operations,
+        ITable table,
+        IReadOnlyList<MigrationOperation> tableOperations)
     {
         var plan = DuckDBStructSchemaPlanner.PlanTable(table);
         var backupName = $"__ef_rebuild_{table.Name}";
@@ -339,19 +459,58 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         var createTable = CreateTableOperationFrom(table, plan);
         operations.Add(createTable);
 
+        // A new column without a default in its operation is left out, so it takes the rebuilt table's default.
+        var copies = DuckDBTableRebuildCopyPlanner.Plan(plan.CopyColumnNames, tableOperations)
+            .Where(copy => copy.SourceColumn is not null || copy.Fallback is not null)
+            .ToArray();
         var columnList = string.Join(
             ", ",
-            plan.CopyColumnNames.Select(Dependencies.SqlGenerationHelper.DelimitIdentifier));
+            copies.Select(copy => Dependencies.SqlGenerationHelper.DelimitIdentifier(copy.TargetColumn)));
+        var selectList = string.Join(", ", copies.Select(RenderCopyExpression));
         operations.Add(new SqlOperation
         {
-            Sql = $"INSERT INTO {delimitedTable} ({columnList}) SELECT {columnList} FROM {delimitedBackup}{Dependencies.SqlGenerationHelper.StatementTerminator}"
+            Sql = $"INSERT INTO {delimitedTable} ({columnList}) SELECT {selectList} FROM {delimitedBackup}{Dependencies.SqlGenerationHelper.StatementTerminator}"
         });
         operations.Add(new DropTableOperation { Name = backupName, Schema = table.Schema });
+
+        if (!_capabilities.SupportsIndexes)
+        {
+            return;
+        }
 
         foreach (var index in table.Indexes)
         {
             operations.Add(CreateIndexOperation.CreateFrom(index));
         }
+    }
+
+    private string RenderCopyExpression(DuckDBRebuildColumnCopy copy)
+    {
+        var source = copy.SourceColumn is null ? null : Dependencies.SqlGenerationHelper.DelimitIdentifier(copy.SourceColumn);
+        if (copy.Fallback is null)
+        {
+            return source!;
+        }
+
+        var fallback = RenderFallbackValue(copy.Fallback);
+        return source is null ? fallback : $"COALESCE({source}, {fallback})";
+    }
+
+    // The value EF scaffolds on the operation for existing rows. It is a SELECT expression, not a column default, so a
+    // typed literal is valid on every profile.
+    private string RenderFallbackValue(ColumnOperation operation)
+    {
+        if (operation.DefaultValueSql is { } sql)
+        {
+            return $"({sql})";
+        }
+
+        var value = operation.DefaultValue!;
+        var typeMapping = (operation.ColumnType is { } columnType
+                ? Dependencies.TypeMappingSource.FindMapping(value.GetType(), columnType)
+                : null)
+            ?? Dependencies.TypeMappingSource.GetMappingForValue(value);
+        return typeMapping.GenerateSqlLiteral(value);
     }
 
     private CreateTableOperation CreateTableOperationFrom(
@@ -368,6 +527,12 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
         foreach (var column in plan.Columns)
         {
             operation.Columns.Add(CreateAddColumnOperation(plan, column));
+        }
+
+        operation.AddAnnotations(table.GetAnnotations());
+        if (!_capabilities.SupportsSchemaConstraints)
+        {
+            return operation;
         }
 
         if (table.PrimaryKey is { } primaryKey)
@@ -390,7 +555,6 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
             operation.CheckConstraints.Add(AddCheckConstraintOperation.CreateFrom(checkConstraint));
         }
 
-        operation.AddAnnotations(table.GetAnnotations());
         return operation;
     }
 
@@ -739,12 +903,44 @@ public class DuckDBMigrationsSqlGenerator : MigrationsSqlGenerator
 
         ConfigureAutoIncrementColumn(operation.Table, operation.Schema, operation, model, builder);
 
-        base.Generate(operation, model, builder, terminate);
+        _renderingAddedColumn = true;
+        try
+        {
+            base.Generate(operation, model, builder, terminate);
+        }
+        finally
+        {
+            _renderingAddedColumn = false;
+        }
 
         if (operation.Comment != null)
         {
             Comment(builder, "COLUMN", Dependencies.SqlGenerationHelper.DelimitIdentifier(operation.Name, operation.Table), operation.Comment);
         }
+    }
+
+    /// <inheritdoc />
+    protected override void DefaultValue(
+        object? defaultValue,
+        string? defaultValueSql,
+        string? columnType,
+        MigrationCommandListBuilder builder)
+    {
+        if (!_renderingAddedColumn
+            || _capabilities.SupportsTypedAddColumnDefaults
+            || defaultValueSql is not null
+            || defaultValue is null or DBNull)
+        {
+            base.DefaultValue(defaultValue, defaultValueSql, columnType, builder);
+            return;
+        }
+
+        var literal = DuckDBUntypedDefaultLiteral.Plan(defaultValue, table: null, column: null);
+        builder
+            .Append(" DEFAULT ")
+            .Append(literal.IntegerValue is { } integer
+                ? Dependencies.TypeMappingSource.GetMappingForValue(integer).GenerateSqlLiteral(integer)
+                : Dependencies.TypeMappingSource.GetMapping(typeof(string)).GenerateSqlLiteral(literal.Text));
     }
 
     /// <inheritdoc />
