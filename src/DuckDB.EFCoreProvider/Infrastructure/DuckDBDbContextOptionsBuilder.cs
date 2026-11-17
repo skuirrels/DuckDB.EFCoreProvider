@@ -366,6 +366,9 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
     ///     The migration copies the table into a temporary backup, recreates the target table from the EF
     ///     model, copies compatible columns back, and recreates indexes. This requires temporary disk space
     ///     approximately equal to the table and an exclusive writer window. Disabled by default.
+    ///     On DuckLake it also rebuilds tables for column type conversions and required columns added to existing
+    ///     tables, which DuckLake cannot apply in place. A rebuilt DuckLake table is a new table, so time travel on
+    ///     it cannot reach back past the rebuild.
     /// </remarks>
     /// <param name="enable"><see langword="true" /> to enable table rebuilds; otherwise, <see langword="false" />.</param>
     public virtual DuckDBDbContextOptionsBuilder EnableMigrationTableRebuilds(bool enable = true)

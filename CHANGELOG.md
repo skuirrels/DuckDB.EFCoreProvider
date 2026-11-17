@@ -2,6 +2,22 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- EF Core migrations now work on the DuckLake profile: `Database.Migrate()`, `dotnet ef database update` and
+  `dotnet ef migrations script` no longer throw `NotSupportedException`. The history table is created without a
+  physical key, and the migrations lock claims one seeded `__EFMigrationsLock` row with a conditional `UPDATE`, so
+  DuckLake's commit conflicts serialise concurrent migrators. Clear a stale DuckLake lock with
+  `UPDATE "__EFMigrationsLock" SET "Holder" = NULL, "Timestamp" = NULL WHERE "Id" = 1`. The Quack profile still
+  rejects migrations.
+- On DuckLake, migrations apply renames, added and dropped columns, widening type changes and literal defaults in
+  place, and reject narrowing or cross-type changes, required columns added to existing tables and
+  `ALTER TABLE ... SET SCHEMA` while the script is generated. With `EnableMigrationTableRebuilds()`, type conversions
+  and required columns are applied by rebuilding the table, which gives it a new DuckLake identity, so time travel on
+  it cannot reach back past the rebuild.
+- On DuckLake, a column added by a migration gets its default as an untyped literal, such as `DEFAULT 'false'`,
+  because `ADD COLUMN` rejects typed literals such as `DEFAULT false`.
+
 ## 1.34.0
 
 - Fix `EnableBulkUpdateBatching()` and `EnableBulkDeleteBatching()` silently skipping a row that another context

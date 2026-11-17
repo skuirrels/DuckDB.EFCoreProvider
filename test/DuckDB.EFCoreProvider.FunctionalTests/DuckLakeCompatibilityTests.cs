@@ -579,7 +579,7 @@ public sealed class DuckLakeCompatibilityTests
     }
 
     [Fact]
-    public async Task Destructive_delete_and_migrations_fail_explicitly_for_DuckLake()
+    public async Task Destructive_delete_fails_explicitly_for_DuckLake()
     {
         var root = CreateDirectories(out var metadataPath, out var dataPath);
 
@@ -587,11 +587,6 @@ public sealed class DuckLakeCompatibilityTests
         {
             var options = new DbContextOptionsBuilder<DuckLakeContext>()
                 .UseDuckLake(metadataPath, duckLake => duckLake.DataPath(dataPath))
-                // This fixture intentionally uses distinct warning options; do not populate the shared EF cache.
-                .EnableServiceProviderCaching(false)
-                // Exercise the provider's migration capability guard even without fixture migrations.
-                .ConfigureWarnings(warnings => warnings.Ignore(
-                    RelationalEventId.MigrationsNotFound, CoreEventId.ManyServiceProvidersCreatedWarning))
                 .Options;
             using var context = new DuckLakeContext(options);
             context.Database.EnsureCreated();
@@ -601,12 +596,6 @@ public sealed class DuckLakeCompatibilityTests
             var asyncDeleteException = await Assert.ThrowsAsync<NotSupportedException>(
                 () => context.Database.EnsureDeletedAsync());
             Assert.Contains("intentionally disabled", asyncDeleteException.Message);
-
-            var migrationException = Assert.Throws<NotSupportedException>(() => context.Database.Migrate());
-            Assert.Contains("migrations are not supported", migrationException.Message);
-            var asyncMigrationException = await Assert.ThrowsAsync<NotSupportedException>(
-                () => context.Database.MigrateAsync());
-            Assert.Contains("migrations are not supported", asyncMigrationException.Message);
         }
         finally
         {

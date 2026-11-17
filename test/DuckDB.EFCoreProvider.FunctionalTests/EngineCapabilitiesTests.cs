@@ -467,6 +467,156 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.Contains("__ef_rebuild_CapabilityItems", sql);
     }
 
+    [ConditionalFact]
+    public void Migration_capabilities_render_untyped_default_literals_independently()
+    {
+        using var context = new CapabilityContext(FileOptions<CapabilityContext>());
+        var column = new AddColumnOperation
+        {
+            Table = "Items",
+            Name = "Active",
+            ClrType = typeof(bool),
+            ColumnType = "BOOLEAN",
+            IsNullable = true,
+            DefaultValue = true
+        };
+
+        var typed = Sql(CreateMigrationsGenerator(context, new TestCapabilities()).Generate([column]));
+        var untyped = Sql(CreateMigrationsGenerator(
+                context,
+                new TestCapabilities(SupportsTypedAddColumnDefaults: false))
+            .Generate([column]));
+
+        Assert.DoesNotContain("DEFAULT 'true'", typed);
+        Assert.Contains("\"Active\" BOOLEAN NULL DEFAULT 'true'", untyped);
+    }
+
+    [ConditionalFact]
+    public void Migration_capabilities_gate_column_type_conversions_independently()
+    {
+        using var context = new CapabilityContext(FileOptions<CapabilityContext>());
+        var conversion = new AlterColumnOperation
+        {
+            Table = "Items",
+            Name = "Name",
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            OldColumn = new AddColumnOperation { Table = "Items", Name = "Name", ClrType = typeof(string), ColumnType = "VARCHAR" }
+        };
+
+        var native = Sql(CreateMigrationsGenerator(context, new TestCapabilities()).Generate([conversion]));
+        var exception = Assert.Throws<NotSupportedException>(() => CreateMigrationsGenerator(
+                context,
+                new TestCapabilities(SupportsColumnTypeConversions: false))
+            .Generate([conversion]));
+
+        Assert.Contains("ALTER \"Name\" TYPE INTEGER", native);
+        Assert.Contains("can only widen column types", exception.Message);
+        Assert.DoesNotContain("DuckLake", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Migration_capabilities_route_type_conversions_to_rebuilds_when_enabled()
+    {
+        using var context = new CapabilityContext(
+            FileOptions<CapabilityContext>(options => options.EnableMigrationTableRebuilds()));
+        var generator = CreateMigrationsGenerator(
+            context,
+            new TestCapabilities(SupportsColumnTypeConversions: false));
+        var conversion = new AlterColumnOperation
+        {
+            Table = "CapabilityItems",
+            Name = "Name",
+            ClrType = typeof(string),
+            ColumnType = "VARCHAR",
+            OldColumn = new AddColumnOperation
+            {
+                Table = "CapabilityItems",
+                Name = "Name",
+                ClrType = typeof(int),
+                ColumnType = "INTEGER"
+            }
+        };
+
+        var sql = Sql(generator.Generate([conversion], context.GetService<IDesignTimeModel>().Model));
+
+        Assert.Contains("__ef_rebuild_CapabilityItems", sql);
+        Assert.DoesNotContain("ALTER \"Name\" TYPE", sql);
+    }
+
+    [ConditionalFact]
+    public void Migration_capabilities_gate_required_column_additions_independently()
+    {
+        using var context = new CapabilityContext(FileOptions<CapabilityContext>());
+        var column = new AddColumnOperation
+        {
+            Table = "Items",
+            Name = "Quantity",
+            ClrType = typeof(int),
+            ColumnType = "INTEGER",
+            IsNullable = false,
+            DefaultValue = 0
+        };
+
+        var native = Sql(CreateMigrationsGenerator(context, new TestCapabilities()).Generate([column]));
+        var exception = Assert.Throws<NotSupportedException>(() => CreateMigrationsGenerator(
+                context,
+                new TestCapabilities(SupportsSetNotNullOnAddedColumns: false))
+            .Generate([column]));
+
+        Assert.Contains("ADD \"Quantity\" INTEGER NOT NULL DEFAULT 0", native);
+        Assert.Contains("'Items.Quantity'", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Migration_capabilities_gate_table_schema_transfers_independently()
+    {
+        using var context = new CapabilityContext(FileOptions<CapabilityContext>());
+        var rename = new RenameTableOperation { Name = "Items", NewName = "Items", NewSchema = "archive" };
+
+        var native = Sql(CreateMigrationsGenerator(context, new TestCapabilities()).Generate([rename]));
+        var exception = Assert.Throws<NotSupportedException>(() => CreateMigrationsGenerator(
+                context,
+                new TestCapabilities(SupportsTableSchemaTransfer: false))
+            .Generate([rename]));
+
+        Assert.Contains("SET SCHEMA archive", native);
+        Assert.Contains("'Items'", exception.Message);
+        Assert.Contains("'archive'", exception.Message);
+    }
+
+    [ConditionalFact]
+    public void Conditional_update_lock_strategy_serialises_native_DuckDB_migrators()
+    {
+        using var serviceProvider = CreateCapabilityServiceProvider<ConditionalUpdateLockCapabilities>();
+        using var holder = new CapabilityContext(FileOptionsWithCapabilities<CapabilityContext>(serviceProvider));
+        using var waiter = new CapabilityContext(
+            new DbContextOptionsBuilder<CapabilityContext>(
+                    FileOptions<CapabilityContext>(options => options.MigrationLockTimeout(TimeSpan.FromSeconds(2))))
+                .UseInternalServiceProvider(serviceProvider)
+                .Options);
+
+        var heldLock = holder.GetService<IHistoryRepository>().AcquireDatabaseLock();
+        var exception = Assert.Throws<TimeoutException>(() => waiter.GetService<IHistoryRepository>().AcquireDatabaseLock());
+        Assert.Contains("SET \"Holder\" = NULL", exception.Message);
+        Assert.Equal(
+            ["Holder", "Id", "Timestamp"],
+            holder.Database.SqlQueryRaw<string>(
+                    "SELECT column_name AS \"Value\" FROM duckdb_columns() WHERE table_name = '__EFMigrationsLock' ORDER BY 1")
+                .ToArray());
+        Assert.Equal(
+            0,
+            holder.Database.SqlQueryRaw<int>(
+                    "SELECT count(*)::INTEGER AS \"Value\" FROM duckdb_constraints() WHERE table_name = '__EFMigrationsLock' AND constraint_type = 'PRIMARY KEY'")
+                .Single());
+
+        heldLock.Dispose();
+        using var acquired = waiter.GetService<IHistoryRepository>().AcquireDatabaseLock();
+    }
+
+    private static string Sql(IEnumerable<MigrationCommand> commands)
+        => string.Join(Environment.NewLine, commands.Select(command => command.CommandText));
+
     private static DuckDBMigrationsSqlGenerator CreateMigrationsGenerator(
         DbContext context,
         IDuckDBEngineCapabilities capabilities)
@@ -540,7 +690,14 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.Equal(supported, capabilities.SupportsIndexes);
         Assert.Equal(supported, capabilities.SupportsSchemaConstraints);
         Assert.Equal(supported, capabilities.SupportsTieredStorage);
-        Assert.Equal(supported, capabilities.SupportsEfMigrations);
+        Assert.True(capabilities.SupportsEfMigrations);
+        Assert.Equal(
+            supported ? DuckDBMigrationLockStrategy.KeyedInsert : DuckDBMigrationLockStrategy.ConditionalUpdate,
+            capabilities.MigrationLockStrategy);
+        Assert.Equal(supported, capabilities.SupportsColumnTypeConversions);
+        Assert.Equal(supported, capabilities.SupportsTableSchemaTransfer);
+        Assert.Equal(supported, capabilities.SupportsTypedAddColumnDefaults);
+        Assert.Equal(supported, capabilities.SupportsSetNotNullOnAddedColumns);
         Assert.True(capabilities.SupportsSchemaManagement);
         Assert.Equal(supported, capabilities.SupportsDatabaseDeletion);
         Assert.True(capabilities.SupportsMultipleStatementsPerCommand);
@@ -691,6 +848,11 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         public override bool SupportsTieredStorage => false;
     }
 
+    private sealed class ConditionalUpdateLockCapabilities : NativeCapabilities, IDuckDBEngineCapabilities
+    {
+        public DuckDBMigrationLockStrategy MigrationLockStrategy => DuckDBMigrationLockStrategy.ConditionalUpdate;
+    }
+
     private sealed class MergeUpsertCapabilities : NativeCapabilities
     {
         public override DuckDBUpsertStrategy UpsertStrategy => DuckDBUpsertStrategy.Merge;
@@ -708,5 +870,9 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         bool SupportsSchemaConstraints = true,
         bool SupportsTieredStorage = true,
         bool SupportsEfMigrations = true,
+        bool SupportsColumnTypeConversions = true,
+        bool SupportsTableSchemaTransfer = true,
+        bool SupportsTypedAddColumnDefaults = true,
+        bool SupportsSetNotNullOnAddedColumns = true,
         DuckDBUpsertStrategy UpsertStrategy = DuckDBUpsertStrategy.InsertOnConflict) : IDuckDBEngineCapabilities;
 }

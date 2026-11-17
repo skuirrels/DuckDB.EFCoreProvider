@@ -105,11 +105,15 @@ changes and constraint rebuilds must be placed in separate migrations; the provi
 rather than risking an ambiguous copy. Rebuilding a table referenced by foreign keys from other tables may also
 be rejected by DuckDB, so rebuild dependants first or use an application-managed maintenance migration.
 
+On the DuckLake profile the same option also rebuilds tables for type conversions and required columns, which
+DuckLake cannot apply in place. See [DUCKLAKE.md](DUCKLAKE.md#ef-core-migrations) for the DuckLake lock, history
+table and supported operations.
+
 For the complete capability matrix and the engine-limitation rationale, see [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
 
 ## Tips
 
 - **Single writer.** DuckDB is single-writer and embedded. Run `database update` when no other process holds the database file open, or you will hit a lock error.
-- **The migrations lock times out rather than waiting forever.** Migrators coordinate through a row in the `__EFMigrationsLock` table. If a migrator crashes while holding it, the row is left behind; rather than hanging indefinitely, later migrators wait up to **5 minutes** (configurable with `UseDuckDB(o => o.MigrationLockTimeout(...))`, or `Timeout.InfiniteTimeSpan` to wait forever) and then fail with a `TimeoutException` that reports how long the lock has been held and how to clear it: `DELETE FROM "__EFMigrationsLock"`.
+- **The migrations lock times out rather than waiting forever.** Migrators coordinate through a row in the `__EFMigrationsLock` table. If a migrator crashes while holding it, the row is left behind; rather than hanging indefinitely, later migrators wait up to **5 minutes** (configurable with `UseDuckDB(o => o.MigrationLockTimeout(...))`, or `Timeout.InfiniteTimeSpan` to wait forever) and then fail with a `TimeoutException` that reports how long the lock has been held and how to clear it: `DELETE FROM "__EFMigrationsLock"`. On DuckLake the row is cleared with an `UPDATE` instead; see [DUCKLAKE.md](DUCKLAKE.md#ef-core-migrations).
 - **Indexes for ad-hoc/Dynamic LINQ filters.** DuckDB's zone-map (min/max) pruning already accelerates range and equality scans on naturally ordered columns without any index. Add ART indexes (`HasIndex(...)`) for selective equality predicates on high-cardinality columns that are queried frequently; broad analytical scans rarely benefit. See [CAPABILITY-MAP.md](CAPABILITY-MAP.md) and [PERFORMANCE.md](PERFORMANCE.md).
 - **Bulk loads bypass migrations history.** `BulkInsert` and `Upsert` write data only; they never touch schema or the migrations history table.

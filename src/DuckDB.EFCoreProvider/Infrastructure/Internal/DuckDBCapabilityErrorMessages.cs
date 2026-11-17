@@ -7,6 +7,11 @@ internal static class DuckDBCapabilityErrorMessages
         + "does not provide the schema constraints and/or locking semantics required by EF's migrations history "
         + "contract. Use Database.EnsureCreated() for a new catalog, and apply reviewed schema-evolution SQL explicitly.";
 
+    public static string TableSchemaTransferNotSupported(string table, string newSchema)
+        => $"The configured DuckDB engine cannot move table '{table}' to schema '{newSchema}': it does not support "
+            + "ALTER TABLE ... SET SCHEMA. Create the table in the new schema and copy the data explicitly in a "
+            + "migration, or keep the table in its current schema.";
+
     public const string SequencesNotSupported =
         "The configured DuckDB engine does not support sequences. Configure client-assigned keys or a client-side "
         + "value generator.";

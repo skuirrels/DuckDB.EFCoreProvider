@@ -10,6 +10,25 @@ public enum DuckDBUpsertStrategy
 }
 
 /// <summary>
+///     Selects how EF Core migrators coordinate through the <c>__EFMigrationsLock</c> table.
+/// </summary>
+public enum DuckDBMigrationLockStrategy
+{
+    /// <summary>
+    ///     Claim the lock by inserting a row under an enforced primary key with
+    ///     <c>INSERT OR IGNORE ... RETURNING</c>, and release it by deleting the row.
+    /// </summary>
+    KeyedInsert,
+
+    /// <summary>
+    ///     Claim one pre-seeded lock row with a conditional <c>UPDATE</c> in its own committed transaction, and release
+    ///     it with an <c>UPDATE</c> that matches the holder. Overlapping claims are serialised by the engine's optimistic
+    ///     commit conflicts, so the lock needs neither an enforced key nor <c>RETURNING</c>.
+    /// </summary>
+    ConditionalUpdate
+}
+
+/// <summary>
 ///     Describes the SQL and schema capabilities of the configured DuckDB engine profile.
 /// </summary>
 /// <remarks>
@@ -60,6 +79,36 @@ public interface IDuckDBEngineCapabilities
     bool SupportsTieredStorage { get; }
 
     bool SupportsEfMigrations { get; }
+
+    /// <summary>The strategy EF Core migrators use to hold the migrations lock.</summary>
+    DuckDBMigrationLockStrategy MigrationLockStrategy
+        => SupportsSchemaConstraints && SupportsReturning
+            ? DuckDBMigrationLockStrategy.KeyedInsert
+            : DuckDBMigrationLockStrategy.ConditionalUpdate;
+
+    /// <summary>
+    ///     Whether <c>ALTER COLUMN ... TYPE</c> can convert a column to any castable type in place. When
+    ///     <see langword="false" />, only widening type promotions are applied in place; other type changes need a
+    ///     table rebuild.
+    /// </summary>
+    bool SupportsColumnTypeConversions => true;
+
+    /// <summary>Whether a table can move to another schema with <c>ALTER TABLE ... SET SCHEMA</c>.</summary>
+    bool SupportsTableSchemaTransfer => true;
+
+    /// <summary>
+    ///     Whether <c>ALTER TABLE ... ADD COLUMN</c> accepts a typed default literal such as <c>true</c> or
+    ///     <c>TIMESTAMP '...'</c>. When <see langword="false" />, an added column's default is rendered as an untyped
+    ///     numeric or string literal that the engine casts to the column type. <c>CREATE TABLE</c> defaults are unaffected.
+    /// </summary>
+    bool SupportsTypedAddColumnDefaults => true;
+
+    /// <summary>
+    ///     Whether <c>SET NOT NULL</c> can be applied to a column added by <c>ALTER TABLE ... ADD COLUMN</c>. When
+    ///     <see langword="false" />, a required column can only be introduced by creating the table, so adding one to an
+    ///     existing table needs a table rebuild.
+    /// </summary>
+    bool SupportsSetNotNullOnAddedColumns => true;
 
     /// <summary>Whether EF can provision the configured database schema.</summary>
     bool SupportsSchemaManagement => true;

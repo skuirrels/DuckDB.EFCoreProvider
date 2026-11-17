@@ -1,6 +1,7 @@
 using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.ValueGeneration.Internal;
 using DuckDB.NET.Data;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using System.Globalization;
 using Xunit;
@@ -127,6 +128,72 @@ public sealed class DuckLakeExternalIntegrationTests
             Assert.Equal(5, keys.Distinct().Count());
             Assert.All(keys, key => Assert.DoesNotContain(key, values));
         }
+    }
+
+    [DuckLakeExternalFact]
+    public async Task Concurrent_migrators_on_a_shared_PostgreSQL_catalog_apply_each_migration_once()
+    {
+        var configuration = ExternalConfiguration.Load();
+        var metadataSchema = $"migrations_{Guid.NewGuid():N}";
+        var options = new DbContextOptionsBuilder<DuckLakeMigrationsTests.EvolvingContext>()
+            .UseDuckLake(
+                duckLake => duckLake.UseNamedSecret("ducklake_external_migrations").CatalogName("migrations_lake"),
+                duckDB => duckDB
+                    .LoadExtension("httpfs")
+                    .LoadExtension("postgres")
+                    .MigrationLockTimeout(TimeSpan.FromMinutes(2))
+                    .ConfigureConnection(connection =>
+                    {
+                        InitializeSecrets(connection, configuration);
+                        using var command = connection.CreateCommand();
+                        command.CommandText =
+                            $$"""
+                            CREATE OR REPLACE SECRET ducklake_external_migrations (
+                                TYPE ducklake,
+                                METADATA_PATH '',
+                                DATA_PATH '{{EscapeSqlLiteral(configuration.DataPath)}}/{{metadataSchema}}',
+                                METADATA_SCHEMA '{{metadataSchema}}',
+                                METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'ducklake_external_postgres'}
+                            );
+                            """;
+                        command.ExecuteNonQuery();
+                    }))
+            // The hand-written test migrations have no model snapshot.
+            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+
+        // DuckLake's first attach of a new catalog is not safe to run concurrently, so create it before the race.
+        await using (var context = new DuckLakeMigrationsTests.EvolvingContext(options))
+        {
+            await context.Database.OpenConnectionAsync();
+        }
+
+        // Each migrator has its own DuckDB instance attached to the shared catalog, so overlapping lock claims
+        // conflict in DuckLake and only one migrator applies the migrations.
+        const int migrators = 4;
+        using var start = new Barrier(migrators);
+        await Task.WhenAll(Enumerable.Range(0, migrators).Select(_ => Task.Run(async () =>
+        {
+            await using var context = new DuckLakeMigrationsTests.EvolvingContext(options);
+            start.SignalAndWait();
+            await context.Database.MigrateAsync();
+        })));
+
+        await using var verification = new DuckLakeMigrationsTests.EvolvingContext(options);
+        Assert.Equal(
+            [
+                DuckLakeMigrationsTests.CreateBlogs.Id,
+                DuckLakeMigrationsTests.AddBlogColumns.Id,
+                DuckLakeMigrationsTests.RenameAndWidenBlogColumns.Id
+            ],
+            await verification.Database.SqlQueryRaw<string>(
+                    "SELECT \"MigrationId\" AS \"Value\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\"")
+                .ToListAsync());
+        Assert.Equal(
+            ["free"],
+            await verification.Database.SqlQueryRaw<string>(
+                    "SELECT CASE WHEN \"Holder\" IS NULL THEN 'free' ELSE 'held' END AS \"Value\" FROM \"__EFMigrationsLock\"")
+                .ToListAsync());
     }
 
     private static DbContextOptions<ExternalDuckLakeContext> CreateOptions(

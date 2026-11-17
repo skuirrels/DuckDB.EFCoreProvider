@@ -43,7 +43,14 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
         SupportsIndexes = !isDuckLake;
         SupportsSchemaConstraints = !isDuckLake;
         SupportsTieredStorage = !isDuckLake && !isQuack;
-        SupportsEfMigrations = !isDuckLake && !isQuack;
+        SupportsEfMigrations = !isQuack;
+        MigrationLockStrategy = isDuckLake
+            ? DuckDBMigrationLockStrategy.ConditionalUpdate
+            : DuckDBMigrationLockStrategy.KeyedInsert;
+        SupportsColumnTypeConversions = !isDuckLake;
+        SupportsTableSchemaTransfer = !isDuckLake;
+        SupportsTypedAddColumnDefaults = !isDuckLake;
+        SupportsSetNotNullOnAddedColumns = !isDuckLake;
         SupportsSchemaManagement = true;
         SupportsDatabaseDeletion = !isDuckLake && !isQuack;
         SupportsRemoteCommandExecution = isQuack;
@@ -81,6 +88,16 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
     public bool SupportsTieredStorage { get; }
 
     public bool SupportsEfMigrations { get; }
+
+    public DuckDBMigrationLockStrategy MigrationLockStrategy { get; }
+
+    public bool SupportsColumnTypeConversions { get; }
+
+    public bool SupportsTableSchemaTransfer { get; }
+
+    public bool SupportsTypedAddColumnDefaults { get; }
+
+    public bool SupportsSetNotNullOnAddedColumns { get; }
 
     public bool SupportsSchemaManagement { get; }
 
