@@ -36,7 +36,7 @@ internal sealed class DuckDBEngineCapabilities : IDuckDBEngineCapabilities
         SupportsReturningOnReferencedTableUpdates = false;
         SupportsConflictDetectingReturningUpdates = false;
         SupportsReferencedTableForeignKeyUpdates = isDuckLake;
-        SupportsSaveChangesBatching = !isDuckLake;
+        SupportsSaveChangesBatching = true;
         SupportsSequences = !isDuckLake;
         SupportsGeneratedColumns = !isDuckLake;
         SupportsSqlDefaultExpressions = !isDuckLake;

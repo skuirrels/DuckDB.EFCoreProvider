@@ -516,7 +516,7 @@ public class EngineCapabilitiesTests : DuckDBTestBase
         Assert.False(capabilities.SupportsReturningOnReferencedTableUpdates);
         Assert.False(capabilities.SupportsConflictDetectingReturningUpdates);
         Assert.Equal(!supported, capabilities.SupportsReferencedTableForeignKeyUpdates);
-        Assert.Equal(supported, capabilities.SupportsSaveChangesBatching);
+        Assert.True(capabilities.SupportsSaveChangesBatching);
         Assert.Equal(supported, capabilities.SupportsSequences);
         Assert.Equal(supported, capabilities.SupportsGeneratedColumns);
         Assert.Equal(supported, capabilities.SupportsSqlDefaultExpressions);

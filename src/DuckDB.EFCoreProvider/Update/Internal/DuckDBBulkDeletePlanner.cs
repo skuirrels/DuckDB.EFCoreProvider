@@ -77,7 +77,7 @@ internal static class DuckDBBulkDeletePlanner
 /// <summary>
 ///     Immutable snapshot of a validated bulk-delete command run.
 /// </summary>
-internal sealed class DuckDBBulkDeletePlan
+internal sealed class DuckDBBulkDeletePlan : IDuckDBKeyedRunPlan
 {
     private readonly string[] _keyColumnNames;
     private readonly string[] _originalKeyParameterNames;

@@ -2,6 +2,7 @@ using DuckDB.EFCoreProvider.Extensions;
 using DuckDB.EFCoreProvider.Infrastructure.Internal;
 using DuckDB.EFCoreProvider.Update.Internal;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.TestUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using System.Data.Common;
 using Xunit;
@@ -40,12 +41,12 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
         Assert.Equal("AFTER", parent.ComputedValue);
 
         var updateSql = Assert.Single(
-            interceptor.CommandTexts.Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal)));
+            interceptor.CommandTexts.Where(command => BatchedCommandText.WithoutRowCheck(command).StartsWith("UPDATE ", StringComparison.Ordinal)));
         Assert.DoesNotContain("RETURNING", updateSql, StringComparison.OrdinalIgnoreCase);
 
         var selectSql = Assert.Single(
             interceptor.CommandTexts.Where(command
-                => command.StartsWith("SELECT ", StringComparison.Ordinal)
+                => BatchedCommandText.WithoutRowCheck(command).StartsWith("SELECT ", StringComparison.Ordinal)
                     && command.Contains("\"ComputedValue\"", StringComparison.Ordinal)));
         Assert.Contains("FROM \"Parents\"", selectSql, StringComparison.Ordinal);
         Assert.Contains("WHERE \"Id\" =", selectSql, StringComparison.Ordinal);
@@ -68,11 +69,11 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
         await context.SaveChangesAsync();
 
         var updateSql = Assert.Single(
-            interceptor.CommandTexts.Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal)));
+            interceptor.CommandTexts.Where(command => BatchedCommandText.WithoutRowCheck(command).StartsWith("UPDATE ", StringComparison.Ordinal)));
         Assert.DoesNotContain("RETURNING", updateSql, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             interceptor.CommandTexts,
-            command => command.StartsWith("SELECT ", StringComparison.Ordinal));
+            command => BatchedCommandText.WithoutRowCheck(command).StartsWith("SELECT ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -114,7 +115,7 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
         await context.SaveChangesAsync();
 
         var updateSql = Assert.Single(
-            interceptor.CommandTexts.Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal)));
+            interceptor.CommandTexts.Where(command => BatchedCommandText.WithoutRowCheck(command).StartsWith("UPDATE ", StringComparison.Ordinal)));
         Assert.Contains("FROM (VALUES", updateSql, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("RETURNING", updateSql, StringComparison.OrdinalIgnoreCase);
 
@@ -169,11 +170,11 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
 
         Assert.Equal("AFTER", parent.ComputedValue);
         var updateSql = Assert.Single(
-            interceptor.CommandTexts.Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal)));
+            interceptor.CommandTexts.Where(command => BatchedCommandText.WithoutRowCheck(command).StartsWith("UPDATE ", StringComparison.Ordinal)));
         Assert.Contains("RETURNING", updateSql, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             interceptor.CommandTexts,
-            command => command.StartsWith("SELECT ", StringComparison.Ordinal));
+            command => BatchedCommandText.WithoutRowCheck(command).StartsWith("SELECT ", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -214,7 +215,7 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
 
         // DuckDB 1.5.6 does not report write-write conflicts for UPDATE ... RETURNING on keyed tables.
         var updateSql = Assert.Single(
-            interceptor.CommandTexts.Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal)));
+            interceptor.CommandTexts.Where(command => BatchedCommandText.WithoutRowCheck(command).StartsWith("UPDATE ", StringComparison.Ordinal)));
         Assert.DoesNotContain("RETURNING", updateSql, StringComparison.OrdinalIgnoreCase);
         context.ChangeTracker.Clear();
         Assert.Equal("after", (await context.IndependentItems.SingleAsync()).Payload);
@@ -248,7 +249,7 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
         await context.SaveChangesAsync();
 
         var updates = interceptor.CommandTexts
-            .Where(command => command.StartsWith("UPDATE ", StringComparison.Ordinal))
+            .Where(command => BatchedCommandText.WithoutRowCheck(command).StartsWith("UPDATE ", StringComparison.Ordinal))
             .ToList();
         Assert.Equal(2, updates.Count);
         Assert.Contains(
@@ -279,7 +280,7 @@ public class ReferencedPrincipalUpdateTests : DuckDBTestBase
 
         Assert.Equal("AFTER", parent.ComputedValue);
         Assert.Equal(2, interceptor.CommandTexts.Count(command
-            => command.StartsWith("UPDATE ", StringComparison.Ordinal)));
+            => BatchedCommandText.WithoutRowCheck(command).StartsWith("UPDATE ", StringComparison.Ordinal)));
 
         context.ChangeTracker.Clear();
         Assert.Equal("after", (await context.Parents.SingleAsync()).Payload);

@@ -2,6 +2,20 @@
 
 All notable changes to `DuckDB.EFCoreProvider` are documented here. The package follows [semantic versioning](VERSIONING.md); the same notes ship in the NuGet package's release notes.
 
+## Unreleased
+
+- Fix `EnableBulkUpdateBatching()` and `EnableBulkDeleteBatching()` silently skipping a row that another context
+  had already deleted. Each merged update or delete run is now preceded by a count of its keys that match exactly
+  one row, so a missing row raises `DbUpdateConcurrencyException` before the run changes anything, as the
+  unbatched path does. The count costs one extra query per run: in a local 20,000-row measurement, batched updates
+  took about 35% longer and batched deletes about 55% longer, still roughly ten times faster than unbatched.
+- `EnableBulkInsertBatching()`, `EnableBulkUpdateBatching()` and `EnableBulkDeleteBatching()` now work on the
+  DuckLake profile instead of throwing `NotSupportedException`. Because DuckLake does not enforce keys, a key shared
+  by several rows also fails the run, and updates and deletes that cannot be merged, such as those with a
+  concurrency token, are preceded by a count of the rows their conditions match.
+- On the Quack profile, which runs one statement per command, `SaveChanges` updates and deletes keep the per-row
+  path; insert batching is unchanged.
+
 ## 1.33.0
 
 - MAP parameters now bind as native DuckDB MAP values instead of DuckDB's quoted MAP text, so the provider no longer

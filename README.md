@@ -152,7 +152,7 @@ profiles, typed maintenance, additional local or named-secret catalogs, streamin
 database-first scaffolding. DuckLake does
 not physically enforce keys, foreign keys, unique/check constraints, or indexes, and it does not support
 sequences, store-generated values, or `RETURNING`; generate integer keys on the client with `UseHiLo()` instead. EF migrations, `EnsureDeleted`, provider tiered storage,
-`SaveChanges` batching, and EF entity mappings to non-primary attached catalogs are therefore deliberately
+and EF entity mappings to non-primary attached catalogs are therefore deliberately
 unavailable in this profile. See the complete
 [DuckLake configuration, security, and limitations guide](docs/DUCKLAKE.md).
 
@@ -1389,6 +1389,11 @@ options.UseDuckDB(
   key (and, for updates, which read no database-computed values back). Operations that use **concurrency
   tokens** (or, for updates, **computed columns**) automatically fall back to the standard per-row path, so
   their concurrency-detection and value-propagation behaviour is unchanged.
+- **Merged updates and deletes still report missing rows.** Each merged run is preceded by a count of its keys
+  that match exactly one row. If a row was deleted by someone else, or, on DuckLake, which does not enforce keys,
+  a key matches more than one row, `SaveChanges` throws `DbUpdateConcurrencyException` before the run changes
+  anything. The count costs one extra query per run. On the Quack profile, which runs one statement per command,
+  updates and deletes keep the per-row path.
 - Tune the merge size with the standard `MaxBatchSize` option. The default of 100 is based on local benchmark
   results; very large batches regress.
 - For pure bulk inserts that do not need change tracking or generated values other than keys, `BulkInsert`

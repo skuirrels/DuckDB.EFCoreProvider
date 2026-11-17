@@ -228,7 +228,7 @@ internal static class DuckDBBulkUpdatePlanner
 /// <summary>
 ///     Immutable snapshot of a validated bulk-update command run.
 /// </summary>
-internal sealed class DuckDBBulkUpdatePlan
+internal sealed class DuckDBBulkUpdatePlan : IDuckDBKeyedRunPlan
 {
     private readonly IReadOnlyModificationCommand[] _commands;
     private readonly int[] _keyIndexes;

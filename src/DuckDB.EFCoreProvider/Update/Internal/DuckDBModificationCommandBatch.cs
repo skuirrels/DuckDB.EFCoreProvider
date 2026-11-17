@@ -23,7 +23,10 @@ namespace DuckDB.EFCoreProvider.Update.Internal;
 ///     <para>
 ///         Store-generated values are correlated back to each command positionally, which is safe because
 ///         DuckDB returns <c>RETURNING</c> rows in the same order as the supplied <c>VALUES</c> tuples.
-///         Updates, deletes, and inserts that cannot be merged fall back to the standard per-command path.
+///         Eligible key-only updates and deletes are merged the same way, each run preceded by a count of its keys
+///         that match exactly one row, which EF checks as the run's affected-row count before the run changes
+///         anything. Commands that cannot be merged fall back to the standard per-command path; without
+///         <c>RETURNING</c>, those updates and deletes are preceded by a count of the rows their conditions match.
 ///     </para>
 /// </remarks>
 public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBatch
@@ -182,7 +185,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         }
 
         return _pendingBulkDeleteCommands.Count > 0
-               && _deleteBatching
+               && CanUseBulkDelete(modificationCommand)
                && DuckDBBulkDeletePlanner.CanAppend(_pendingBulkDeleteCommands[0], modificationCommand);
     }
 
@@ -210,10 +213,21 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
             _pendingBulkUpdatePlans.Add(dualRolePlan);
             AddParameters(modificationCommand);
         }
-        else if (_deleteBatching && DuckDBBulkDeletePlanner.CanPlan(modificationCommand))
+        else if (CanUseBulkDelete(modificationCommand))
         {
             _pendingBulkDeleteCommands.Add(modificationCommand);
             AddParameters(modificationCommand);
+        }
+        else if (RequiresCheckedModification(modificationCommand, dualRolePlan))
+        {
+            var commandPosition = ResultSetMappings.Count;
+            ResultSetMappings.Add(UpdateSqlGenerator.AppendCheckedModificationOperation(
+                SqlBuilder,
+                modificationCommand,
+                commandPosition,
+                out var requiresTransaction));
+            AddParameters(modificationCommand);
+            SetRequiresTransaction(commandPosition > 0 || requiresTransaction);
         }
         else
         {
@@ -222,6 +236,16 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
         }
     }
 
+    // Without RETURNING the base path renders updates and deletes that report no affected rows through the
+    // batch's reader, so they are rendered with a preceding row count instead.
+    private bool RequiresCheckedModification(
+        IReadOnlyModificationCommand command,
+        DuckDBDualRoleUpdatePlan dualRolePlan)
+        => !_capabilities.SupportsReturning
+            && command.StoreStoredProcedure is null
+            && command.EntityState is EntityState.Modified or EntityState.Deleted
+            && !dualRolePlan.RequiresConditionalForeignKeyUpdate;
+
     private bool RequiresUpdateFallbackExecution(
         IReadOnlyModificationCommand command,
         DuckDBDualRoleUpdatePlan dualRolePlan)
@@ -229,12 +253,20 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
             && !CanUseBulkUpdate(command, dualRolePlan)
             && DuckDBUpdateFallbackPlanner.CanPlan(command, _capabilities);
 
+    // A merged update or delete run is preceded by its row check, so it needs a transport that runs several
+    // statements in one command; single-statement transports keep the per-command path and its affected-row check.
     private bool CanUseBulkUpdate(
         IReadOnlyModificationCommand command,
         DuckDBDualRoleUpdatePlan dualRolePlan)
         => _updateBatching
+            && _capabilities.SupportsMultipleStatementsPerCommand
             && !dualRolePlan.HasChangedForeignKeyWrites
             && DuckDBBulkUpdatePlanner.CanPlan(command, dualRolePlan);
+
+    private bool CanUseBulkDelete(IReadOnlyModificationCommand command)
+        => _deleteBatching
+            && _capabilities.SupportsMultipleStatementsPerCommand
+            && DuckDBBulkDeletePlanner.CanPlan(command);
 
     /// <inheritdoc />
     protected override void RollbackLastCommand(IReadOnlyModificationCommand modificationCommand)
@@ -447,11 +479,7 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
 
         SetRequiresTransaction(!wasCommandTextEmpty || requiresTransaction);
 
-        // Eligible updates read nothing back, so every command maps to a no-results statement.
-        for (var i = 0; i < _pendingBulkUpdateCommands.Count; i++)
-        {
-            ResultSetMappings.Add(resultSetMapping);
-        }
+        AddKeyedRunResultSetMappings(_pendingBulkUpdateCommands.Count, resultSetMapping);
     }
 
     private void ApplyPendingBulkDeleteCommands(string reason)
@@ -477,11 +505,22 @@ public class DuckDBModificationCommandBatch : AffectedCountModificationCommandBa
 
         SetRequiresTransaction(!wasCommandTextEmpty || requiresTransaction);
 
-        // Eligible deletes read nothing back, so every command maps to a no-results statement.
-        for (var i = 0; i < _pendingBulkDeleteCommands.Count; i++)
+        AddKeyedRunResultSetMappings(_pendingBulkDeleteCommands.Count, resultSetMapping);
+    }
+
+    // Every command in the run shares the run's single row-check value; marking the final command as the last in
+    // the result set makes EF compare that value with the run's command count.
+    private void AddKeyedRunResultSetMappings(int commandCount, ResultSetMapping resultSetMapping)
+    {
+        for (var i = 0; i < commandCount; i++)
         {
             ResultSetMappings.Add(resultSetMapping);
         }
+
+        var lastIndex = ResultSetMappings.Count - 1;
+        ResultSetMappings[lastIndex] =
+            (ResultSetMappings[lastIndex] & ~ResultSetMapping.NotLastInResultSet)
+            | ResultSetMapping.LastInResultSet;
     }
 
     private int PendingBatchCellCount()

@@ -491,14 +491,18 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
     ///     </para>
     ///     <para>
     ///         The caller only routes updates here when their condition columns are the primary key (no
-    ///         concurrency tokens) and they read no values back, so no <c>RETURNING</c> clause or result-set
-    ///         consumption is required.
+    ///         concurrency tokens) and they read no values back, so no <c>RETURNING</c> clause is required. The
+    ///         update is preceded by a count of the run's keys that each match exactly one row, which EF checks
+    ///         against the run's command count before the update runs.
     ///     </para>
     /// </remarks>
     /// <param name="commandStringBuilder">The builder to which the SQL is appended.</param>
     /// <param name="modificationCommands">The consecutive update commands to merge into one statement.</param>
     /// <param name="requiresTransaction">Set to <see langword="true" /> if the appended SQL must run inside a transaction.</param>
-    /// <returns><see cref="ResultSetMapping.NoResults" />.</returns>
+    /// <returns>
+    ///     A rows-affected mapping for each command in the run; the caller promotes the final command's mapping to
+    ///     <see cref="ResultSetMapping.LastInResultSet" />.
+    /// </returns>
     public virtual ResultSetMapping AppendBulkUpdateOperation(
         StringBuilder commandStringBuilder,
         IReadOnlyList<IReadOnlyModificationCommand> modificationCommands,
@@ -516,6 +520,8 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         var helper = SqlGenerationHelper;
         var structMutationPlan = plan.StructMutationPlan;
 
+        AppendKeyedRunRowCheck(commandStringBuilder, plan);
+
         if (structMutationPlan is null)
         {
             AppendBulkUpdateOperationCore(commandStringBuilder, plan, helper);
@@ -529,8 +535,145 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
                 helper);
         }
 
-        requiresTransaction = false;
-        return ResultSetMapping.NoResults;
+        // The row check and the update must read the same snapshot.
+        requiresTransaction = true;
+        return KeyedRunResultSetMapping;
+    }
+
+    /// <summary>
+    ///     The result-set mapping of every command in a merged update or delete run. The caller promotes the final
+    ///     command's mapping to <see cref="ResultSetMapping.LastInResultSet" />, so EF reads the run's row check as one
+    ///     rows-affected value covering the whole run.
+    /// </summary>
+    internal const ResultSetMapping KeyedRunResultSetMapping =
+        ResultSetMapping.NotLastInResultSet | ResultSetMapping.ResultSetWithRowsAffectedOnly;
+
+    /// <summary>
+    ///     Appends a query that counts the run's keys that each match exactly one row. EF compares the count with the
+    ///     run's command count before the following update or delete runs, so a key whose row was deleted, or, where
+    ///     the engine does not enforce keys, a key shared by several rows, fails the run before any row changes.
+    /// </summary>
+    private void AppendKeyedRunRowCheck(StringBuilder commandStringBuilder, IDuckDBKeyedRunPlan plan)
+    {
+        var helper = SqlGenerationHelper;
+        var table = helper.DelimitIdentifier(plan.TableName);
+
+        commandStringBuilder
+            .Append("SELECT CAST(COUNT(*) AS INTEGER) FROM (SELECT 1 FROM ")
+            .Append(helper.DelimitIdentifier(plan.TableName, plan.Schema));
+
+        if (plan.KeyColumnCount == 1)
+        {
+            var key = helper.DelimitIdentifier(plan.GetKeyColumnName(0));
+            commandStringBuilder.Append(" WHERE ").Append(key).Append(" IN (");
+            for (var rowIndex = 0; rowIndex < plan.RowCount; rowIndex++)
+            {
+                if (rowIndex > 0)
+                {
+                    commandStringBuilder.Append(", ");
+                }
+
+                commandStringBuilder.Append(
+                    helper.GenerateParameterNamePlaceholder(plan.GetOriginalKeyParameterName(rowIndex, 0)));
+            }
+
+            commandStringBuilder.Append(") GROUP BY ").Append(key);
+        }
+        else
+        {
+            commandStringBuilder.Append(" INNER JOIN (VALUES ");
+            for (var rowIndex = 0; rowIndex < plan.RowCount; rowIndex++)
+            {
+                if (rowIndex > 0)
+                {
+                    commandStringBuilder.Append(", ");
+                }
+
+                commandStringBuilder.Append('(');
+                for (var keyIndex = 0; keyIndex < plan.KeyColumnCount; keyIndex++)
+                {
+                    if (keyIndex > 0)
+                    {
+                        commandStringBuilder.Append(", ");
+                    }
+
+                    commandStringBuilder.Append(
+                        helper.GenerateParameterNamePlaceholder(plan.GetOriginalKeyParameterName(rowIndex, keyIndex)));
+                }
+
+                commandStringBuilder.Append(')');
+            }
+
+            commandStringBuilder.Append(") AS k(");
+            for (var keyIndex = 0; keyIndex < plan.KeyColumnCount; keyIndex++)
+            {
+                if (keyIndex > 0)
+                {
+                    commandStringBuilder.Append(", ");
+                }
+
+                commandStringBuilder.Append(helper.DelimitIdentifier(plan.GetKeyColumnName(keyIndex)));
+            }
+
+            commandStringBuilder.Append(") ON ");
+            for (var keyIndex = 0; keyIndex < plan.KeyColumnCount; keyIndex++)
+            {
+                if (keyIndex > 0)
+                {
+                    commandStringBuilder.Append(" AND ");
+                }
+
+                var key = helper.DelimitIdentifier(plan.GetKeyColumnName(keyIndex));
+                commandStringBuilder.Append(table).Append('.').Append(key).Append(" = k.").Append(key);
+            }
+
+            commandStringBuilder.Append(" GROUP BY ");
+            for (var keyIndex = 0; keyIndex < plan.KeyColumnCount; keyIndex++)
+            {
+                if (keyIndex > 0)
+                {
+                    commandStringBuilder.Append(", ");
+                }
+
+                commandStringBuilder.Append("k.").Append(helper.DelimitIdentifier(plan.GetKeyColumnName(keyIndex)));
+            }
+        }
+
+        commandStringBuilder.Append(" HAVING COUNT(*) = 1)").AppendLine(helper.StatementTerminator);
+    }
+
+    /// <summary>
+    ///     Appends an update or delete that cannot join a merged run, preceded by a count of the rows its conditions
+    ///     match, for engines without <c>RETURNING</c>. EF reads the count as the command's rows-affected value
+    ///     before the statement runs, so a stale concurrency token, a deleted row or, where keys are not enforced,
+    ///     a duplicated key fails the command before it changes anything.
+    /// </summary>
+    internal ResultSetMapping AppendCheckedModificationOperation(
+        StringBuilder commandStringBuilder,
+        IReadOnlyModificationCommand command,
+        int commandPosition,
+        out bool requiresTransaction)
+    {
+        commandStringBuilder
+            .Append("SELECT CAST(COUNT(*) AS INTEGER) FROM ")
+            .Append(SqlGenerationHelper.DelimitIdentifier(command.TableName, command.Schema))
+            .Append(" WHERE ");
+        AppendConditions(
+            commandStringBuilder,
+            command.ColumnModifications.Where(operation => operation.IsCondition).ToArray());
+        commandStringBuilder.AppendLine(SqlGenerationHelper.StatementTerminator);
+
+        var statementMapping = command.EntityState == EntityState.Deleted
+            ? AppendDeleteOperation(commandStringBuilder, command, commandPosition, out _)
+            : AppendUpdateOperation(commandStringBuilder, command, commandPosition, out _);
+        if (statementMapping != ResultSetMapping.NoResults)
+        {
+            throw new InvalidOperationException(
+                $"A checked modification of '{command.TableName}' must render a statement without result sets.");
+        }
+
+        requiresTransaction = true;
+        return ResultSetMapping.LastInResultSet | ResultSetMapping.ResultSetWithRowsAffectedOnly;
     }
 
     private static void AppendBulkUpdateOperationCore(
@@ -832,13 +975,17 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
     /// <remarks>
     ///     Collapsing N single-row deletes into one statement is roughly an order of magnitude (and up to ~20×)
     ///     faster than the per-row delete path on DuckDB. The caller only routes deletes here when their
-    ///     condition columns are the primary key (no concurrency tokens), so no row-count verification or
-    ///     result-set consumption is required.
+    ///     condition columns are the primary key (no concurrency tokens). The delete is preceded by a count of the
+    ///     run's keys that each match exactly one row, which EF checks against the run's command count before the
+    ///     delete runs.
     /// </remarks>
     /// <param name="commandStringBuilder">The builder to which the SQL is appended.</param>
     /// <param name="modificationCommands">The consecutive delete commands to merge into one statement.</param>
     /// <param name="requiresTransaction">Set to <see langword="true" /> if the appended SQL must run inside a transaction.</param>
-    /// <returns><see cref="ResultSetMapping.NoResults" />.</returns>
+    /// <returns>
+    ///     A rows-affected mapping for each command in the run; the caller promotes the final command's mapping to
+    ///     <see cref="ResultSetMapping.LastInResultSet" />.
+    /// </returns>
     public virtual ResultSetMapping AppendBulkDeleteOperation(
         StringBuilder commandStringBuilder,
         IReadOnlyList<IReadOnlyModificationCommand> modificationCommands,
@@ -854,6 +1001,8 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
         out bool requiresTransaction)
     {
         var helper = SqlGenerationHelper;
+
+        AppendKeyedRunRowCheck(commandStringBuilder, plan);
 
         commandStringBuilder.Append("DELETE FROM ");
         commandStringBuilder.Append(helper.DelimitIdentifier(plan.TableName, plan.Schema));
@@ -936,9 +1085,10 @@ public class DuckDBUpdateSqlGenerator : UpdateSqlGenerator
 
         commandStringBuilder.AppendLine(helper.StatementTerminator);
 
-        requiresTransaction = false;
+        // The row check and the delete must read the same snapshot.
+        requiresTransaction = true;
 
-        return ResultSetMapping.NoResults;
+        return KeyedRunResultSetMapping;
     }
 
     private void AppendStructInsertCommandHeader(

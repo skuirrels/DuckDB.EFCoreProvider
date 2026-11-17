@@ -113,10 +113,14 @@ assumptions:
   tracked property must also use `ValueGeneratedNever()` and receive an application value because EF cannot
   read the default back without `RETURNING`.
 - DuckLake rejects `INSERT/UPDATE/DELETE ... RETURNING`. Store-generated values that EF must read back are
-  therefore unsupported. The provider uses one non-returning statement per tracked change and checks the
-  affected-row count for optimistic concurrency.
-- `EnableBulkInsertBatching`, `EnableBulkUpdateBatching`, and `EnableBulkDeleteBatching` are incompatible with
-  the DuckLake profile. Use `BulkInsert` for ingestion and `Upsert` for set-based merge workloads.
+  therefore unsupported. By default the provider uses one non-returning statement per tracked change and checks
+  the affected-row count for optimistic concurrency.
+- `EnableBulkInsertBatching`, `EnableBulkUpdateBatching`, and `EnableBulkDeleteBatching` merge `SaveChanges`
+  writes as on native DuckDB. Because DuckLake cannot enforce keys, each merged update or delete run is preceded
+  by a count of its keys that match exactly one row, and each update or delete that cannot be merged, such as one
+  with a concurrency token, by a count of the rows its conditions match. A deleted row, a stale concurrency token
+  or a key shared by several rows makes `SaveChanges` throw `DbUpdateConcurrencyException` before the statement
+  changes anything. Use `BulkInsert` for ingestion and `Upsert` for set-based merge workloads.
 - Provider tiered storage cannot be combined with DuckLake. DuckLake already owns Parquet layout, snapshots,
   compaction, and data-file lifecycle.
 

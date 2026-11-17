@@ -144,6 +144,9 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
         }
 
         var exception = await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+        // The merged update runs after its row check, so the conflict surfaces while EF reads the batch's results
+        // rather than as a failed command, and the competing transaction is committed here instead.
+        conflict.ReleaseCompetitor();
 
         Assert.True(DuckDBTransientExceptionDetector.ShouldRetryOn(exception));
         Assert.Equal(1, conflict.Attempts);
@@ -565,7 +568,7 @@ public class RetryingExecutionStrategyTests : DuckDBTestBase
             }
         }
 
-        private void ReleaseCompetitor()
+        internal void ReleaseCompetitor()
         {
             if (_competitor is null)
             {

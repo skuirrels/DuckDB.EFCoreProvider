@@ -107,7 +107,11 @@ public class BulkUpdateBatchingTests : DuckDBTestBase
         }
 
         var sql = Assert.Single(interceptor.CommandTexts.Where(
-            commandText => commandText.StartsWith("UPDATE ", StringComparison.Ordinal)));
+            commandText => commandText.Contains("UPDATE ", StringComparison.Ordinal)));
+        Assert.StartsWith(
+            "SELECT CAST(COUNT(*) AS INTEGER) FROM (SELECT 1 FROM \"Items\" WHERE \"Id\" IN ($p0, $p3)"
+            + " GROUP BY \"Id\" HAVING COUNT(*) = 1);",
+            sql);
         Assert.Contains("UPDATE \"Items\" SET \"Name\" = v.\"Name\", \"Value\" = v.\"Value\"", sql);
         Assert.Contains(
             "FROM (VALUES ($p0, $p1, $p2), ($p3, $p4, $p5)) AS v(\"Id\", \"Name\", \"Value\")",
