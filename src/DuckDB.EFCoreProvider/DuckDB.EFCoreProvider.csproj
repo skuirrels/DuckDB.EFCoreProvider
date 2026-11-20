@@ -34,6 +34,10 @@
 - EF Core migrations now work on the DuckLake profile (Database.Migrate(), dotnet ef database update and plain scripts). The history table is keyless and the lock claims one seeded __EFMigrationsLock row with a conditional UPDATE; clear a stale lock with UPDATE "__EFMigrationsLock" SET "Holder" = NULL, "Timestamp" = NULL WHERE "Id" = 1. Quack still rejects migrations.
 - On DuckLake, renames, added and dropped columns, widening type changes and literal defaults apply in place. Other type changes, required columns, columns made required and SET SCHEMA fail while the script is generated. With EnableMigrationTableRebuilds(), conversions and required columns rebuild the table, filling new values from the migration's defaultValue; a rebuilt table cannot be time-travelled past the rebuild.
 - On the Quack profile, SaveChanges updates and deletes keep the per-row path. A custom capability set without RETURNING and without multiple statements per command now rejects SaveChanges batching.
+- Fix TimeSpan.TotalDays, TotalHours and the other Total* members of a DateTime or DateTimeOffset subtraction, which returned the negated value as a whole number of calendar boundaries. They now return elapsed time with its fraction and .NET's sign, including for nullable operands.
+- DateTime and DateTimeOffset now translate AddHours, AddMinutes, AddSeconds, AddMilliseconds, AddMicroseconds, AddTicks and DayOfWeek, resolved to DuckDB's microsecond precision.
+- DateTimeOffset Year, Month, Day, Hour, Minute, Second and DayOfWeek are read in UTC, and AddMonths and AddYears follow the UTC calendar, so results no longer depend on the machine's time zone. AddDays adds 24 hours per day, so it no longer drifts by an hour across daylight-saving changes.
+
 1.33.0 (EF10 and EF11)
 - BulkInsert, BulkInsertAsync, Upsert and UpsertAsync now write Dictionary&lt;K,V&gt;, IDictionary&lt;K,V&gt; and IReadOnlyDictionary&lt;K,V&gt; MAP properties through the appender instead of rejecting them. Keys and values with value converters, such as enums, are converted first.
 - MAP parameters now bind as native DuckDB MAP values instead of DuckDB's quoted MAP text.
