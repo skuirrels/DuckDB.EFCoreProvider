@@ -37,6 +37,7 @@
 - Fix TimeSpan.TotalDays, TotalHours and the other Total* members of a DateTime or DateTimeOffset subtraction, which returned the negated value as a whole number of calendar boundaries. They now return elapsed time with its fraction and .NET's sign, including for nullable operands.
 - DateTime and DateTimeOffset now translate AddHours, AddMinutes, AddSeconds, AddMilliseconds, AddMicroseconds, AddTicks and DayOfWeek, resolved to DuckDB's microsecond precision.
 - DateTimeOffset Year, Month, Day, Hour, Minute, Second and DayOfWeek are read in UTC, and AddMonths and AddYears follow the UTC calendar, so results no longer depend on the machine's time zone. AddDays adds 24 hours per day, so it no longer drifts by an hour across daylight-saving changes.
+- Add UseCaseInsensitiveStringComparisons(), which makes string ==, !=, IN lists and list Contains case-insensitive for the context by adding COLLATE nocase to the query. It changes no DuckDB setting and needs no migration; columns with UseCollation(...) and EF.Functions.Collate(...) keep their collation, navigations, Include and group element lookups stay case-sensitive, and the comparisons do not use an index.
 
 1.33.0 (EF10 and EF11)
 - BulkInsert, BulkInsertAsync, Upsert and UpsertAsync now write Dictionary&lt;K,V&gt;, IDictionary&lt;K,V&gt; and IReadOnlyDictionary&lt;K,V&gt; MAP properties through the appender instead of rejecting them. Keys and values with value converters, such as enums, are converted first.

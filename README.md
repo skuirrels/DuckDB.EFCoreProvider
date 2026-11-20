@@ -229,7 +229,8 @@ Provider behaviour is configured through the optional `UseDuckDB(connectionStrin
 | `.EnableBulkInsertBatching()` | Merge consecutive `SaveChanges` inserts into one multi-row statement (~10× faster). | off |
 | `.EnableBulkUpdateBatching()` | Merge eligible `SaveChanges` updates into one statement (~4× faster). | off |
 | `.EnableBulkDeleteBatching()` | Merge eligible `SaveChanges` deletes into one statement (~4× faster). | off |
-| `.UseCaseInsensitiveStringSearches()` | Make simple `StartsWith`, `Contains`, and `EndsWith` queries case-insensitive for this context; literal `%` and `_` remain literals. | off |
+| `.UseCaseInsensitiveStringSearches()` | Make simple `StartsWith`, `Contains`, and `EndsWith` queries case-insensitive for this context; literal `%` and `_` remain literals. It does not change `==`, `!=` or `IN`. | off |
+| `.UseCaseInsensitiveStringComparisons()` | Make string `==`, `!=`, `IN` lists and list `Contains` case-insensitive for this context by adding `COLLATE nocase` to the query. No DuckDB setting or schema change; see [Case-insensitive comparisons](#case-insensitive-comparisons). | off |
 | `.MemoryLimit("4GB")` | Cap DuckDB's buffer-manager memory. Accepts `"512MB"`, `"75%"`, etc. | 80% of RAM |
 | `.Threads(4)` | Set the global thread count used by DuckDB query execution when the connection opens. | DuckDB default |
 | `.CheckpointThreshold("1GB")` | Raise the WAL size that triggers automatic checkpoints; defers ART-index re-serialization during sustained ingest. Pair with explicit `CHECKPOINT` statements at ingest boundaries. | 16 MB |
@@ -255,6 +256,26 @@ options.UseDuckDB(
 ```
 
 The batching, memory, thread, and file-search options are explained in detail under [Performance](#performance) and [Memory limit, threads, and file search path](#memory-limit-threads-and-file-search-path).
+
+### Case-insensitive comparisons
+
+`UseCaseInsensitiveStringComparisons()` adds `COLLATE nocase` to one side of each string `=`, `<>`, `IN`, `= ANY(...)`
+and `array_contains` comparison the context translates, including joins between unrelated string columns. It changes only that
+context's SQL: no DuckDB setting such as `default_collation` is changed, so other connections to the same database are
+unaffected, no migration is needed, and it works on DuckLake. `ORDER BY`, `GROUP BY`, `Distinct` and string searches
+keep their usual behaviour; combine it with `UseCaseInsensitiveStringSearches()` for `StartsWith`, `Contains` and
+`EndsWith`.
+
+- A comparison whose operand already has a collation, from `UseCollation(...)` on the column or
+  `EF.Functions.Collate(...)` in the query, keeps that collation, because DuckDB rejects mixing two collations.
+- A foreign key compared with its principal key, as navigations and `Include` do, and a column compared with the same
+  column, as a group's elements are fetched, stay case-sensitive, so entity graphs and groups stay consistent with the
+  change tracker and `GROUP BY`. A `join` on a foreign key written by hand is also left case-sensitive.
+- DuckDB evaluates a `nocase` comparison as `lower(...)` over each row, so it does not use an index.
+- DuckDB accepts a collation only on `VARCHAR` values, so a string property over an `ENUM` column fails with this
+  option.
+- `nocase` folds case only: `ß` does not equal `SS`.
+- String properties with a value converter are left case-sensitive.
 
 ## Data workflows
 

@@ -57,6 +57,13 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
   machine, so results changed with the server's time zone and could disagree with the loaded value, which
   materialises at +00:00. On a machine whose time zone is not UTC, queries that filter or group on these members
   can return different rows from before.
+- Add `UseCaseInsensitiveStringComparisons()`, which makes string `==`, `!=`, `IN` lists and list `Contains`
+  case-insensitive for the context, including joins between unrelated string columns, by adding `COLLATE nocase` to
+  the comparison in the query. It changes no DuckDB setting, so other connections and contexts on the same database
+  are unaffected, and needs no migration. Operands that already have a collation, from `UseCollation(...)` or
+  `EF.Functions.Collate(...)`, keep it, and foreign keys compared with their principal keys, as in navigations and
+  `Include`, stay case-sensitive, as do group element lookups. DuckDB evaluates these comparisons over each row with `lower(...)`, so they do not use an index.
+  `UseCaseInsensitiveStringSearches()` still covers only `StartsWith`, `Contains` and `EndsWith`.
 
 ## 1.33.0
 

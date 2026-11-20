@@ -15,12 +15,24 @@ public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPos
     private static readonly DuckDBUnnestPostprocessor UnnestPostprocessor = new();
     private static readonly DuckDBWholeStructProjectionExpressionVisitor WholeStructProjectionVisitor = new();
 
+    private readonly bool _caseInsensitiveStringComparisons;
+
     public DuckDBQueryTranslationPostprocessor(
         QueryTranslationPostprocessorDependencies dependencies,
         RelationalQueryTranslationPostprocessorDependencies relationalDependencies,
         RelationalQueryCompilationContext queryCompilationContext)
         : base(dependencies, relationalDependencies, queryCompilationContext)
     {
+    }
+
+    public DuckDBQueryTranslationPostprocessor(
+        QueryTranslationPostprocessorDependencies dependencies,
+        RelationalQueryTranslationPostprocessorDependencies relationalDependencies,
+        RelationalQueryCompilationContext queryCompilationContext,
+        bool caseInsensitiveStringComparisons)
+        : this(dependencies, relationalDependencies, queryCompilationContext)
+    {
+        _caseInsensitiveStringComparisons = caseInsensitiveStringComparisons;
     }
 
     /// <inheritdoc />
@@ -74,6 +86,12 @@ public class DuckDBQueryTranslationPostprocessor : RelationalQueryTranslationPos
             .Visit(result);
         result = new DuckDBUpdateJoinFlatteningExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
             .Visit(result);
+
+        if (_caseInsensitiveStringComparisons)
+        {
+            result = new DuckDBCaseInsensitiveComparisonExpressionVisitor(RelationalDependencies.SqlExpressionFactory)
+                .Visit(result);
+        }
 
         return result;
     }

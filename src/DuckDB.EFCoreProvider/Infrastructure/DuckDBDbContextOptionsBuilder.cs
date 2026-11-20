@@ -173,6 +173,39 @@ public class DuckDBDbContextOptionsBuilder : RelationalDbContextOptionsBuilder<D
         => WithOption(e => e.WithCaseInsensitiveStringSearches(enable));
 
     /// <summary>
+    ///     Configures string <c>==</c>, <c>!=</c>, and <c>IN</c> comparisons, including
+    ///     <see cref="Enumerable.Contains{TSource}(IEnumerable{TSource}, TSource)" /> over a list of strings, to use
+    ///     DuckDB's <c>NOCASE</c> collation.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is a context-wide opt-in and is disabled by default. It is applied in each translated query by
+    ///         adding <c>COLLATE nocase</c> to one operand of the comparison, so it needs no migration, works with
+    ///         existing databases and the DuckLake profile, and does not change any DuckDB setting. It applies to the
+    ///         string equalities the query performs, including joins between unrelated string columns.
+    ///     </para>
+    ///     <para>
+    ///         A comparison is left unchanged when either operand is a column whose property has an explicit
+    ///         collation, configured with <c>UseCollation</c>, or is already collated with <c>EF.Functions.Collate</c>,
+    ///         and when a string property has a value converter. Comparisons between a foreign key and its principal
+    ///         key, as navigations and <c>Include</c> produce, and between a column and the same column, as a group's
+    ///         elements are fetched by, stay case-sensitive so that entity graphs and groups stay consistent.
+    ///         Ordering, grouping, <c>Distinct</c>, and the <c>StartsWith</c>, <c>Contains</c>, and <c>EndsWith</c>
+    ///         searches are not affected; use <see cref="UseCaseInsensitiveStringSearches" /> for the searches.
+    ///     </para>
+    ///     <para>
+    ///         DuckDB evaluates a <c>NOCASE</c> comparison as <c>lower(column) = value</c>, so an equality filter on
+    ///         an indexed column scans the table instead of using the index. <c>NOCASE</c> folds case character by
+    ///         character, so, for example, <c>ß</c> does not match <c>SS</c>. DuckDB accepts a collation only on
+    ///         <c>VARCHAR</c> values, so a string property over an <c>ENUM</c> column fails with this option.
+    ///     </para>
+    /// </remarks>
+    /// <param name="enable"><see langword="true" /> to enable case-insensitive string comparisons; otherwise, <see langword="false" />.</param>
+    /// <returns>The DuckDB options builder so that further configuration can be chained.</returns>
+    public virtual DuckDBDbContextOptionsBuilder UseCaseInsensitiveStringComparisons(bool enable = true)
+        => WithOption(e => e.WithCaseInsensitiveStringComparisons(enable));
+
+    /// <summary>
     ///     Merges consecutive inserts within a <see cref="DbContext.SaveChanges()" /> batch into a single
     ///     multi-row <c>INSERT ... VALUES (..),(..)</c> statement. This is roughly an order of magnitude faster
     ///     than the default per-row insert path on DuckDB's columnar engine.

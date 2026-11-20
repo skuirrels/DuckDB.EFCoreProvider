@@ -115,6 +115,16 @@ public class DuckDBCSharpRuntimeAnnotationCodeGenerator : RelationalCSharpRuntim
     public override void Generate(IProperty property, CSharpRuntimeAnnotationCodeGeneratorParameters parameters)
     {
         RemoveOpaqueAnnotations(parameters);
+
+        // The base generator drops the design-time collation; keep it under the provider annotation the runtime model
+        // convention sets, so UseCaseInsensitiveStringComparisons() leaves collated columns alone in compiled models.
+        if (!parameters.IsRuntime
+            && parameters.Annotations.TryGetValue(RelationalAnnotationNames.Collation, out var collation)
+            && collation is string)
+        {
+            parameters.Annotations[DuckDBAnnotationNames.RuntimeCollation] = collation;
+        }
+
         base.Generate(property, parameters);
     }
 

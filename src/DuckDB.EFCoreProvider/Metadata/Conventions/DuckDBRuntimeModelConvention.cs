@@ -1,4 +1,7 @@
-﻿using Microsoft.EntityFrameworkCore.Metadata.Conventions;
+﻿using DuckDB.EFCoreProvider.Metadata.Internal;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions.Infrastructure;
 
 namespace DuckDB.EFCoreProvider.Metadata.Conventions;
@@ -18,5 +21,24 @@ public class DuckDBRuntimeModelConvention : RelationalRuntimeModelConvention
     /// <param name="relationalDependencies">Parameter object containing relational dependencies for this convention.</param>
     public DuckDBRuntimeModelConvention(ProviderConventionSetBuilderDependencies dependencies, RelationalConventionSetBuilderDependencies relationalDependencies) : base(dependencies, relationalDependencies)
     {
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    ///     Keeps a property's collation under a provider annotation, because the base convention drops
+    ///     <c>Relational:Collation</c> and <c>UseCaseInsensitiveStringComparisons()</c> must leave collated columns alone.
+    /// </remarks>
+    protected override void ProcessPropertyAnnotations(
+        Dictionary<string, object?> annotations,
+        IProperty property,
+        RuntimeProperty runtimeProperty,
+        bool runtime)
+    {
+        base.ProcessPropertyAnnotations(annotations, property, runtimeProperty, runtime);
+
+        if (!runtime && property.GetCollation() is { } collation)
+        {
+            annotations[DuckDBAnnotationNames.RuntimeCollation] = collation;
+        }
     }
 }

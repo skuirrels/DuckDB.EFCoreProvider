@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.Query;
+﻿using DuckDB.EFCoreProvider.Infrastructure.Internal;
+using Microsoft.EntityFrameworkCore.Query;
 
 namespace DuckDB.EFCoreProvider.Query.Internal;
 
@@ -12,11 +13,21 @@ public class DuckDBQueryTranslationPostprocessorFactory : IQueryTranslationPostp
 {
     private readonly QueryTranslationPostprocessorDependencies _dependencies;
     private readonly RelationalQueryTranslationPostprocessorDependencies _relationalDependencies;
+    private readonly bool _caseInsensitiveStringComparisons;
 
     public DuckDBQueryTranslationPostprocessorFactory(QueryTranslationPostprocessorDependencies dependencies, RelationalQueryTranslationPostprocessorDependencies relationalDependencies)
     {
         _dependencies = dependencies;
         _relationalDependencies = relationalDependencies;
+    }
+
+    public DuckDBQueryTranslationPostprocessorFactory(
+        QueryTranslationPostprocessorDependencies dependencies,
+        RelationalQueryTranslationPostprocessorDependencies relationalDependencies,
+        IDuckDBSingletonOptions singletonOptions)
+        : this(dependencies, relationalDependencies)
+    {
+        _caseInsensitiveStringComparisons = singletonOptions.CaseInsensitiveStringComparisonsEnabled;
     }
 
     /// <inheritdoc />
@@ -25,6 +36,7 @@ public class DuckDBQueryTranslationPostprocessorFactory : IQueryTranslationPostp
         return new DuckDBQueryTranslationPostprocessor(
             _dependencies,
             _relationalDependencies,
-            (RelationalQueryCompilationContext)queryCompilationContext);
+            (RelationalQueryCompilationContext)queryCompilationContext,
+            _caseInsensitiveStringComparisons);
     }
 }

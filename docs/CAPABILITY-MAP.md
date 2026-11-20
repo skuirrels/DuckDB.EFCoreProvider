@@ -31,7 +31,7 @@ This document is the published capability matrix for the provider. It serves two
 | Optimistic concurrency | concurrency tokens |
 | Transactions | commit / rollback |
 | Migrations — create | tables, columns, indexes, sequences, comments, history table |
-| LINQ query translation | joins (including `ASOF` joins), grouping (including `ROLLUP` / `CUBE` / `GROUPING SETS`), `QUALIFY` ranking filters, ordering, paging, aggregates, string/math/temporal, row values, arrays, JSON traversal, set operations |
+| LINQ query translation | joins (including `ASOF` joins), grouping (including `ROLLUP` / `CUBE` / `GROUPING SETS`), `QUALIFY` ranking filters, ordering, paging, aggregates, string/math/temporal, opt-in case-insensitive string comparisons and searches, row values, arrays, JSON traversal, set operations |
 | JSON | `string`, `JsonDocument`, `JsonElement`, owned JSON via `ToJson()` |
 | Arrays / `List<T>` | CLR arrays and lists, typed `INTEGER[]`-style store types |
 | Type-mapping contract | EF model mappings and raw DuckDB.NET reader mappings are documented separately in [TYPE-MAPPINGS.md](TYPE-MAPPINGS.md) |
