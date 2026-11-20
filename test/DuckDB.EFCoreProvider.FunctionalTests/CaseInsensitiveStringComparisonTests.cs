@@ -144,6 +144,8 @@ public sealed class CaseInsensitiveStringComparisonTests : DuckDBTestBase
         using var context = new ComparisonContext(
             new DbContextOptionsBuilder<ComparisonContext>()
                 .UseDuckDB("DataSource=:memory:", duckdb => duckdb.UseCaseInsensitiveStringComparisons())
+                .EnableServiceProviderCaching(false)
+                .ConfigureWarnings(warnings => warnings.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
                 .Options,
             exactCollation: true);
         var serviceProvider = new DesignTimeServicesBuilder(
