@@ -44,6 +44,14 @@ internal static class DuckDBSkipReasons
     public const string OffsetNotStored = "DuckDB TIMESTAMPTZ does not store the original DateTimeOffset offset.";
 
     /// <summary>
+    ///     DuckDB engine limitation: <c>TIMESTAMP</c> and <c>TIMESTAMPTZ</c> store whole microseconds. The shared
+    ///     basic-types fixture seeds values with sub-microsecond ticks, which are truncated when written, so results
+    ///     computed from the stored value differ from .NET's in the final ticks although the translation is correct.
+    /// </summary>
+    public const string SubMicrosecondTicksNotStored =
+        "DuckDB timestamps store whole microseconds; the fixture's sub-microsecond ticks are truncated on write.";
+
+    /// <summary>
     ///     EF Core renders an unordered <c>First()</c> over a group as a correlated <c>TOP(1)</c> subquery without
     ///     <c>ORDER BY</c>. The row it picks is undefined; DuckDB does not keep insertion order there, while the
     ///     expected results assume the first row in key order.

@@ -15,6 +15,8 @@ public class DuckDBSingletonOptions : IDuckDBSingletonOptions
 
     public virtual bool CaseInsensitiveStringSearchesEnabled { get; private set; }
 
+    public virtual bool CaseInsensitiveStringComparisonsEnabled { get; private set; }
+
     public virtual bool IsQuack { get; private set; }
 
     /// <inheritdoc />
@@ -24,6 +26,7 @@ public class DuckDBSingletonOptions : IDuckDBSingletonOptions
 
         ReverseNullOrderingEnabled = duckDbOptions.ReverseNullOrdering;
         CaseInsensitiveStringSearchesEnabled = duckDbOptions.CaseInsensitiveStringSearches;
+        CaseInsensitiveStringComparisonsEnabled = duckDbOptions.CaseInsensitiveStringComparisons;
         IsQuack = duckDbOptions.QuackOptions is not null;
     }
 
@@ -46,6 +49,16 @@ public class DuckDBSingletonOptions : IDuckDBSingletonOptions
         {
             throw new InvalidOperationException(
                 $"A call was made to an option method ('{nameof(DuckDBOptionsExtension.CaseInsensitiveStringSearches)}') that"
+                + " changed an option that must be constant within a service provider, but Entity Framework is not"
+                + " building its own internal service provider. Either allow Entity Framework to build the service"
+                + " provider by removing the call to 'UseInternalServiceProvider', or ensure that the configuration"
+                + " does not change for all uses of a given service provider.");
+        }
+
+        if (duckDbOptions.CaseInsensitiveStringComparisons != CaseInsensitiveStringComparisonsEnabled)
+        {
+            throw new InvalidOperationException(
+                $"A call was made to an option method ('{nameof(DuckDBOptionsExtension.CaseInsensitiveStringComparisons)}') that"
                 + " changed an option that must be constant within a service provider, but Entity Framework is not"
                 + " building its own internal service provider. Either allow Entity Framework to build the service"
                 + " provider by removing the call to 'UseInternalServiceProvider', or ensure that the configuration"

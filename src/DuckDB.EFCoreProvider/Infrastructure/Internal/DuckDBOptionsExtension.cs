@@ -28,6 +28,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     private TimeSpan? _migrationLockTimeout;
     private bool _migrationTableRebuilds;
     private bool _caseInsensitiveStringSearches;
+    private bool _caseInsensitiveStringComparisons;
     private IReadOnlyList<DuckDBExtensionConfiguration> _configuredExtensions = [];
     private Action<DuckDBConnection>? _connectionInitializer;
     private DuckDBEncryptedDatabaseOptions? _encryptedDatabase;
@@ -53,6 +54,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
         _migrationLockTimeout = copyFrom._migrationLockTimeout;
         _migrationTableRebuilds = copyFrom._migrationTableRebuilds;
         _caseInsensitiveStringSearches = copyFrom._caseInsensitiveStringSearches;
+        _caseInsensitiveStringComparisons = copyFrom._caseInsensitiveStringComparisons;
         _configuredExtensions = copyFrom._configuredExtensions;
         _connectionInitializer = copyFrom._connectionInitializer;
         _encryptedDatabase = copyFrom._encryptedDatabase;
@@ -167,6 +169,12 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     ///     DuckDB's case-insensitive matching semantics; otherwise, <see langword="false" />.
     /// </summary>
     public virtual bool CaseInsensitiveStringSearches => _caseInsensitiveStringSearches;
+
+    /// <summary>
+    ///     <see langword="true" /> when string <c>==</c>, <c>!=</c>, and <c>IN</c>/<c>Contains</c> comparisons use
+    ///     DuckDB's <c>NOCASE</c> collation in queries; otherwise, <see langword="false" />.
+    /// </summary>
+    public virtual bool CaseInsensitiveStringComparisons => _caseInsensitiveStringComparisons;
 
     /// <summary>DuckDB extension names configured for compatibility with the original one-mode API.</summary>
     public virtual IReadOnlyList<string> ExtensionsToLoad
@@ -324,6 +332,14 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
     {
         var clone = (DuckDBOptionsExtension)Clone();
         clone._caseInsensitiveStringSearches = caseInsensitiveStringSearches;
+        return clone;
+    }
+
+    /// <summary>Returns a copy configured with the specified string-comparison behaviour.</summary>
+    public virtual DuckDBOptionsExtension WithCaseInsensitiveStringComparisons(bool caseInsensitiveStringComparisons)
+    {
+        var clone = (DuckDBOptionsExtension)Clone();
+        clone._caseInsensitiveStringComparisons = caseInsensitiveStringComparisons;
         return clone;
     }
 
@@ -617,6 +633,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             => other is ExtensionInfo otherInfo
                && Extension.ReverseNullOrdering == otherInfo.Extension.ReverseNullOrdering
                && Extension.CaseInsensitiveStringSearches == otherInfo.Extension.CaseInsensitiveStringSearches
+               && Extension.CaseInsensitiveStringComparisons == otherInfo.Extension.CaseInsensitiveStringComparisons
                && (Extension.EncryptedDatabase is null) == (otherInfo.Extension.EncryptedDatabase is null)
                && (Extension.DuckLakeOptions is null) == (otherInfo.Extension.DuckLakeOptions is null)
                && (Extension.QuackOptions is null) == (otherInfo.Extension.QuackOptions is null);
@@ -639,6 +656,11 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
                     if (Extension.CaseInsensitiveStringSearches)
                     {
                         builder.Append(nameof(Extension.CaseInsensitiveStringSearches)).Append(' ');
+                    }
+
+                    if (Extension.CaseInsensitiveStringComparisons)
+                    {
+                        builder.Append(nameof(Extension.CaseInsensitiveStringComparisons)).Append(' ');
                     }
 
                     if (Extension.EncryptedDatabase is not null)
@@ -671,6 +693,7 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
 
                 hashCode.Add(Extension.ReverseNullOrdering);
                 hashCode.Add(Extension.CaseInsensitiveStringSearches);
+                hashCode.Add(Extension.CaseInsensitiveStringComparisons);
                 hashCode.Add(Extension.EncryptedDatabase is not null);
                 hashCode.Add(Extension.DuckLakeOptions is not null);
                 hashCode.Add(Extension.QuackOptions is not null);
@@ -687,6 +710,8 @@ public class DuckDBOptionsExtension : RelationalOptionsExtension
             debugInfo["DuckDB.EFCoreProvider:" + nameof(ReverseNullOrdering)] = Extension.ReverseNullOrdering.GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:" + nameof(CaseInsensitiveStringSearches)] = Extension.CaseInsensitiveStringSearches
+                .GetHashCode().ToString(CultureInfo.InvariantCulture);
+            debugInfo["DuckDB.EFCoreProvider:" + nameof(CaseInsensitiveStringComparisons)] = Extension.CaseInsensitiveStringComparisons
                 .GetHashCode().ToString(CultureInfo.InvariantCulture);
             debugInfo["DuckDB.EFCoreProvider:EncryptedDatabase"] = (Extension.EncryptedDatabase is not null).GetHashCode()
                 .ToString(CultureInfo.InvariantCulture);

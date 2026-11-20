@@ -17,6 +17,11 @@ public interface IDuckDBSingletonOptions : ISingletonOptions
     /// </summary>
     bool CaseInsensitiveStringSearchesEnabled => false;
 
+    /// <summary>
+    ///     Whether string equality, inequality, and <c>IN</c> comparisons use DuckDB's <c>NOCASE</c> collation.
+    /// </summary>
+    bool CaseInsensitiveStringComparisonsEnabled => false;
+
     /// <summary>Whether commands execute against a remote DuckDB server through Quack.</summary>
     bool IsQuack => false;
 }

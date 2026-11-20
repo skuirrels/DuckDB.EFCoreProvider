@@ -29,6 +29,7 @@ public class DuckDBDateTimeMemberTranslator : IMemberTranslator
     private static readonly MemberInfo UtcNow = typeof(DateTime).GetRuntimeProperty(nameof(DateTime.UtcNow))!;
     private static readonly MemberInfo Today = typeof(DateTime).GetRuntimeProperty(nameof(DateTime.Today))!;
     private static readonly MemberInfo DayOfYear = typeof(DateTime).GetRuntimeProperty(nameof(DateTime.DayOfYear))!;
+    private static readonly MemberInfo DayOfWeek = typeof(DateTime).GetRuntimeProperty(nameof(DateTime.DayOfWeek))!;
 
     private readonly DuckDBSqlExpressionFactory _sqlExpressionFactory;
     private readonly DuckDBTypeMappingSource _typeMappingSource;
@@ -139,6 +140,11 @@ public class DuckDBDateTimeMemberTranslator : IMemberTranslator
                 argumentsPropagateNullability: [true],
                 returnType: typeof(int),
                 typeMapping: _typeMappingSource.FindMapping(typeof(int)));
+        }
+
+        if (member == DayOfWeek)
+        {
+            return _sqlExpressionFactory.DayOfWeek(instance!);
         }
 
         return null;

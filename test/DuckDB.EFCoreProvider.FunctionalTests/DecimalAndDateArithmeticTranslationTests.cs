@@ -123,7 +123,7 @@ public class DecimalAndDateArithmeticTranslationTests : DuckDBTestBase
         var result = query.Single();
 
         Assert.Equal(new DateTimeOffset(2026, 6, 2, 20, 0, 0, TimeSpan.Zero), result);
-        Assert.Contains("INTERVAL '1 day'", sql);
+        Assert.Contains("INTERVAL '24 hours'", sql);
         Assert.DoesNotContain("to_days", sql);
     }
 

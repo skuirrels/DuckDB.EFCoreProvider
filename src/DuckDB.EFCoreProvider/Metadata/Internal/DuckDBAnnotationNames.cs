@@ -118,6 +118,12 @@ public static class DuckDBAnnotationNames
     internal const string StructForeignKeyPath = Prefix + "StructForeignKeyPath";
 
     /// <summary>
+    ///     A property's configured collation, kept in the runtime model so query translation can tell which columns
+    ///     already carry a collation. EF removes <c>Relational:Collation</c> from the runtime model.
+    /// </summary>
+    internal const string RuntimeCollation = Prefix + "RuntimeCollation";
+
+    /// <summary>
     ///     A <see cref="DuckDBStructMapping" /> attached to a complex property (or nested
     ///     complex property) describing the DuckDB STRUCT column and child field names for
     ///     that specific usage. This disambiguates shared complex types used under multiple

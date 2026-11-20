@@ -103,6 +103,21 @@ public class DuckDBSqlExpressionFactory : SqlExpressionFactory
             returnType: typeof(int));
     }
 
+    /// <summary>
+    ///     Translates <c>DayOfWeek</c>. DuckDB's <c>dayofweek</c> numbers Sunday as 0, as <see cref="System.DayOfWeek" />
+    ///     does, so the result is typed as the enum over an integer mapping and compares directly with enum constants.
+    /// </summary>
+    public virtual SqlExpression DayOfWeek(SqlExpression expression)
+    {
+        return Function(
+            name: "dayofweek",
+            arguments: [expression],
+            argumentsPropagateNullability: [true],
+            nullable: true,
+            returnType: typeof(System.DayOfWeek),
+            typeMapping: _typeMappingSource.FindMapping(typeof(int)));
+    }
+
     public virtual SqlExpression MicrosecondComponent(SqlExpression expression)
     {
         var microsecondTotal = Function(
@@ -156,20 +171,112 @@ public class DuckDBSqlExpressionFactory : SqlExpressionFactory
 
     public virtual SqlExpression AddYears(SqlExpression timestamp, SqlExpression years, Type returnType)
     {
-        return DateAdd(timestamp, ToYears(years), returnType);
+        return CalendarDateAdd(timestamp, ToYears(years), returnType);
     }
 
     public virtual SqlExpression AddMonths(SqlExpression timestamp, SqlExpression months, Type returnType)
     {
-        return DateAdd(timestamp, ToMonths(months), returnType);
+        return CalendarDateAdd(timestamp, ToMonths(months), returnType);
     }
+
+    // A TIMESTAMPTZ plus whole months or years follows the calendar of the session TimeZone. DateTimeOffset values
+    // materialise at +00:00, so add the calendar interval to the UTC TIMESTAMP and read the result back as UTC.
+    private SqlExpression CalendarDateAdd(SqlExpression timestamp, SqlExpression interval, Type returnType)
+        => returnType == typeof(DateTimeOffset)
+            ? AtUtc(DateAdd(AtUtc(timestamp, typeof(DateTime)), interval, typeof(DateTime)), typeof(DateTimeOffset))
+            : DateAdd(timestamp, interval, returnType);
 
     public virtual SqlExpression AddDays(SqlExpression timestamp, SqlExpression days, Type returnType)
     {
         return DateAdd(
             timestamp,
-            returnType == typeof(DateOnly) ? ToDays(days) : ToFractionalDays(days),
+            returnType == typeof(DateOnly)
+                ? ToDays(days)
+                // .NET adds 24 hours per day. A TIMESTAMPTZ plus a calendar day follows the session TimeZone across
+                // daylight-saving changes, so DateTimeOffset adds hours; TIMESTAMP has no zone, so a day is exact.
+                : ToFractionalInterval(days, returnType == typeof(DateTimeOffset) ? "INTERVAL '24 hours'" : "INTERVAL '1 day'"),
             returnType);
+    }
+
+    /// <summary>
+    ///     Translates <c>AddHours</c>. DuckDB rounds the fractional interval to whole microseconds, the
+    ///     precision of <c>TIMESTAMP</c> and <c>TIMESTAMPTZ</c>.
+    /// </summary>
+    public virtual SqlExpression AddHours(SqlExpression timestamp, SqlExpression hours, Type returnType)
+        => DateAdd(timestamp, ToFractionalInterval(hours, "INTERVAL '1 hour'"), returnType);
+
+    /// <summary>Translates <c>AddMinutes</c>, rounded to whole microseconds.</summary>
+    public virtual SqlExpression AddMinutes(SqlExpression timestamp, SqlExpression minutes, Type returnType)
+        => DateAdd(timestamp, ToFractionalInterval(minutes, "INTERVAL '1 minute'"), returnType);
+
+    /// <summary>Translates <c>AddSeconds</c>, rounded to whole microseconds.</summary>
+    public virtual SqlExpression AddSeconds(SqlExpression timestamp, SqlExpression seconds, Type returnType)
+        => DateAdd(timestamp, ToFractionalInterval(seconds, "INTERVAL '1 second'"), returnType);
+
+    /// <summary>Translates <c>AddMilliseconds</c>, rounded to whole microseconds.</summary>
+    public virtual SqlExpression AddMilliseconds(SqlExpression timestamp, SqlExpression milliseconds, Type returnType)
+        => DateAdd(timestamp, ToFractionalInterval(milliseconds, "INTERVAL '1 millisecond'"), returnType);
+
+    /// <summary>Translates <c>AddMicroseconds</c>, rounded to whole microseconds.</summary>
+    public virtual SqlExpression AddMicroseconds(SqlExpression timestamp, SqlExpression microseconds, Type returnType)
+        => DateAdd(timestamp, ToFractionalInterval(microseconds, "INTERVAL '1 microsecond'"), returnType);
+
+    /// <summary>
+    ///     Translates <c>AddTicks</c>. A tick is 100 nanoseconds, below DuckDB's microsecond precision, so the tick
+    ///     count is truncated towards zero to whole microseconds with exact integer division.
+    /// </summary>
+    public virtual SqlExpression AddTicks(SqlExpression timestamp, SqlExpression ticks, Type returnType)
+    {
+        var longMapping = _typeMappingSource.FindMapping(typeof(long));
+        var microseconds = Function(
+            name: "divide",
+            arguments: [ApplyTypeMapping(ticks, longMapping), Constant(TimeSpan.TicksPerMicrosecond, longMapping)],
+            argumentsPropagateNullability: [true, true],
+            nullable: true,
+            returnType: typeof(long),
+            typeMapping: longMapping);
+
+        return DateAdd(
+            timestamp,
+            Function(
+                name: "to_microseconds",
+                arguments: [microseconds],
+                argumentsPropagateNullability: [true],
+                nullable: true,
+                returnType: typeof(TimeSpan),
+                typeMapping: _typeMappingSource.FindMapping(typeof(TimeSpan))),
+            returnType);
+    }
+
+    /// <summary>
+    ///     The elapsed time of the .NET subtraction <c>left - right</c> in microseconds, as <c>DOUBLE</c>. Both
+    ///     operands are <c>TIMESTAMP</c> or both <c>TIMESTAMPTZ</c>; <c>epoch_us</c> measures each as an instant,
+    ///     so the difference is exact elapsed time rather than a count of calendar-unit boundaries.
+    /// </summary>
+    public virtual SqlExpression ElapsedMicroseconds(SqlExpression left, SqlExpression right)
+    {
+        var operandTypeMapping = ExpressionExtensions.InferTypeMapping(left, right)
+            ?? _typeMappingSource.FindMapping(left.Type);
+        var longMapping = _typeMappingSource.FindMapping(typeof(long));
+
+        return Convert(
+            new SqlBinaryExpression(
+                ExpressionType.Subtract,
+                EpochMicroseconds(ApplyTypeMapping(left, operandTypeMapping)),
+                EpochMicroseconds(ApplyTypeMapping(right, operandTypeMapping)),
+                typeof(long),
+                longMapping),
+            typeof(double),
+            _typeMappingSource.FindMapping(typeof(double)));
+
+        SqlExpression EpochMicroseconds(SqlExpression value)
+            => Function(
+                name: "epoch_us",
+                arguments: [value],
+                argumentsPropagateNullability: [true],
+                nullable: true,
+                returnType: typeof(long),
+                typeMapping: longMapping);
     }
 
     private SqlExpression DateAdd(SqlExpression timestamp, SqlExpression interval, Type returnType)
@@ -189,12 +296,13 @@ public class DuckDBSqlExpressionFactory : SqlExpressionFactory
             : result;
     }
 
-    private SqlExpression ToFractionalDays(SqlExpression days)
+    // The unit literal is one of the fixed interval constants above, never model- or user-derived text.
+    private SqlExpression ToFractionalInterval(SqlExpression amount, string unitInterval)
     {
         return new SqlBinaryExpression(
             ExpressionType.Multiply,
-            ApplyDefaultTypeMapping(days),
-            Fragment("INTERVAL '1 day'"),
+            ApplyDefaultTypeMapping(amount),
+            Fragment(unitInterval),
             typeof(TimeSpan),
             _typeMappingSource.FindMapping(typeof(TimeSpan)));
     }
