@@ -5,7 +5,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Query;
 using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -20,15 +22,16 @@ namespace DuckDB.EFCoreProvider.Query.Internal;
 /// </summary>
 public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExpressionVisitor
 {
-    private static readonly Dictionary<string, string> TimeUnits = new()
+    // Scales elapsed microseconds to each TimeSpan.Total* member: (operator, factor), or null when no scaling is needed.
+    private static readonly Dictionary<string, (ExpressionType Operator, double Factor)?> TimeSpanTotalScales = new()
     {
-        [nameof(TimeSpan.TotalDays)] = "day",
-        [nameof(TimeSpan.TotalHours)] = "hour",
-        [nameof(TimeSpan.TotalMinutes)] = "minute",
-        [nameof(TimeSpan.TotalSeconds)] = "second",
-        [nameof(TimeSpan.TotalMilliseconds)] = "millisecond",
-        [nameof(TimeSpan.TotalMicroseconds)] = "microsecond",
-        [nameof(TimeSpan.TotalNanoseconds)] = "nanosecond"
+        [nameof(TimeSpan.TotalDays)] = (ExpressionType.Divide, TimeSpan.TicksPerDay / TimeSpan.TicksPerMicrosecond),
+        [nameof(TimeSpan.TotalHours)] = (ExpressionType.Divide, TimeSpan.TicksPerHour / TimeSpan.TicksPerMicrosecond),
+        [nameof(TimeSpan.TotalMinutes)] = (ExpressionType.Divide, TimeSpan.TicksPerMinute / TimeSpan.TicksPerMicrosecond),
+        [nameof(TimeSpan.TotalSeconds)] = (ExpressionType.Divide, TimeSpan.TicksPerSecond / TimeSpan.TicksPerMicrosecond),
+        [nameof(TimeSpan.TotalMilliseconds)] = (ExpressionType.Divide, TimeSpan.TicksPerMillisecond / TimeSpan.TicksPerMicrosecond),
+        [nameof(TimeSpan.TotalMicroseconds)] = null,
+        [nameof(TimeSpan.TotalNanoseconds)] = (ExpressionType.Multiply, TimeSpan.NanosecondsPerTick * TimeSpan.TicksPerMicrosecond)
     };
 
     private static readonly MethodInfo StringJoinWithStringArray =
@@ -224,24 +227,75 @@ public class DuckDBSqlTranslatingExpressionVisitor : RelationalSqlTranslatingExp
     /// <inheritdoc />
     protected override Expression VisitMember(MemberExpression memberExpression)
     {
-        if (memberExpression.Expression is BinaryExpression { NodeType: ExpressionType.Subtract } binaryExpression)
+        if (memberExpression.Member.DeclaringType == typeof(TimeSpan)
+            && TimeSpanTotalScales.TryGetValue(memberExpression.Member.Name, out var scale)
+            && TryGetTemporalSubtraction(memberExpression.Expression, out var subtraction))
         {
-            var sqlExpressionFactory = (DuckDBSqlExpressionFactory)Dependencies.SqlExpressionFactory;
-
-            if ((binaryExpression.Left.Type == typeof(DateTime) && binaryExpression.Right.Type == typeof(DateTime)) ||
-                (binaryExpression.Left.Type == typeof(DateTimeOffset) && binaryExpression.Right.Type == typeof(DateTimeOffset)))
-            {
-                if (TimeUnits.TryGetValue(memberExpression.Member.Name, out var unit))
-                {
-                    return sqlExpressionFactory.DateDiff(
-                        unit,
-                        Translate(binaryExpression.Left)!,
-                        Translate(binaryExpression.Right)!);
-                }
-            }
+            return TranslateTimeSpanTotal(subtraction, scale);
         }
 
         return base.VisitMember(memberExpression);
+    }
+
+    // Matches (a - b) for two DateTime or two DateTimeOffset operands, including the lifted subtraction of nullable
+    // operands, which reaches a TimeSpan member through .Value or a conversion from TimeSpan?.
+    private static bool TryGetTemporalSubtraction(Expression? expression, [NotNullWhen(true)] out BinaryExpression? subtraction)
+    {
+        var unwrapped = expression switch
+        {
+            MemberExpression { Member.Name: nameof(Nullable<TimeSpan>.Value), Expression: { Type: var type } inner }
+                when type == typeof(TimeSpan?) => inner,
+            UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked, Operand: { Type: var type } operand }
+                when type == typeof(TimeSpan?) => operand,
+            _ => expression
+        };
+
+        if (unwrapped is BinaryExpression { NodeType: ExpressionType.Subtract } binary)
+        {
+            var leftType = binary.Left.Type.UnwrapNullableType();
+            if ((leftType == typeof(DateTime) || leftType == typeof(DateTimeOffset))
+                && binary.Right.Type.UnwrapNullableType() == leftType)
+            {
+                subtraction = binary;
+                return true;
+            }
+        }
+
+        subtraction = null;
+        return false;
+    }
+
+    private static bool StoresTimestamp(RelationalTypeMapping? typeMapping)
+        => typeMapping?.Converter?.ProviderClrType.UnwrapNullableType() is not { } providerType
+            || providerType == typeof(DateTime)
+            || providerType == typeof(DateTimeOffset);
+
+    private Expression TranslateTimeSpanTotal(BinaryExpression subtraction, (ExpressionType Operator, double Factor)? scale)
+    {
+        if (TranslationFailed(subtraction.Left, Visit(subtraction.Left), out var left)
+            || TranslationFailed(subtraction.Right, Visit(subtraction.Right), out var right))
+        {
+            return QueryCompilationContext.NotTranslatedExpression;
+        }
+
+        // A converter to another provider type, such as ticks in BIGINT, stores something epoch_us cannot measure;
+        // leave the member untranslated rather than computing over the stored representation. Converters that keep a
+        // DateTime or DateTimeOffset, such as one that sets DateTimeKind, still store TIMESTAMP or TIMESTAMPTZ.
+        if (!StoresTimestamp(left!.TypeMapping) || !StoresTimestamp(right!.TypeMapping))
+        {
+            return QueryCompilationContext.NotTranslatedExpression;
+        }
+
+        var sqlExpressionFactory = (DuckDBSqlExpressionFactory)Dependencies.SqlExpressionFactory;
+        var microseconds = sqlExpressionFactory.ElapsedMicroseconds(left, right);
+
+        return scale is { } value
+            ? sqlExpressionFactory.MakeBinary(
+                value.Operator,
+                microseconds,
+                sqlExpressionFactory.Constant(value.Factor, microseconds.TypeMapping),
+                microseconds.TypeMapping)!
+            : microseconds;
     }
 
     /// <inheritdoc />

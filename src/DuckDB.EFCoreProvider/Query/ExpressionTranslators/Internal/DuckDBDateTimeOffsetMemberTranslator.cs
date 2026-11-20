@@ -21,6 +21,7 @@ public class DuckDBDateTimeOffsetMemberTranslator : IMemberTranslator
     private static readonly MemberInfo Hour = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.Hour))!;
     private static readonly MemberInfo Minute = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.Minute))!;
     private static readonly MemberInfo Second = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.Second))!;
+    private static readonly MemberInfo DayOfWeek = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.DayOfWeek))!;
     private static readonly MemberInfo UtcDateTime = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.UtcDateTime))!;
     private static readonly MemberInfo LocalDateTime = typeof(DateTimeOffset).GetRuntimeProperty(nameof(DateTimeOffset.LocalDateTime))!;
 
@@ -31,6 +32,11 @@ public class DuckDBDateTimeOffsetMemberTranslator : IMemberTranslator
         _sqlExpressionFactory = (DuckDBSqlExpressionFactory)sqlExpressionFactory;
     }
 
+    // TIMESTAMPTZ keeps the instant, not its offset, and materialises at +00:00. Read calendar and clock parts from
+    // the UTC TIMESTAMP rather than in the session TimeZone, so they match a loaded value on every machine.
+    private SqlExpression InUtc(SqlExpression instance)
+        => _sqlExpressionFactory.AtUtc(instance, typeof(DateTime));
+
     public SqlExpression? Translate(
         SqlExpression? instance,
         MemberInfo member,
@@ -39,32 +45,37 @@ public class DuckDBDateTimeOffsetMemberTranslator : IMemberTranslator
     {
         if (member == Year)
         {
-            return _sqlExpressionFactory.Year(instance!);
+            return _sqlExpressionFactory.Year(InUtc(instance!));
         }
 
         if (member == Month)
         {
-            return _sqlExpressionFactory.Month(instance!);
+            return _sqlExpressionFactory.Month(InUtc(instance!));
         }
 
         if (member == Day)
         {
-            return _sqlExpressionFactory.Day(instance!);
+            return _sqlExpressionFactory.Day(InUtc(instance!));
         }
 
         if (member == Hour)
         {
-            return _sqlExpressionFactory.Hour(instance!);
+            return _sqlExpressionFactory.Hour(InUtc(instance!));
         }
 
         if (member == Minute)
         {
-            return _sqlExpressionFactory.Minute(instance!);
+            return _sqlExpressionFactory.Minute(InUtc(instance!));
         }
 
         if (member == Second)
         {
-            return _sqlExpressionFactory.Second(instance!);
+            return _sqlExpressionFactory.Second(InUtc(instance!));
+        }
+
+        if (member == DayOfWeek)
+        {
+            return _sqlExpressionFactory.DayOfWeek(InUtc(instance!));
         }
 
         if (member == UtcDateTime)

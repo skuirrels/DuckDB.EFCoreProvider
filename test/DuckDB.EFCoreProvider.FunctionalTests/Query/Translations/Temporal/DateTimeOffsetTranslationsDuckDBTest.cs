@@ -17,19 +17,22 @@ public class DateTimeOffsetTranslationsDuckDBTest : DateTimeOffsetTranslationsTe
         return base.AddDays();
     }
 
-    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
+    // Translated; TemporalArithmeticTranslationTests covers the behaviour on both backend profiles.
+    [ConditionalFact(Skip = DuckDBSkipReasons.SubMicrosecondTicksNotStored)]
     public override Task AddHours()
     {
         return base.AddHours();
     }
 
-    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
+    // Translated; TemporalArithmeticTranslationTests covers the behaviour on both backend profiles.
+    [ConditionalFact(Skip = DuckDBSkipReasons.SubMicrosecondTicksNotStored)]
     public override Task AddMilliseconds()
     {
         return base.AddMilliseconds();
     }
 
-    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
+    // Translated; TemporalArithmeticTranslationTests covers the behaviour on both backend profiles.
+    [ConditionalFact(Skip = DuckDBSkipReasons.SubMicrosecondTicksNotStored)]
     public override Task AddMinutes()
     {
         return base.AddMinutes();
@@ -41,7 +44,8 @@ public class DateTimeOffsetTranslationsDuckDBTest : DateTimeOffsetTranslationsTe
         return base.AddMonths();
     }
 
-    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
+    // Translated; TemporalArithmeticTranslationTests covers the behaviour on both backend profiles.
+    [ConditionalFact(Skip = DuckDBSkipReasons.SubMicrosecondTicksNotStored)]
     public override Task AddSeconds()
     {
         return base.AddSeconds();

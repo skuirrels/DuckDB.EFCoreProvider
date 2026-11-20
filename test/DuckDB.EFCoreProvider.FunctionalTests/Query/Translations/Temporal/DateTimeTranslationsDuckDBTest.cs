@@ -30,10 +30,18 @@ public class DateTimeTranslationsDuckDBTest : DateTimeTranslationsTestBase<Basic
         return base.Millisecond();
     }
 
-    [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]
-    public override Task subtract_and_TotalDays()
+    public override async Task subtract_and_TotalDays()
     {
-        return base.subtract_and_TotalDays();
+        await base.subtract_and_TotalDays();
+
+        AssertSql(
+            """
+            date='1997-01-01T00:00:00.0000000' (DbType = DateTime)
+
+            SELECT b."Id", b."Bool", b."Byte", b."ByteArray", b."DateOnly", b."DateTime", b."DateTimeOffset", b."Decimal", b."Double", b."Enum", b."FlagsEnum", b."Float", b."Guid", b."Int", b."Long", b."Short", b."String", b."TimeOnly", b."TimeSpan"
+            FROM "BasicTypesEntities" AS b
+            WHERE (CAST(epoch_us(b."DateTime") - epoch_us($date) AS DOUBLE) / 86400000000.0) > 365.0
+            """);
     }
 
     [ConditionalFact(Skip = DuckDBSkipReasons.Tbd)]

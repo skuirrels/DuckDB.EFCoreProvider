@@ -18,6 +18,12 @@ public class DuckDBDateTimeOffsetMethodTranslator : IMethodCallTranslator
     private static readonly MethodInfo AddYears = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddYears), [typeof(int)])!;
     private static readonly MethodInfo AddMonths = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddMonths), [typeof(int)])!;
     private static readonly MethodInfo AddDays = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddDays), [typeof(double)])!;
+    private static readonly MethodInfo AddHours = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddHours), [typeof(double)])!;
+    private static readonly MethodInfo AddMinutes = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddMinutes), [typeof(double)])!;
+    private static readonly MethodInfo AddSeconds = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddSeconds), [typeof(double)])!;
+    private static readonly MethodInfo AddMilliseconds = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddMilliseconds), [typeof(double)])!;
+    private static readonly MethodInfo AddMicroseconds = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddMicroseconds), [typeof(double)])!;
+    private static readonly MethodInfo AddTicks = typeof(DateTimeOffset).GetRuntimeMethod(nameof(DateTimeOffset.AddTicks), [typeof(long)])!;
 
     private readonly DuckDBSqlExpressionFactory _sqlExpressionFactory;
 
@@ -45,6 +51,36 @@ public class DuckDBDateTimeOffsetMethodTranslator : IMethodCallTranslator
         if (method == AddDays)
         {
             return _sqlExpressionFactory.AddDays(instance!, arguments[0], typeof(DateTimeOffset));
+        }
+
+        if (method == AddHours)
+        {
+            return _sqlExpressionFactory.AddHours(instance!, arguments[0], typeof(DateTimeOffset));
+        }
+
+        if (method == AddMinutes)
+        {
+            return _sqlExpressionFactory.AddMinutes(instance!, arguments[0], typeof(DateTimeOffset));
+        }
+
+        if (method == AddSeconds)
+        {
+            return _sqlExpressionFactory.AddSeconds(instance!, arguments[0], typeof(DateTimeOffset));
+        }
+
+        if (method == AddMilliseconds)
+        {
+            return _sqlExpressionFactory.AddMilliseconds(instance!, arguments[0], typeof(DateTimeOffset));
+        }
+
+        if (method == AddMicroseconds)
+        {
+            return _sqlExpressionFactory.AddMicroseconds(instance!, arguments[0], typeof(DateTimeOffset));
+        }
+
+        if (method == AddTicks)
+        {
+            return _sqlExpressionFactory.AddTicks(instance!, arguments[0], typeof(DateTimeOffset));
         }
 
         return null;

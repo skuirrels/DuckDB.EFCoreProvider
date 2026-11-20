@@ -126,6 +126,8 @@ Basic indexes work (single/composite column, unique, expression). The following 
 | `array_contains` searching for `NULL` elements | `DuckDBQueryableMethodTranslatingExpressionVisitor` |
 | `DateTimeOffset` with non-zero offset | skipped spec tests ("DateTimeOffset with non-zero offset") |
 | `DateTimeOffset.DateTime`, `Offset` and `ToOffset` | `TIMESTAMPTZ` stores the instant, not the original offset (`DuckDBSkipReasons.OffsetNotStored`); `UtcDateTime`, `LocalDateTime` and constant-offset constructors translate |
+| `DateTimeOffset` calendar members (`Year`, `Month`, `Day`, `Hour`, `Minute`, `Second`, `DayOfWeek`) and `AddMonths` / `AddYears` | read in UTC, not the value's original offset, because `TIMESTAMPTZ` does not store it; this matches the +00:00 offset values materialise with and does not depend on the session's `TimeZone` |
+| Sub-microsecond `DateTime` / `DateTimeOffset` ticks | timestamps store whole microseconds; `AddTicks` and fractional `Add*` amounts resolve to microseconds, and spec tests whose fixture seeds sub-microsecond ticks are skipped with `DuckDBSkipReasons.SubMicrosecondTicksNotStored` |
 
 ---
 

@@ -38,6 +38,25 @@ All notable changes to `DuckDB.EFCoreProvider` are documented here. The package 
 - On the Quack profile, which runs one statement per command, `SaveChanges` updates and deletes keep the per-row
   path; insert batching is unchanged. A custom engine capability set without `RETURNING` and without multiple
   statements per command now rejects `SaveChanges` batching with `NotSupportedException`.
+- Fix `TotalDays`, `TotalHours` and the other `TimeSpan.Total*` members of a `DateTime` or `DateTimeOffset`
+  subtraction, such as `(later - earlier).TotalDays`. They returned the negated value as a whole number of calendar
+  boundaries crossed, so 2.23 days came back as -2 and 23:00 to 01:00 the next day as one day. They now return
+  elapsed time with its fraction and .NET's sign, computed from `epoch_us`, and also translate when the operands are
+  nullable, as in `(a - b).Value.TotalHours`, or when a value converter keeps the `DateTime` or `DateTimeOffset`
+  type, such as one that sets `DateTimeKind`.
+- `DateTime` and `DateTimeOffset` now translate `AddHours`, `AddMinutes`, `AddSeconds`, `AddMilliseconds`,
+  `AddMicroseconds` and `AddTicks`. Fractional amounts are rounded to whole microseconds, the precision of DuckDB
+  timestamps, and `AddTicks` truncates the tick count towards zero to whole microseconds.
+- `DateTime.DayOfWeek` and `DateTimeOffset.DayOfWeek` now translate to `dayofweek`, which compares directly with
+  `DayOfWeek` values. A `DateTimeOffset` weekday is read in UTC, matching the +00:00 offset that `TIMESTAMPTZ`
+  values materialise with, so it does not depend on the machine's time zone.
+- Fix `DateTimeOffset.AddDays` landing an hour out when the result crossed a daylight-saving change in the
+  session's `TimeZone`. It now adds 24 hours per day, as .NET does.
+- `DateTimeOffset.Year`, `Month`, `Day`, `Hour`, `Minute` and `Second` are now read in UTC, and `AddMonths` and
+  `AddYears` follow the UTC calendar. They previously used the session's `TimeZone`, which DuckDB takes from the
+  machine, so results changed with the server's time zone and could disagree with the loaded value, which
+  materialises at +00:00. On a machine whose time zone is not UTC, queries that filter or group on these members
+  can return different rows from before.
 
 ## 1.33.0
 
